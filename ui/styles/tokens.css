@@ -1,0 +1,95 @@
+:root {
+  /* Color tokens */
+  --color-accent: #d96c4a;
+  --color-accent-hover: #c45f3f;
+  --color-accent-dark: #a35138;
+  --color-accent-glow: rgba(217, 108, 74, 0.3);
+  --color-accent-subtle: rgba(217, 108, 74, 0.08);
+
+  --color-bg: #f4f1ea;
+  --color-bg-soft: #f9f7f2;
+  --color-bg-gradient-start: #fdfcf9;
+  --color-bg-gradient-end: #efe8dc;
+
+  --color-surface: #ffffff;
+  --color-surface-warm: linear-gradient(135deg, #fffaf6, #f8f2e7);
+
+  --color-ink: #141414;
+  --color-muted: #5c5c5c;
+
+  --color-border: rgba(20, 20, 20, 0.08);
+  --color-border-accent: rgba(217, 108, 74, 0.4);
+  --color-border-active: rgba(217, 108, 74, 0.6);
+
+  --color-success: #1e8449;
+  --color-success-bg: rgba(39, 174, 96, 0.12);
+  --color-warning: #d68910;
+  --color-warning-bg: rgba(214, 137, 16, 0.12);
+  --color-error: #c0392b;
+  --color-error-bg: rgba(192, 57, 43, 0.12);
+
+  --color-orb-warm: #ffb199;
+  --color-orb-cool: #98d7e6;
+
+  /* Typography tokens */
+  --font-sans: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", monospace;
+
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 2.25rem;
+  --text-display: clamp(2.25rem, 5vw, 4rem);
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.08em;
+  --tracking-wider: 0.1em;
+  --tracking-widest: 0.28em;
+
+  /* Spacing tokens (8px base) */
+  --space-1: 0.5rem;
+  --space-2: 1rem;
+  --space-3: 1.5rem;
+  --space-4: 2rem;
+  --space-5: 3rem;
+  --space-6: 5rem;
+
+  /* Effect tokens */
+  --radius-sm: 0.75rem;
+  --radius-md: 1rem;
+  --radius-lg: 1.125rem;
+  --radius-full: 9999px;
+
+  --shadow-card: 0 20px 40px rgba(20, 20, 20, 0.12);
+  --shadow-elevated: 0 12px 30px rgba(217, 108, 74, 0.18);
+  --shadow-button-hover: 0 8px 18px var(--color-accent-glow);
+
+  /* Animation tokens */
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --duration-mode-transition: 350ms;
+
+  --ease-out: cubic-bezier(0.0, 0.0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0.0, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Layout tokens */
+  --max-width-shell: 1200px;
+  --max-width-auth: 520px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+    --duration-mode-transition: 0ms;
+  }
+}

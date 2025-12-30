@@ -1,1 +1,4 @@
 tmp/
+ui-dist/**
+fbforward
+ui/node_modules/

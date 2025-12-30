@@ -1,0 +1,14 @@
+.connection-table {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.connection-table .table-wrap {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.connection-table table {
+  background: var(--color-surface);
+}

@@ -1,0 +1,108 @@
+.upstream-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2);
+}
+
+.upstream-card {
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-warm);
+  position: relative;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.upstream-card.active {
+  border-color: var(--color-border-active);
+  box-shadow: var(--shadow-elevated);
+}
+
+.upstream-card.unusable {
+  opacity: 0.6;
+}
+
+.upstream-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.upstream-tag {
+  font-weight: 700;
+  font-size: var(--text-lg);
+}
+
+.upstream-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  word-break: break-all;
+}
+
+.upstream-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  padding: 4px 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-dark);
+  border: 1px solid var(--color-border-accent);
+}
+
+.badge.active {
+  background: var(--color-accent);
+  color: white;
+}
+
+.badge.unusable {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  border-color: rgba(192, 57, 43, 0.3);
+}
+
+.badge.best {
+  background: rgba(20, 20, 20, 0.08);
+  color: var(--color-ink);
+  border-color: var(--color-border);
+}
+
+.score-track {
+  width: 100%;
+  height: 8px;
+  background: rgba(20, 20, 20, 0.08);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.score-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-accent), var(--color-accent-dark));
+  width: 0;
+  transition: width var(--duration-normal) var(--ease-out);
+}
+
+.metric-list {
+  display: grid;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.metric-row strong {
+  color: var(--color-ink);
+}

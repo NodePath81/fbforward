@@ -1,0 +1,112 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: radial-gradient(circle at 20% 20%, rgba(217, 108, 74, 0.18), transparent 45%),
+    radial-gradient(circle at 80% 0%, rgba(14, 142, 173, 0.2), transparent 40%),
+    linear-gradient(180deg, var(--color-bg-gradient-start) 0%, var(--color-bg-gradient-end) 100%);
+  color: var(--color-ink);
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+.bg-orb {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.35;
+  z-index: 0;
+}
+
+.orb-a {
+  background: var(--color-orb-warm);
+  top: -120px;
+  left: -100px;
+}
+
+.orb-b {
+  background: var(--color-orb-cool);
+  bottom: -160px;
+  right: -120px;
+}
+
+.shell,
+.auth-shell {
+  position: relative;
+  z-index: 1;
+  max-width: var(--max-width-shell);
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-2) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.auth-shell {
+  max-width: var(--max-width-auth);
+  min-height: 100vh;
+  justify-content: center;
+}
+
+.hero {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hero-copy {
+  max-width: 560px;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  margin: 0 0 var(--space-1);
+}
+
+h1 {
+  margin: 0;
+  font-size: var(--text-display);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+}
+
+.subhead {
+  margin: var(--space-1) 0 0;
+  color: var(--color-muted);
+  line-height: var(--leading-normal);
+}
+
+a {
+  color: inherit;
+}
+
+@media (max-width: 720px) {
+  .hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .shell {
+    padding-top: var(--space-4);
+  }
+}

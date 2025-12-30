@@ -1,0 +1,37 @@
+.toast-region {
+  position: fixed;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  display: grid;
+  gap: var(--space-1);
+  z-index: 10;
+}
+
+.toast {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  box-shadow: var(--shadow-card);
+  font-size: var(--text-sm);
+  color: var(--color-ink);
+  min-width: 200px;
+}
+
+.toast.success {
+  border-color: rgba(39, 174, 96, 0.3);
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.toast.error {
+  border-color: rgba(192, 57, 43, 0.3);
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+.toast.warning {
+  border-color: rgba(214, 137, 16, 0.3);
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}

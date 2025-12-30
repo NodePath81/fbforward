@@ -1,0 +1,86 @@
+.control-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mode-transition-container {
+  position: relative;
+  min-height: 150px;
+  perspective: 1000px;
+}
+
+.mode-content {
+  display: grid;
+  gap: var(--space-2);
+  transition: opacity var(--duration-mode-transition) var(--ease-out),
+    transform var(--duration-mode-transition) var(--ease-out);
+  transform-origin: center;
+}
+
+.mode-content.entered {
+  opacity: 1;
+  transform: rotateY(0deg) scale(1);
+}
+
+.mode-content.entering {
+  opacity: 0;
+  transform: rotateY(20deg) scale(0.98);
+}
+
+.mode-content.exiting {
+  opacity: 0;
+  transform: rotateY(-20deg) scale(0.98);
+}
+
+.mode-fields {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.mode-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.control-hint-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.mode-transition-container.is-transitioning::after {
+  content: "switching modes...";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-muted);
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: var(--radius-md);
+  opacity: 1;
+  pointer-events: none;
+}
+
+.apply-button.emphasize {
+  box-shadow: var(--shadow-button-hover);
+}
+
+@media (max-width: 720px) {
+  .mode-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .control-hint-row {
+    align-items: flex-start;
+  }
+}

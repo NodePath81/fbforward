@@ -1,0 +1,11 @@
+.status-card {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.status-title {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-muted);
+}

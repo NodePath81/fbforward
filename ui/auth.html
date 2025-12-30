@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>fbforward - auth</title>
-    <link rel="stylesheet" href="/styles.css"/>
+    <link rel="stylesheet" href="/styles/main.css"/>
   </head>
   <body>
     <div class="bg-orb orb-a"></div>
@@ -18,12 +18,13 @@
           <label for="tokenInput">Token</label>
           <input id="tokenInput" type="password" placeholder="Bearer token"/>
         </div>
-        <div class="buttons">
-          <button id="saveButton">Continue</button>
+        <div class="mode-actions">
+          <button id="saveButton" type="button">Continue</button>
         </div>
         <p class="hint" id="authHint"></p>
       </section>
     </main>
-    <script src="/auth.js"></script>
+    <div id="toastRegion" class="toast-region"></div>
+    <script type="module" src="/src/auth.ts"></script>
   </body>
 </html>
