@@ -2,18 +2,15 @@ package main
 
 import (
 	"flag"
-	"math/rand"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 )
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
 	flag.Parse()
 
-	rand.Seed(time.Now().UnixNano())
 	logger := NewLogger()
 	supervisor := NewSupervisor(*configPath, logger)
 	if err := supervisor.Start(); err != nil {

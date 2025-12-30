@@ -137,36 +137,25 @@ func (m *UpstreamManager) SetManual(tag string) error {
 }
 
 func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
-	m.mu.RLock()
-	mode := m.mode
-	manual := m.manualTag
-	active := m.activeTag
-	m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	if mode == ModeManual {
-		m.mu.RLock()
-		up, ok := m.upstreams[manual]
-		usable := ok && up.stats.Usable
-		m.mu.RUnlock()
+	if m.mode == ModeManual {
+		up, ok := m.upstreams[m.manualTag]
 		if !ok {
 			return nil, errors.New("manual upstream not found")
 		}
-		if !usable {
+		if !up.stats.Usable {
 			return nil, errors.New("manual upstream unusable")
 		}
 		return up, nil
 	}
-	if active != "" {
-		m.mu.RLock()
-		up := m.upstreams[active]
-		usable := up != nil && up.stats.Usable
-		m.mu.RUnlock()
-		if usable {
+	if m.activeTag != "" {
+		up := m.upstreams[m.activeTag]
+		if up != nil && up.stats.Usable {
 			return up, nil
 		}
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	best := m.selectBestLocked()
 	if best == "" {
 		return nil, errors.New("no usable upstreams")

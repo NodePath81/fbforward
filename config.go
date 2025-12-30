@@ -228,6 +228,7 @@ func (c *Config) validate() error {
 		}
 		seenTags[up.Tag] = struct{}{}
 	}
+	seenListeners := make(map[string]struct{}, len(c.Listeners))
 	for i := range c.Listeners {
 		ln := &c.Listeners[i]
 		ln.Protocol = strings.ToLower(strings.TrimSpace(ln.Protocol))
@@ -235,12 +236,23 @@ func (c *Config) validate() error {
 		if ln.Addr == "" || ln.Port <= 0 {
 			return fmt.Errorf("listener addr and port are required")
 		}
+		if ln.Port > 65535 {
+			return fmt.Errorf("listener port must be <= 65535")
+		}
 		if ln.Protocol != "tcp" && ln.Protocol != "udp" {
 			return fmt.Errorf("listener protocol must be tcp or udp")
 		}
+		key := fmt.Sprintf("%s:%d:%s", ln.Addr, ln.Port, ln.Protocol)
+		if _, exists := seenListeners[key]; exists {
+			return fmt.Errorf("duplicate listener: %s", key)
+		}
+		seenListeners[key] = struct{}{}
 	}
 	if c.Control.Token == "" {
 		return errors.New("control.token is required")
+	}
+	if c.Control.Port <= 0 || c.Control.Port > 65535 {
+		return errors.New("control.port must be in 1..65535")
 	}
 	if c.Probe.Interval.Duration() <= 0 {
 		return errors.New("probe.interval must be > 0")

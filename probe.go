@@ -106,7 +106,7 @@ func ProbeLoop(ctx context.Context, up *Upstream, cfg ProbeConfig, scoring Scori
 		timeout = time.Second
 	}
 	id := rand.Intn(0xffff)
-	seq := 0
+	var seq uint16
 	window := newProbeWindow(cfg.WindowSize)
 	ticker := time.NewTicker(cfg.Interval.Duration())
 	defer ticker.Stop()
@@ -129,13 +129,13 @@ func ProbeLoop(ctx context.Context, up *Upstream, cfg ProbeConfig, scoring Scori
 	}
 }
 
-func sendPing(conn *icmp.PacketConn, ip net.IP, id, seq int, echoType, replyType icmp.Type, proto int, timeout time.Duration) (time.Duration, bool) {
+func sendPing(conn *icmp.PacketConn, ip net.IP, id int, seq uint16, echoType, replyType icmp.Type, proto int, timeout time.Duration) (time.Duration, bool) {
 	msg := icmp.Message{
 		Type: echoType,
 		Code: 0,
 		Body: &icmp.Echo{
 			ID:   id,
-			Seq:  seq,
+			Seq:  int(seq),
 			Data: []byte("fbforward"),
 		},
 	}
@@ -173,7 +173,7 @@ func sendPing(conn *icmp.PacketConn, ip net.IP, id, seq int, echoType, replyType
 		if !ok {
 			continue
 		}
-		if echo.ID == id && echo.Seq == seq {
+		if echo.ID == id && echo.Seq == int(seq) {
 			return time.Since(start), true
 		}
 	}

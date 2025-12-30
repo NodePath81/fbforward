@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>fbforward</title>
+    <link rel="stylesheet" href="/styles.css"/>
+  </head>
+  <body>
+    <div class="bg-orb orb-a"></div>
+    <div class="bg-orb orb-b"></div>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Userspace NAT forwarder</p>
+          <h1>fbforward</h1>
+          <p class="subhead">Adaptive TCP/UDP forwarding driven by live ICMP quality scoring.</p>
+        </div>
+        <div class="status-card">
+          <div class="status-row">
+            <span>Mode</span>
+            <strong id="modeLabel">auto</strong>
+          </div>
+          <div class="status-row">
+            <span>Active upstream</span>
+            <strong id="activeLabel">-</strong>
+          </div>
+          <div class="status-row">
+            <span>TCP conns</span>
+            <strong id="tcpCount">0</strong>
+          </div>
+          <div class="status-row">
+            <span>UDP mappings</span>
+            <strong id="udpCount">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="panel">
+        <h2>Control</h2>
+        <div class="control-grid">
+          <div class="control-field">
+            <label for="modeSelect">Mode</label>
+            <select id="modeSelect">
+              <option value="auto">auto</option>
+              <option value="manual">manual</option>
+            </select>
+          </div>
+          <div class="control-field">
+            <label for="upstreamSelect">Manual upstream</label>
+            <select id="upstreamSelect"></select>
+          </div>
+          <div class="control-field buttons">
+            <button id="applyButton">Apply</button>
+            <button id="restartButton" class="outline">Restart</button>
+            <button id="authButton" class="ghost">Change token</button>
+          </div>
+        </div>
+        <p class="hint" id="controlHint"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Upstreams</h2>
+        <div id="upstreamGrid" class="upstream-grid"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Active TCP connections</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Client</th>
+                <th>Upstream</th>
+                <th>Up</th>
+                <th>Down</th>
+                <th>Last activity</th>
+                <th>Age</th>
+              </tr>
+            </thead>
+            <tbody id="tcpTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Active UDP mappings</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Client</th>
+                <th>Upstream</th>
+                <th>Up</th>
+                <th>Down</th>
+                <th>Last activity</th>
+                <th>Age</th>
+              </tr>
+            </thead>
+            <tbody id="udpTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

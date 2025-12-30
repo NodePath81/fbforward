@@ -2,13 +2,26 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+)
+
+const (
+	maxRPCBodyBytes   = 1 << 20
+	rpcRatePerSecond  = 5
+	rpcRateBurst      = 10
+	wsTokenPrefix     = "fbforward-token."
+	wsPrimaryProtocol = "fbforward"
 )
 
 type ControlServer struct {
@@ -20,6 +33,7 @@ type ControlServer struct {
 	restartFn    func() error
 	logger       Logger
 	server       *http.Server
+	limiter      *rateLimiter
 }
 
 func NewControlServer(cfg ControlConfig, webUIEnabled bool, manager *UpstreamManager, metrics *Metrics, status *StatusStore, restartFn func() error, logger Logger) *ControlServer {
@@ -31,12 +45,13 @@ func NewControlServer(cfg ControlConfig, webUIEnabled bool, manager *UpstreamMan
 		status:       status,
 		restartFn:    restartFn,
 		logger:       logger,
+		limiter:      newRateLimiter(rpcRatePerSecond, rpcRateBurst, 5*time.Minute),
 	}
 }
 
 func (c *ControlServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/metrics", c.metrics.Handler)
+	mux.HandleFunc("/metrics", c.handleMetrics)
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/status", c.handleStatus)
 	mux.Handle("/", WebUIHandler(c.webUIEnabled))
@@ -99,6 +114,10 @@ type statusCounts struct {
 }
 
 func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
+	if !c.limiter.Allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, rpcResponse{Ok: false, Error: "rate limit exceeded"})
+		return
+	}
 	if !c.checkAuth(r) {
 		writeJSON(w, http.StatusUnauthorized, rpcResponse{Ok: false, Error: "unauthorized"})
 		return
@@ -107,6 +126,7 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, rpcResponse{Ok: false, Error: "method not allowed"})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRPCBodyBytes)
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "invalid json"})
@@ -167,13 +187,13 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// Browsers can't set Authorization headers for WebSocket upgrades, so allow ?token=.
-	if !c.checkAuth(r) && !c.checkTokenQuery(r) {
+	if !c.checkStatusAuth(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin: func(r *http.Request) bool { return c.originAllowed(r) },
+		Subprotocols: []string{wsPrimaryProtocol},
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -182,12 +202,24 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	client := &statusClient{send: make(chan []byte, 32)}
 	c.status.hub.Register(client)
 
-	go func() {
-		defer func() {
-			c.status.hub.Unregister(client)
-			close(client.send)
+	var closeOnce sync.Once
+	done := make(chan struct{})
+	closeConn := func() {
+		closeOnce.Do(func() {
+			close(done)
 			_ = conn.Close()
-		}()
+		})
+	}
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			c.status.hub.Unregister(client)
+			closeConn()
+		})
+	}
+
+	go func() {
+		defer cleanup()
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
@@ -212,36 +244,169 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	go func() {
-		for data := range client.send {
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		defer cleanup()
+		for {
+			select {
+			case <-done:
 				return
+			case data, ok := <-client.send:
+				if !ok {
+					return
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+					return
+				}
 			}
 		}
 	}()
 }
 
+func (c *ControlServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if !c.checkAuth(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	c.metrics.Handler(w, r)
+}
+
 func (c *ControlServer) checkAuth(r *http.Request) bool {
+	token, ok := bearerToken(r)
+	if !ok {
+		return false
+	}
+	return secureTokenEqual(token, c.cfg.Token)
+}
+
+func (c *ControlServer) checkStatusAuth(r *http.Request) bool {
+	if token, ok := bearerToken(r); ok {
+		return secureTokenEqual(token, c.cfg.Token)
+	}
+	if token, ok := tokenFromWebSocketProtocols(r); ok {
+		return secureTokenEqual(token, c.cfg.Token)
+	}
+	return false
+}
+
+func bearerToken(r *http.Request) (string, bool) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		return false
+		return "", false
 	}
 	const prefix = "Bearer "
 	if !strings.HasPrefix(auth, prefix) {
-		return false
+		return "", false
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
-	return token != "" && token == c.cfg.Token
+	if token == "" {
+		return "", false
+	}
+	return token, true
 }
 
-func (c *ControlServer) checkTokenQuery(r *http.Request) bool {
-	if token := r.URL.Query().Get("token"); token != "" {
-		return token == c.cfg.Token
+func tokenFromWebSocketProtocols(r *http.Request) (string, bool) {
+	for _, proto := range websocket.Subprotocols(r) {
+		if !strings.HasPrefix(proto, wsTokenPrefix) {
+			continue
+		}
+		encoded := strings.TrimPrefix(proto, wsTokenPrefix)
+		if encoded == "" {
+			continue
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil || len(decoded) == 0 {
+			continue
+		}
+		return string(decoded), true
 	}
-	return false
+	return "", false
+}
+
+func secureTokenEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (c *ControlServer) originAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
 }
 
 func writeJSON(w http.ResponseWriter, status int, resp rpcResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+type rateLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*clientLimiter
+	rate    float64
+	burst   float64
+	ttl     time.Duration
+}
+
+type clientLimiter struct {
+	tokens float64
+	last   time.Time
+}
+
+func newRateLimiter(rate float64, burst int, ttl time.Duration) *rateLimiter {
+	return &rateLimiter{
+		clients: make(map[string]*clientLimiter),
+		rate:    rate,
+		burst:   float64(burst),
+		ttl:     ttl,
+	}
+}
+
+func (r *rateLimiter) Allow(key string) bool {
+	if key == "" {
+		return false
+	}
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	limiter := r.clients[key]
+	if limiter != nil && now.Sub(limiter.last) > r.ttl {
+		delete(r.clients, key)
+		limiter = nil
+	}
+	if limiter == nil {
+		r.clients[key] = &clientLimiter{
+			tokens: r.burst - 1,
+			last:   now,
+		}
+		return true
+	}
+	elapsed := now.Sub(limiter.last).Seconds()
+	limiter.tokens = minFloat(r.burst, limiter.tokens+elapsed*r.rate)
+	limiter.last = now
+	if limiter.tokens < 1 {
+		return false
+	}
+	limiter.tokens -= 1
+	return true
+}
+
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }

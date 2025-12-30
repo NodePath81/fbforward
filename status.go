@@ -63,15 +63,16 @@ func (s *StatusStore) AddUDP(clientAddr, upstream string, closeFunc func()) stri
 
 func (s *StatusStore) add(kind, clientAddr, upstream string, closeFunc func()) string {
 	s.mu.Lock()
+	now := time.Now()
 	s.nextID++
-	id := kind + "-" + strconv.FormatUint(s.nextID, 10)
+	id := kind + "-" + strconv.FormatInt(now.UnixNano(), 10) + "-" + strconv.FormatUint(s.nextID, 10)
 	entry := &statusEntry{
 		kind:         kind,
 		id:           id,
 		clientAddr:   clientAddr,
 		upstream:     upstream,
-		lastActivity: time.Now(),
-		created:      time.Now(),
+		lastActivity: now,
+		created:      now,
 	}
 	if kind == "tcp" {
 		s.tcp[id] = entry
@@ -242,7 +243,8 @@ type StatusHub struct {
 }
 
 type statusClient struct {
-	send chan []byte
+	send      chan []byte
+	closeOnce sync.Once
 }
 
 func NewStatusHub(ctxDone <-chan struct{}) *StatusHub {
@@ -261,7 +263,7 @@ func (h *StatusHub) run() {
 		case <-h.ctxDone:
 			h.mu.Lock()
 			for client := range h.clients {
-				close(client.send)
+				client.close()
 			}
 			h.clients = make(map[*statusClient]struct{})
 			h.mu.Unlock()
@@ -290,6 +292,7 @@ func (h *StatusHub) Unregister(client *statusClient) {
 	h.mu.Lock()
 	delete(h.clients, client)
 	h.mu.Unlock()
+	client.close()
 }
 
 func (h *StatusHub) Broadcast(msg statusMessage) {
@@ -297,4 +300,10 @@ func (h *StatusHub) Broadcast(msg statusMessage) {
 	case h.broadcast <- msg:
 	default:
 	}
+}
+
+func (c *statusClient) close() {
+	c.closeOnce.Do(func() {
+		close(c.send)
+	})
 }
