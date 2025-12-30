@@ -22,6 +22,9 @@ const (
 	rpcRateBurst      = 10
 	wsTokenPrefix     = "fbforward-token."
 	wsPrimaryProtocol = "fbforward"
+	wsWriteWait       = 10 * time.Second
+	wsPongWait        = 60 * time.Second
+	wsPingInterval    = 30 * time.Second
 )
 
 type ControlServer struct {
@@ -199,6 +202,10 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
 	client := &statusClient{send: make(chan []byte, 32)}
 	c.status.hub.Register(client)
 
@@ -245,14 +252,21 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cleanup()
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-done:
 				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(wsWriteWait)); err != nil {
+					return
+				}
 			case data, ok := <-client.send:
 				if !ok {
 					return
 				}
+				_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 					return
 				}

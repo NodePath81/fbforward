@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,8 +25,8 @@ type Metrics struct {
 	activeTag        string
 	tcpActive        int
 	udpActive        int
-	bytesUpTotal     map[string]uint64
-	bytesDownTotal   map[string]uint64
+	bytesUpTotal     map[string]*atomic.Uint64
+	bytesDownTotal   map[string]*atomic.Uint64
 	bytesUpPerSec    map[string]uint64
 	bytesDownPerSec  map[string]uint64
 	lastBytesUpTotal map[string]uint64
@@ -34,16 +35,16 @@ type Metrics struct {
 
 func NewMetrics(tags []string) *Metrics {
 	upstreams := make(map[string]*UpstreamMetrics, len(tags))
-	bytesUpTotal := make(map[string]uint64, len(tags))
-	bytesDownTotal := make(map[string]uint64, len(tags))
+	bytesUpTotal := make(map[string]*atomic.Uint64, len(tags))
+	bytesDownTotal := make(map[string]*atomic.Uint64, len(tags))
 	bytesUpPerSec := make(map[string]uint64, len(tags))
 	bytesDownPerSec := make(map[string]uint64, len(tags))
 	lastBytesUp := make(map[string]uint64, len(tags))
 	lastBytesDown := make(map[string]uint64, len(tags))
 	for _, tag := range tags {
 		upstreams[tag] = &UpstreamMetrics{}
-		bytesUpTotal[tag] = 0
-		bytesDownTotal[tag] = 0
+		bytesUpTotal[tag] = &atomic.Uint64{}
+		bytesDownTotal[tag] = &atomic.Uint64{}
 		bytesUpPerSec[tag] = 0
 		bytesDownPerSec[tag] = 0
 		lastBytesUp[tag] = 0
@@ -79,14 +80,16 @@ func (m *Metrics) updatePerSecond() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for tag, total := range m.bytesUpTotal {
+		current := total.Load()
 		prev := m.lastBytesUpTotal[tag]
-		m.bytesUpPerSec[tag] = total - prev
-		m.lastBytesUpTotal[tag] = total
+		m.bytesUpPerSec[tag] = current - prev
+		m.lastBytesUpTotal[tag] = current
 	}
 	for tag, total := range m.bytesDownTotal {
+		current := total.Load()
 		prev := m.lastBytesDownTotal[tag]
-		m.bytesDownPerSec[tag] = total - prev
-		m.lastBytesDownTotal[tag] = total
+		m.bytesDownPerSec[tag] = current - prev
+		m.lastBytesDownTotal[tag] = current
 	}
 }
 
@@ -145,15 +148,15 @@ func (m *Metrics) DecUDPActive() {
 }
 
 func (m *Metrics) AddBytesUp(tag string, n uint64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.bytesUpTotal[tag] += n
+	if counter, ok := m.bytesUpTotal[tag]; ok {
+		counter.Add(n)
+	}
 }
 
 func (m *Metrics) AddBytesDown(tag string, n uint64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.bytesDownTotal[tag] += n
+	if counter, ok := m.bytesDownTotal[tag]; ok {
+		counter.Add(n)
+	}
 }
 
 func (m *Metrics) Handler(w http.ResponseWriter, _ *http.Request) {
@@ -176,11 +179,19 @@ func (m *Metrics) Render() string {
 	for tag, stat := range m.upstreams {
 		upstreams[tag] = *stat
 	}
-	bytesUpTotal := copyUint64Map(m.bytesUpTotal)
-	bytesDownTotal := copyUint64Map(m.bytesDownTotal)
 	bytesUpPerSec := copyUint64Map(m.bytesUpPerSec)
 	bytesDownPerSec := copyUint64Map(m.bytesDownPerSec)
 	m.mu.Unlock()
+	bytesUpTotal := make(map[string]uint64, len(tags))
+	bytesDownTotal := make(map[string]uint64, len(tags))
+	for _, tag := range tags {
+		if counter, ok := m.bytesUpTotal[tag]; ok {
+			bytesUpTotal[tag] = counter.Load()
+		}
+		if counter, ok := m.bytesDownTotal[tag]; ok {
+			bytesDownTotal[tag] = counter.Load()
+		}
+	}
 
 	var b strings.Builder
 	b.WriteString("# TYPE fbforward_upstream_rtt_ms gauge\n")

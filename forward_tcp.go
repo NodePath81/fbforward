@@ -21,6 +21,19 @@ type TCPListener struct {
 	listener net.Listener
 }
 
+const (
+	tcpDialTimeout         = 5 * time.Second
+	tcpDialFailureCooldown = 5 * time.Second
+	tcpBufferSize          = 32 * 1024
+)
+
+var tcpBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, tcpBufferSize)
+		return &buf
+	},
+}
+
 func NewTCPListener(cfg ListenerConfig, limits LimitsConfig, timeout time.Duration, manager *UpstreamManager, metrics *Metrics, status *StatusStore, logger Logger) *TCPListener {
 	return &TCPListener{
 		cfg:     cfg,
@@ -82,28 +95,39 @@ func (l *TCPListener) Close() error {
 
 func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 	defer func() { <-l.sem }()
+	if tcpConn, ok := client.(*net.TCPConn); ok {
+		applyTCPOptions(tcpConn)
+	}
 	up, err := l.manager.SelectUpstream()
 	if err != nil {
 		l.logger.Debug("tcp upstream selection failed", "error", err)
 		_ = client.Close()
 		return
 	}
-	remoteAddr := net.JoinHostPort(up.ActiveIP.String(), formatPort(l.cfg.Port))
-	upConn, err := net.Dial("tcp", remoteAddr)
-	if err != nil {
-		l.logger.Debug("tcp dial failed", "upstream", up.Tag, "error", err)
+	ip := up.ActiveIP()
+	if ip == nil {
+		l.logger.Debug("tcp upstream missing IP", "upstream", up.Tag)
 		_ = client.Close()
 		return
 	}
+	remoteAddr := net.JoinHostPort(ip.String(), formatPort(l.cfg.Port))
+	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond)
+	if err != nil {
+		l.logger.Debug("tcp dial failed", "upstream", up.Tag, "error", err)
+		l.manager.MarkDialFailure(up.Tag, tcpDialFailureCooldown)
+		_ = client.Close()
+		return
+	}
+	l.manager.ClearDialFailure(up.Tag)
 
 	conn := &tcpConn{
-		client:  client,
-		upstream: upConn,
+		client:      client,
+		upstream:    upConn,
 		upstreamTag: up.Tag,
-		timeout: l.timeout,
-		metrics: l.metrics,
-		status:  l.status,
-		logger:  l.logger,
+		timeout:     l.timeout,
+		metrics:     l.metrics,
+		status:      l.status,
+		logger:      l.logger,
 	}
 	conn.start(ctx)
 }
@@ -136,7 +160,9 @@ func (c *tcpConn) start(ctx context.Context) {
 }
 
 func (c *tcpConn) proxy(ctx context.Context, dst, src net.Conn, up bool) {
-	buf := make([]byte, 32*1024)
+	bufPtr := tcpBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer tcpBufPool.Put(bufPtr)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -174,6 +200,38 @@ func writeAll(dst net.Conn, buf []byte) error {
 		buf = buf[n:]
 	}
 	return nil
+}
+
+func dialTCPWithRetry(ctx context.Context, addr string, attempts int, backoff time.Duration) (net.Conn, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		dialer := net.Dialer{Timeout: tcpDialTimeout}
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err == nil {
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				applyTCPOptions(tcpConn)
+			}
+			return conn, nil
+		}
+		lastErr = err
+		if i < attempts-1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+func applyTCPOptions(conn *net.TCPConn) {
+	_ = conn.SetNoDelay(true)
+	_ = conn.SetKeepAlive(true)
+	_ = conn.SetKeepAlivePeriod(30 * time.Second)
 }
 
 func (c *tcpConn) touch(n uint64, up bool) {

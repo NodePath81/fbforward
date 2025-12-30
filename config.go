@@ -16,7 +16,7 @@ const (
 	defaultEMAAlpha          = 0.357
 	defaultMetricRefRTTMs    = 7
 	defaultMetricRefJitterMs = 1
-	defaultMetricRefLoss     = 0.01
+	defaultMetricRefLoss     = 0.05
 	defaultWeightRTT         = 0.2
 	defaultWeightJitter      = 0.45
 	defaultWeightLoss        = 0.35
@@ -26,6 +26,10 @@ const (
 	defaultUDPIdleSeconds    = 30
 	defaultControlAddr       = "127.0.0.1"
 	defaultControlPort       = 8080
+	defaultConfirmWindows    = 3
+	defaultFailureLoss       = 0.8
+	defaultSwitchThreshold   = 1.0
+	defaultMinHoldSeconds    = 5
 )
 
 type Duration time.Duration
@@ -70,6 +74,7 @@ type Config struct {
 	Resolver  ResolverConfig   `yaml:"resolver"`
 	Probe     ProbeConfig      `yaml:"probe"`
 	Scoring   ScoringConfig    `yaml:"scoring"`
+	Switching SwitchingConfig  `yaml:"switching"`
 	Limits    LimitsConfig     `yaml:"limits"`
 	Timeouts  TimeoutsConfig   `yaml:"timeouts"`
 	Control   ControlConfig    `yaml:"control"`
@@ -109,6 +114,13 @@ type WeightsConfig struct {
 	RTT    float64 `yaml:"rtt"`
 	Jitter float64 `yaml:"jitter"`
 	Loss   float64 `yaml:"loss"`
+}
+
+type SwitchingConfig struct {
+	ConfirmWindows       int     `yaml:"confirm_windows"`
+	FailureLossThreshold float64 `yaml:"failure_loss_threshold"`
+	SwitchThreshold      float64 `yaml:"switch_threshold"`
+	MinHoldSeconds       int     `yaml:"min_hold_seconds"`
 }
 
 type LimitsConfig struct {
@@ -181,6 +193,19 @@ func (c *Config) setDefaults() {
 		c.Scoring.Weights.RTT = defaultWeightRTT
 		c.Scoring.Weights.Jitter = defaultWeightJitter
 		c.Scoring.Weights.Loss = defaultWeightLoss
+	}
+
+	if c.Switching.ConfirmWindows == 0 {
+		c.Switching.ConfirmWindows = defaultConfirmWindows
+	}
+	if c.Switching.FailureLossThreshold == 0 {
+		c.Switching.FailureLossThreshold = defaultFailureLoss
+	}
+	if c.Switching.SwitchThreshold == 0 {
+		c.Switching.SwitchThreshold = defaultSwitchThreshold
+	}
+	if c.Switching.MinHoldSeconds == 0 {
+		c.Switching.MinHoldSeconds = defaultMinHoldSeconds
 	}
 
 	if c.Limits.MaxTCPConns == 0 {
@@ -283,6 +308,18 @@ func (c *Config) validate() error {
 	}
 	if c.Timeouts.TCPIdleSeconds <= 0 || c.Timeouts.UDPIdleSeconds <= 0 {
 		return errors.New("timeouts must be > 0")
+	}
+	if c.Switching.ConfirmWindows <= 0 {
+		return errors.New("switching.confirm_windows must be > 0")
+	}
+	if c.Switching.FailureLossThreshold <= 0 || c.Switching.FailureLossThreshold > 1 {
+		return errors.New("switching.failure_loss_threshold must be in (0,1]")
+	}
+	if c.Switching.SwitchThreshold < 0 {
+		return errors.New("switching.switch_threshold must be >= 0")
+	}
+	if c.Switching.MinHoldSeconds < 0 {
+		return errors.New("switching.min_hold_seconds must be >= 0")
 	}
 	return nil
 }

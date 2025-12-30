@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 )
 
@@ -12,6 +13,10 @@ func main() {
 	flag.Parse()
 
 	logger := NewLogger()
+	if runtime.GOOS != "linux" {
+		logger.Error("unsupported OS", "goos", runtime.GOOS)
+		os.Exit(1)
+	}
 	supervisor := NewSupervisor(*configPath, logger)
 	if err := supervisor.Start(); err != nil {
 		logger.Error("startup failed", "error", err)

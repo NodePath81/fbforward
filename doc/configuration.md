@@ -28,11 +28,16 @@ scoring:
   ema_alpha: 0.357
   metric_ref_rtt_ms: 7
   metric_ref_jitter_ms: 1
-  metric_ref_loss: 0.01
+  metric_ref_loss: 0.05
   weights:
     rtt: 0.2
     jitter: 0.45
     loss: 0.35
+switching:
+  confirm_windows: 3
+  failure_loss_threshold: 0.8
+  switch_threshold: 1.0
+  min_hold_seconds: 5
 limits:
   max_tcp_conns: 50
   max_udp_mappings: 500
@@ -54,6 +59,7 @@ webui:
 - `resolver` (object, optional): custom DNS settings.
 - `probe` (object, optional): ICMP probe scheduling.
 - `scoring` (object, optional): scoring/EMA parameters.
+- `switching` (object, optional): auto switching behavior.
 - `limits` (object, optional): connection/mapping caps.
 - `timeouts` (object, optional): idle timeouts in seconds.
 - `control` (object, required): control plane bind + token.
@@ -95,7 +101,7 @@ Duration format:
 - `ema_alpha` (float, default: `0.357`): EMA smoothing factor in `(0,1]`.
 - `metric_ref_rtt_ms` (float, default: `7`): RTT reference in ms.
 - `metric_ref_jitter_ms` (float, default: `1`): jitter reference in ms.
-- `metric_ref_loss` (float, default: `0.01`): loss reference as fraction.
+- `metric_ref_loss` (float, default: `0.05`): loss reference as fraction.
 - `weights` (object, optional): weights for RTT/jitter/loss subscores.
   - `rtt` (float, default: `0.2`)
   - `jitter` (float, default: `0.45`)
@@ -105,6 +111,16 @@ Notes:
 - Weights are normalized to sum to `1` if they do not already.
 - Loss is clamped to `[0,1]` before scoring.
 - Jitter is the mean absolute difference between consecutive RTT samples in a window.
+
+## switching
+
+- `confirm_windows` (int, default: `3`): number of best-score windows required before switching.
+- `failure_loss_threshold` (float, default: `0.8`): if active loss in a window is at/above this, fail over immediately.
+- `switch_threshold` (float, default: `1.0`): score delta required to consider a switch.
+- `min_hold_seconds` (int, default: `5`): minimum time to hold the active upstream before score-based switching.
+
+Notes:
+- `failure_loss_threshold` affects fast failover only; usability still uses loss == 1.
 
 ## limits
 

@@ -77,53 +77,83 @@ func computeJitter(samples []float64) float64 {
 }
 
 func ProbeLoop(ctx context.Context, up *Upstream, cfg ProbeConfig, scoring ScoringConfig, manager *UpstreamManager, metrics *Metrics, logger Logger) {
-	if up.ActiveIP == nil {
-		logger.Error("probe skipped, no resolved IP", "upstream", up.Tag)
-		return
-	}
-	ip := up.ActiveIP
-	isV4 := ip.To4() != nil
-	network := "ip4:icmp"
-	proto := 1
-	echoType := icmp.Type(ipv4.ICMPTypeEcho)
-	echoReplyType := icmp.Type(ipv4.ICMPTypeEchoReply)
-	if !isV4 {
-		network = "ip6:ipv6-icmp"
-		proto = 58
-		echoType = icmp.Type(ipv6.ICMPTypeEchoRequest)
-		echoReplyType = icmp.Type(ipv6.ICMPTypeEchoReply)
-	}
-
-	conn, err := icmp.ListenPacket(network, "")
-	if err != nil {
-		logger.Error("probe socket error", "upstream", up.Tag, "error", err)
-		return
-	}
-	defer conn.Close()
-
 	timeout := cfg.Interval.Duration()
 	if timeout <= 0 {
 		timeout = time.Second
 	}
+	retryDelay := timeout
+	if retryDelay <= 0 {
+		retryDelay = time.Second
+	}
 	id := rand.Intn(0xffff)
 	var seq uint16
-	window := newProbeWindow(cfg.WindowSize)
-	ticker := time.NewTicker(cfg.Interval.Duration())
-	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			seq++
-			rtt, ok := sendPing(conn, ip, id, seq, echoType, echoReplyType, proto, timeout)
-			window.addSample(ok, rtt)
-			if window.complete() {
-				wm := window.metrics()
-				stats := manager.UpdateWindow(up.Tag, wm, scoring)
-				metrics.SetUpstreamMetrics(up.Tag, stats)
-				window.reset()
+		default:
+		}
+
+		ip := up.ActiveIP()
+		if ip == nil {
+			logger.Error("probe waiting, no resolved IP", "upstream", up.Tag)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retryDelay):
+				continue
+			}
+		}
+
+		isV4 := ip.To4() != nil
+		network := "ip4:icmp"
+		proto := 1
+		echoType := icmp.Type(ipv4.ICMPTypeEcho)
+		echoReplyType := icmp.Type(ipv4.ICMPTypeEchoReply)
+		if !isV4 {
+			network = "ip6:ipv6-icmp"
+			proto = 58
+			echoType = icmp.Type(ipv6.ICMPTypeEchoRequest)
+			echoReplyType = icmp.Type(ipv6.ICMPTypeEchoReply)
+		}
+
+		conn, err := icmp.ListenPacket(network, "")
+		if err != nil {
+			logger.Error("probe socket error", "upstream", up.Tag, "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retryDelay):
+				continue
+			}
+		}
+
+		window := newProbeWindow(cfg.WindowSize)
+		ticker := time.NewTicker(cfg.Interval.Duration())
+	probeLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				_ = conn.Close()
+				return
+			case <-ticker.C:
+				current := up.ActiveIP()
+				if current == nil || !current.Equal(ip) {
+					ticker.Stop()
+					_ = conn.Close()
+					break probeLoop
+				}
+				seq++
+				rtt, ok := sendPing(conn, ip, id, seq, echoType, echoReplyType, proto, timeout)
+				window.addSample(ok, rtt)
+				if window.complete() {
+					wm := window.metrics()
+					stats := manager.UpdateWindow(up.Tag, wm, scoring)
+					metrics.SetUpstreamMetrics(up.Tag, stats)
+					window.reset()
+				}
 			}
 		}
 	}

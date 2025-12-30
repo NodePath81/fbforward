@@ -7,7 +7,8 @@ Linux-only userspace TCP/UDP port forwarder that picks the best upstream using I
 - NAT-style forwarding: clients connect to fbforward; upstream sees fbforward as source.
 - Multiple listeners, single global upstream list; outbound port always matches listener port.
 - Probing is ICMP-only; upstream is unusable on 100% loss in a window and recovers automatically.
-- Auto mode switches immediately to best usable score; manual mode rejects unusable tags.
+- Auto mode uses confirmation windows, score threshold, and a minimum hold time; manual mode rejects unusable tags.
+- Fast failover triggers on high loss windows or consecutive dial failures.
 - TCP/UDP flows are pinned to the selected upstream until idle/expired.
 
 ## Requirements
@@ -45,7 +46,7 @@ control:
   token: "change-me"
 ```
 
-Supported fields include: `resolver.servers`, `probe.interval/window_size/discovery_delay`, `scoring.ema_alpha/metric_ref_*/weights`, `limits.max_tcp_conns/max_udp_mappings`, `timeouts.tcp_idle_seconds/udp_idle_seconds`, and `webui.enabled`.
+Supported fields include: `resolver.servers`, `probe.interval/window_size/discovery_delay`, `scoring.ema_alpha/metric_ref_*/weights`, `switching.confirm_windows/failure_loss_threshold/switch_threshold/min_hold_seconds`, `limits.max_tcp_conns/max_udp_mappings`, `timeouts.tcp_idle_seconds/udp_idle_seconds`, and `webui.enabled`.
 
 ## Run
 

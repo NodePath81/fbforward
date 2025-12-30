@@ -4,22 +4,36 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"sync"
 	"time"
 )
 
 type UDPListener struct {
-	cfg      ListenerConfig
-	manager  *UpstreamManager
-	metrics  *Metrics
-	status   *StatusStore
-	timeout  time.Duration
-	sem      chan struct{}
-	logger   Logger
+	cfg     ListenerConfig
+	manager *UpstreamManager
+	metrics *Metrics
+	status  *StatusStore
+	timeout time.Duration
+	sem     chan struct{}
+	logger  Logger
 
 	conn     *net.UDPConn
 	mu       sync.Mutex
 	mappings map[string]*udpMapping
+}
+
+const udpDialFailureCooldown = 5 * time.Second
+
+const (
+	udpPacketQueueSize = 1024
+)
+
+var udpPacketPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 65535)
+		return &buf
+	},
 }
 
 func NewUDPListener(cfg ListenerConfig, limits LimitsConfig, timeout time.Duration, manager *UpstreamManager, metrics *Metrics, status *StatusStore, logger Logger) *UDPListener {
@@ -48,13 +62,40 @@ func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	l.conn = conn
 	l.logger.Info("udp listener started", "addr", addr)
 
+	packetCh := make(chan udpPacket, udpPacketQueueSize)
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case pkt, ok := <-packetCh:
+					if !ok {
+						return
+					}
+					l.handlePacket(ctx, pkt.addr, pkt.data)
+					udpPacketPool.Put(pkt.bufPtr)
+				}
+			}
+		}()
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 65535)
+		defer close(packetCh)
 		for {
+			bufPtr := udpPacketPool.Get().(*[]byte)
+			buf := *bufPtr
 			n, clientAddr, err := conn.ReadFromUDP(buf)
 			if err != nil {
+				udpPacketPool.Put(bufPtr)
 				if errors.Is(err, net.ErrClosed) {
 					return
 				}
@@ -66,7 +107,13 @@ func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 					continue
 				}
 			}
-			l.handlePacket(ctx, clientAddr, buf[:n])
+			payload := buf[:n]
+			select {
+			case packetCh <- udpPacket{addr: clientAddr, data: payload, bufPtr: bufPtr}:
+			default:
+				udpPacketPool.Put(bufPtr)
+				l.logger.Debug("udp packet dropped, queue full", "client", clientAddr.String())
+			}
 		}
 	}()
 	return nil
@@ -115,22 +162,28 @@ func (l *UDPListener) createMapping(ctx context.Context, clientAddr *net.UDPAddr
 	if err != nil {
 		return nil, err
 	}
-	upAddr := &net.UDPAddr{IP: up.ActiveIP, Port: l.cfg.Port}
+	ip := up.ActiveIP()
+	if ip == nil {
+		return nil, errors.New("upstream has no resolved IP")
+	}
+	upAddr := &net.UDPAddr{IP: ip, Port: l.cfg.Port}
 	upConn, err := net.DialUDP("udp", nil, upAddr)
 	if err != nil {
+		l.manager.MarkDialFailure(up.Tag, udpDialFailureCooldown)
 		return nil, err
 	}
+	l.manager.ClearDialFailure(up.Tag)
 	mapping := &udpMapping{
-		parent:     l,
-		clientAddr: clientAddr,
-		upstreamTag: up.Tag,
+		parent:       l,
+		clientAddr:   clientAddr,
+		upstreamTag:  up.Tag,
 		upstreamConn: upConn,
-		timeout:    l.timeout,
-		metrics:    l.metrics,
-		status:     l.status,
-		logger:     l.logger,
-		activityCh: make(chan struct{}, 1),
-		done:       make(chan struct{}),
+		timeout:      l.timeout,
+		metrics:      l.metrics,
+		status:       l.status,
+		logger:       l.logger,
+		activityCh:   make(chan struct{}, 1),
+		done:         make(chan struct{}),
 	}
 	mapping.id = l.status.AddUDP(clientAddr.String(), up.Tag, mapping.close)
 	l.mu.Lock()
@@ -251,4 +304,10 @@ func (l *UDPListener) removeMapping(key string) {
 	l.mu.Lock()
 	delete(l.mappings, key)
 	l.mu.Unlock()
+}
+
+type udpPacket struct {
+	addr   *net.UDPAddr
+	data   []byte
+	bufPtr *[]byte
 }

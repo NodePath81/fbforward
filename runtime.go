@@ -4,20 +4,23 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"net"
 	"sync"
 	"time"
 )
 
+const dnsRefreshInterval = 30 * time.Second
+
 type Runtime struct {
-	cfg      Config
-	ctx      context.Context
-	cancel   context.CancelFunc
-	logger   Logger
-	resolver *Resolver
-	manager  *UpstreamManager
-	metrics  *Metrics
-	status   *StatusStore
-	control  *ControlServer
+	cfg       Config
+	ctx       context.Context
+	cancel    context.CancelFunc
+	logger    Logger
+	resolver  *Resolver
+	manager   *UpstreamManager
+	metrics   *Metrics
+	status    *StatusStore
+	control   *ControlServer
 	upstreams []*Upstream
 	listeners []closer
 	wg        sync.WaitGroup
@@ -44,16 +47,17 @@ func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, er
 	status := NewStatusStore(statusHub, metrics)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	manager := NewUpstreamManager(upstreams, rng)
+	manager.SetSwitching(cfg.Switching)
 
 	rt := &Runtime{
-		cfg:      cfg,
-		ctx:      ctx,
-		cancel:   cancel,
-		logger:   logger,
-		resolver: resolver,
-		manager:  manager,
-		metrics:  metrics,
-		status:   status,
+		cfg:       cfg,
+		ctx:       ctx,
+		cancel:    cancel,
+		logger:    logger,
+		resolver:  resolver,
+		manager:   manager,
+		metrics:   metrics,
+		status:    status,
 		upstreams: upstreams,
 	}
 
@@ -91,6 +95,7 @@ func (r *Runtime) Start() error {
 	}
 
 	r.startProbes()
+	r.startDNSRefresh()
 
 	delay := r.cfg.Probe.DiscoveryDelay.Duration()
 	if delay > 0 {
@@ -161,6 +166,42 @@ func (r *Runtime) wait() {
 	r.wg.Wait()
 }
 
+func (r *Runtime) startDNSRefresh() {
+	for _, upstream := range r.upstreams {
+		if net.ParseIP(upstream.Host) != nil {
+			continue
+		}
+		up := upstream
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			ticker := time.NewTicker(dnsRefreshInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-r.ctx.Done():
+					return
+				case <-ticker.C:
+					ips, err := r.resolver.ResolveHost(r.ctx, up.Host)
+					if err != nil {
+						r.logger.Debug("upstream resolve failed", "upstream", up.Tag, "error", err)
+						continue
+					}
+					changed := r.manager.UpdateResolved(up.Tag, ips)
+					if changed {
+						active := up.ActiveIP()
+						activeStr := ""
+						if active != nil {
+							activeStr = active.String()
+						}
+						r.logger.Info("upstream resolved", "upstream", up.Tag, "active_ip", activeStr)
+					}
+				}
+			}
+		}()
+	}
+}
+
 func resolveUpstreams(ctx context.Context, cfg Config, resolver *Resolver) ([]*Upstream, error) {
 	upstreams := make([]*Upstream, 0, len(cfg.Upstreams))
 	for _, item := range cfg.Upstreams {
@@ -169,11 +210,11 @@ func resolveUpstreams(ctx context.Context, cfg Config, resolver *Resolver) ([]*U
 			return nil, err
 		}
 		up := &Upstream{
-			Tag:      item.Tag,
-			Host:     item.Host,
-			IPs:      ips,
-			ActiveIP: ips[0],
+			Tag:  item.Tag,
+			Host: item.Host,
+			IPs:  ips,
 		}
+		up.SetActiveIP(ips[0])
 		upstreams = append(upstreams, up)
 	}
 	return upstreams, nil
