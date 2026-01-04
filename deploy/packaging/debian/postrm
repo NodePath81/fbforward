@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+set -eu
+
+SERVICE_USER="fbforward"
+SERVICE_GROUP="fbforward"
+
+case "${1:-}" in
+  remove|purge)
+    if id -u "$SERVICE_USER" >/dev/null 2>&1; then
+      userdel "$SERVICE_USER" || true
+    fi
+    if getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+      groupdel "$SERVICE_GROUP" || true
+    fi
+    ;;
+esac

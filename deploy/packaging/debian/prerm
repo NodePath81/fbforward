@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+
+systemctl disable --now fbforward.service || true
+systemctl daemon-reload || true

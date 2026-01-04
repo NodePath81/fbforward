@@ -12,7 +12,7 @@ CONFIG_DEST="${CONFIG_DIR}/config.yaml"
 ROOT_DIR="$(pwd)"
 BIN_SRC="${1:-${ROOT_DIR}/fbforward}"
 CONFIG_SRC="${2:-""}"
-SERVICE_SRC="${ROOT_DIR}/deploy/${SERVICE_NAME}.service"
+SERVICE_SRC="${ROOT_DIR}/deploy/systemd/${SERVICE_NAME}.service"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run as root." >&2

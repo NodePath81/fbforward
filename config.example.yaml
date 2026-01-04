@@ -1,4 +1,5 @@
 listeners:
+  # Each listener forwards to upstream host on the same port.
   - addr: 0.0.0.0
     port: 9000
     protocol: tcp
@@ -6,40 +7,51 @@ listeners:
     port: 9000
     protocol: udp
 upstreams:
+  # Global upstream list shared by all listeners.
   - tag: primary
     host: 203.0.113.10
   - tag: backup
     host: example.net
 resolver:
+  # Optional custom DNS servers (ip or ip:port). Empty = system DNS.
   servers:
     - 1.1.1.1
 probe:
+  # ICMP probe interval and window size for scoring.
   interval: 1s
   window_size: 5
+  # Delay before selecting the initial upstream.
   discovery_delay: 5s
 scoring:
+  # EMA smoothing and score reference values.
   ema_alpha: 0.357
   metric_ref_rtt_ms: 7
   metric_ref_jitter_ms: 1
   metric_ref_loss: 0.05
   weights:
+    # Weights are normalized to sum to 1 if needed.
     rtt: 0.2
     jitter: 0.45
     loss: 0.35
 switching:
+  # Auto mode switch confirmation and failover behavior.
   confirm_windows: 3
   failure_loss_threshold: 0.8
   switch_threshold: 1.0
   min_hold_seconds: 5
 limits:
+  # Concurrency caps.
   max_tcp_conns: 50
   max_udp_mappings: 500
 timeouts:
+  # Idle timeouts (seconds).
   tcp_idle_seconds: 60
   udp_idle_seconds: 30
 control:
+  # Control plane bind + auth token.
   addr: 127.0.0.1
   port: 8080
   token: "change-me"
 webui:
+  # Serve the embedded UI.
   enabled: true

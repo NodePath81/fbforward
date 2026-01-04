@@ -1,4 +1,6 @@
 tmp/
+deploy/packaging/debian/build/
+deploy/packaging/debian/*.deb
 ui-dist/**
 fbforward
 ui/node_modules/
