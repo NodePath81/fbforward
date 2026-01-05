@@ -15,8 +15,9 @@ Linux-only userspace TCP/UDP port forwarder that picks the best upstream using I
 
 - Linux only.
 - ICMP probing requires `CAP_NET_RAW` (e.g., `sudo setcap cap_net_raw+ep ./fbforward`).
+- Traffic shaping (if enabled) requires `CAP_NET_ADMIN`.
 - Go toolchain: `1.25.4` (per `go.mod`).
-- Go module deps: `github.com/gorilla/websocket@v1.5.3`, `golang.org/x/net@v0.33.0`, `gopkg.in/yaml.v3@v3.0.1`, `golang.org/x/sys@v0.28.0`.
+- Go module deps: `github.com/gorilla/websocket@v1.5.3`, `github.com/vishvananda/netlink@v1.3.1`, `golang.org/x/net@v0.33.0`, `gopkg.in/yaml.v3@v3.0.1`, `golang.org/x/sys@v0.28.0`, `github.com/vishvananda/netns@v0.0.5` (indirect).
 - Frontend build deps: Node.js + npm with `typescript@^5.4.0`, `vite@^5.4.0` (see `ui/package.json`).
 
 ## Control plane
@@ -49,7 +50,7 @@ control:
   token: "change-me"
 ```
 
-Supported fields include: `resolver.servers`, `probe.interval/window_size/discovery_delay`, `scoring.ema_alpha/metric_ref_*/weights`, `switching.confirm_windows/failure_loss_threshold/switch_threshold/min_hold_seconds`, `limits.max_tcp_conns/max_udp_mappings`, `timeouts.tcp_idle_seconds/udp_idle_seconds`, and `webui.enabled`.
+Supported fields include: `resolver.servers`, `probe.interval/window_size/discovery_delay`, `scoring.ema_alpha/metric_ref_*/weights`, `switching.confirm_windows/failure_loss_threshold/switch_threshold/min_hold_seconds`, `limits.max_tcp_conns/max_udp_mappings`, `timeouts.tcp_idle_seconds/udp_idle_seconds`, `webui.enabled`, `shaping.enabled/device/ifb/aggregate_bandwidth`, and `listeners.ingress/egress`.
 
 ## Run
 

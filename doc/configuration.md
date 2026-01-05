@@ -9,6 +9,10 @@ listeners:
   - addr: 0.0.0.0
     port: 9000
     protocol: tcp
+    egress:
+      rate: 50m
+    ingress:
+      rate: 200m
   - addr: 0.0.0.0
     port: 9000
     protocol: udp
@@ -50,6 +54,11 @@ control:
   token: "change-me"
 webui:
   enabled: true
+shaping:
+  enabled: false
+  device: eth0
+  ifb: ifb0
+  aggregate_bandwidth: 1g
 ```
 
 ## Top-level
@@ -64,6 +73,7 @@ webui:
 - `timeouts` (object, optional): idle timeouts in seconds.
 - `control` (object, required): control plane bind + token.
 - `webui` (object, optional): SPA enable/disable.
+- `shaping` (object, optional): traffic shaping via Linux `tc`.
 
 ## listeners
 
@@ -72,6 +82,11 @@ Each entry:
 - `addr` (string, required): bind address (IPv4/IPv6 literal or hostname).
 - `port` (int, required): listener port, forwarded to upstream host on same port.
 - `protocol` (string, required): `tcp` or `udp`.
+- `ingress` (object, optional): per-listener download shaping.
+- `egress` (object, optional): per-listener upload shaping.
+
+Notes:
+- `ingress`/`egress` require `shaping.enabled: true` and a valid `shaping.device`.
 
 ## upstreams
 
@@ -141,3 +156,25 @@ Notes:
 ## webui
 
 - `enabled` (bool, default: `true`): serve the embedded SPA.
+
+## shaping
+
+- `enabled` (bool, default: `false`): enable tc-based shaping.
+- `device` (string, required when enabled): interface to shape (e.g. `eth0`).
+- `ifb` (string, default: `ifb0`): IFB device used for ingress shaping.
+- `aggregate_bandwidth` (string, default: `1g`): root cap for each direction.
+  - Format: `100`, `100k`, `100m`, `1g` (bits/sec, SI units).
+
+`egress` / `ingress` fields (defined on each listener):
+- `rate` (string, required): guaranteed rate (bits/sec).
+- `ceil` (string, optional): maximum rate, defaults to `rate`.
+- `burst` (string, optional): burst size in bytes (e.g. `16k`).
+- `cburst` (string, optional): ceil burst size in bytes.
+
+Notes:
+- Shaping uses HTB + fq_codel and requires `CAP_NET_ADMIN` (or root).
+- Ingress is handled via IFB redirection; existing root/ingress qdiscs are reset
+  on the configured device and IFB.
+- On shutdown, the program clears root/ingress qdiscs on the configured device
+  and IFB.
+- Filters are IPv4-only (ETH_P_IP).

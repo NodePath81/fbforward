@@ -6,6 +6,8 @@ Short, practical notes for working on this repo.
 
 `fbforward` is a Linux-only Go userspace NAT-style TCP/UDP forwarder. It probes upstreams via ICMP, scores them, and forwards new flows to the best upstream. It exposes a token-protected control plane, Prometheus metrics, WebSocket status streaming, and an embedded SPA UI.
 
+Before making structural changes, skim `doc/codebase.md` for a concise architecture and component overview.
+
 ## Scoring and selection
 
 - Probing is ICMP only. Each upstream accumulates a fixed-size window of probe results and computes:

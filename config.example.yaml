@@ -3,6 +3,11 @@ listeners:
   - addr: 0.0.0.0
     port: 9000
     protocol: tcp
+    # Optional per-listener shaping (requires shaping.enabled).
+    egress:
+      rate: 50m
+    ingress:
+      rate: 200m
   - addr: 0.0.0.0
     port: 9000
     protocol: udp
@@ -55,3 +60,12 @@ control:
 webui:
   # Serve the embedded UI.
   enabled: true
+shaping:
+  # Linux tc shaping via netlink (requires CAP_NET_ADMIN).
+  enabled: true
+  # Network device to shape (required when enabled).
+  device: eth0
+  # IFB device used for ingress shaping.
+  ifb: ifb0
+  # Aggregate cap for each direction (bits/sec, SI units).
+  aggregate_bandwidth: 1g

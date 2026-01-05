@@ -21,6 +21,7 @@ type Runtime struct {
 	metrics   *Metrics
 	status    *StatusStore
 	control   *ControlServer
+	shaper    *TrafficShaper
 	upstreams []*Upstream
 	listeners []closer
 	wg        sync.WaitGroup
@@ -60,6 +61,9 @@ func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, er
 		status:    status,
 		upstreams: upstreams,
 	}
+	if cfg.Shaping.Enabled {
+		rt.shaper = NewTrafficShaper(cfg.Shaping, cfg.Listeners, logger)
+	}
 
 	manager.SetCallbacks(func(oldTag, newTag string) {
 		if oldTag != newTag {
@@ -94,6 +98,13 @@ func (r *Runtime) Start() error {
 		return err
 	}
 
+	if r.shaper != nil {
+		if err := r.shaper.Apply(); err != nil {
+			r.Stop()
+			return err
+		}
+	}
+
 	r.startProbes()
 	r.startDNSRefresh()
 
@@ -122,6 +133,11 @@ func (r *Runtime) Stop() {
 	}
 	for _, ln := range r.listeners {
 		_ = ln.Close()
+	}
+	if r.shaper != nil {
+		if err := r.shaper.Cleanup(); err != nil {
+			r.logger.Error("shaping cleanup failed", "error", err)
+		}
 	}
 	if r.control != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

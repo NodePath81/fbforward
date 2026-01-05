@@ -11,25 +11,28 @@ import (
 )
 
 const (
-	defaultProbeInterval     = 1 * time.Second
-	defaultProbeWindowSize   = 5
-	defaultEMAAlpha          = 0.357
-	defaultMetricRefRTTMs    = 7
-	defaultMetricRefJitterMs = 1
-	defaultMetricRefLoss     = 0.05
-	defaultWeightRTT         = 0.2
-	defaultWeightJitter      = 0.45
-	defaultWeightLoss        = 0.35
-	defaultMaxTCPConns       = 50
-	defaultMaxUDPMappings    = 500
-	defaultTCPIdleSeconds    = 60
-	defaultUDPIdleSeconds    = 30
-	defaultControlAddr       = "127.0.0.1"
-	defaultControlPort       = 8080
-	defaultConfirmWindows    = 3
-	defaultFailureLoss       = 0.8
-	defaultSwitchThreshold   = 1.0
-	defaultMinHoldSeconds    = 5
+	defaultProbeInterval      = 1 * time.Second
+	defaultProbeWindowSize    = 5
+	defaultEMAAlpha           = 0.357
+	defaultMetricRefRTTMs     = 7
+	defaultMetricRefJitterMs  = 1
+	defaultMetricRefLoss      = 0.05
+	defaultWeightRTT          = 0.2
+	defaultWeightJitter       = 0.45
+	defaultWeightLoss         = 0.35
+	defaultMaxTCPConns        = 50
+	defaultMaxUDPMappings     = 500
+	defaultTCPIdleSeconds     = 60
+	defaultUDPIdleSeconds     = 30
+	defaultControlAddr        = "127.0.0.1"
+	defaultControlPort        = 8080
+	defaultConfirmWindows     = 3
+	defaultFailureLoss        = 0.8
+	defaultSwitchThreshold    = 1.0
+	defaultMinHoldSeconds     = 5
+	defaultShapingIFB         = "ifb0"
+	defaultAggregateBandwidth = "1g"
+	maxListeners             = 45
 )
 
 type Duration time.Duration
@@ -79,12 +82,15 @@ type Config struct {
 	Timeouts  TimeoutsConfig   `yaml:"timeouts"`
 	Control   ControlConfig    `yaml:"control"`
 	WebUI     WebUIConfig      `yaml:"webui"`
+	Shaping   ShapingConfig    `yaml:"shaping"`
 }
 
 type ListenerConfig struct {
-	Addr     string `yaml:"addr"`
-	Port     int    `yaml:"port"`
-	Protocol string `yaml:"protocol"`
+	Addr     string           `yaml:"addr"`
+	Port     int              `yaml:"port"`
+	Protocol string           `yaml:"protocol"`
+	Ingress  *BandwidthConfig `yaml:"ingress"`
+	Egress   *BandwidthConfig `yaml:"egress"`
 }
 
 type UpstreamConfig struct {
@@ -103,10 +109,10 @@ type ProbeConfig struct {
 }
 
 type ScoringConfig struct {
-	EMAAlpha          float64     `yaml:"ema_alpha"`
-	MetricRefRTTMs    float64     `yaml:"metric_ref_rtt_ms"`
-	MetricRefJitterMs float64     `yaml:"metric_ref_jitter_ms"`
-	MetricRefLoss     float64     `yaml:"metric_ref_loss"`
+	EMAAlpha          float64       `yaml:"ema_alpha"`
+	MetricRefRTTMs    float64       `yaml:"metric_ref_rtt_ms"`
+	MetricRefJitterMs float64       `yaml:"metric_ref_jitter_ms"`
+	MetricRefLoss     float64       `yaml:"metric_ref_loss"`
 	Weights           WeightsConfig `yaml:"weights"`
 }
 
@@ -148,6 +154,27 @@ func (w WebUIConfig) IsEnabled() bool {
 		return true
 	}
 	return *w.Enabled
+}
+
+type ShapingConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	Device             string `yaml:"device"`
+	IFB                string `yaml:"ifb"`
+	AggregateBandwidth string `yaml:"aggregate_bandwidth"`
+
+	aggregateBandwidthBits uint64
+}
+
+type BandwidthConfig struct {
+	Rate   string `yaml:"rate"`
+	Ceil   string `yaml:"ceil"`
+	Burst  string `yaml:"burst"`
+	Cburst string `yaml:"cburst"`
+
+	rateBits    uint64
+	ceilBits    uint64
+	burstBytes  uint32
+	cburstBytes uint32
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -231,11 +258,22 @@ func (c *Config) setDefaults() {
 		enabled := true
 		c.WebUI.Enabled = &enabled
 	}
+	if c.Shaping.Enabled {
+		if c.Shaping.IFB == "" {
+			c.Shaping.IFB = defaultShapingIFB
+		}
+		if c.Shaping.AggregateBandwidth == "" {
+			c.Shaping.AggregateBandwidth = defaultAggregateBandwidth
+		}
+	}
 }
 
 func (c *Config) validate() error {
 	if len(c.Listeners) == 0 {
 		return errors.New("at least one listener is required")
+	}
+	if len(c.Listeners) > maxListeners {
+		return fmt.Errorf("listeners cannot exceed %d entries", maxListeners)
 	}
 	if len(c.Upstreams) == 0 {
 		return errors.New("at least one upstream is required")
@@ -254,6 +292,7 @@ func (c *Config) validate() error {
 		seenTags[up.Tag] = struct{}{}
 	}
 	seenListeners := make(map[string]struct{}, len(c.Listeners))
+	shapeKeys := make(map[string]struct{})
 	for i := range c.Listeners {
 		ln := &c.Listeners[i]
 		ln.Protocol = strings.ToLower(strings.TrimSpace(ln.Protocol))
@@ -272,6 +311,67 @@ func (c *Config) validate() error {
 			return fmt.Errorf("duplicate listener: %s", key)
 		}
 		seenListeners[key] = struct{}{}
+
+		hasShaping := ln.Ingress != nil || ln.Egress != nil
+		if hasShaping && !c.Shaping.Enabled {
+			return fmt.Errorf("listener %s has shaping config but shaping.enabled is false", key)
+		}
+		if ln.Ingress != nil {
+			if strings.TrimSpace(ln.Ingress.Rate) == "" {
+				return fmt.Errorf("listener %s ingress.rate is required", key)
+			}
+			if _, err := parseBandwidth(ln.Ingress.Rate); err != nil {
+				return fmt.Errorf("listener %s ingress.rate: %w", key, err)
+			}
+			if ln.Ingress.Ceil != "" {
+				if _, err := parseBandwidth(ln.Ingress.Ceil); err != nil {
+					return fmt.Errorf("listener %s ingress.ceil: %w", key, err)
+				}
+			}
+			if ln.Ingress.Burst != "" {
+				if _, err := parseSize(ln.Ingress.Burst); err != nil {
+					return fmt.Errorf("listener %s ingress.burst: %w", key, err)
+				}
+			}
+			if ln.Ingress.Cburst != "" {
+				if _, err := parseSize(ln.Ingress.Cburst); err != nil {
+					return fmt.Errorf("listener %s ingress.cburst: %w", key, err)
+				}
+			}
+			shapeKey := fmt.Sprintf("ingress:%s:%d", ln.Protocol, ln.Port)
+			if _, exists := shapeKeys[shapeKey]; exists {
+				return fmt.Errorf("duplicate ingress shaping rule for %s:%d", ln.Protocol, ln.Port)
+			}
+			shapeKeys[shapeKey] = struct{}{}
+		}
+		if ln.Egress != nil {
+			if strings.TrimSpace(ln.Egress.Rate) == "" {
+				return fmt.Errorf("listener %s egress.rate is required", key)
+			}
+			if _, err := parseBandwidth(ln.Egress.Rate); err != nil {
+				return fmt.Errorf("listener %s egress.rate: %w", key, err)
+			}
+			if ln.Egress.Ceil != "" {
+				if _, err := parseBandwidth(ln.Egress.Ceil); err != nil {
+					return fmt.Errorf("listener %s egress.ceil: %w", key, err)
+				}
+			}
+			if ln.Egress.Burst != "" {
+				if _, err := parseSize(ln.Egress.Burst); err != nil {
+					return fmt.Errorf("listener %s egress.burst: %w", key, err)
+				}
+			}
+			if ln.Egress.Cburst != "" {
+				if _, err := parseSize(ln.Egress.Cburst); err != nil {
+					return fmt.Errorf("listener %s egress.cburst: %w", key, err)
+				}
+			}
+			shapeKey := fmt.Sprintf("egress:%s:%d", ln.Protocol, ln.Port)
+			if _, exists := shapeKeys[shapeKey]; exists {
+				return fmt.Errorf("duplicate egress shaping rule for %s:%d", ln.Protocol, ln.Port)
+			}
+			shapeKeys[shapeKey] = struct{}{}
+		}
 	}
 	if c.Control.Token == "" {
 		return errors.New("control.token is required")
@@ -320,6 +420,22 @@ func (c *Config) validate() error {
 	}
 	if c.Switching.MinHoldSeconds < 0 {
 		return errors.New("switching.min_hold_seconds must be >= 0")
+	}
+	if c.Shaping.Enabled {
+		c.Shaping.Device = strings.TrimSpace(c.Shaping.Device)
+		c.Shaping.IFB = strings.TrimSpace(c.Shaping.IFB)
+		c.Shaping.AggregateBandwidth = strings.TrimSpace(c.Shaping.AggregateBandwidth)
+		if c.Shaping.Device == "" {
+			return errors.New("shaping.device is required when shaping.enabled is true")
+		}
+		if c.Shaping.IFB == "" {
+			return errors.New("shaping.ifb is required when shaping.enabled is true")
+		}
+		if c.Shaping.AggregateBandwidth != "" {
+			if _, err := parseBandwidth(c.Shaping.AggregateBandwidth); err != nil {
+				return fmt.Errorf("shaping.aggregate_bandwidth: %w", err)
+			}
+		}
 	}
 	return nil
 }
