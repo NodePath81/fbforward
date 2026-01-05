@@ -2,7 +2,7 @@
 set -eu
 
 SERVICE_NAME="fbforward"
-ROOT_DIR="$(pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 VERSION="${VERSION:-0.1.0}"
 MAINTAINER="${MAINTAINER:-fbforward maintainer <root@localhost>}"
@@ -13,7 +13,7 @@ SERVICE_SRC="${ROOT_DIR}/deploy/systemd/${SERVICE_NAME}.service"
 
 BUILD_DIR="${ROOT_DIR}/deploy/packaging/debian/build"
 PKG_DIR="${BUILD_DIR}/${SERVICE_NAME}_${VERSION}_${ARCH}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/deploy/packaging/debian}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/deploy/packaging/debian/deb}"
 OUTPUT_DEB="${OUTPUT_DIR}/${SERVICE_NAME}_${VERSION}_${ARCH}.deb"
 
 rm -rf "$PKG_DIR"
@@ -23,8 +23,13 @@ mkdir -p "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/etc/systemd/system"
 
 if [ ! -f "$BIN_SRC" ]; then
-  echo "Binary not found at $BIN_SRC; building..." >&2
-  go build -o "$BIN_SRC" .
+  echo "Binary not found at $BIN_SRC; building via make..." >&2
+  make -C "$ROOT_DIR" build
+fi
+
+if [ ! -f "$BIN_SRC" ]; then
+  echo "Binary still not found at $BIN_SRC after make build" >&2
+  exit 1
 fi
 
 if [ ! -f "$SERVICE_SRC" ]; then

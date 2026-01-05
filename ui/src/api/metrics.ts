@@ -15,6 +15,7 @@ export interface MetricsSnapshot {
     udp: number;
   };
   upstreams: Record<string, UpstreamMetrics>;
+  memoryBytes: number;
 }
 
 export function parseMetrics(text: string): MetricsMap {
@@ -56,6 +57,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
 
   const tcp = data['fbforward_tcp_active']?.[0]?.value ?? 0;
   const udp = data['fbforward_udp_mappings_active']?.[0]?.value ?? 0;
+  const memorySample = data['fbforward_memory_alloc_bytes']?.[0]?.value;
+  const memoryBytes = Number.isFinite(memorySample) ? memorySample : Number.NaN;
 
   const activeTags = new Set<string>();
   let activeUpstream = '';
@@ -130,6 +133,7 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     mode,
     activeUpstream,
     counts: { tcp, udp },
-    upstreams
+    upstreams,
+    memoryBytes
   };
 }

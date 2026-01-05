@@ -70,7 +70,8 @@ function startApp(token: string) {
       mode: state.mode,
       activeUpstream: state.activeUpstream,
       tcp: state.counts.tcp,
-      udp: state.counts.udp
+      udp: state.counts.udp,
+      memoryBytes: state.memoryBytes
     });
 
     upstreamSummary.textContent = `${state.upstreams.length} upstreams`;
@@ -150,7 +151,8 @@ function startApp(token: string) {
         mode: snapshot.mode,
         activeUpstream: snapshot.activeUpstream,
         counts: snapshot.counts,
-        metrics: snapshot.upstreams
+        metrics: snapshot.upstreams,
+        memoryBytes: snapshot.memoryBytes
       });
       updateStatusCard();
       updateUpstreamCards();

@@ -10,6 +10,7 @@ interface StatusSocketOptions {
 export function connectStatusSocket(options: StatusSocketOptions) {
   let ws: WebSocket | null = null;
   let reconnectTimer: number | null = null;
+  let snapshotTimer: number | null = null;
   let attempts = 0;
   let closed = false;
 
@@ -24,6 +25,12 @@ export function connectStatusSocket(options: StatusSocketOptions) {
     ws.addEventListener('open', () => {
       attempts = 0;
       ws?.send(JSON.stringify({ type: 'snapshot' }));
+      if (snapshotTimer) {
+        window.clearInterval(snapshotTimer);
+      }
+      snapshotTimer = window.setInterval(() => {
+        ws?.send(JSON.stringify({ type: 'snapshot' }));
+      }, 10000);
       options.onOpen?.();
     });
 
@@ -37,6 +44,10 @@ export function connectStatusSocket(options: StatusSocketOptions) {
     });
 
     ws.addEventListener('close', () => {
+      if (snapshotTimer) {
+        window.clearInterval(snapshotTimer);
+        snapshotTimer = null;
+      }
       options.onClose?.();
       if (!closed) {
         scheduleReconnect();
@@ -64,6 +75,10 @@ export function connectStatusSocket(options: StatusSocketOptions) {
       closed = true;
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);
+      }
+      if (snapshotTimer) {
+        window.clearInterval(snapshotTimer);
+        snapshotTimer = null;
       }
       ws?.close();
     }

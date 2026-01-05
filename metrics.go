@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,18 +20,19 @@ type UpstreamMetrics struct {
 }
 
 type Metrics struct {
-	mu               sync.Mutex
-	upstreams        map[string]*UpstreamMetrics
-	mode             Mode
-	activeTag        string
-	tcpActive        int
-	udpActive        int
-	bytesUpTotal     map[string]*atomic.Uint64
-	bytesDownTotal   map[string]*atomic.Uint64
-	bytesUpPerSec    map[string]uint64
-	bytesDownPerSec  map[string]uint64
-	lastBytesUpTotal map[string]uint64
+	mu                 sync.Mutex
+	upstreams          map[string]*UpstreamMetrics
+	mode               Mode
+	activeTag          string
+	tcpActive          int
+	udpActive          int
+	bytesUpTotal       map[string]*atomic.Uint64
+	bytesDownTotal     map[string]*atomic.Uint64
+	bytesUpPerSec      map[string]uint64
+	bytesDownPerSec    map[string]uint64
+	lastBytesUpTotal   map[string]uint64
 	lastBytesDownTotal map[string]uint64
+	memoryAllocBytes   uint64
 }
 
 func NewMetrics(tags []string) *Metrics {
@@ -77,8 +79,12 @@ func (m *Metrics) Start(ctxDone <-chan struct{}) {
 }
 
 func (m *Metrics) updatePerSecond() {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.memoryAllocBytes = mem.Alloc
 	for tag, total := range m.bytesUpTotal {
 		current := total.Load()
 		prev := m.lastBytesUpTotal[tag]
@@ -181,6 +187,7 @@ func (m *Metrics) Render() string {
 	}
 	bytesUpPerSec := copyUint64Map(m.bytesUpPerSec)
 	bytesDownPerSec := copyUint64Map(m.bytesDownPerSec)
+	memoryAlloc := m.memoryAllocBytes
 	m.mu.Unlock()
 	bytesUpTotal := make(map[string]uint64, len(tags))
 	bytesDownTotal := make(map[string]uint64, len(tags))
@@ -297,6 +304,10 @@ func (m *Metrics) Render() string {
 		b.WriteString(strconv.FormatUint(bytesDownPerSec[tag], 10))
 		b.WriteString("\n")
 	}
+	b.WriteString("# TYPE fbforward_memory_alloc_bytes gauge\n")
+	b.WriteString("fbforward_memory_alloc_bytes ")
+	b.WriteString(strconv.FormatUint(memoryAlloc, 10))
+	b.WriteString("\n")
 	return b.String()
 }
 

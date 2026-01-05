@@ -1,5 +1,6 @@
 UI_DIR := ui
 UI_VITE := $(UI_DIR)/node_modules/.bin/vite
+BIN_OUT ?= fbforward
 
 .PHONY: all ui-build build clean
 
@@ -13,7 +14,7 @@ ui-build:
 	fi
 
 build: ui-build
-	go build ./...
+	go build -o $(BIN_OUT) .
 
 clean:
 	rm -rf ui-dist

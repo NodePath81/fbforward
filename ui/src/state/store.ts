@@ -13,6 +13,7 @@ export interface AppState {
     tcp: number;
     udp: number;
   };
+  memoryBytes: number;
   mode: Mode;
   activeUpstream: string;
 }
@@ -81,6 +82,7 @@ export function createInitialState(token: string): AppState {
       tcp: 0,
       udp: 0
     },
+    memoryBytes: Number.NaN,
     mode: 'auto',
     activeUpstream: ''
   };
