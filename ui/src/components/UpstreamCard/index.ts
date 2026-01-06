@@ -15,6 +15,7 @@ export interface UpstreamCardHandle {
 
 export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHandle {
   const card = createEl('div', 'upstream-card');
+  card.dataset.tag = upstream.tag;
   const header = createEl('div', 'upstream-header');
   const title = createEl('div');
   const tag = createEl('div', 'upstream-tag', upstream.tag);

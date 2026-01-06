@@ -12,23 +12,41 @@
     <main class="shell">
       <header class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">Userspace NAT forwarder</p>
-          <h1>fbforward</h1>
-          <p class="subhead">Adaptive TCP/UDP forwarding driven by live ICMP quality scoring.</p>
+          <div class="header-widget">
+            <div class="header-top">
+              <div class="host-identity">
+                <div class="host-name" id="hostName">-</div>
+                <div class="host-ips" id="hostIPs">-</div>
+              </div>
+              <button id="restartButton" class="restart-button" type="button">Restart</button>
+            </div>
+            <div class="header-stats">
+              <div class="metric-item">
+                <span>Uptime</span>
+                <strong id="uptimeValue">-</strong>
+              </div>
+              <div class="metric-item">
+                <span>Total upload</span>
+                <strong id="totalUpValue">-</strong>
+              </div>
+              <div class="metric-item">
+                <span>Total download</span>
+                <strong id="totalDownValue">-</strong>
+              </div>
+            </div>
+          </div>
+          <section class="panel mode-card">
+            <div class="panel-header">
+              <h2>Mode</h2>
+              <div class="segmented" role="group" aria-label="Mode">
+                <button class="segmented-button" type="button" data-mode="auto" aria-pressed="true">auto</button>
+                <button class="segmented-button" type="button" data-mode="manual" aria-pressed="false">manual</button>
+              </div>
+            </div>
+          </section>
         </div>
         <div id="statusCard" class="status-card"></div>
       </header>
-
-      <section class="panel control-panel">
-        <div class="panel-header">
-          <h2>Control</h2>
-        </div>
-        <div id="modeTransition" class="mode-transition-container"></div>
-        <div class="control-hint-row">
-          <p class="hint" id="controlHint"></p>
-          <button id="authButton" class="ghost-link" type="button">Change token</button>
-        </div>
-      </section>
 
       <section class="panel">
         <div class="panel-header">

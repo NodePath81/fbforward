@@ -19,6 +19,20 @@
   box-shadow: var(--shadow-elevated);
 }
 
+.upstream-card.selectable {
+  cursor: pointer;
+}
+
+.upstream-card.selected {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.upstream-card.disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
 .upstream-card.unusable {
   opacity: 0.6;
 }

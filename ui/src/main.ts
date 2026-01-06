@@ -1,7 +1,6 @@
 import { callRPC } from './api/rpc';
-import { fetchText } from './api/client';
+import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
-import { initControlPanel } from './components/ControlPanel';
 import { createConnectionTable } from './components/ConnectionTable';
 import { createUpstreamCard } from './components/UpstreamCard';
 import { renderStatusCard } from './components/StatusCard';
@@ -10,12 +9,15 @@ import { connectStatusSocket } from './websocket/status';
 import { createInitialState, Store } from './state/store';
 import type {
   ConnectionEntry,
+  Mode,
   RawConnectionEntry,
   StatusResponse,
   UpstreamMetrics,
+  IdentityResponse,
   WSMessage
 } from './types';
 import { clearChildren, qs } from './utils/dom';
+import { formatBytes, formatDuration } from './utils/format';
 
 const storedToken = localStorage.getItem('fbforward_token') || '';
 if (!storedToken) {
@@ -35,54 +37,48 @@ function startApp(token: string) {
   const tcpTable = createConnectionTable(qs<HTMLElement>(document, '#tcpTable'));
   const udpTable = createConnectionTable(qs<HTMLElement>(document, '#udpTable'));
   const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
+  const restartButton = qs<HTMLButtonElement>(document, '#restartButton');
+  const modeButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('.segmented-button')
+  );
 
   let upstreamCards = new Map<string, ReturnType<typeof createUpstreamCard>>();
-
-  const controlPanel = initControlPanel({
-    container: qs<HTMLElement>(document, '#modeTransition'),
-    hintEl: qs<HTMLElement>(document, '#controlHint'),
-    authButton: qs<HTMLButtonElement>(document, '#authButton'),
-    store,
-    toast,
-    onApply: async (mode, tag) => {
-      const params = { mode, tag: tag || '' };
-      const result = await callRPC<unknown>(token, 'SetUpstream', params);
-      if (result.ok) {
-        await loadStatus();
-        return true;
-      }
+  restartButton.addEventListener('click', async () => {
+    restartButton.disabled = true;
+    const result = await callRPC<unknown>(token, 'Restart', {});
+    if (!result.ok) {
       toast.show(result.error || 'Request failed.', 'error');
-      return false;
-    },
-    onRestart: async () => {
-      const result = await callRPC<unknown>(token, 'Restart', {});
-      if (!result.ok) {
-        toast.show(result.error || 'Request failed.', 'error');
-        return false;
-      }
-      return true;
+    } else {
+      toast.show('Restart requested.', 'warning');
     }
+    restartButton.disabled = false;
+  });
+
+  modeButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const mode = button.dataset.mode === 'manual' ? 'manual' : 'auto';
+      setModeUI(mode, true);
+    });
   });
 
   function updateStatusCard(): void {
     const state = store.getState();
     statusCard({
-      mode: state.mode,
+      mode: state.control.mode,
       activeUpstream: state.activeUpstream,
       tcp: state.counts.tcp,
       udp: state.counts.udp,
       memoryBytes: state.memoryBytes
     });
+    updateHeaderStats();
 
     upstreamSummary.textContent = `${state.upstreams.length} upstreams`;
     tcpSummary.textContent = `${state.counts.tcp} active`;
     udpSummary.textContent = `${state.counts.udp} active`;
 
-    const titleBits = ['fbforward', state.mode];
-    if (state.activeUpstream) {
-      titleBits.push(state.activeUpstream);
+    if (state.hostname) {
+      document.title = `fbforward - ${state.hostname}`;
     }
-    document.title = titleBits.join(' - ');
   }
 
   function rebuildUpstreamGrid(): void {
@@ -91,11 +87,14 @@ function startApp(token: string) {
     clearChildren(upstreamGrid);
     for (const upstream of state.upstreams) {
       const card = createUpstreamCard(upstream);
+      card.element.addEventListener('click', () => {
+        handleUpstreamSelect(upstream.tag);
+      });
       upstreamCards.set(upstream.tag, card);
       upstreamGrid.appendChild(card.element);
     }
-    controlPanel.setUpstreams(state.upstreams.map(up => up.tag));
     updateUpstreamCards();
+    updateUpstreamInteractivity();
   }
 
   function updateUpstreamCards(): void {
@@ -111,6 +110,74 @@ function startApp(token: string) {
         bestScore: best.bestScore === tag
       });
     }
+    updateUpstreamInteractivity();
+  }
+
+  function updateModeSwitch(): void {
+    const current = store.getState().control.mode;
+    for (const button of modeButtons) {
+      const active = button.dataset.mode === current;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+  }
+
+  function updateUpstreamInteractivity(): void {
+    const state = store.getState();
+    const isManual = state.control.mode === 'manual';
+    for (const [tag, card] of upstreamCards.entries()) {
+      card.element.classList.toggle('selectable', isManual);
+      card.element.classList.toggle('disabled', !isManual);
+      card.element.classList.toggle('selected', isManual && state.control.selectedUpstream === tag);
+    }
+  }
+
+  function setModeUI(mode: Mode, apply: boolean): void {
+    const state = store.getState();
+    let selected = state.control.selectedUpstream;
+    if (mode === 'manual') {
+      if (!selected) {
+        selected = state.activeUpstream || state.upstreams[0]?.tag || null;
+      }
+    } else {
+      selected = null;
+    }
+    store.setState({
+      control: {
+        ...state.control,
+        mode,
+        selectedUpstream: selected
+      }
+    });
+    updateModeSwitch();
+    updateUpstreamInteractivity();
+    updateStatusCard();
+    if (apply) {
+      void applyMode(mode, selected);
+    }
+  }
+
+  async function applyMode(mode: Mode, selected: string | null): Promise<void> {
+    const params = { mode, tag: selected || '' };
+    const result = await callRPC<unknown>(token, 'SetUpstream', params);
+    if (!result.ok) {
+      toast.show(result.error || 'Request failed.', 'error');
+    }
+  }
+
+  function handleUpstreamSelect(tag: string): void {
+    const state = store.getState();
+    if (state.control.mode !== 'manual') {
+      return;
+    }
+    store.setState({
+      control: {
+        ...state.control,
+        selectedUpstream: tag
+      }
+    });
+    updateUpstreamInteractivity();
+    void applyMode('manual', tag);
   }
 
   function updateTables(): void {
@@ -133,12 +200,59 @@ function startApp(token: string) {
       counts: {
         tcp: data.counts.tcp_active,
         udp: data.counts.udp_active
+      },
+      control: {
+        ...store.getState().control,
+        mode: data.mode,
+        selectedUpstream: data.active_upstream || null
       }
     });
-    controlPanel.setMode(data.mode, data.active_upstream || null, false);
     rebuildUpstreamGrid();
+    updateModeSwitch();
     updateStatusCard();
     updateTables();
+  }
+
+  async function loadIdentity(): Promise<void> {
+    try {
+      const resp = await fetchJSON<{ ok: boolean; result?: IdentityResponse; error?: string }>(
+        '/identity',
+        token
+      );
+      if (!resp.ok || !resp.result) {
+        return;
+      }
+      store.setState({
+        hostname: resp.result.hostname || '',
+        hostIPs: resp.result.ips || []
+      });
+      updateHeaderIdentity();
+      updateStatusCard();
+    } catch (err) {
+      // ignore identity load failures
+    }
+  }
+
+  function updateHeaderIdentity(): void {
+    const state = store.getState();
+    const nameEl = qs<HTMLElement>(document, '#hostName');
+    const ipEl = qs<HTMLElement>(document, '#hostIPs');
+    nameEl.textContent = state.hostname || '-';
+    if (state.hostIPs.length === 0) {
+      ipEl.textContent = '-';
+    } else {
+      ipEl.textContent = state.hostIPs.join(', ');
+    }
+  }
+
+  function updateHeaderStats(): void {
+    const state = store.getState();
+    const uptimeEl = qs<HTMLElement>(document, '#uptimeValue');
+    const totalUpEl = qs<HTMLElement>(document, '#totalUpValue');
+    const totalDownEl = qs<HTMLElement>(document, '#totalDownValue');
+    uptimeEl.textContent = formatDuration(state.uptimeSeconds);
+    totalUpEl.textContent = formatBytes(state.totalBytesUp);
+    totalDownEl.textContent = formatBytes(state.totalBytesDown);
   }
 
   async function pollMetrics(): Promise<void> {
@@ -152,7 +266,10 @@ function startApp(token: string) {
         activeUpstream: snapshot.activeUpstream,
         counts: snapshot.counts,
         metrics: snapshot.upstreams,
-        memoryBytes: snapshot.memoryBytes
+        memoryBytes: snapshot.memoryBytes,
+        uptimeSeconds: snapshot.uptimeSeconds,
+        totalBytesUp: snapshot.totalBytesUp,
+        totalBytesDown: snapshot.totalBytesDown
       });
       updateStatusCard();
       updateUpstreamCards();
@@ -201,6 +318,7 @@ function startApp(token: string) {
   });
 
   loadStatus();
+  loadIdentity();
   pollMetrics();
   window.setInterval(pollMetrics, 1000);
 }
