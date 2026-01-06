@@ -33,6 +33,7 @@ type Metrics struct {
 	lastBytesUpTotal   map[string]uint64
 	lastBytesDownTotal map[string]uint64
 	memoryAllocBytes   uint64
+	startTime          time.Time
 }
 
 func NewMetrics(tags []string) *Metrics {
@@ -60,6 +61,7 @@ func NewMetrics(tags []string) *Metrics {
 		bytesDownPerSec:    bytesDownPerSec,
 		lastBytesUpTotal:   lastBytesUp,
 		lastBytesDownTotal: lastBytesDown,
+		startTime:          time.Now(),
 	}
 }
 
@@ -188,6 +190,7 @@ func (m *Metrics) Render() string {
 	bytesUpPerSec := copyUint64Map(m.bytesUpPerSec)
 	bytesDownPerSec := copyUint64Map(m.bytesDownPerSec)
 	memoryAlloc := m.memoryAllocBytes
+	startTime := m.startTime
 	m.mu.Unlock()
 	bytesUpTotal := make(map[string]uint64, len(tags))
 	bytesDownTotal := make(map[string]uint64, len(tags))
@@ -308,6 +311,14 @@ func (m *Metrics) Render() string {
 	b.WriteString("fbforward_memory_alloc_bytes ")
 	b.WriteString(strconv.FormatUint(memoryAlloc, 10))
 	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_uptime_seconds gauge\n")
+	b.WriteString("fbforward_uptime_seconds ")
+	if startTime.IsZero() {
+		b.WriteString("0\n")
+	} else {
+		b.WriteString(formatFloat(time.Since(startTime).Seconds()))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

@@ -15,7 +15,7 @@ export function createConnectionTable(tbody: HTMLElement) {
     }
     for (const entry of entries) {
       const row = createEl('tr');
-      row.appendChild(createCell(entry.id));
+      row.appendChild(createCell(entry.kind.toUpperCase(), 'protocol-cell'));
       row.appendChild(createCell(entry.clientAddr));
       row.appendChild(createCell(entry.upstream));
       row.appendChild(createCell(formatBytes(entry.bytesUp)));
@@ -27,8 +27,8 @@ export function createConnectionTable(tbody: HTMLElement) {
   };
 }
 
-function createCell(value: string) {
-  const cell = createEl('td');
+function createCell(value: string, className?: string) {
+  const cell = createEl('td', className);
   cell.textContent = value;
   return cell;
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ const (
 type ControlServer struct {
 	cfg          ControlConfig
 	webUIEnabled bool
+	hostname     string
 	manager      *UpstreamManager
 	metrics      *Metrics
 	status       *StatusStore
@@ -39,10 +41,11 @@ type ControlServer struct {
 	limiter      *rateLimiter
 }
 
-func NewControlServer(cfg ControlConfig, webUIEnabled bool, manager *UpstreamManager, metrics *Metrics, status *StatusStore, restartFn func() error, logger Logger) *ControlServer {
+func NewControlServer(cfg ControlConfig, webUIEnabled bool, hostname string, manager *UpstreamManager, metrics *Metrics, status *StatusStore, restartFn func() error, logger Logger) *ControlServer {
 	return &ControlServer{
 		cfg:          cfg,
 		webUIEnabled: webUIEnabled,
+		hostname:     hostname,
 		manager:      manager,
 		metrics:      metrics,
 		status:       status,
@@ -57,6 +60,7 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/metrics", c.handleMetrics)
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/status", c.handleStatus)
+	mux.HandleFunc("/identity", c.handleIdentity)
 	mux.Handle("/", WebUIHandler(c.webUIEnabled))
 
 	addr := netJoin(c.cfg.Addr, c.cfg.Port)
@@ -105,15 +109,20 @@ type setUpstreamParams struct {
 }
 
 type statusResponse struct {
-	Mode           string            `json:"mode"`
-	ActiveUpstream string            `json:"active_upstream"`
+	Mode           string             `json:"mode"`
+	ActiveUpstream string             `json:"active_upstream"`
 	Upstreams      []UpstreamSnapshot `json:"upstreams"`
-	Counts         statusCounts      `json:"counts"`
+	Counts         statusCounts       `json:"counts"`
 }
 
 type statusCounts struct {
 	TCPActive int `json:"tcp_active"`
 	UDPActive int `json:"udp_active"`
+}
+
+type identityResponse struct {
+	Hostname string   `json:"hostname"`
+	IPs      []string `json:"ips"`
 }
 
 func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +204,7 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return c.originAllowed(r) },
+		CheckOrigin:  func(r *http.Request) bool { return c.originAllowed(r) },
 		Subprotocols: []string{wsPrimaryProtocol},
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -273,6 +282,80 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+}
+
+func (c *ControlServer) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	if !c.checkAuth(r) {
+		writeJSON(w, http.StatusUnauthorized, rpcResponse{Ok: false, Error: "unauthorized"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, rpcResponse{Ok: false, Error: "method not allowed"})
+		return
+	}
+	name := strings.TrimSpace(c.hostname)
+	if name == "" {
+		name, _ = os.Hostname()
+	}
+	resp := identityResponse{
+		Hostname: name,
+		IPs:      listActiveIPs(),
+	}
+	writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
+}
+
+func listActiveIPs() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	addrs := collectIPs(ifaces, func(iface net.Interface) bool {
+		return iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0
+	})
+	if len(addrs) > 0 {
+		return addrs
+	}
+	return collectIPs(ifaces, func(iface net.Interface) bool {
+		return iface.Flags&net.FlagLoopback == 0
+	})
+}
+
+func collectIPs(ifaces []net.Interface, filter func(net.Interface) bool) []string {
+	ips := make([]string, 0)
+	for _, iface := range ifaces {
+		if !filter(iface) {
+			continue
+		}
+		addrList, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrList {
+			ip := addrToIP(addr)
+			if ip == "" {
+				continue
+			}
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+func addrToIP(addr net.Addr) string {
+	switch v := addr.(type) {
+	case *net.IPNet:
+		if v.IP == nil {
+			return ""
+		}
+		return v.IP.String()
+	case *net.IPAddr:
+		if v.IP == nil {
+			return ""
+		}
+		return v.IP.String()
+	default:
+		return ""
+	}
 }
 
 func (c *ControlServer) handleMetrics(w http.ResponseWriter, r *http.Request) {

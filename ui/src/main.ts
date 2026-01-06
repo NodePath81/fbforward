@@ -32,17 +32,26 @@ function startApp(token: string) {
   const statusCard = renderStatusCard(qs<HTMLElement>(document, '#statusCard'));
   const upstreamGrid = qs<HTMLElement>(document, '#upstreamGrid');
   const upstreamSummary = qs<HTMLElement>(document, '#upstreamSummary');
-  const tcpSummary = qs<HTMLElement>(document, '#tcpSummary');
-  const udpSummary = qs<HTMLElement>(document, '#udpSummary');
-  const tcpTable = createConnectionTable(qs<HTMLElement>(document, '#tcpTable'));
-  const udpTable = createConnectionTable(qs<HTMLElement>(document, '#udpTable'));
+  const connectionsSummary = qs<HTMLElement>(document, '#connectionsSummary');
+  const connectionTable = createConnectionTable(qs<HTMLElement>(document, '#connectionTable'));
   const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
   const restartButton = qs<HTMLButtonElement>(document, '#restartButton');
-  const modeButtons = Array.from(
-    document.querySelectorAll<HTMLButtonElement>('.segmented-button')
+  const sortButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('.sort-button')
   );
+  const modeButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('.segmented-button[data-mode]')
+  );
+  const intervalButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('.polling-button')
+  );
+  let pollTimer: number | null = null;
+  let pollIntervalMs = 1000;
 
   let upstreamCards = new Map<string, ReturnType<typeof createUpstreamCard>>();
+  const entryOrder = new Map<string, number>();
+  let entrySeq = 0;
+  const sortState: SortState = { key: 'client', direction: 'asc' };
   restartButton.addEventListener('click', async () => {
     restartButton.disabled = true;
     const result = await callRPC<unknown>(token, 'Restart', {});
@@ -61,6 +70,50 @@ function startApp(token: string) {
     });
   });
 
+  intervalButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const value = Number.parseInt(button.dataset.interval || '', 10);
+      if (!Number.isFinite(value) || value <= 0) {
+        return;
+      }
+      setPollInterval(value);
+    });
+  });
+
+  function setPollInterval(seconds: number): void {
+    pollIntervalMs = seconds * 1000;
+    updatePollIntervalUI();
+    startPolling();
+  }
+
+  function updatePollIntervalUI(): void {
+    for (const button of intervalButtons) {
+      const value = Number.parseInt(button.dataset.interval || '', 10);
+      const active = value * 1000 === pollIntervalMs;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+  }
+
+  sortButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const key = button.dataset.sort as SortKey | undefined;
+      if (!key) {
+        return;
+      }
+      if (sortState.key === key) {
+        sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortState.key = key;
+        sortState.direction = 'asc';
+      }
+      updateSortIndicators();
+      updateTables();
+    });
+  });
+
+  updateSortIndicators();
+
   function updateStatusCard(): void {
     const state = store.getState();
     statusCard({
@@ -73,8 +126,6 @@ function startApp(token: string) {
     updateHeaderStats();
 
     upstreamSummary.textContent = `${state.upstreams.length} upstreams`;
-    tcpSummary.textContent = `${state.counts.tcp} active`;
-    udpSummary.textContent = `${state.counts.udp} active`;
 
     if (state.hostname) {
       document.title = `fbforward - ${state.hostname}`;
@@ -119,6 +170,32 @@ function startApp(token: string) {
       const active = button.dataset.mode === current;
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+  }
+
+  function updateSortIndicators(): void {
+    for (const button of sortButtons) {
+      const key = button.dataset.sort as SortKey | undefined;
+      if (!key) {
+        continue;
+      }
+      const active = key === sortState.key;
+      button.classList.toggle('is-active', active);
+      const indicator = button.querySelector<HTMLElement>('.sort-indicator');
+      if (indicator) {
+        indicator.textContent = active
+          ? sortState.direction === 'asc'
+            ? '\u25B2'
+            : '\u25BC'
+          : '';
+      }
+      const th = button.closest('th');
+      if (th) {
+        th.setAttribute(
+          'aria-sort',
+          active ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none'
+        );
+      }
     }
   }
 
@@ -182,8 +259,18 @@ function startApp(token: string) {
 
   function updateTables(): void {
     const state = store.getState();
-    tcpTable(Array.from(state.connections.tcp.values()));
-    udpTable(Array.from(state.connections.udp.values()));
+    const entries = Array.from(state.connections.tcp.values()).concat(
+      Array.from(state.connections.udp.values())
+    );
+    for (const entry of entries) {
+      if (!entryOrder.has(entry.id)) {
+        entryOrder.set(entry.id, entrySeq);
+        entrySeq += 1;
+      }
+    }
+    entries.sort((a, b) => compareEntries(a, b, sortState, entryOrder));
+    connectionTable(entries);
+    connectionsSummary.textContent = `${entries.length} active`;
   }
 
   async function loadStatus(): Promise<void> {
@@ -309,6 +396,23 @@ function startApp(token: string) {
         }
       }
     });
+    if (message.type === 'snapshot') {
+      const currentIds = new Set<string>();
+      for (const entry of message.tcp || []) {
+        currentIds.add(entry.id);
+      }
+      for (const entry of message.udp || []) {
+        currentIds.add(entry.id);
+      }
+      for (const id of entryOrder.keys()) {
+        if (!currentIds.has(id)) {
+          entryOrder.delete(id);
+        }
+      }
+    }
+    if (message.type === 'remove' && message.id) {
+      entryOrder.delete(message.id);
+    }
     updateTables();
   }
 
@@ -319,8 +423,35 @@ function startApp(token: string) {
 
   loadStatus();
   loadIdentity();
+  updatePollIntervalUI();
+  function startPolling(): void {
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+    }
+    pollTimer = window.setInterval(pollMetrics, pollIntervalMs);
+  }
+
   pollMetrics();
-  window.setInterval(pollMetrics, 1000);
+  startPolling();
+}
+
+type SortKey = 'protocol' | 'client' | 'upstream' | 'up' | 'down' | 'last' | 'age';
+type SortDirection = 'asc' | 'desc';
+
+interface SortState {
+  key: SortKey;
+  direction: SortDirection;
+}
+
+interface ParsedHost {
+  kind: 'ipv4' | 'ipv6' | 'name';
+  parts: number[];
+  text: string;
+}
+
+interface ParsedClient {
+  host: ParsedHost;
+  port: number;
 }
 
 function normalizeEntry(raw: RawConnectionEntry): ConnectionEntry {
@@ -374,4 +505,195 @@ function computeBestMetrics(metrics: Record<string, UpstreamMetrics>) {
   }
 
   return { bestRtt, bestLoss, bestScore };
+}
+
+function compareEntries(
+  a: ConnectionEntry,
+  b: ConnectionEntry,
+  sortState: SortState,
+  entryOrder: Map<string, number>
+): number {
+  const primary = compareByKey(a, b, sortState.key);
+  if (primary !== 0) {
+    return sortState.direction === 'asc' ? primary : -primary;
+  }
+  const orderA = entryOrder.get(a.id) ?? 0;
+  const orderB = entryOrder.get(b.id) ?? 0;
+  return orderA - orderB;
+}
+
+function compareByKey(a: ConnectionEntry, b: ConnectionEntry, key: SortKey): number {
+  switch (key) {
+    case 'protocol':
+      return a.kind.localeCompare(b.kind);
+    case 'client': {
+      const parsedA = parseClientAddress(a.clientAddr);
+      const parsedB = parseClientAddress(b.clientAddr);
+      const hostCompare = compareHosts(parsedA.host, parsedB.host);
+      if (hostCompare !== 0) {
+        return hostCompare;
+      }
+      return compareNumber(parsedA.port, parsedB.port);
+    }
+    case 'upstream':
+      return a.upstream.localeCompare(b.upstream);
+    case 'up':
+      return compareNumber(a.bytesUp, b.bytesUp);
+    case 'down':
+      return compareNumber(a.bytesDown, b.bytesDown);
+    case 'last':
+      return compareNumber(a.lastActivity, b.lastActivity);
+    case 'age':
+      return compareNumber(a.age, b.age);
+    default:
+      return 0;
+  }
+}
+
+function compareNumber(a: number, b: number): number {
+  if (a === b) {
+    return 0;
+  }
+  return a < b ? -1 : 1;
+}
+
+function parseClientAddress(value: string): ParsedClient {
+  const trimmed = value.trim();
+  let hostPart = trimmed;
+  let port = 0;
+
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    if (end > 0) {
+      hostPart = trimmed.slice(1, end);
+      const portPart = trimmed.slice(end + 1);
+      if (portPart.startsWith(':')) {
+        port = parsePort(portPart.slice(1));
+      }
+    }
+  } else {
+    const lastColon = trimmed.lastIndexOf(':');
+    if (lastColon > -1) {
+      const hostCandidate = trimmed.slice(0, lastColon);
+      const portCandidate = trimmed.slice(lastColon + 1);
+      if (hostCandidate.includes(':')) {
+        hostPart = hostCandidate;
+        port = parsePort(portCandidate);
+      } else if (hostCandidate.length > 0) {
+        hostPart = hostCandidate;
+        port = parsePort(portCandidate);
+      }
+    }
+  }
+
+  hostPart = hostPart.split('%')[0];
+  return {
+    host: parseHost(hostPart),
+    port
+  };
+}
+
+function parsePort(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseHost(value: string): ParsedHost {
+  const cleaned = value.trim().toLowerCase();
+  const ipv4 = parseIPv4(cleaned);
+  if (ipv4) {
+    return { kind: 'ipv4', parts: ipv4, text: cleaned };
+  }
+  const ipv6 = parseIPv6(cleaned);
+  if (ipv6) {
+    return { kind: 'ipv6', parts: ipv6, text: cleaned };
+  }
+  return { kind: 'name', parts: [], text: cleaned };
+}
+
+function compareHosts(a: ParsedHost, b: ParsedHost): number {
+  const rank = { ipv4: 0, ipv6: 1, name: 2 };
+  if (rank[a.kind] !== rank[b.kind]) {
+    return rank[a.kind] - rank[b.kind];
+  }
+  if (a.kind === 'name') {
+    return a.text.localeCompare(b.text);
+  }
+  const len = Math.max(a.parts.length, b.parts.length);
+  for (let i = 0; i < len; i += 1) {
+    const diff = compareNumber(a.parts[i] ?? 0, b.parts[i] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+function parseIPv4(value: string): number[] | null {
+  const parts = value.split('.');
+  if (parts.length !== 4) {
+    return null;
+  }
+  const nums: number[] = [];
+  for (const part of parts) {
+    if (part === '') {
+      return null;
+    }
+    const parsed = Number.parseInt(part, 10);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 255) {
+      return null;
+    }
+    nums.push(parsed);
+  }
+  return nums;
+}
+
+function parseIPv6(value: string): number[] | null {
+  if (!value.includes(':') || value.includes('.')) {
+    return null;
+  }
+  const segments = value.split('::');
+  if (segments.length > 2) {
+    return null;
+  }
+  const head = segments[0] ? segments[0].split(':') : [];
+  const tail = segments[1] ? segments[1].split(':') : [];
+  if (segments.length === 1 && head.length !== 8) {
+    return null;
+  }
+  const total = head.length + tail.length;
+  if (total > 8) {
+    return null;
+  }
+  const zeros = segments.length === 2 ? 8 - total : 0;
+  const nums: number[] = [];
+  for (const part of head) {
+    const parsed = parseHex(part);
+    if (parsed === null) {
+      return null;
+    }
+    nums.push(parsed);
+  }
+  for (let i = 0; i < zeros; i += 1) {
+    nums.push(0);
+  }
+  for (const part of tail) {
+    const parsed = parseHex(part);
+    if (parsed === null) {
+      return null;
+    }
+    nums.push(parsed);
+  }
+  return nums.length === 8 ? nums : null;
+}
+
+function parseHex(value: string): number | null {
+  if (value === '') {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 16);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 0xffff) {
+    return null;
+  }
+  return parsed;
 }

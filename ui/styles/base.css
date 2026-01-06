@@ -138,6 +138,19 @@ img {
   margin-bottom: 0;
 }
 
+.mode-card .panel-body {
+  margin-top: var(--space-2);
+  display: grid;
+  gap: 8px;
+}
+
+.polling-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-muted);
+}
+
 .header-widget .restart-button {
   align-self: flex-start;
   padding: 8px 16px;
@@ -184,6 +197,15 @@ img {
 .segmented .segmented-button.active {
   background: var(--color-accent);
   color: white;
+}
+
+.polling-segmented {
+  width: 100%;
+}
+
+.polling-segmented .segmented-button {
+  flex: 1;
+  justify-content: center;
 }
 
 .eyebrow {

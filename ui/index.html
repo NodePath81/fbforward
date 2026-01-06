@@ -43,6 +43,14 @@
                 <button class="segmented-button" type="button" data-mode="manual" aria-pressed="false">manual</button>
               </div>
             </div>
+            <div class="panel-body">
+              <div class="segmented polling-segmented" role="group" aria-label="Polling interval">
+                <button class="segmented-button polling-button" type="button" data-interval="1" aria-pressed="true">1s</button>
+                <button class="segmented-button polling-button" type="button" data-interval="3" aria-pressed="false">3s</button>
+                <button class="segmented-button polling-button" type="button" data-interval="5" aria-pressed="false">5s</button>
+                <button class="segmented-button polling-button" type="button" data-interval="10" aria-pressed="false">10s</button>
+              </div>
+            </div>
           </section>
         </div>
         <div id="statusCard" class="status-card"></div>
@@ -58,49 +66,59 @@
 
       <section class="panel">
         <div class="panel-header">
-          <h2>Active TCP connections</h2>
-          <span class="panel-meta" id="tcpSummary"></span>
+          <h2>Active Connections</h2>
+          <span class="panel-meta" id="connectionsSummary"></span>
         </div>
         <div class="connection-table">
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Client</th>
-                  <th>Upstream</th>
-                  <th>Up</th>
-                  <th>Down</th>
-                  <th>Last activity</th>
-                  <th>Age</th>
+                  <th>
+                    <button class="sort-button" type="button" data-sort="protocol">
+                      Protocol
+                      <span class="sort-indicator" aria-hidden="true"></span>
+                    </button>
+                  </th>
+                  <th>
+                    <button class="sort-button" type="button" data-sort="client">
+                      Client
+                      <span class="sort-indicator" aria-hidden="true"></span>
+                    </button>
+                  </th>
+                  <th>
+                    <button class="sort-button" type="button" data-sort="upstream">
+                      Upstream
+                      <span class="sort-indicator" aria-hidden="true"></span>
+                    </button>
+                  </th>
+                  <th>
+                    <button class="sort-button" type="button" data-sort="up">
+                      Up
+                      <span class="sort-indicator" aria-hidden="true"></span>
+                    </button>
+                  </th>
+                  <th>
+                    <button class="sort-button" type="button" data-sort="down">
+                      Down
+                      <span class="sort-indicator" aria-hidden="true"></span>
+                    </button>
+                  </th>
+                  <th>
+                    <button class="sort-button" type="button" data-sort="last">
+                      Last activity
+                      <span class="sort-indicator" aria-hidden="true"></span>
+                    </button>
+                  </th>
+                  <th>
+                    <button class="sort-button" type="button" data-sort="age">
+                      Age
+                      <span class="sort-indicator" aria-hidden="true"></span>
+                    </button>
+                  </th>
                 </tr>
               </thead>
-              <tbody id="tcpTable"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Active UDP mappings</h2>
-          <span class="panel-meta" id="udpSummary"></span>
-        </div>
-        <div class="connection-table">
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Client</th>
-                  <th>Upstream</th>
-                  <th>Up</th>
-                  <th>Down</th>
-                  <th>Last activity</th>
-                  <th>Age</th>
-                </tr>
-              </thead>
-              <tbody id="udpTable"></tbody>
+              <tbody id="connectionTable"></tbody>
             </table>
           </div>
         </div>

@@ -16,6 +16,9 @@ export interface MetricsSnapshot {
   };
   upstreams: Record<string, UpstreamMetrics>;
   memoryBytes: number;
+  uptimeSeconds: number;
+  totalBytesUp: number;
+  totalBytesDown: number;
 }
 
 export function parseMetrics(text: string): MetricsMap {
@@ -59,6 +62,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
   const udp = data['fbforward_udp_mappings_active']?.[0]?.value ?? 0;
   const memorySample = data['fbforward_memory_alloc_bytes']?.[0]?.value;
   const memoryBytes = Number.isFinite(memorySample) ? memorySample : Number.NaN;
+  const uptimeSample = data['fbforward_uptime_seconds']?.[0]?.value;
+  const uptimeSeconds = Number.isFinite(uptimeSample) ? uptimeSample : Number.NaN;
 
   const activeTags = new Set<string>();
   let activeUpstream = '';
@@ -70,6 +75,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
   }
 
   const upstreams: Record<string, UpstreamMetrics> = {};
+  let totalBytesUp = 0;
+  let totalBytesDown = 0;
 
   const ensure = (tag: string): UpstreamMetrics => {
     if (!upstreams[tag]) {
@@ -129,11 +136,26 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     upstreams[tag].active = activeTags.has(tag);
   }
 
+  for (const item of data['fbforward_bytes_up_total'] || []) {
+    if (Number.isFinite(item.value)) {
+      totalBytesUp += item.value;
+    }
+  }
+
+  for (const item of data['fbforward_bytes_down_total'] || []) {
+    if (Number.isFinite(item.value)) {
+      totalBytesDown += item.value;
+    }
+  }
+
   return {
     mode,
     activeUpstream,
     counts: { tcp, udp },
     upstreams,
-    memoryBytes
+    memoryBytes,
+    uptimeSeconds,
+    totalBytesUp,
+    totalBytesDown
   };
 }

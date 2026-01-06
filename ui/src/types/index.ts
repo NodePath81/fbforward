@@ -78,6 +78,11 @@ export interface StatusResponse {
   upstreams: UpstreamSnapshot[];
 }
 
+export interface IdentityResponse {
+  hostname: string;
+  ips: string[];
+}
+
 export type WSMessageType = 'snapshot' | 'add' | 'update' | 'remove';
 
 export interface WSMessage {

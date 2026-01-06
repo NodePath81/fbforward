@@ -87,7 +87,7 @@ func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, er
 	manager.SetAuto()
 	metrics.Start(ctx.Done())
 
-	control := NewControlServer(cfg.Control, cfg.WebUI.IsEnabled(), manager, metrics, status, restartFn, logger)
+	control := NewControlServer(cfg.Control, cfg.WebUI.IsEnabled(), cfg.Hostname, manager, metrics, status, restartFn, logger)
 	rt.control = control
 
 	return rt, nil

@@ -32,7 +32,7 @@ const (
 	defaultMinHoldSeconds     = 5
 	defaultShapingIFB         = "ifb0"
 	defaultAggregateBandwidth = "1g"
-	maxListeners             = 45
+	maxListeners              = 45
 )
 
 type Duration time.Duration
@@ -72,6 +72,7 @@ func (d Duration) Duration() time.Duration {
 }
 
 type Config struct {
+	Hostname  string           `yaml:"hostname"`
 	Listeners []ListenerConfig `yaml:"listeners"`
 	Upstreams []UpstreamConfig `yaml:"upstreams"`
 	Resolver  ResolverConfig   `yaml:"resolver"`
@@ -269,6 +270,7 @@ func (c *Config) setDefaults() {
 }
 
 func (c *Config) validate() error {
+	c.Hostname = strings.TrimSpace(c.Hostname)
 	if len(c.Listeners) == 0 {
 		return errors.New("at least one listener is required")
 	}

@@ -14,6 +14,11 @@ export interface AppState {
     udp: number;
   };
   memoryBytes: number;
+  uptimeSeconds: number;
+  totalBytesUp: number;
+  totalBytesDown: number;
+  hostname: string;
+  hostIPs: string[];
   mode: Mode;
   activeUpstream: string;
 }
@@ -83,6 +88,11 @@ export function createInitialState(token: string): AppState {
       udp: 0
     },
     memoryBytes: Number.NaN,
+    uptimeSeconds: Number.NaN,
+    totalBytesUp: 0,
+    totalBytesDown: 0,
+    hostname: '',
+    hostIPs: [],
     mode: 'auto',
     activeUpstream: ''
   };
