@@ -19,6 +19,10 @@ listeners:
 upstreams:
   - tag: primary
     host: 203.0.113.10
+    egress:
+      rate: 100m
+    ingress:
+      rate: 500m
   - tag: backup
     host: example.net
 resolver:
@@ -94,6 +98,13 @@ Each entry:
 
 - `tag` (string, required): stable identifier used in RPC/UI/metrics.
 - `host` (string, required): IP literal or hostname.
+- `ingress` (object, optional): per-upstream download shaping (traffic FROM upstream).
+- `egress` (object, optional): per-upstream upload shaping (traffic TO upstream).
+
+Notes:
+- `ingress`/`egress` require `shaping.enabled: true` and a valid `shaping.device`.
+- For hostname upstreams, shaping is applied to all resolved IPs.
+- Upstream shaping uses IP-based flower filters (lower priority than port-based listener shaping).
 
 ## resolver
 
@@ -165,7 +176,7 @@ Notes:
 - `aggregate_bandwidth` (string, default: `1g`): root cap for each direction.
   - Format: `100`, `100k`, `100m`, `1g` (bits/sec, SI units).
 
-`egress` / `ingress` fields (defined on each listener):
+`egress` / `ingress` fields (defined on listeners or upstreams):
 - `rate` (string, required): guaranteed rate (bits/sec).
 - `ceil` (string, optional): maximum rate, defaults to `rate`.
 - `burst` (string, optional): burst size in bytes (e.g. `16k`).
@@ -177,4 +188,6 @@ Notes:
   on the configured device and IFB.
 - On shutdown, the program clears root/ingress qdiscs on the configured device
   and IFB.
-- Filters are IPv4-only (ETH_P_IP).
+- Both IPv4 and IPv6 traffic is supported for upstream shaping.
+- Listener shaping uses port-based flower filters (priority 1, IPv4 only).
+- Upstream shaping uses IP-based flower filters (priority 2, IPv4 or IPv6 based on upstream address).

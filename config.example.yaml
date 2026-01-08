@@ -15,8 +15,19 @@ upstreams:
   # Global upstream list shared by all listeners.
   - tag: primary
     host: 203.0.113.10
+    # Optional per-upstream shaping (requires shaping.enabled).
+    # Limits bandwidth to/from this upstream's IP address.
+    egress:
+      rate: 100m      # outbound rate to upstream
+    ingress:
+      rate: 500m      # inbound rate from upstream
   - tag: backup
     host: example.net
+    # Shaping also works with hostname upstreams (resolved IPs are shaped).
+    egress:
+      rate: 50m
+    ingress:
+      rate: 200m
 resolver:
   # Optional custom DNS servers (ip or ip:port). Empty = system DNS.
   servers:

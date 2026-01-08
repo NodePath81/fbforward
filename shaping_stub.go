@@ -4,11 +4,19 @@ package main
 
 import "errors"
 
+// UpstreamShapingEntry holds upstream config with resolved IPs for shaping.
+type UpstreamShapingEntry struct {
+	Tag     string
+	IPs     []string
+	Ingress *BandwidthConfig
+	Egress  *BandwidthConfig
+}
+
 type TrafficShaper struct {
 	enabled bool
 }
 
-func NewTrafficShaper(cfg ShapingConfig, _ []ListenerConfig, _ Logger) *TrafficShaper {
+func NewTrafficShaper(cfg ShapingConfig, _ []ListenerConfig, _ []UpstreamShapingEntry, _ Logger) *TrafficShaper {
 	return &TrafficShaper{enabled: cfg.Enabled}
 }
 

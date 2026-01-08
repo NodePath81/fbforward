@@ -95,8 +95,10 @@ type ListenerConfig struct {
 }
 
 type UpstreamConfig struct {
-	Tag  string `yaml:"tag"`
-	Host string `yaml:"host"`
+	Tag     string           `yaml:"tag"`
+	Host    string           `yaml:"host"`
+	Ingress *BandwidthConfig `yaml:"ingress"`
+	Egress  *BandwidthConfig `yaml:"egress"`
 }
 
 type ResolverConfig struct {
@@ -292,6 +294,58 @@ func (c *Config) validate() error {
 			return fmt.Errorf("duplicate upstream tag: %s", up.Tag)
 		}
 		seenTags[up.Tag] = struct{}{}
+
+		// Validate upstream shaping configs
+		hasShaping := up.Ingress != nil || up.Egress != nil
+		if hasShaping && !c.Shaping.Enabled {
+			return fmt.Errorf("upstream %s has shaping config but shaping.enabled is false", up.Tag)
+		}
+		if up.Ingress != nil {
+			if strings.TrimSpace(up.Ingress.Rate) == "" {
+				return fmt.Errorf("upstream %s ingress.rate is required", up.Tag)
+			}
+			if _, err := parseBandwidth(up.Ingress.Rate); err != nil {
+				return fmt.Errorf("upstream %s ingress.rate: %w", up.Tag, err)
+			}
+			if up.Ingress.Ceil != "" {
+				if _, err := parseBandwidth(up.Ingress.Ceil); err != nil {
+					return fmt.Errorf("upstream %s ingress.ceil: %w", up.Tag, err)
+				}
+			}
+			if up.Ingress.Burst != "" {
+				if _, err := parseSize(up.Ingress.Burst); err != nil {
+					return fmt.Errorf("upstream %s ingress.burst: %w", up.Tag, err)
+				}
+			}
+			if up.Ingress.Cburst != "" {
+				if _, err := parseSize(up.Ingress.Cburst); err != nil {
+					return fmt.Errorf("upstream %s ingress.cburst: %w", up.Tag, err)
+				}
+			}
+		}
+		if up.Egress != nil {
+			if strings.TrimSpace(up.Egress.Rate) == "" {
+				return fmt.Errorf("upstream %s egress.rate is required", up.Tag)
+			}
+			if _, err := parseBandwidth(up.Egress.Rate); err != nil {
+				return fmt.Errorf("upstream %s egress.rate: %w", up.Tag, err)
+			}
+			if up.Egress.Ceil != "" {
+				if _, err := parseBandwidth(up.Egress.Ceil); err != nil {
+					return fmt.Errorf("upstream %s egress.ceil: %w", up.Tag, err)
+				}
+			}
+			if up.Egress.Burst != "" {
+				if _, err := parseSize(up.Egress.Burst); err != nil {
+					return fmt.Errorf("upstream %s egress.burst: %w", up.Tag, err)
+				}
+			}
+			if up.Egress.Cburst != "" {
+				if _, err := parseSize(up.Egress.Cburst); err != nil {
+					return fmt.Errorf("upstream %s egress.cburst: %w", up.Tag, err)
+				}
+			}
+		}
 	}
 	seenListeners := make(map[string]struct{}, len(c.Listeners))
 	shapeKeys := make(map[string]struct{})

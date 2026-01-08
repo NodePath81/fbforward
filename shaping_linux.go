@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/vishvananda/netlink"
@@ -24,16 +25,26 @@ const (
 	defaultAggregateBandwidthBits uint64 = 1_000_000_000
 )
 
+// UpstreamShapingEntry holds upstream config with resolved IPs for shaping.
+type UpstreamShapingEntry struct {
+	Tag     string
+	IPs     []string
+	Ingress *BandwidthConfig
+	Egress  *BandwidthConfig
+}
+
 type TrafficShaper struct {
 	cfg       ShapingConfig
 	listeners []ListenerConfig
+	upstreams []UpstreamShapingEntry
 	logger    Logger
 }
 
-func NewTrafficShaper(cfg ShapingConfig, listeners []ListenerConfig, logger Logger) *TrafficShaper {
+func NewTrafficShaper(cfg ShapingConfig, listeners []ListenerConfig, upstreams []UpstreamShapingEntry, logger Logger) *TrafficShaper {
 	return &TrafficShaper{
 		cfg:       cfg,
 		listeners: listeners,
+		upstreams: upstreams,
 		logger:    logger,
 	}
 }
@@ -73,6 +84,7 @@ func (s *TrafficShaper) Apply() error {
 	mtu := dev.Attrs().MTU
 	hz := float64(netlink.Hz())
 
+	// Parse listener bandwidth configs
 	for i := range s.listeners {
 		ln := &s.listeners[i]
 		ln.Protocol = strings.ToLower(strings.TrimSpace(ln.Protocol))
@@ -88,9 +100,32 @@ func (s *TrafficShaper) Apply() error {
 		}
 	}
 
-	egressClasses, ingressClasses := buildPortClasses(s.listeners)
+	// Parse upstream bandwidth configs
+	for i := range s.upstreams {
+		up := &s.upstreams[i]
+		if up.Ingress != nil {
+			if err := parseBandwidthConfig(up.Ingress, mtu, hz); err != nil {
+				return fmt.Errorf("upstream %s ingress: %w", up.Tag, err)
+			}
+		}
+		if up.Egress != nil {
+			if err := parseBandwidthConfig(up.Egress, mtu, hz); err != nil {
+				return fmt.Errorf("upstream %s egress: %w", up.Tag, err)
+			}
+		}
+	}
+
+	egressPortClasses, ingressPortClasses := buildPortClasses(s.listeners)
+	egressIPClasses, ingressIPClasses := buildIPClasses(s.upstreams)
+
 	if s.logger != nil {
-		s.logger.Info("applying traffic shaping", "device", dev.Attrs().Name, "ifb", ifb.Attrs().Name, "egress_rules", len(egressClasses), "ingress_rules", len(ingressClasses))
+		s.logger.Info("applying traffic shaping",
+			"device", dev.Attrs().Name,
+			"ifb", ifb.Attrs().Name,
+			"egress_port_rules", len(egressPortClasses),
+			"ingress_port_rules", len(ingressPortClasses),
+			"egress_ip_rules", len(egressIPClasses),
+			"ingress_ip_rules", len(ingressIPClasses))
 	}
 
 	// Deterministic apply: clear root+ingress qdiscs on dev and root qdisc on ifb, then rebuild.
@@ -101,9 +136,12 @@ func (s *TrafficShaper) Apply() error {
 		return fmt.Errorf("clear qdiscs on %s: %w", ifb.Attrs().Name, err)
 	}
 
-	// 1) Egress shaping on dev (match src port).
-	if err := setupHTBWithPortClasses(dev, s.cfg.aggregateBandwidthBits, egressClasses); err != nil {
+	// 1) Egress shaping on dev (port-based: match src port; IP-based: match dst IP).
+	if err := setupHTBWithPortClasses(dev, s.cfg.aggregateBandwidthBits, egressPortClasses); err != nil {
 		return fmt.Errorf("setup egress HTB on %s: %w", dev.Attrs().Name, err)
+	}
+	if err := addIPClassesToHTB(dev, egressIPClasses); err != nil {
+		return fmt.Errorf("add egress IP classes on %s: %w", dev.Attrs().Name, err)
 	}
 
 	// 2) Ingress redirect dev -> ifb.
@@ -111,9 +149,12 @@ func (s *TrafficShaper) Apply() error {
 		return fmt.Errorf("setup ingress redirect %s -> %s: %w", dev.Attrs().Name, ifb.Attrs().Name, err)
 	}
 
-	// 3) Ingress shaping is done as egress shaping on IFB (match dest port).
-	if err := setupHTBWithPortClasses(ifb, s.cfg.aggregateBandwidthBits, ingressClasses); err != nil {
+	// 3) Ingress shaping on IFB (port-based: match dest port; IP-based: match src IP).
+	if err := setupHTBWithPortClasses(ifb, s.cfg.aggregateBandwidthBits, ingressPortClasses); err != nil {
 		return fmt.Errorf("setup ingress HTB on %s: %w", ifb.Attrs().Name, err)
+	}
+	if err := addIPClassesToHTB(ifb, ingressIPClasses); err != nil {
+		return fmt.Errorf("add ingress IP classes on %s: %w", ifb.Attrs().Name, err)
 	}
 
 	if s.logger != nil {
@@ -277,10 +318,95 @@ func buildPortClasses(listeners []ListenerConfig) (egress []portClass, ingress [
 	return egress, ingress
 }
 
+// buildIPClasses converts upstream shaping configs to ipClass slices for egress and ingress.
+// Egress: match destination IP (traffic TO the upstream).
+// Ingress (on IFB): match source IP (traffic FROM the upstream).
+func buildIPClasses(upstreams []UpstreamShapingEntry) (egress []ipClass, ingress []ipClass) {
+	// Use minor class IDs starting from 200, incrementing for each IP.
+	// This avoids collision with port classes (20-199).
+	classMinor := uint16(200)
+	filterHandle := uint32(0x200)
+
+	for _, up := range upstreams {
+		if up.Ingress == nil && up.Egress == nil {
+			continue
+		}
+
+		for _, ipStr := range up.IPs {
+			ip := net.ParseIP(ipStr)
+			if ip == nil {
+				continue
+			}
+
+			// Determine mask and version based on IP type
+			var mask net.IPMask
+			var isIPv6 bool
+			if ip4 := ip.To4(); ip4 != nil {
+				ip = ip4
+				mask = net.CIDRMask(32, 32)
+				isIPv6 = false
+			} else {
+				mask = net.CIDRMask(128, 128)
+				isIPv6 = true
+			}
+
+			if up.Egress != nil && up.Egress.rateBits > 0 {
+				egress = append(egress, ipClass{
+					ip:           ip,
+					ipMask:       mask,
+					isIPv6:       isIPv6,
+					isEgress:     true,
+					rateBits:     up.Egress.rateBits,
+					ceilBits:     up.Egress.ceilBits,
+					burstBytes:   up.Egress.burstBytes,
+					cburstBytes:  up.Egress.cburstBytes,
+					classMinor:   classMinor,
+					filterHandle: filterHandle,
+				})
+				classMinor++
+				filterHandle++
+			}
+
+			if up.Ingress != nil && up.Ingress.rateBits > 0 {
+				ingress = append(ingress, ipClass{
+					ip:           ip,
+					ipMask:       mask,
+					isIPv6:       isIPv6,
+					isEgress:     false,
+					rateBits:     up.Ingress.rateBits,
+					ceilBits:     up.Ingress.ceilBits,
+					burstBytes:   up.Ingress.burstBytes,
+					cburstBytes:  up.Ingress.cburstBytes,
+					classMinor:   classMinor + 100, // offset for ingress classes
+					filterHandle: filterHandle + 0x100,
+				})
+				classMinor++
+				filterHandle++
+			}
+		}
+	}
+
+	return egress, ingress
+}
+
 type portClass struct {
 	proto        int
 	port         uint16
 	matchSrcPort bool
+	rateBits     uint64
+	ceilBits     uint64
+	burstBytes   uint32
+	cburstBytes  uint32
+	classMinor   uint16
+	filterHandle uint32
+}
+
+// ipClass represents an IP-based traffic class for upstream shaping.
+type ipClass struct {
+	ip           net.IP     // IP address to match
+	ipMask       net.IPMask // mask (typically /32 for single IP)
+	isIPv6       bool       // true for IPv6, false for IPv4
+	isEgress     bool       // true: match dst IP (egress); false: match src IP (ingress on IFB)
 	rateBits     uint64
 	ceilBits     uint64
 	burstBytes   uint32
@@ -337,10 +463,11 @@ func setupIngressRedirectToIFB(dev netlink.Link, ifb netlink.Link) error {
 		return fmt.Errorf("add/replace ingress qdisc: %w", err)
 	}
 
-	mirred := netlink.NewMirredAction(ifb.Attrs().Index)
-	mirred.MirredAction = netlink.TCA_EGRESS_REDIR
+	// Redirect IPv4 traffic to IFB
+	mirredV4 := netlink.NewMirredAction(ifb.Attrs().Index)
+	mirredV4.MirredAction = netlink.TCA_EGRESS_REDIR
 
-	f := &netlink.MatchAll{
+	fV4 := &netlink.MatchAll{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: devIdx,
 			Parent:    netlink.HANDLE_INGRESS,
@@ -348,11 +475,30 @@ func setupIngressRedirectToIFB(dev netlink.Link, ifb netlink.Link) error {
 			Protocol:  unix.ETH_P_IP,
 			Handle:    filterHandleRedirect,
 		},
-		Actions: []netlink.Action{mirred},
+		Actions: []netlink.Action{mirredV4},
 	}
-	if err := netlink.FilterReplace(f); err != nil {
-		return fmt.Errorf("FilterReplace(matchall mirred redirect): %w", err)
+	if err := netlink.FilterReplace(fV4); err != nil {
+		return fmt.Errorf("FilterReplace(matchall mirred redirect IPv4): %w", err)
 	}
+
+	// Redirect IPv6 traffic to IFB
+	mirredV6 := netlink.NewMirredAction(ifb.Attrs().Index)
+	mirredV6.MirredAction = netlink.TCA_EGRESS_REDIR
+
+	fV6 := &netlink.MatchAll{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: devIdx,
+			Parent:    netlink.HANDLE_INGRESS,
+			Priority:  2,
+			Protocol:  unix.ETH_P_IPV6,
+			Handle:    filterHandleRedirect + 1, // Different handle for IPv6 filter
+		},
+		Actions: []netlink.Action{mirredV6},
+	}
+	if err := netlink.FilterReplace(fV6); err != nil {
+		return fmt.Errorf("FilterReplace(matchall mirred redirect IPv6): %w", err)
+	}
+
 	return nil
 }
 
@@ -452,6 +598,83 @@ func setupHTBWithPortClasses(link netlink.Link, aggBits uint64, pcs []portClass)
 
 		if err := netlink.FilterReplace(flower); err != nil {
 			return fmt.Errorf("FilterReplace(flower class 1:%d): %w", pc.classMinor, err)
+		}
+	}
+
+	return nil
+}
+
+// addIPClassesToHTB adds IP-based traffic classes and flower filters to an existing HTB qdisc.
+// This should be called after setupHTBWithPortClasses to add upstream shaping rules.
+func addIPClassesToHTB(link netlink.Link, ipcs []ipClass) error {
+	if len(ipcs) == 0 {
+		return nil
+	}
+
+	idx := link.Attrs().Index
+	rootQdiscHandle := netlink.MakeHandle(handleMajorHTB, 0)
+	rootClassID := netlink.MakeHandle(handleMajorHTB, classRootMinor)
+
+	for _, ic := range ipcs {
+		classID := netlink.MakeHandle(handleMajorHTB, ic.classMinor)
+		rateBytes := bitsToBytesPerSec(ic.rateBits)
+		ceilBytes := bitsToBytesPerSec(ic.ceilBits)
+
+		buffer := netlink.Xmittime(rateBytes, ic.burstBytes)
+		cbuffer := netlink.Xmittime(ceilBytes, ic.cburstBytes)
+
+		if err := classReplaceOrAdd(&netlink.HtbClass{
+			ClassAttrs: netlink.ClassAttrs{
+				LinkIndex: idx,
+				Handle:    classID,
+				Parent:    rootClassID,
+			},
+			Rate:    rateBytes,
+			Ceil:    ceilBytes,
+			Buffer:  buffer,
+			Cbuffer: cbuffer,
+		}); err != nil {
+			return fmt.Errorf("add/replace class 1:%d: %w", ic.classMinor, err)
+		}
+
+		if err := ensureFqCodel(idx, classID, netlink.MakeHandle(ic.classMinor, 0)); err != nil {
+			return fmt.Errorf("fq_codel under class 1:%d: %w", ic.classMinor, err)
+		}
+
+		// Build flower filter with IP match criteria
+		// Use appropriate protocol based on IP version
+		var ethProto uint16
+		if ic.isIPv6 {
+			ethProto = unix.ETH_P_IPV6
+		} else {
+			ethProto = unix.ETH_P_IP
+		}
+
+		flower := &netlink.Flower{
+			FilterAttrs: netlink.FilterAttrs{
+				LinkIndex: idx,
+				Parent:    rootQdiscHandle,
+				Priority:  2, // Lower priority than port-based filters (priority 1)
+				Protocol:  ethProto,
+				Handle:    ic.filterHandle,
+			},
+			EthType: ethProto,
+			ClassId: classID,
+		}
+
+		// Set IP match criteria:
+		// For egress: match destination IP (traffic TO the upstream)
+		// For ingress (on IFB): match source IP (traffic FROM the upstream)
+		if ic.isEgress {
+			flower.DestIP = ic.ip
+			flower.DestIPMask = ic.ipMask
+		} else {
+			flower.SrcIP = ic.ip
+			flower.SrcIPMask = ic.ipMask
+		}
+
+		if err := netlink.FilterReplace(flower); err != nil {
+			return fmt.Errorf("FilterReplace(flower IP class 1:%d): %w", ic.classMinor, err)
 		}
 	}
 

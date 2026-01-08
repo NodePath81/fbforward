@@ -62,7 +62,9 @@ func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, er
 		upstreams: upstreams,
 	}
 	if cfg.Shaping.Enabled {
-		rt.shaper = NewTrafficShaper(cfg.Shaping, cfg.Listeners, logger)
+		// Build upstream shaping entries with resolved IPs
+		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
+		rt.shaper = NewTrafficShaper(cfg.Shaping, cfg.Listeners, upstreamShaping, logger)
 	}
 
 	manager.SetCallbacks(func(oldTag, newTag string) {
@@ -234,4 +236,36 @@ func resolveUpstreams(ctx context.Context, cfg Config, resolver *Resolver) ([]*U
 		upstreams = append(upstreams, up)
 	}
 	return upstreams, nil
+}
+
+// buildUpstreamShapingEntries creates shaping entries from config and resolved upstreams.
+func buildUpstreamShapingEntries(cfgUpstreams []UpstreamConfig, resolvedUpstreams []*Upstream) []UpstreamShapingEntry {
+	// Create a map of tag -> resolved IPs for quick lookup
+	tagToIPs := make(map[string][]string, len(resolvedUpstreams))
+	for _, up := range resolvedUpstreams {
+		ips := make([]string, 0, len(up.IPs))
+		for _, ip := range up.IPs {
+			ips = append(ips, ip.String())
+		}
+		tagToIPs[up.Tag] = ips
+	}
+
+	entries := make([]UpstreamShapingEntry, 0)
+	for _, cfgUp := range cfgUpstreams {
+		// Only include upstreams that have shaping config
+		if cfgUp.Ingress == nil && cfgUp.Egress == nil {
+			continue
+		}
+		ips, ok := tagToIPs[cfgUp.Tag]
+		if !ok || len(ips) == 0 {
+			continue
+		}
+		entries = append(entries, UpstreamShapingEntry{
+			Tag:     cfgUp.Tag,
+			IPs:     ips,
+			Ingress: cfgUp.Ingress,
+			Egress:  cfgUp.Egress,
+		})
+	}
+	return entries
 }
