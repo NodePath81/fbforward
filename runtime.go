@@ -213,6 +213,12 @@ func (r *Runtime) startDNSRefresh() {
 							activeStr = active.String()
 						}
 						r.logger.Info("upstream resolved", "upstream", up.Tag, "active_ip", activeStr)
+						if r.shaper != nil && upstreamHasShaping(r.cfg.Upstreams, up.Tag) {
+							upstreamShaping := buildUpstreamShapingEntries(r.cfg.Upstreams, r.upstreams)
+							if err := r.shaper.UpdateUpstreams(upstreamShaping); err != nil {
+								r.logger.Error("shaping reapply failed", "upstream", up.Tag, "error", err)
+							}
+						}
 					}
 				}
 			}
@@ -268,4 +274,14 @@ func buildUpstreamShapingEntries(cfgUpstreams []UpstreamConfig, resolvedUpstream
 		})
 	}
 	return entries
+}
+
+func upstreamHasShaping(cfgUpstreams []UpstreamConfig, tag string) bool {
+	for _, up := range cfgUpstreams {
+		if up.Tag != tag {
+			continue
+		}
+		return up.Ingress != nil || up.Egress != nil
+	}
+	return false
 }

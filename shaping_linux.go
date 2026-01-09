@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -38,6 +39,7 @@ type TrafficShaper struct {
 	listeners []ListenerConfig
 	upstreams []UpstreamShapingEntry
 	logger    Logger
+	mu        sync.Mutex
 }
 
 func NewTrafficShaper(cfg ShapingConfig, listeners []ListenerConfig, upstreams []UpstreamShapingEntry, logger Logger) *TrafficShaper {
@@ -50,6 +52,19 @@ func NewTrafficShaper(cfg ShapingConfig, listeners []ListenerConfig, upstreams [
 }
 
 func (s *TrafficShaper) Apply() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applyLocked()
+}
+
+func (s *TrafficShaper) UpdateUpstreams(upstreams []UpstreamShapingEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upstreams = upstreams
+	return s.applyLocked()
+}
+
+func (s *TrafficShaper) applyLocked() error {
 	if !s.cfg.Enabled {
 		return nil
 	}
@@ -164,6 +179,12 @@ func (s *TrafficShaper) Apply() error {
 }
 
 func (s *TrafficShaper) Cleanup() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cleanupLocked()
+}
+
+func (s *TrafficShaper) cleanupLocked() error {
 	if !s.cfg.Enabled {
 		return nil
 	}

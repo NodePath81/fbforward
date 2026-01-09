@@ -27,6 +27,10 @@ func (s *TrafficShaper) Apply() error {
 	return errors.New("traffic shaping is only supported on linux")
 }
 
+func (s *TrafficShaper) UpdateUpstreams(_ []UpstreamShapingEntry) error {
+	return s.Apply()
+}
+
 func (s *TrafficShaper) Cleanup() error {
 	return nil
 }
