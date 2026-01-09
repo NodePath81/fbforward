@@ -20,6 +20,7 @@ rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/usr/local/bin" \
   "$PKG_DIR/etc/fbforward" \
+  "$PKG_DIR/usr/share/fbforward" \
   "$PKG_DIR/etc/systemd/system"
 
 if [ ! -f "$BIN_SRC" ]; then
@@ -41,7 +42,7 @@ install -m 0755 "$BIN_SRC" "$PKG_DIR/usr/local/bin/fbforward"
 install -m 0644 "$SERVICE_SRC" "$PKG_DIR/etc/systemd/system/${SERVICE_NAME}.service"
 
 if [ -f "$CONFIG_SRC" ]; then
-  install -m 0640 "$CONFIG_SRC" "$PKG_DIR/etc/fbforward/config.yaml"
+  install -m 0644 "$CONFIG_SRC" "$PKG_DIR/usr/share/fbforward/config.example.yaml"
 fi
 
 cat <<CONTROL > "$PKG_DIR/DEBIAN/control"

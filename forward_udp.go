@@ -185,7 +185,7 @@ func (l *UDPListener) createMapping(ctx context.Context, clientAddr *net.UDPAddr
 		activityCh:   make(chan struct{}, 1),
 		done:         make(chan struct{}),
 	}
-	mapping.id = l.status.AddUDP(clientAddr.String(), up.Tag, mapping.close)
+	mapping.id = l.status.AddUDP(clientAddr.String(), up.Tag, l.cfg.Port, mapping.close)
 	l.mu.Lock()
 	l.mappings[clientAddr.String()] = mapping
 	l.mu.Unlock()

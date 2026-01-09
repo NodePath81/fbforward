@@ -8,38 +8,40 @@ import (
 )
 
 type StatusEntry struct {
-	Kind         string `json:"kind"`
-	ID           string `json:"id"`
-	ClientAddr   string `json:"client_addr"`
-	Upstream     string `json:"upstream"`
-	BytesUp      uint64 `json:"bytes_up"`
-	BytesDown    uint64 `json:"bytes_down"`
+	Kind       string `json:"kind"`
+	ID         string `json:"id"`
+	ClientAddr string `json:"client_addr"`
+	Port       int    `json:"port"`
+	Upstream   string `json:"upstream"`
+	BytesUp    uint64 `json:"bytes_up"`
+	BytesDown  uint64 `json:"bytes_down"`
 	// LastActivity is Unix milliseconds; Age is seconds since creation.
 	LastActivity int64 `json:"last_activity"`
 	Age          int64 `json:"age"`
 }
 
 type statusEntry struct {
-	kind         string
-	id           string
-	clientAddr   string
-	upstream     string
-	bytesUp      uint64
-	bytesDown    uint64
-	lastActivity time.Time
-	created      time.Time
+	kind          string
+	id            string
+	clientAddr    string
+	port          int
+	upstream      string
+	bytesUp       uint64
+	bytesDown     uint64
+	lastActivity  time.Time
+	created       time.Time
 	lastBroadcast time.Time
 }
 
 type StatusStore struct {
-	mu         sync.Mutex
-	tcp        map[string]*statusEntry
-	udp        map[string]*statusEntry
-	tcpCloser  map[string]func()
-	udpCloser  map[string]func()
-	nextID     uint64
-	hub        *StatusHub
-	metrics    *Metrics
+	mu        sync.Mutex
+	tcp       map[string]*statusEntry
+	udp       map[string]*statusEntry
+	tcpCloser map[string]func()
+	udpCloser map[string]func()
+	nextID    uint64
+	hub       *StatusHub
+	metrics   *Metrics
 }
 
 func NewStatusStore(hub *StatusHub, metrics *Metrics) *StatusStore {
@@ -53,15 +55,15 @@ func NewStatusStore(hub *StatusHub, metrics *Metrics) *StatusStore {
 	}
 }
 
-func (s *StatusStore) AddTCP(clientAddr, upstream string, closeFunc func()) string {
-	return s.add("tcp", clientAddr, upstream, closeFunc)
+func (s *StatusStore) AddTCP(clientAddr, upstream string, port int, closeFunc func()) string {
+	return s.add("tcp", clientAddr, upstream, port, closeFunc)
 }
 
-func (s *StatusStore) AddUDP(clientAddr, upstream string, closeFunc func()) string {
-	return s.add("udp", clientAddr, upstream, closeFunc)
+func (s *StatusStore) AddUDP(clientAddr, upstream string, port int, closeFunc func()) string {
+	return s.add("udp", clientAddr, upstream, port, closeFunc)
 }
 
-func (s *StatusStore) add(kind, clientAddr, upstream string, closeFunc func()) string {
+func (s *StatusStore) add(kind, clientAddr, upstream string, port int, closeFunc func()) string {
 	s.mu.Lock()
 	now := time.Now()
 	s.nextID++
@@ -70,6 +72,7 @@ func (s *StatusStore) add(kind, clientAddr, upstream string, closeFunc func()) s
 		kind:         kind,
 		id:           id,
 		clientAddr:   clientAddr,
+		port:         port,
 		upstream:     upstream,
 		lastActivity: now,
 		created:      now,
@@ -218,6 +221,7 @@ func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 		Kind:         entry.kind,
 		ID:           entry.id,
 		ClientAddr:   entry.clientAddr,
+		Port:         entry.port,
 		Upstream:     entry.upstream,
 		BytesUp:      entry.bytesUp,
 		BytesDown:    entry.bytesDown,
@@ -236,10 +240,10 @@ type statusMessage struct {
 }
 
 type StatusHub struct {
-	mu       sync.Mutex
-	clients  map[*statusClient]struct{}
+	mu        sync.Mutex
+	clients   map[*statusClient]struct{}
 	broadcast chan statusMessage
-	ctxDone  <-chan struct{}
+	ctxDone   <-chan struct{}
 }
 
 type statusClient struct {
@@ -249,9 +253,9 @@ type statusClient struct {
 
 func NewStatusHub(ctxDone <-chan struct{}) *StatusHub {
 	h := &StatusHub{
-		clients:  make(map[*statusClient]struct{}),
+		clients:   make(map[*statusClient]struct{}),
 		broadcast: make(chan statusMessage, 128),
-		ctxDone:  ctxDone,
+		ctxDone:   ctxDone,
 	}
 	go h.run()
 	return h

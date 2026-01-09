@@ -4,6 +4,7 @@ set -eu
 SERVICE_USER="fbforward"
 SERVICE_GROUP="fbforward"
 CONFIG_PATH="/etc/fbforward/config.yaml"
+CONFIG_TEMPLATE="/usr/share/fbforward/config.example.yaml"
 
 if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
   groupadd --system "$SERVICE_GROUP"
@@ -12,6 +13,11 @@ fi
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --gid "$SERVICE_GROUP" --home /nonexistent --shell /usr/sbin/nologin "$SERVICE_USER" || \
     useradd --system --gid "$SERVICE_GROUP" --home /nonexistent --shell /sbin/nologin "$SERVICE_USER"
+fi
+
+mkdir -p "$(dirname "$CONFIG_PATH")"
+if [ ! -f "$CONFIG_PATH" ] && [ -f "$CONFIG_TEMPLATE" ]; then
+  install -m 0640 "$CONFIG_TEMPLATE" "$CONFIG_PATH"
 fi
 
 if [ -f "$CONFIG_PATH" ]; then

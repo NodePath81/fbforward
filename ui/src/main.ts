@@ -34,6 +34,7 @@ function startApp(token: string) {
   const upstreamSummary = qs<HTMLElement>(document, '#upstreamSummary');
   const connectionsSummary = qs<HTMLElement>(document, '#connectionsSummary');
   const connectionTable = createConnectionTable(qs<HTMLElement>(document, '#connectionTable'));
+  const connectionSearch = qs<HTMLInputElement>(document, '#connectionSearch');
   const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
   const restartButton = qs<HTMLButtonElement>(document, '#restartButton');
   const sortButtons = Array.from(
@@ -113,6 +114,10 @@ function startApp(token: string) {
   });
 
   updateSortIndicators();
+
+  connectionSearch.addEventListener('input', () => {
+    updateTables();
+  });
 
   function updateStatusCard(): void {
     const state = store.getState();
@@ -262,15 +267,17 @@ function startApp(token: string) {
     const entries = Array.from(state.connections.tcp.values()).concat(
       Array.from(state.connections.udp.values())
     );
+    const total = entries.length;
     for (const entry of entries) {
       if (!entryOrder.has(entry.id)) {
         entryOrder.set(entry.id, entrySeq);
         entrySeq += 1;
       }
     }
-    entries.sort((a, b) => compareEntries(a, b, sortState, entryOrder));
-    connectionTable(entries);
-    connectionsSummary.textContent = `${entries.length} active`;
+    const filtered = filterEntries(entries, connectionSearch.value);
+    filtered.sort((a, b) => compareEntries(a, b, sortState, entryOrder));
+    connectionTable(filtered);
+    connectionsSummary.textContent = `${total} active`;
   }
 
   async function loadStatus(): Promise<void> {
@@ -458,6 +465,7 @@ function normalizeEntry(raw: RawConnectionEntry): ConnectionEntry {
   return {
     id: raw.id,
     clientAddr: raw.client_addr,
+    port: raw.port,
     upstream: raw.upstream,
     bytesUp: raw.bytes_up,
     bytesDown: raw.bytes_down,
@@ -465,6 +473,21 @@ function normalizeEntry(raw: RawConnectionEntry): ConnectionEntry {
     age: raw.age,
     kind: raw.kind
   };
+}
+
+function filterEntries(entries: ConnectionEntry[], query: string): ConnectionEntry[] {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {
+    return entries;
+  }
+  return entries.filter(entry => matchesSearch(entry, trimmed));
+}
+
+function matchesSearch(entry: ConnectionEntry, query: string): boolean {
+  const haystack = [entry.kind, entry.clientAddr, entry.port, entry.upstream]
+    .join(' ')
+    .toLowerCase();
+  return haystack.includes(query);
 }
 
 function defaultMetrics(tag: string, activeTag: string): UpstreamMetrics {

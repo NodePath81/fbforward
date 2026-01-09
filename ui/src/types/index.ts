@@ -41,6 +41,7 @@ export interface UpstreamMetrics {
 export interface ConnectionEntry {
   id: string;
   clientAddr: string;
+  port: number;
   upstream: string;
   bytesUp: number;
   bytesDown: number;
@@ -52,6 +53,7 @@ export interface ConnectionEntry {
 export interface RawConnectionEntry {
   id: string;
   client_addr: string;
+  port: number;
   upstream: string;
   bytes_up: number;
   bytes_down: number;

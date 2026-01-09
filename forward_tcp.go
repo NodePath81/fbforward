@@ -124,6 +124,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		client:      client,
 		upstream:    upConn,
 		upstreamTag: up.Tag,
+		listenPort:  l.cfg.Port,
 		timeout:     l.timeout,
 		metrics:     l.metrics,
 		status:      l.status,
@@ -136,6 +137,7 @@ type tcpConn struct {
 	client      net.Conn
 	upstream    net.Conn
 	upstreamTag string
+	listenPort  int
 	timeout     time.Duration
 	metrics     *Metrics
 	status      *StatusStore
@@ -151,7 +153,7 @@ func (c *tcpConn) start(ctx context.Context) {
 	clientAddr := c.client.RemoteAddr().String()
 	c.activityCh = make(chan struct{}, 1)
 	c.done = make(chan struct{})
-	c.id = c.status.AddTCP(clientAddr, c.upstreamTag, c.close)
+	c.id = c.status.AddTCP(clientAddr, c.upstreamTag, c.listenPort, c.close)
 	c.logger.Debug("tcp connection added", "id", c.id, "client", clientAddr, "upstream", c.upstreamTag)
 
 	go c.proxy(ctx, c.upstream, c.client, true)

@@ -70,6 +70,24 @@
           <span class="panel-meta" id="connectionsSummary"></span>
         </div>
         <div class="connection-table">
+          <div class="connection-search">
+            <label class="connection-search-field" for="connectionSearch">
+              <span class="connection-search-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+                  <path d="M16.5 16.5L21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+              </span>
+              <input
+                id="connectionSearch"
+                class="connection-search-input"
+                type="search"
+                placeholder="Search..."
+                autocomplete="off"
+                aria-label="Search connections"
+              />
+            </label>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -86,6 +104,7 @@
                       <span class="sort-indicator" aria-hidden="true"></span>
                     </button>
                   </th>
+                  <th>Port</th>
                   <th>
                     <button class="sort-button" type="button" data-sort="upstream">
                       Upstream
@@ -106,7 +125,7 @@
                   </th>
                   <th>
                     <button class="sort-button" type="button" data-sort="last">
-                      Last activity
+                      Last Activity
                       <span class="sort-indicator" aria-hidden="true"></span>
                     </button>
                   </th>

@@ -8,7 +8,7 @@ export function createConnectionTable(tbody: HTMLElement) {
     if (entries.length === 0) {
       const row = createEl('tr');
       const cell = createEl('td', 'empty-row', 'No active entries');
-      cell.setAttribute('colspan', '7');
+      cell.setAttribute('colspan', '8');
       row.appendChild(cell);
       tbody.appendChild(row);
       return;
@@ -17,6 +17,7 @@ export function createConnectionTable(tbody: HTMLElement) {
       const row = createEl('tr');
       row.appendChild(createCell(entry.kind.toUpperCase(), 'protocol-cell'));
       row.appendChild(createCell(entry.clientAddr));
+      row.appendChild(createCell(String(entry.port)));
       row.appendChild(createCell(entry.upstream));
       row.appendChild(createCell(formatBytes(entry.bytesUp)));
       row.appendChild(createCell(formatBytes(entry.bytesDown)));
