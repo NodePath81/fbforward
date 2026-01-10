@@ -13,11 +13,13 @@ type Resolver struct {
 	resolver *net.Resolver
 	servers  []string
 	next     uint32
+	strategy string
 }
 
 func NewResolver(cfg ResolverConfig) *Resolver {
+	strategy := strings.ToLower(strings.TrimSpace(cfg.Strategy))
 	if len(cfg.Servers) == 0 {
-		return &Resolver{resolver: net.DefaultResolver}
+		return &Resolver{resolver: net.DefaultResolver, strategy: strategy}
 	}
 	servers := make([]string, 0, len(cfg.Servers))
 	for _, server := range cfg.Servers {
@@ -30,7 +32,7 @@ func NewResolver(cfg ResolverConfig) *Resolver {
 		}
 		servers = append(servers, server)
 	}
-	r := &Resolver{servers: servers}
+	r := &Resolver{servers: servers, strategy: strategy}
 	r.resolver = &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -49,6 +51,9 @@ func NewResolver(cfg ResolverConfig) *Resolver {
 
 func (r *Resolver) ResolveHost(ctx context.Context, host string) ([]net.IP, error) {
 	if ip := net.ParseIP(host); ip != nil {
+		if r.strategy == resolverStrategyIPv4Only && ip.To4() == nil {
+			return nil, fmt.Errorf("ipv6 address not allowed for resolver.strategy=%s", r.strategy)
+		}
 		return []net.IP{ip}, nil
 	}
 	if r.resolver == nil {
@@ -64,8 +69,47 @@ func (r *Resolver) ResolveHost(ctx context.Context, host string) ([]net.IP, erro
 			ips = append(ips, addr.IP)
 		}
 	}
+	ips = applyResolverStrategy(ips, r.strategy)
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("no IPs resolved for %s", host)
 	}
 	return ips, nil
+}
+
+func applyResolverStrategy(ips []net.IP, strategy string) []net.IP {
+	if len(ips) == 0 {
+		return ips
+	}
+	switch strategy {
+	case resolverStrategyIPv4Only:
+		return filterIPv4(ips)
+	case resolverStrategyPreferV6:
+		v6 := filterIPv6(ips)
+		if len(v6) > 0 {
+			return v6
+		}
+		return filterIPv4(ips)
+	default:
+		return ips
+	}
+}
+
+func filterIPv4(ips []net.IP) []net.IP {
+	filtered := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip != nil && ip.To4() != nil {
+			filtered = append(filtered, ip)
+		}
+	}
+	return filtered
+}
+
+func filterIPv6(ips []net.IP) []net.IP {
+	filtered := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip != nil && ip.To4() == nil {
+			filtered = append(filtered, ip)
+		}
+	}
+	return filtered
 }

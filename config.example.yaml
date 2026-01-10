@@ -32,6 +32,9 @@ resolver:
   # Optional custom DNS servers (ip or ip:port). Empty = system DNS.
   servers:
     - 1.1.1.1
+  # Optional address selection strategy: ipv4_only or prefer_ipv6.
+  # If omitted, both A and AAAA results are used.
+  # strategy: ipv4_only
 probe:
   # ICMP probe interval and window size for scoring.
   interval: 1s

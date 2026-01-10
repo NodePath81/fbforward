@@ -155,7 +155,7 @@ func (s *TrafficShaper) applyLocked() error {
 	if err := setupHTBWithPortClasses(dev, s.cfg.aggregateBandwidthBits, egressPortClasses); err != nil {
 		return fmt.Errorf("setup egress HTB on %s: %w", dev.Attrs().Name, err)
 	}
-	if err := addIPClassesToHTB(dev, egressIPClasses); err != nil {
+	if err := addIPClassesToHTB(dev, egressIPClasses, s.logger); err != nil {
 		return fmt.Errorf("add egress IP classes on %s: %w", dev.Attrs().Name, err)
 	}
 
@@ -168,7 +168,7 @@ func (s *TrafficShaper) applyLocked() error {
 	if err := setupHTBWithPortClasses(ifb, s.cfg.aggregateBandwidthBits, ingressPortClasses); err != nil {
 		return fmt.Errorf("setup ingress HTB on %s: %w", ifb.Attrs().Name, err)
 	}
-	if err := addIPClassesToHTB(ifb, ingressIPClasses); err != nil {
+	if err := addIPClassesToHTB(ifb, ingressIPClasses, s.logger); err != nil {
 		return fmt.Errorf("add ingress IP classes on %s: %w", ifb.Attrs().Name, err)
 	}
 
@@ -627,7 +627,7 @@ func setupHTBWithPortClasses(link netlink.Link, aggBits uint64, pcs []portClass)
 
 // addIPClassesToHTB adds IP-based traffic classes and flower filters to an existing HTB qdisc.
 // This should be called after setupHTBWithPortClasses to add upstream shaping rules.
-func addIPClassesToHTB(link netlink.Link, ipcs []ipClass) error {
+func addIPClassesToHTB(link netlink.Link, ipcs []ipClass, logger Logger) error {
 	if len(ipcs) == 0 {
 		return nil
 	}
@@ -695,6 +695,14 @@ func addIPClassesToHTB(link netlink.Link, ipcs []ipClass) error {
 		}
 
 		if err := netlink.FilterReplace(flower); err != nil {
+			if ic.isIPv6 && errors.Is(err, unix.EINVAL) {
+				if logger != nil {
+					logger.Warn("ipv6 flower filter unsupported; skipping ip-based shaping rule",
+						"device", link.Attrs().Name,
+						"ip", ic.ip.String())
+				}
+				continue
+			}
 			return fmt.Errorf("FilterReplace(flower IP class 1:%d): %w", ic.classMinor, err)
 		}
 	}

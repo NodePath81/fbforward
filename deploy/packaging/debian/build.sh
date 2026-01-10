@@ -19,7 +19,6 @@ OUTPUT_DEB="${OUTPUT_DIR}/${SERVICE_NAME}_${VERSION}_${ARCH}.deb"
 rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/usr/local/bin" \
-  "$PKG_DIR/etc/fbforward" \
   "$PKG_DIR/usr/share/fbforward" \
   "$PKG_DIR/etc/systemd/system"
 

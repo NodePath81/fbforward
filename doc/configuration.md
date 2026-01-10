@@ -111,6 +111,10 @@ Notes:
 - `servers` (list of string, optional): custom DNS servers. Each entry can be `ip` or `ip:port`.
   - If `ip` is provided, port `53` is used.
   - If omitted or empty, system DNS is used.
+- `strategy` (string, optional): address selection strategy.
+  - `ipv4_only`: use only IPv4 (A) results; ignore AAAA records.
+  - `prefer_ipv6`: use IPv6 (AAAA) results when present; fall back to IPv4 (A) when no IPv6 records exist.
+  - If omitted, all resolved addresses are used in resolver order.
 
 ## probe
 

@@ -33,6 +33,8 @@ const (
 	defaultShapingIFB         = "ifb0"
 	defaultAggregateBandwidth = "1g"
 	maxListeners              = 45
+	resolverStrategyIPv4Only  = "ipv4_only"
+	resolverStrategyPreferV6  = "prefer_ipv6"
 )
 
 type Duration time.Duration
@@ -102,7 +104,8 @@ type UpstreamConfig struct {
 }
 
 type ResolverConfig struct {
-	Servers []string `yaml:"servers"`
+	Servers  []string `yaml:"servers"`
+	Strategy string   `yaml:"strategy"`
 }
 
 type ProbeConfig struct {
@@ -476,6 +479,14 @@ func (c *Config) validate() error {
 	}
 	if c.Switching.MinHoldSeconds < 0 {
 		return errors.New("switching.min_hold_seconds must be >= 0")
+	}
+	c.Resolver.Strategy = strings.ToLower(strings.TrimSpace(c.Resolver.Strategy))
+	if c.Resolver.Strategy != "" {
+		switch c.Resolver.Strategy {
+		case resolverStrategyIPv4Only, resolverStrategyPreferV6:
+		default:
+			return fmt.Errorf("resolver.strategy must be %q or %q", resolverStrategyIPv4Only, resolverStrategyPreferV6)
+		}
 	}
 	if c.Shaping.Enabled {
 		c.Shaping.Device = strings.TrimSpace(c.Shaping.Device)
