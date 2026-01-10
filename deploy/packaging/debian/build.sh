@@ -22,13 +22,11 @@ mkdir -p "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/usr/share/fbforward" \
   "$PKG_DIR/etc/systemd/system"
 
-if [ ! -f "$BIN_SRC" ]; then
-  echo "Binary not found at $BIN_SRC; building via make..." >&2
-  make -C "$ROOT_DIR" build VERSION="$VERSION"
-fi
+echo "Building fbforward..." >&2
+make -C "$ROOT_DIR" build VERSION="$VERSION"
 
 if [ ! -f "$BIN_SRC" ]; then
-  echo "Binary still not found at $BIN_SRC after make build" >&2
+  echo "Binary not found at $BIN_SRC after make build" >&2
   exit 1
 fi
 
