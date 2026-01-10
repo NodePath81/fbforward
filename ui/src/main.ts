@@ -318,7 +318,8 @@ function startApp(token: string) {
       }
       store.setState({
         hostname: resp.result.hostname || '',
-        hostIPs: resp.result.ips || []
+        hostIPs: resp.result.ips || [],
+        version: resp.result.version || ''
       });
       updateHeaderIdentity();
       updateStatusCard();
@@ -331,12 +332,14 @@ function startApp(token: string) {
     const state = store.getState();
     const nameEl = qs<HTMLElement>(document, '#hostName');
     const ipEl = qs<HTMLElement>(document, '#hostIPs');
+    const versionEl = qs<HTMLElement>(document, '#hostVersion');
     nameEl.textContent = state.hostname || '-';
     if (state.hostIPs.length === 0) {
       ipEl.textContent = '-';
     } else {
       ipEl.textContent = state.hostIPs.join(', ');
     }
+    versionEl.textContent = state.version ? `v${state.version}` : '-';
   }
 
   function updateHeaderStats(): void {

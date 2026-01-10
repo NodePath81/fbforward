@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
@@ -10,7 +11,14 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println(Version)
+		return
+	}
 	flag.Parse()
+	if *configPath == "config.yaml" && len(flag.Args()) > 0 {
+		*configPath = flag.Arg(0)
+	}
 
 	logger := NewLogger()
 	if runtime.GOOS != "linux" {

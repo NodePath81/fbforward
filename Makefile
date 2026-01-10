@@ -1,6 +1,8 @@
 UI_DIR := ui
 UI_VITE := $(UI_DIR)/node_modules/.bin/vite
 BIN_OUT ?= fbforward
+VERSION ?= dev
+LDFLAGS ?= -X main.Version=$(VERSION)
 
 .PHONY: all ui-build build clean
 
@@ -14,7 +16,7 @@ ui-build:
 	fi
 
 build: ui-build
-	go build -o $(BIN_OUT) .
+	go build -ldflags "$(LDFLAGS)" -o $(BIN_OUT) .
 
 clean:
 	rm -rf ui-dist

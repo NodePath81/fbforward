@@ -24,7 +24,7 @@ mkdir -p "$PKG_DIR/DEBIAN" \
 
 if [ ! -f "$BIN_SRC" ]; then
   echo "Binary not found at $BIN_SRC; building via make..." >&2
-  make -C "$ROOT_DIR" build
+  make -C "$ROOT_DIR" build VERSION="$VERSION"
 fi
 
 if [ ! -f "$BIN_SRC" ]; then

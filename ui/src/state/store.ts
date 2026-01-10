@@ -19,6 +19,7 @@ export interface AppState {
   totalBytesDown: number;
   hostname: string;
   hostIPs: string[];
+  version: string;
   mode: Mode;
   activeUpstream: string;
 }
@@ -93,6 +94,7 @@ export function createInitialState(token: string): AppState {
     totalBytesDown: 0,
     hostname: '',
     hostIPs: [],
+    version: '',
     mode: 'auto',
     activeUpstream: ''
   };

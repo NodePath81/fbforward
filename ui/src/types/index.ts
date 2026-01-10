@@ -83,6 +83,7 @@ export interface StatusResponse {
 export interface IdentityResponse {
   hostname: string;
   ips: string[];
+  version?: string;
 }
 
 export type WSMessageType = 'snapshot' | 'add' | 'update' | 'remove';

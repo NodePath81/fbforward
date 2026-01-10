@@ -110,6 +110,12 @@ img {
   word-break: break-word;
 }
 
+.host-version {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+
 .header-stats {
   display: flex;
   flex-wrap: wrap;

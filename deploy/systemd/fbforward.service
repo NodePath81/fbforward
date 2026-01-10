@@ -5,6 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+PermissionsStartOnly=true
+ExecStartPre=/sbin/modprobe ifb
+ExecStartPre=/sbin/modprobe cls_flower
+ExecStartPre=/sbin/modprobe act_mirred
 User=fbforward
 Group=fbforward
 ExecStart=/usr/local/bin/fbforward --config /etc/fbforward/config.yaml

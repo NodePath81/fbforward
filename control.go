@@ -123,6 +123,7 @@ type statusCounts struct {
 type identityResponse struct {
 	Hostname string   `json:"hostname"`
 	IPs      []string `json:"ips"`
+	Version  string   `json:"version"`
 }
 
 func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +301,7 @@ func (c *ControlServer) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	resp := identityResponse{
 		Hostname: name,
 		IPs:      listActiveIPs(),
+		Version:  Version,
 	}
 	writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 }
