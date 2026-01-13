@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package shaping
 
 import (
 	"errors"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/util"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
@@ -30,19 +32,19 @@ const (
 type UpstreamShapingEntry struct {
 	Tag     string
 	IPs     []string
-	Ingress *BandwidthConfig
-	Egress  *BandwidthConfig
+	Ingress *config.BandwidthConfig
+	Egress  *config.BandwidthConfig
 }
 
 type TrafficShaper struct {
-	cfg       ShapingConfig
-	listeners []ListenerConfig
+	cfg       config.ShapingConfig
+	listeners []config.ListenerConfig
 	upstreams []UpstreamShapingEntry
-	logger    Logger
+	logger    util.Logger
 	mu        sync.Mutex
 }
 
-func NewTrafficShaper(cfg ShapingConfig, listeners []ListenerConfig, upstreams []UpstreamShapingEntry, logger Logger) *TrafficShaper {
+func NewTrafficShaper(cfg config.ShapingConfig, listeners []config.ListenerConfig, upstreams []UpstreamShapingEntry, logger util.Logger) *TrafficShaper {
 	return &TrafficShaper{
 		cfg:       cfg,
 		listeners: listeners,
@@ -72,20 +74,20 @@ func (s *TrafficShaper) applyLocked() error {
 		return errors.New("shaping.device is required")
 	}
 	if s.cfg.IFB == "" {
-		s.cfg.IFB = defaultShapingIFB
+		s.cfg.IFB = config.DefaultShapingIFB
 	}
 	if s.cfg.AggregateBandwidth == "" {
-		s.cfg.AggregateBandwidth = defaultAggregateBandwidth
+		s.cfg.AggregateBandwidth = config.DefaultAggregateBandwidth
 	}
 
-	aggBits, err := parseBandwidth(s.cfg.AggregateBandwidth)
+	aggBits, err := config.ParseBandwidth(s.cfg.AggregateBandwidth)
 	if err != nil {
 		return fmt.Errorf("shaping.aggregate_bandwidth: %w", err)
 	}
 	if aggBits == 0 {
 		aggBits = defaultAggregateBandwidthBits
 	}
-	s.cfg.aggregateBandwidthBits = aggBits
+	s.cfg.AggregateBandwidthBits = aggBits
 
 	dev, err := netlink.LinkByName(s.cfg.Device)
 	if err != nil {
@@ -152,7 +154,7 @@ func (s *TrafficShaper) applyLocked() error {
 	}
 
 	// 1) Egress shaping on dev (port-based: match src port; IP-based: match dst IP).
-	if err := setupHTBWithPortClasses(dev, s.cfg.aggregateBandwidthBits, egressPortClasses); err != nil {
+	if err := setupHTBWithPortClasses(dev, s.cfg.AggregateBandwidthBits, egressPortClasses); err != nil {
 		return fmt.Errorf("setup egress HTB on %s: %w", dev.Attrs().Name, err)
 	}
 	if err := addIPClassesToHTB(dev, egressIPClasses, s.logger); err != nil {
@@ -165,7 +167,7 @@ func (s *TrafficShaper) applyLocked() error {
 	}
 
 	// 3) Ingress shaping on IFB (port-based: match dest port; IP-based: match src IP).
-	if err := setupHTBWithPortClasses(ifb, s.cfg.aggregateBandwidthBits, ingressPortClasses); err != nil {
+	if err := setupHTBWithPortClasses(ifb, s.cfg.AggregateBandwidthBits, ingressPortClasses); err != nil {
 		return fmt.Errorf("setup ingress HTB on %s: %w", ifb.Attrs().Name, err)
 	}
 	if err := addIPClassesToHTB(ifb, ingressIPClasses, s.logger); err != nil {
@@ -213,66 +215,66 @@ func (s *TrafficShaper) cleanupLocked() error {
 
 // parseBandwidthConfig parses and validates a BandwidthConfig.
 // mtu and hz are used for calculating default burst values.
-func parseBandwidthConfig(bc *BandwidthConfig, mtu int, hz float64) error {
+func parseBandwidthConfig(bc *config.BandwidthConfig, mtu int, hz float64) error {
 	if bc == nil {
 		return nil
 	}
 
-	rateBits, err := parseBandwidth(bc.Rate)
+	rateBits, err := config.ParseBandwidth(bc.Rate)
 	if err != nil {
 		return fmt.Errorf("invalid rate: %w", err)
 	}
 	if rateBits == 0 {
 		return fmt.Errorf("rate is required")
 	}
-	bc.rateBits = rateBits
+	bc.RateBits = rateBits
 
 	if bc.Ceil == "" {
-		bc.ceilBits = rateBits
+		bc.CeilBits = rateBits
 	} else {
-		ceilBits, err := parseBandwidth(bc.Ceil)
+		ceilBits, err := config.ParseBandwidth(bc.Ceil)
 		if err != nil {
 			return fmt.Errorf("invalid ceil: %w", err)
 		}
 		if ceilBits == 0 {
-			bc.ceilBits = rateBits
+			bc.CeilBits = rateBits
 		} else {
-			bc.ceilBits = ceilBits
+			bc.CeilBits = ceilBits
 		}
 	}
 
-	if bc.ceilBits < bc.rateBits {
-		return fmt.Errorf("ceil (%d) must be >= rate (%d)", bc.ceilBits, bc.rateBits)
+	if bc.CeilBits < bc.RateBits {
+		return fmt.Errorf("ceil (%d) must be >= rate (%d)", bc.CeilBits, bc.RateBits)
 	}
 
-	rateBytes := bc.rateBits / 8
-	ceilBytes := bc.ceilBits / 8
+	rateBytes := bc.RateBits / 8
+	ceilBytes := bc.CeilBits / 8
 
 	if bc.Burst == "" {
-		bc.burstBytes = uint32(float64(rateBytes)/hz + float64(mtu))
+		bc.BurstBytes = uint32(float64(rateBytes)/hz + float64(mtu))
 	} else {
-		burstBytes, err := parseSize(bc.Burst)
+		burstBytes, err := config.ParseSize(bc.Burst)
 		if err != nil {
 			return fmt.Errorf("invalid burst: %w", err)
 		}
-		bc.burstBytes = burstBytes
+		bc.BurstBytes = burstBytes
 	}
 
 	if bc.Cburst == "" {
-		bc.cburstBytes = uint32(float64(ceilBytes)/hz + float64(mtu))
+		bc.CburstBytes = uint32(float64(ceilBytes)/hz + float64(mtu))
 	} else {
-		cburstBytes, err := parseSize(bc.Cburst)
+		cburstBytes, err := config.ParseSize(bc.Cburst)
 		if err != nil {
 			return fmt.Errorf("invalid cburst: %w", err)
 		}
-		bc.cburstBytes = cburstBytes
+		bc.CburstBytes = cburstBytes
 	}
 
 	return nil
 }
 
 // buildPortClasses converts config rules to portClass slices for egress and ingress.
-func buildPortClasses(listeners []ListenerConfig) (egress []portClass, ingress []portClass) {
+func buildPortClasses(listeners []config.ListenerConfig) (egress []portClass, ingress []portClass) {
 	// Use minor class IDs starting from 20, incrementing for each rule.
 	// TCP rules get even minors (20, 22, 24...), UDP rules get odd minors (21, 23, 25...).
 	tcpMinor := uint16(20)
@@ -307,29 +309,29 @@ func buildPortClasses(listeners []ListenerConfig) (egress []portClass, ingress [
 		}
 
 		port := uint16(ln.Port)
-		if ln.Egress != nil && ln.Egress.rateBits > 0 {
+		if ln.Egress != nil && ln.Egress.RateBits > 0 {
 			egress = append(egress, portClass{
 				proto:        proto,
 				port:         port,
 				matchSrcPort: true,
-				rateBits:     ln.Egress.rateBits,
-				ceilBits:     ln.Egress.ceilBits,
-				burstBytes:   ln.Egress.burstBytes,
-				cburstBytes:  ln.Egress.cburstBytes,
+				rateBits:     ln.Egress.RateBits,
+				ceilBits:     ln.Egress.CeilBits,
+				burstBytes:   ln.Egress.BurstBytes,
+				cburstBytes:  ln.Egress.CburstBytes,
 				classMinor:   classMinorEgress,
 				filterHandle: filterHandleEgress,
 			})
 		}
 
-		if ln.Ingress != nil && ln.Ingress.rateBits > 0 {
+		if ln.Ingress != nil && ln.Ingress.RateBits > 0 {
 			ingress = append(ingress, portClass{
 				proto:        proto,
 				port:         port,
 				matchSrcPort: false,
-				rateBits:     ln.Ingress.rateBits,
-				ceilBits:     ln.Ingress.ceilBits,
-				burstBytes:   ln.Ingress.burstBytes,
-				cburstBytes:  ln.Ingress.cburstBytes,
+				rateBits:     ln.Ingress.RateBits,
+				ceilBits:     ln.Ingress.CeilBits,
+				burstBytes:   ln.Ingress.BurstBytes,
+				cburstBytes:  ln.Ingress.CburstBytes,
 				classMinor:   classMinorIngress,
 				filterHandle: filterHandleIngress,
 			})
@@ -371,16 +373,16 @@ func buildIPClasses(upstreams []UpstreamShapingEntry) (egress []ipClass, ingress
 				isIPv6 = true
 			}
 
-			if up.Egress != nil && up.Egress.rateBits > 0 {
+			if up.Egress != nil && up.Egress.RateBits > 0 {
 				egress = append(egress, ipClass{
 					ip:           ip,
 					ipMask:       mask,
 					isIPv6:       isIPv6,
 					isEgress:     true,
-					rateBits:     up.Egress.rateBits,
-					ceilBits:     up.Egress.ceilBits,
-					burstBytes:   up.Egress.burstBytes,
-					cburstBytes:  up.Egress.cburstBytes,
+					rateBits:     up.Egress.RateBits,
+					ceilBits:     up.Egress.CeilBits,
+					burstBytes:   up.Egress.BurstBytes,
+					cburstBytes:  up.Egress.CburstBytes,
 					classMinor:   classMinor,
 					filterHandle: filterHandle,
 				})
@@ -388,16 +390,16 @@ func buildIPClasses(upstreams []UpstreamShapingEntry) (egress []ipClass, ingress
 				filterHandle++
 			}
 
-			if up.Ingress != nil && up.Ingress.rateBits > 0 {
+			if up.Ingress != nil && up.Ingress.RateBits > 0 {
 				ingress = append(ingress, ipClass{
 					ip:           ip,
 					ipMask:       mask,
 					isIPv6:       isIPv6,
 					isEgress:     false,
-					rateBits:     up.Ingress.rateBits,
-					ceilBits:     up.Ingress.ceilBits,
-					burstBytes:   up.Ingress.burstBytes,
-					cburstBytes:  up.Ingress.cburstBytes,
+					rateBits:     up.Ingress.RateBits,
+					ceilBits:     up.Ingress.CeilBits,
+					burstBytes:   up.Ingress.BurstBytes,
+					cburstBytes:  up.Ingress.CburstBytes,
 					classMinor:   classMinor + 100, // offset for ingress classes
 					filterHandle: filterHandle + 0x100,
 				})
@@ -627,7 +629,7 @@ func setupHTBWithPortClasses(link netlink.Link, aggBits uint64, pcs []portClass)
 
 // addIPClassesToHTB adds IP-based traffic classes and flower filters to an existing HTB qdisc.
 // This should be called after setupHTBWithPortClasses to add upstream shaping rules.
-func addIPClassesToHTB(link netlink.Link, ipcs []ipClass, logger Logger) error {
+func addIPClassesToHTB(link netlink.Link, ipcs []ipClass, logger util.Logger) error {
 	if len(ipcs) == 0 {
 		return nil
 	}

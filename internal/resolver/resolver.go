@@ -1,4 +1,4 @@
-package main
+package resolver
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/config"
 )
 
 type Resolver struct {
@@ -16,7 +18,7 @@ type Resolver struct {
 	strategy string
 }
 
-func NewResolver(cfg ResolverConfig) *Resolver {
+func NewResolver(cfg config.ResolverConfig) *Resolver {
 	strategy := strings.ToLower(strings.TrimSpace(cfg.Strategy))
 	if len(cfg.Servers) == 0 {
 		return &Resolver{resolver: net.DefaultResolver, strategy: strategy}
@@ -51,7 +53,7 @@ func NewResolver(cfg ResolverConfig) *Resolver {
 
 func (r *Resolver) ResolveHost(ctx context.Context, host string) ([]net.IP, error) {
 	if ip := net.ParseIP(host); ip != nil {
-		if r.strategy == resolverStrategyIPv4Only && ip.To4() == nil {
+		if r.strategy == config.ResolverStrategyIPv4Only && ip.To4() == nil {
 			return nil, fmt.Errorf("ipv6 address not allowed for resolver.strategy=%s", r.strategy)
 		}
 		return []net.IP{ip}, nil
@@ -81,9 +83,9 @@ func applyResolverStrategy(ips []net.IP, strategy string) []net.IP {
 		return ips
 	}
 	switch strategy {
-	case resolverStrategyIPv4Only:
+	case config.ResolverStrategyIPv4Only:
 		return filterIPv4(ips)
-	case resolverStrategyPreferV6:
+	case config.ResolverStrategyPreferV6:
 		v6 := filterIPv6(ips)
 		if len(v6) > 0 {
 			return v6

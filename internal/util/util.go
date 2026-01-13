@@ -1,14 +1,14 @@
-package main
+package util
 
 import (
 	"net"
 	"strconv"
 )
 
-func formatPort(port int) string {
+func FormatPort(port int) string {
 	return strconv.Itoa(port)
 }
 
-func netJoin(host string, port int) string {
+func NetJoin(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }

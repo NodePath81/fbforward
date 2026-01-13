@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"errors"
@@ -30,11 +30,11 @@ const (
 	defaultFailureLoss        = 0.8
 	defaultSwitchThreshold    = 1.0
 	defaultMinHoldSeconds     = 5
-	defaultShapingIFB         = "ifb0"
-	defaultAggregateBandwidth = "1g"
+	DefaultShapingIFB         = "ifb0"
+	DefaultAggregateBandwidth = "1g"
 	maxListeners              = 45
-	resolverStrategyIPv4Only  = "ipv4_only"
-	resolverStrategyPreferV6  = "prefer_ipv6"
+	ResolverStrategyIPv4Only = "ipv4_only"
+	ResolverStrategyPreferV6 = "prefer_ipv6"
 )
 
 type Duration time.Duration
@@ -135,6 +135,15 @@ type SwitchingConfig struct {
 	MinHoldSeconds       int     `yaml:"min_hold_seconds"`
 }
 
+func DefaultSwitchingConfig() SwitchingConfig {
+	return SwitchingConfig{
+		ConfirmWindows:       defaultConfirmWindows,
+		FailureLossThreshold: defaultFailureLoss,
+		SwitchThreshold:      defaultSwitchThreshold,
+		MinHoldSeconds:       defaultMinHoldSeconds,
+	}
+}
+
 type LimitsConfig struct {
 	MaxTCPConns    int `yaml:"max_tcp_conns"`
 	MaxUDPMappings int `yaml:"max_udp_mappings"`
@@ -168,7 +177,7 @@ type ShapingConfig struct {
 	IFB                string `yaml:"ifb"`
 	AggregateBandwidth string `yaml:"aggregate_bandwidth"`
 
-	aggregateBandwidthBits uint64
+	AggregateBandwidthBits uint64 `yaml:"-"`
 }
 
 type BandwidthConfig struct {
@@ -177,10 +186,10 @@ type BandwidthConfig struct {
 	Burst  string `yaml:"burst"`
 	Cburst string `yaml:"cburst"`
 
-	rateBits    uint64
-	ceilBits    uint64
-	burstBytes  uint32
-	cburstBytes uint32
+	RateBits    uint64 `yaml:"-"`
+	CeilBits    uint64 `yaml:"-"`
+	BurstBytes  uint32 `yaml:"-"`
+	CburstBytes uint32 `yaml:"-"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -266,10 +275,10 @@ func (c *Config) setDefaults() {
 	}
 	if c.Shaping.Enabled {
 		if c.Shaping.IFB == "" {
-			c.Shaping.IFB = defaultShapingIFB
+			c.Shaping.IFB = DefaultShapingIFB
 		}
 		if c.Shaping.AggregateBandwidth == "" {
-			c.Shaping.AggregateBandwidth = defaultAggregateBandwidth
+			c.Shaping.AggregateBandwidth = DefaultAggregateBandwidth
 		}
 	}
 }
@@ -307,21 +316,21 @@ func (c *Config) validate() error {
 			if strings.TrimSpace(up.Ingress.Rate) == "" {
 				return fmt.Errorf("upstream %s ingress.rate is required", up.Tag)
 			}
-			if _, err := parseBandwidth(up.Ingress.Rate); err != nil {
+			if _, err := ParseBandwidth(up.Ingress.Rate); err != nil {
 				return fmt.Errorf("upstream %s ingress.rate: %w", up.Tag, err)
 			}
 			if up.Ingress.Ceil != "" {
-				if _, err := parseBandwidth(up.Ingress.Ceil); err != nil {
+				if _, err := ParseBandwidth(up.Ingress.Ceil); err != nil {
 					return fmt.Errorf("upstream %s ingress.ceil: %w", up.Tag, err)
 				}
 			}
 			if up.Ingress.Burst != "" {
-				if _, err := parseSize(up.Ingress.Burst); err != nil {
+				if _, err := ParseSize(up.Ingress.Burst); err != nil {
 					return fmt.Errorf("upstream %s ingress.burst: %w", up.Tag, err)
 				}
 			}
 			if up.Ingress.Cburst != "" {
-				if _, err := parseSize(up.Ingress.Cburst); err != nil {
+				if _, err := ParseSize(up.Ingress.Cburst); err != nil {
 					return fmt.Errorf("upstream %s ingress.cburst: %w", up.Tag, err)
 				}
 			}
@@ -330,21 +339,21 @@ func (c *Config) validate() error {
 			if strings.TrimSpace(up.Egress.Rate) == "" {
 				return fmt.Errorf("upstream %s egress.rate is required", up.Tag)
 			}
-			if _, err := parseBandwidth(up.Egress.Rate); err != nil {
+			if _, err := ParseBandwidth(up.Egress.Rate); err != nil {
 				return fmt.Errorf("upstream %s egress.rate: %w", up.Tag, err)
 			}
 			if up.Egress.Ceil != "" {
-				if _, err := parseBandwidth(up.Egress.Ceil); err != nil {
+				if _, err := ParseBandwidth(up.Egress.Ceil); err != nil {
 					return fmt.Errorf("upstream %s egress.ceil: %w", up.Tag, err)
 				}
 			}
 			if up.Egress.Burst != "" {
-				if _, err := parseSize(up.Egress.Burst); err != nil {
+				if _, err := ParseSize(up.Egress.Burst); err != nil {
 					return fmt.Errorf("upstream %s egress.burst: %w", up.Tag, err)
 				}
 			}
 			if up.Egress.Cburst != "" {
-				if _, err := parseSize(up.Egress.Cburst); err != nil {
+				if _, err := ParseSize(up.Egress.Cburst); err != nil {
 					return fmt.Errorf("upstream %s egress.cburst: %w", up.Tag, err)
 				}
 			}
@@ -379,21 +388,21 @@ func (c *Config) validate() error {
 			if strings.TrimSpace(ln.Ingress.Rate) == "" {
 				return fmt.Errorf("listener %s ingress.rate is required", key)
 			}
-			if _, err := parseBandwidth(ln.Ingress.Rate); err != nil {
+			if _, err := ParseBandwidth(ln.Ingress.Rate); err != nil {
 				return fmt.Errorf("listener %s ingress.rate: %w", key, err)
 			}
 			if ln.Ingress.Ceil != "" {
-				if _, err := parseBandwidth(ln.Ingress.Ceil); err != nil {
+				if _, err := ParseBandwidth(ln.Ingress.Ceil); err != nil {
 					return fmt.Errorf("listener %s ingress.ceil: %w", key, err)
 				}
 			}
 			if ln.Ingress.Burst != "" {
-				if _, err := parseSize(ln.Ingress.Burst); err != nil {
+				if _, err := ParseSize(ln.Ingress.Burst); err != nil {
 					return fmt.Errorf("listener %s ingress.burst: %w", key, err)
 				}
 			}
 			if ln.Ingress.Cburst != "" {
-				if _, err := parseSize(ln.Ingress.Cburst); err != nil {
+				if _, err := ParseSize(ln.Ingress.Cburst); err != nil {
 					return fmt.Errorf("listener %s ingress.cburst: %w", key, err)
 				}
 			}
@@ -407,21 +416,21 @@ func (c *Config) validate() error {
 			if strings.TrimSpace(ln.Egress.Rate) == "" {
 				return fmt.Errorf("listener %s egress.rate is required", key)
 			}
-			if _, err := parseBandwidth(ln.Egress.Rate); err != nil {
+			if _, err := ParseBandwidth(ln.Egress.Rate); err != nil {
 				return fmt.Errorf("listener %s egress.rate: %w", key, err)
 			}
 			if ln.Egress.Ceil != "" {
-				if _, err := parseBandwidth(ln.Egress.Ceil); err != nil {
+				if _, err := ParseBandwidth(ln.Egress.Ceil); err != nil {
 					return fmt.Errorf("listener %s egress.ceil: %w", key, err)
 				}
 			}
 			if ln.Egress.Burst != "" {
-				if _, err := parseSize(ln.Egress.Burst); err != nil {
+				if _, err := ParseSize(ln.Egress.Burst); err != nil {
 					return fmt.Errorf("listener %s egress.burst: %w", key, err)
 				}
 			}
 			if ln.Egress.Cburst != "" {
-				if _, err := parseSize(ln.Egress.Cburst); err != nil {
+				if _, err := ParseSize(ln.Egress.Cburst); err != nil {
 					return fmt.Errorf("listener %s egress.cburst: %w", key, err)
 				}
 			}
@@ -483,9 +492,9 @@ func (c *Config) validate() error {
 	c.Resolver.Strategy = strings.ToLower(strings.TrimSpace(c.Resolver.Strategy))
 	if c.Resolver.Strategy != "" {
 		switch c.Resolver.Strategy {
-		case resolverStrategyIPv4Only, resolverStrategyPreferV6:
+		case ResolverStrategyIPv4Only, ResolverStrategyPreferV6:
 		default:
-			return fmt.Errorf("resolver.strategy must be %q or %q", resolverStrategyIPv4Only, resolverStrategyPreferV6)
+			return fmt.Errorf("resolver.strategy must be %q or %q", ResolverStrategyIPv4Only, ResolverStrategyPreferV6)
 		}
 	}
 	if c.Shaping.Enabled {
@@ -499,7 +508,7 @@ func (c *Config) validate() error {
 			return errors.New("shaping.ifb is required when shaping.enabled is true")
 		}
 		if c.Shaping.AggregateBandwidth != "" {
-			if _, err := parseBandwidth(c.Shaping.AggregateBandwidth); err != nil {
+			if _, err := ParseBandwidth(c.Shaping.AggregateBandwidth); err != nil {
 				return fmt.Errorf("shaping.aggregate_bandwidth: %w", err)
 			}
 		}

@@ -1,8 +1,8 @@
-UI_DIR := ui
+UI_DIR := web
 UI_VITE := $(UI_DIR)/node_modules/.bin/vite
-BIN_OUT ?= fbforward
+BIN_OUT ?= build/bin/fbforward
 VERSION ?= dev
-LDFLAGS ?= -X main.Version=$(VERSION)
+LDFLAGS ?= -X github.com/NodePath81/fbforward/internal/version.Version=$(VERSION)
 
 .PHONY: all ui-build build clean
 
@@ -12,11 +12,12 @@ ui-build:
 	@if [ -x "$(UI_VITE)" ]; then \
 		npm --prefix $(UI_DIR) run build; \
 	else \
-		echo "vite not installed; skipping ui build and using existing ui-dist"; \
+		echo "vite not installed; skipping ui build and using existing web/dist"; \
 	fi
 
 build: ui-build
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_OUT) .
+	mkdir -p $(dir $(BIN_OUT))
+	go build -ldflags "$(LDFLAGS)" -o $(BIN_OUT) ./cmd/fbforward
 
 clean:
-	rm -rf ui-dist
+	rm -rf web/dist

@@ -1,4 +1,4 @@
-package main
+package metrics
 
 import (
 	"net/http"
@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
 type UpstreamMetrics struct {
@@ -22,7 +24,7 @@ type UpstreamMetrics struct {
 type Metrics struct {
 	mu                 sync.Mutex
 	upstreams          map[string]*UpstreamMetrics
-	mode               Mode
+	mode               upstream.Mode
 	activeTag          string
 	tcpActive          int
 	udpActive          int
@@ -101,7 +103,7 @@ func (m *Metrics) updatePerSecond() {
 	}
 }
 
-func (m *Metrics) SetUpstreamMetrics(tag string, stats UpstreamStats) {
+func (m *Metrics) SetUpstreamMetrics(tag string, stats upstream.UpstreamStats) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	up, ok := m.upstreams[tag]
@@ -115,7 +117,7 @@ func (m *Metrics) SetUpstreamMetrics(tag string, stats UpstreamStats) {
 	up.Unusable = !stats.Usable
 }
 
-func (m *Metrics) SetMode(mode Mode) {
+func (m *Metrics) SetMode(mode upstream.Mode) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mode = mode
@@ -250,7 +252,7 @@ func (m *Metrics) Render() string {
 	}
 	b.WriteString("# TYPE fbforward_mode gauge\n")
 	b.WriteString("fbforward_mode ")
-	if mode == ModeManual {
+	if mode == upstream.ModeManual {
 		b.WriteString("1\n")
 	} else {
 		b.WriteString("0\n")

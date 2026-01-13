@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   root: '.',
   build: {
-    outDir: '../ui-dist',
+    outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       input: {

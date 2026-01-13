@@ -1,22 +1,27 @@
 //go:build !linux
 
-package main
+package shaping
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/util"
+)
 
 // UpstreamShapingEntry holds upstream config with resolved IPs for shaping.
 type UpstreamShapingEntry struct {
 	Tag     string
 	IPs     []string
-	Ingress *BandwidthConfig
-	Egress  *BandwidthConfig
+	Ingress *config.BandwidthConfig
+	Egress  *config.BandwidthConfig
 }
 
 type TrafficShaper struct {
 	enabled bool
 }
 
-func NewTrafficShaper(cfg ShapingConfig, _ []ListenerConfig, _ []UpstreamShapingEntry, _ Logger) *TrafficShaper {
+func NewTrafficShaper(cfg config.ShapingConfig, _ []config.ListenerConfig, _ []UpstreamShapingEntry, _ util.Logger) *TrafficShaper {
 	return &TrafficShaper{enabled: cfg.Enabled}
 }
 

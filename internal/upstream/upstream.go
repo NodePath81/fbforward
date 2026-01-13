@@ -1,4 +1,4 @@
-package main
+package upstream
 
 import (
 	"errors"
@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/config"
 )
 
 type Mode int
@@ -68,7 +70,7 @@ type UpstreamManager struct {
 	rng           *rand.Rand
 	onSelect      func(oldTag, newTag string)
 	onStateChange func(tag string, usable bool)
-	switching     SwitchingConfig
+	switching     config.SwitchingConfig
 	pendingTag    string
 	pendingCount  int
 	lastSwitch    time.Time
@@ -80,12 +82,7 @@ func NewUpstreamManager(upstreams []*Upstream, rng *rand.Rand) *UpstreamManager 
 		order:     make([]string, 0, len(upstreams)),
 		mode:      ModeAuto,
 		rng:       rng,
-		switching: SwitchingConfig{
-			ConfirmWindows:       defaultConfirmWindows,
-			FailureLossThreshold: defaultFailureLoss,
-			SwitchThreshold:      defaultSwitchThreshold,
-			MinHoldSeconds:       defaultMinHoldSeconds,
-		},
+		switching: config.DefaultSwitchingConfig(),
 	}
 	for _, up := range upstreams {
 		m.upstreams[up.Tag] = up
@@ -99,21 +96,22 @@ func (m *UpstreamManager) SetCallbacks(onSelect func(oldTag, newTag string), onS
 	m.onStateChange = onStateChange
 }
 
-func (m *UpstreamManager) SetSwitching(cfg SwitchingConfig) {
+func (m *UpstreamManager) SetSwitching(cfg config.SwitchingConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defaults := config.DefaultSwitchingConfig()
 	m.switching = cfg
 	if m.switching.ConfirmWindows < 1 {
 		m.switching.ConfirmWindows = 1
 	}
 	if m.switching.FailureLossThreshold <= 0 || m.switching.FailureLossThreshold > 1 {
-		m.switching.FailureLossThreshold = defaultFailureLoss
+		m.switching.FailureLossThreshold = defaults.FailureLossThreshold
 	}
 	if m.switching.SwitchThreshold < 0 {
-		m.switching.SwitchThreshold = 0
+		m.switching.SwitchThreshold = defaults.SwitchThreshold
 	}
 	if m.switching.MinHoldSeconds < 0 {
-		m.switching.MinHoldSeconds = 0
+		m.switching.MinHoldSeconds = defaults.MinHoldSeconds
 	}
 	m.resetPendingLocked()
 }
@@ -208,7 +206,7 @@ func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
 	return m.upstreams[best], nil
 }
 
-func (m *UpstreamManager) UpdateWindow(tag string, wm WindowMetrics, scoring ScoringConfig) UpstreamStats {
+func (m *UpstreamManager) UpdateWindow(tag string, wm WindowMetrics, scoring config.ScoringConfig) UpstreamStats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	up, ok := m.upstreams[tag]
@@ -411,7 +409,7 @@ func (m *UpstreamManager) resetPendingLocked() {
 	m.pendingCount = 0
 }
 
-func computeScore(stats UpstreamStats, scoring ScoringConfig) float64 {
+func computeScore(stats UpstreamStats, scoring config.ScoringConfig) float64 {
 	loss := stats.Loss
 	if loss < 0 {
 		loss = 0

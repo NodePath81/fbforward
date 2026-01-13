@@ -1,4 +1,4 @@
-package main
+package control
 
 import (
 	"context"
@@ -14,6 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/internal/util"
+	"github.com/NodePath81/fbforward/internal/version"
+	"github.com/NodePath81/fbforward/web"
 	"github.com/gorilla/websocket"
 )
 
@@ -29,19 +35,19 @@ const (
 )
 
 type ControlServer struct {
-	cfg          ControlConfig
+	cfg          config.ControlConfig
 	webUIEnabled bool
 	hostname     string
-	manager      *UpstreamManager
-	metrics      *Metrics
+	manager      *upstream.UpstreamManager
+	metrics      *metrics.Metrics
 	status       *StatusStore
 	restartFn    func() error
-	logger       Logger
+	logger       util.Logger
 	server       *http.Server
 	limiter      *rateLimiter
 }
 
-func NewControlServer(cfg ControlConfig, webUIEnabled bool, hostname string, manager *UpstreamManager, metrics *Metrics, status *StatusStore, restartFn func() error, logger Logger) *ControlServer {
+func NewControlServer(cfg config.ControlConfig, webUIEnabled bool, hostname string, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
 	return &ControlServer{
 		cfg:          cfg,
 		webUIEnabled: webUIEnabled,
@@ -61,9 +67,9 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/status", c.handleStatus)
 	mux.HandleFunc("/identity", c.handleIdentity)
-	mux.Handle("/", WebUIHandler(c.webUIEnabled))
+	mux.Handle("/", web.WebUIHandler(c.webUIEnabled))
 
-	addr := netJoin(c.cfg.Addr, c.cfg.Port)
+	addr := util.NetJoin(c.cfg.Addr, c.cfg.Port)
 	c.server = &http.Server{
 		Addr:    addr,
 		Handler: mux,
@@ -111,7 +117,7 @@ type setUpstreamParams struct {
 type statusResponse struct {
 	Mode           string             `json:"mode"`
 	ActiveUpstream string             `json:"active_upstream"`
-	Upstreams      []UpstreamSnapshot `json:"upstreams"`
+	Upstreams      []upstream.UpstreamSnapshot `json:"upstreams"`
 	Counts         statusCounts       `json:"counts"`
 }
 
@@ -155,7 +161,7 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		mode := strings.ToLower(params.Mode)
 		if mode == "auto" {
 			c.manager.SetAuto()
-			c.metrics.SetMode(ModeAuto)
+			c.metrics.SetMode(upstream.ModeAuto)
 			c.logger.Info("manual override cleared")
 			writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
 			return
@@ -165,7 +171,7 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: err.Error()})
 				return
 			}
-			c.metrics.SetMode(ModeManual)
+			c.metrics.SetMode(upstream.ModeManual)
 			c.logger.Info("manual override set", "upstream", params.Tag)
 			writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
 			return
@@ -301,7 +307,7 @@ func (c *ControlServer) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	resp := identityResponse{
 		Hostname: name,
 		IPs:      listActiveIPs(),
-		Version:  Version,
+		Version:  version.Version,
 	}
 	writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 }

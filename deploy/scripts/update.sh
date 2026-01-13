@@ -9,7 +9,7 @@ CONFIG_DEST="${CONFIG_DIR}/config.yaml"
 GROUP_NAME="fbforward"
 
 ROOT_DIR="$(pwd)"
-BIN_SRC="${1:-${ROOT_DIR}/fbforward}"
+BIN_SRC="${1:-${ROOT_DIR}/build/bin/fbforward}"
 CONFIG_SRC="${2:-""}"
 SERVICE_SRC="${ROOT_DIR}/deploy/systemd/${SERVICE_NAME}.service"
 

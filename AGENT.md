@@ -6,7 +6,7 @@ Short, practical notes for working on this repo.
 
 `fbforward` is a Linux-only Go userspace NAT-style TCP/UDP forwarder. It probes upstreams via ICMP, scores them, and forwards new flows to the best upstream. It exposes a token-protected control plane, Prometheus metrics, WebSocket status streaming, and an embedded SPA UI.
 
-Before making structural changes, skim `doc/codebase.md` for a concise architecture and component overview.
+Before making structural changes, skim `docs/codebase.md` for a concise architecture and component overview.
 
 ## Scoring and selection
 
@@ -29,27 +29,27 @@ score = 100 * (s_rtt ^ w_rtt) * (s_jit ^ w_jit) * (s_los ^ w_los)
 
 ## Key paths
 
-- `main.go`: entrypoint and OS guard.
-- `runtime.go`: lifecycle wiring, DNS refresh loop, listener/probe startup.
-- `probe.go`: ICMP probing and window metrics.
-- `forward_tcp.go`, `forward_udp.go`: data plane forwarding.
-- `upstream.go`: selection/scoring state and dial-failure cooldown.
-- `control.go`: control API, metrics auth, WebSocket status.
-- `webui.go` + `ui/`: embedded UI assets.
-- `config.go`: YAML config defaults/validation.
-- `doc/configuration.md`: config reference.
+- `cmd/fbforward/main.go`: entrypoint and OS guard.
+- `internal/app/runtime.go`: lifecycle wiring, DNS refresh loop, listener/probe startup.
+- `internal/probe/probe.go`: ICMP probing and window metrics.
+- `internal/forwarding/forward_tcp.go`, `internal/forwarding/forward_udp.go`: data plane forwarding.
+- `internal/upstream/upstream.go`: selection/scoring state and dial-failure cooldown.
+- `internal/control/control.go`: control API, metrics auth, WebSocket status.
+- `web/handler.go` + `web/`: embedded UI assets.
+- `internal/config/config.go`: YAML config defaults/validation.
+- `docs/configuration.md`: config reference.
 
 ## Build and run
 
 ```
 go build ./...
-./fbforward --config config.yaml
+./build/bin/fbforward --config config.yaml
 ```
 
 ICMP probing requires `CAP_NET_RAW`:
 
 ```
-sudo setcap cap_net_raw+ep ./fbforward
+sudo setcap cap_net_raw+ep ./build/bin/fbforward
 ```
 
 ## Control plane auth
@@ -61,13 +61,13 @@ sudo setcap cap_net_raw+ep ./fbforward
 
 ## UI assets
 
-Static files live in `ui/` and are embedded via `webui.go`. If you add files there, keep names ASCII and update the UI code as needed. No external asset pipeline.
+Static files live in `web/` and are embedded via `web/handler.go`. If you add files there, keep names ASCII and update the UI code as needed. No external asset pipeline.
 
 ## Config hints
 
 - Listener ports must be `1..65535`.
 - Duplicate `addr:port:protocol` listeners are rejected.
-- Hostname upstreams are re-resolved every `30s` (see `runtime.go`).
+- Hostname upstreams are re-resolved every `30s` (see `internal/app/runtime.go`).
 
 ## Testing
 

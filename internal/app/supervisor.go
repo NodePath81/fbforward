@@ -1,17 +1,20 @@
-package main
+package app
 
 import (
 	"sync"
+
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type Supervisor struct {
 	configPath string
-	logger     Logger
+	logger     util.Logger
 	mu         sync.Mutex
 	runtime    *Runtime
 }
 
-func NewSupervisor(configPath string, logger Logger) *Supervisor {
+func NewSupervisor(configPath string, logger util.Logger) *Supervisor {
 	return &Supervisor{
 		configPath: configPath,
 		logger:     logger,
@@ -19,7 +22,7 @@ func NewSupervisor(configPath string, logger Logger) *Supervisor {
 }
 
 func (s *Supervisor) Start() error {
-	cfg, err := LoadConfig(s.configPath)
+	cfg, err := config.LoadConfig(s.configPath)
 	if err != nil {
 		return err
 	}

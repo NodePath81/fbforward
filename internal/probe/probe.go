@@ -1,4 +1,4 @@
-package main
+package probe
 
 import (
 	"context"
@@ -6,6 +6,10 @@ import (
 	"net"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/internal/util"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -41,7 +45,7 @@ func (w *probeWindow) reset() {
 	w.rttsMs = w.rttsMs[:0]
 }
 
-func (w *probeWindow) metrics() WindowMetrics {
+func (w *probeWindow) metrics() upstream.WindowMetrics {
 	loss := float64(w.lost) / float64(w.size)
 	var avg float64
 	if len(w.rttsMs) > 0 {
@@ -52,7 +56,7 @@ func (w *probeWindow) metrics() WindowMetrics {
 		avg = sum / float64(len(w.rttsMs))
 	}
 	jitter := computeJitter(w.rttsMs)
-	return WindowMetrics{
+	return upstream.WindowMetrics{
 		Loss:     clampFloat(loss, 0, 1),
 		AvgRTTMs: avg,
 		JitterMs: jitter,
@@ -76,7 +80,7 @@ func computeJitter(samples []float64) float64 {
 	return sum / float64(len(samples)-1)
 }
 
-func ProbeLoop(ctx context.Context, up *Upstream, cfg ProbeConfig, scoring ScoringConfig, manager *UpstreamManager, metrics *Metrics, logger Logger) {
+func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.ProbeConfig, scoring config.ScoringConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, logger util.Logger) {
 	timeout := cfg.Interval.Duration()
 	if timeout <= 0 {
 		timeout = time.Second

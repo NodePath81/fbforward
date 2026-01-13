@@ -1,7 +1,6 @@
-tmp/
+build/
 deploy/packaging/debian/build/
 deploy/packaging/debian/*.deb
-ui-dist/**
 deploy/packaging/debian/deb/**
-fbforward
-ui/node_modules/
+web/dist/**
+web/node_modules/

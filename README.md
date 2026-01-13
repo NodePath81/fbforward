@@ -14,11 +14,11 @@ Linux-only userspace TCP/UDP port forwarder that picks the best upstream using I
 ## Requirements
 
 - Linux only.
-- ICMP probing requires `CAP_NET_RAW` (e.g., `sudo setcap cap_net_raw+ep ./fbforward`).
+- ICMP probing requires `CAP_NET_RAW` (e.g., `sudo setcap cap_net_raw+ep ./build/bin/fbforward`).
 - Traffic shaping (if enabled) requires `CAP_NET_ADMIN`.
 - Go toolchain: `1.25.4` (per `go.mod`).
 - Go module deps: `github.com/gorilla/websocket@v1.5.3`, `github.com/vishvananda/netlink@v1.3.1`, `golang.org/x/net@v0.33.0`, `gopkg.in/yaml.v3@v3.0.1`, `golang.org/x/sys@v0.28.0`, `github.com/vishvananda/netns@v0.0.5` (indirect).
-- Frontend build deps: Node.js + npm with `typescript@^5.4.0`, `vite@^5.4.0` (see `ui/package.json`).
+- Frontend build deps: Node.js + npm with `typescript@^5.4.0`, `vite@^5.4.0` (see `web/package.json`).
 
 ## Control plane
 
@@ -55,7 +55,8 @@ Supported fields include: `resolver.servers`, `probe.interval/window_size/discov
 ## Run
 
 ```
-./fbforward --config config.yaml
+cp configs/config.example.yaml config.yaml
+./build/bin/fbforward --config config.yaml
 ```
 
 ## Build
@@ -64,8 +65,8 @@ Supported fields include: `resolver.servers`, `probe.interval/window_size/discov
 # Build UI + Go binary
 make
 
-# Or build only the Go binary (uses existing ui-dist)
-go build ./...
+# Or build only the Go binary (uses existing web/dist)
+go build ./cmd/fbforward
 ```
 
 ## Debian packaging

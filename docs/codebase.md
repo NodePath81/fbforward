@@ -16,7 +16,7 @@ fbforward runs as a single process with three main planes:
 
 High-level startup flow:
 
-1. `main.go` loads config path, creates a logger, validates Linux, and starts
+1. `cmd/fbforward/main.go` loads config path, creates a logger, validates Linux, and starts
    the Supervisor.
 2. `Supervisor` loads config and constructs a `Runtime`.
 3. `Runtime` resolves upstreams, creates the `UpstreamManager`, `Metrics`,
@@ -25,22 +25,23 @@ High-level startup flow:
 
 ## Code Structure (by file)
 
-- `main.go`: CLI entry, Linux guard, signal handling.
-- `supervisor.go`: Owns the current Runtime and handles restart lifecycle.
-- `runtime.go`: Wires together all runtime components and manages goroutines.
-- `config.go`: YAML config parsing, defaults, and validation.
-- `resolver.go`: DNS resolution (custom servers or system), plus refresh.
-- `probe.go`: ICMP probe loop, windowing, jitter, and score updates.
-- `upstream.go`: Upstream state, EMA metrics, scoring, and switching logic.
-- `forward_tcp.go`: TCP listener, per-connection proxying, idle handling.
-- `forward_udp.go`: UDP listener, per-mapping sockets, idle handling.
-- `control.go`: HTTP API, auth, WebSocket status stream, rate limiting.
-- `status.go`: Active connection/mapping tracking and WebSocket broadcasting.
-- `metrics.go`: Prometheus metric aggregation and rendering.
-- `shaping_common.go`, `shaping_linux.go`, `shaping_stub.go`: tc shaping helpers and netlink integration.
-- `webui.go`: Embedded UI handler (serves `ui-dist`).
-- `logger.go`: slog-based logger setup.
-- `util.go`: small helpers (port formatting, net join).
+- `cmd/fbforward/main.go`: CLI entry, Linux guard, signal handling.
+- `internal/app/supervisor.go`: Owns the current Runtime and handles restart lifecycle.
+- `internal/app/runtime.go`: Wires together all runtime components and manages goroutines.
+- `internal/config/config.go`: YAML config parsing, defaults, and validation.
+- `internal/config/bandwidth.go`: bandwidth/size parsing helpers.
+- `internal/resolver/resolver.go`: DNS resolution (custom servers or system), plus refresh.
+- `internal/probe/probe.go`: ICMP probe loop, windowing, jitter, and score updates.
+- `internal/upstream/upstream.go`: Upstream state, EMA metrics, scoring, and switching logic.
+- `internal/forwarding/forward_tcp.go`: TCP listener, per-connection proxying, idle handling.
+- `internal/forwarding/forward_udp.go`: UDP listener, per-mapping sockets, idle handling.
+- `internal/control/control.go`: HTTP API, auth, WebSocket status stream, rate limiting.
+- `internal/control/status.go`: Active connection/mapping tracking and WebSocket broadcasting.
+- `internal/metrics/metrics.go`: Prometheus metric aggregation and rendering.
+- `internal/shaping/shaping_linux.go`, `internal/shaping/shaping_stub.go`: tc shaping helpers and netlink integration.
+- `web/handler.go`: Embedded UI handler (serves `web/dist`).
+- `internal/util/logger.go`: slog-based logger setup.
+- `internal/util/util.go`: small helpers (port formatting, net join).
 
 ## Key Structs and Components
 
@@ -159,5 +160,5 @@ Scoring and switching:
 
 - Switching behavior: adjust `SwitchingConfig` and `UpstreamManager` logic.
 - Observability: extend `Metrics` or `StatusStore` for new telemetry.
-- Control API: add new RPC methods in `control.go`.
+- Control API: add new RPC methods in `internal/control/control.go`.
 - Data plane: add new protocol listeners following TCP/UDP patterns.

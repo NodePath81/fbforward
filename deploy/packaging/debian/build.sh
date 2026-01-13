@@ -7,8 +7,8 @@ ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 VERSION="${VERSION:-0.1.0}"
 MAINTAINER="${MAINTAINER:-fbforward maintainer <root@localhost>}"
 
-BIN_SRC="${ROOT_DIR}/fbforward"
-CONFIG_SRC="${ROOT_DIR}/config.example.yaml"
+BIN_SRC="${ROOT_DIR}/build/bin/fbforward"
+CONFIG_SRC="${ROOT_DIR}/configs/config.example.yaml"
 SERVICE_SRC="${ROOT_DIR}/deploy/systemd/${SERVICE_NAME}.service"
 
 BUILD_DIR="${ROOT_DIR}/deploy/packaging/debian/build"
@@ -23,7 +23,7 @@ mkdir -p "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/etc/systemd/system"
 
 echo "Building fbforward..." >&2
-make -C "$ROOT_DIR" build VERSION="$VERSION"
+make -C "$ROOT_DIR" build VERSION="$VERSION" BIN_OUT="$BIN_SRC"
 
 if [ ! -f "$BIN_SRC" ]; then
   echo "Binary not found at $BIN_SRC after make build" >&2

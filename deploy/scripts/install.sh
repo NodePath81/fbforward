@@ -10,7 +10,7 @@ CONFIG_DIR="/etc/fbforward"
 CONFIG_DEST="${CONFIG_DIR}/config.yaml"
 
 ROOT_DIR="$(pwd)"
-BIN_SRC="${1:-${ROOT_DIR}/fbforward}"
+BIN_SRC="${1:-${ROOT_DIR}/build/bin/fbforward}"
 CONFIG_SRC="${2:-""}"
 SERVICE_SRC="${ROOT_DIR}/deploy/systemd/${SERVICE_NAME}.service"
 
@@ -48,7 +48,7 @@ if [ -n "$CONFIG_SRC" ]; then
   chown root:"$GROUP_NAME" "$CONFIG_DEST"
 else
   if [ ! -f "$CONFIG_DEST" ]; then
-    echo "No config provided; copy config.example.yaml to $CONFIG_DEST and update it." >&2
+    echo "No config provided; copy configs/config.example.yaml to $CONFIG_DEST and update it." >&2
   fi
 fi
 

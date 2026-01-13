@@ -1,4 +1,4 @@
-package main
+package forwarding
 
 import (
 	"context"
@@ -7,16 +7,22 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/control"
+	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type TCPListener struct {
-	cfg     ListenerConfig
-	manager *UpstreamManager
-	metrics *Metrics
-	status  *StatusStore
+	cfg     config.ListenerConfig
+	manager *upstream.UpstreamManager
+	metrics *metrics.Metrics
+	status  *control.StatusStore
 	timeout time.Duration
 	sem     chan struct{}
-	logger  Logger
+	logger  util.Logger
 
 	listener net.Listener
 }
@@ -34,7 +40,7 @@ var tcpBufPool = sync.Pool{
 	},
 }
 
-func NewTCPListener(cfg ListenerConfig, limits LimitsConfig, timeout time.Duration, manager *UpstreamManager, metrics *Metrics, status *StatusStore, logger Logger) *TCPListener {
+func NewTCPListener(cfg config.ListenerConfig, limits config.LimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *TCPListener {
 	return &TCPListener{
 		cfg:     cfg,
 		manager: manager,
@@ -47,7 +53,7 @@ func NewTCPListener(cfg ListenerConfig, limits LimitsConfig, timeout time.Durati
 }
 
 func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
-	addr := net.JoinHostPort(l.cfg.Addr, formatPort(l.cfg.Port))
+	addr := net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -87,7 +93,7 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 func (l *TCPListener) Close() error {
 	if l.listener != nil {
 		err := l.listener.Close()
-		l.logger.Info("tcp listener stopped", "addr", net.JoinHostPort(l.cfg.Addr, formatPort(l.cfg.Port)))
+		l.logger.Info("tcp listener stopped", "addr", net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port)))
 		return err
 	}
 	return nil
@@ -110,7 +116,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		_ = client.Close()
 		return
 	}
-	remoteAddr := net.JoinHostPort(ip.String(), formatPort(l.cfg.Port))
+	remoteAddr := net.JoinHostPort(ip.String(), util.FormatPort(l.cfg.Port))
 	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond)
 	if err != nil {
 		l.logger.Debug("tcp dial failed", "upstream", up.Tag, "error", err)
@@ -139,9 +145,9 @@ type tcpConn struct {
 	upstreamTag string
 	listenPort  int
 	timeout     time.Duration
-	metrics     *Metrics
-	status      *StatusStore
-	logger      Logger
+	metrics     *metrics.Metrics
+	status      *control.StatusStore
+	logger      util.Logger
 
 	id         string
 	closeOnce  sync.Once

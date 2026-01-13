@@ -1,4 +1,4 @@
-package main
+package forwarding
 
 import (
 	"context"
@@ -7,16 +7,22 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/control"
+	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type UDPListener struct {
-	cfg     ListenerConfig
-	manager *UpstreamManager
-	metrics *Metrics
-	status  *StatusStore
+	cfg     config.ListenerConfig
+	manager *upstream.UpstreamManager
+	metrics *metrics.Metrics
+	status  *control.StatusStore
 	timeout time.Duration
 	sem     chan struct{}
-	logger  Logger
+	logger  util.Logger
 
 	conn     *net.UDPConn
 	mu       sync.Mutex
@@ -36,7 +42,7 @@ var udpPacketPool = sync.Pool{
 	},
 }
 
-func NewUDPListener(cfg ListenerConfig, limits LimitsConfig, timeout time.Duration, manager *UpstreamManager, metrics *Metrics, status *StatusStore, logger Logger) *UDPListener {
+func NewUDPListener(cfg config.ListenerConfig, limits config.LimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *UDPListener {
 	return &UDPListener{
 		cfg:      cfg,
 		manager:  manager,
@@ -50,7 +56,7 @@ func NewUDPListener(cfg ListenerConfig, limits LimitsConfig, timeout time.Durati
 }
 
 func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
-	addr := net.JoinHostPort(l.cfg.Addr, formatPort(l.cfg.Port))
+	addr := net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port))
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return err
@@ -122,7 +128,7 @@ func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 func (l *UDPListener) Close() error {
 	if l.conn != nil {
 		err := l.conn.Close()
-		l.logger.Info("udp listener stopped", "addr", net.JoinHostPort(l.cfg.Addr, formatPort(l.cfg.Port)))
+		l.logger.Info("udp listener stopped", "addr", net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port)))
 		return err
 	}
 	return nil
@@ -202,9 +208,9 @@ type udpMapping struct {
 	upstreamTag  string
 	upstreamConn *net.UDPConn
 	timeout      time.Duration
-	metrics      *Metrics
-	status       *StatusStore
-	logger       Logger
+	metrics      *metrics.Metrics
+	status       *control.StatusStore
+	logger       util.Logger
 
 	id         string
 	closeOnce  sync.Once

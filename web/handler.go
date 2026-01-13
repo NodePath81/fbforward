@@ -1,4 +1,4 @@
-package main
+package web
 
 import (
 	"embed"
@@ -6,14 +6,14 @@ import (
 	"net/http"
 )
 
-//go:embed ui-dist
+//go:embed dist
 var uiFS embed.FS
 
 func WebUIHandler(enabled bool) http.Handler {
 	if !enabled {
 		return http.NotFoundHandler()
 	}
-	sub, err := fs.Sub(uiFS, "ui-dist")
+	sub, err := fs.Sub(uiFS, "dist")
 	if err != nil {
 		return http.NotFoundHandler()
 	}

@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -7,22 +7,32 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/control"
+	"github.com/NodePath81/fbforward/internal/forwarding"
+	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/probe"
+	"github.com/NodePath81/fbforward/internal/resolver"
+	"github.com/NodePath81/fbforward/internal/shaping"
+	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 const dnsRefreshInterval = 30 * time.Second
 
 type Runtime struct {
-	cfg       Config
+	cfg       config.Config
 	ctx       context.Context
 	cancel    context.CancelFunc
-	logger    Logger
-	resolver  *Resolver
-	manager   *UpstreamManager
-	metrics   *Metrics
-	status    *StatusStore
-	control   *ControlServer
-	shaper    *TrafficShaper
-	upstreams []*Upstream
+	logger    util.Logger
+	resolver  *resolver.Resolver
+	manager   *upstream.UpstreamManager
+	metrics   *metrics.Metrics
+	status    *control.StatusStore
+	control   *control.ControlServer
+	shaper    *shaping.TrafficShaper
+	upstreams []*upstream.Upstream
 	listeners []closer
 	wg        sync.WaitGroup
 }
@@ -31,9 +41,9 @@ type closer interface {
 	Close() error
 }
 
-func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, error) {
+func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (*Runtime, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	resolver := NewResolver(cfg.Resolver)
+	resolver := resolver.NewResolver(cfg.Resolver)
 	upstreams, err := resolveUpstreams(ctx, cfg, resolver)
 	if err != nil {
 		cancel()
@@ -43,11 +53,11 @@ func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, er
 	for _, up := range upstreams {
 		tags = append(tags, up.Tag)
 	}
-	metrics := NewMetrics(tags)
-	statusHub := NewStatusHub(ctx.Done())
-	status := NewStatusStore(statusHub, metrics)
+	metrics := metrics.NewMetrics(tags)
+	statusHub := control.NewStatusHub(ctx.Done())
+	status := control.NewStatusStore(statusHub, metrics)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	manager := NewUpstreamManager(upstreams, rng)
+	manager := upstream.NewUpstreamManager(upstreams, rng)
 	manager.SetSwitching(cfg.Switching)
 
 	rt := &Runtime{
@@ -64,12 +74,12 @@ func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, er
 	if cfg.Shaping.Enabled {
 		// Build upstream shaping entries with resolved IPs
 		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
-		rt.shaper = NewTrafficShaper(cfg.Shaping, cfg.Listeners, upstreamShaping, logger)
+		rt.shaper = shaping.NewTrafficShaper(cfg.Shaping, cfg.Listeners, upstreamShaping, logger)
 	}
 
-	manager.SetCallbacks(func(oldTag, newTag string) {
-		if oldTag != newTag {
-			if newTag == "" {
+		manager.SetCallbacks(func(oldTag, newTag string) {
+			if oldTag != newTag {
+				if newTag == "" {
 				logger.Info("active upstream cleared")
 			} else {
 				logger.Info("active upstream changed", "from", oldTag, "to", newTag)
@@ -85,12 +95,12 @@ func NewRuntime(cfg Config, logger Logger, restartFn func() error) (*Runtime, er
 		status.CloseByUpstream(tag)
 	})
 
-	metrics.SetMode(ModeAuto)
+	metrics.SetMode(upstream.ModeAuto)
 	manager.SetAuto()
 	metrics.Start(ctx.Done())
 
-	control := NewControlServer(cfg.Control, cfg.WebUI.IsEnabled(), cfg.Hostname, manager, metrics, status, restartFn, logger)
-	rt.control = control
+	ctrl := control.NewControlServer(cfg.Control, cfg.WebUI.IsEnabled(), cfg.Hostname, manager, metrics, status, restartFn, logger)
+	rt.control = ctrl
 
 	return rt, nil
 }
@@ -150,12 +160,12 @@ func (r *Runtime) Stop() {
 }
 
 func (r *Runtime) startProbes() {
-	for _, upstream := range r.upstreams {
+	for _, up := range r.upstreams {
 		r.wg.Add(1)
-		go func(u *Upstream) {
+		go func(u *upstream.Upstream) {
 			defer r.wg.Done()
-			ProbeLoop(r.ctx, u, r.cfg.Probe, r.cfg.Scoring, r.manager, r.metrics, r.logger)
-		}(upstream)
+			probe.ProbeLoop(r.ctx, u, r.cfg.Probe, r.cfg.Scoring, r.manager, r.metrics, r.logger)
+		}(up)
 	}
 }
 
@@ -164,13 +174,13 @@ func (r *Runtime) startListeners() error {
 	for _, ln := range r.cfg.Listeners {
 		switch ln.Protocol {
 		case "tcp":
-			tcpListener := NewTCPListener(ln, r.cfg.Limits, time.Duration(r.cfg.Timeouts.TCPIdleSeconds)*time.Second, r.manager, r.metrics, r.status, r.logger)
+			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Limits, time.Duration(r.cfg.Timeouts.TCPIdleSeconds)*time.Second, r.manager, r.metrics, r.status, r.logger)
 			if err := tcpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
 			r.listeners = append(r.listeners, tcpListener)
 		case "udp":
-			udpListener := NewUDPListener(ln, r.cfg.Limits, time.Duration(r.cfg.Timeouts.UDPIdleSeconds)*time.Second, r.manager, r.metrics, r.status, r.logger)
+			udpListener := forwarding.NewUDPListener(ln, r.cfg.Limits, time.Duration(r.cfg.Timeouts.UDPIdleSeconds)*time.Second, r.manager, r.metrics, r.status, r.logger)
 			if err := udpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
@@ -226,14 +236,14 @@ func (r *Runtime) startDNSRefresh() {
 	}
 }
 
-func resolveUpstreams(ctx context.Context, cfg Config, resolver *Resolver) ([]*Upstream, error) {
-	upstreams := make([]*Upstream, 0, len(cfg.Upstreams))
+func resolveUpstreams(ctx context.Context, cfg config.Config, res *resolver.Resolver) ([]*upstream.Upstream, error) {
+	upstreams := make([]*upstream.Upstream, 0, len(cfg.Upstreams))
 	for _, item := range cfg.Upstreams {
-		ips, err := resolver.ResolveHost(ctx, item.Host)
+		ips, err := res.ResolveHost(ctx, item.Host)
 		if err != nil {
 			return nil, err
 		}
-		up := &Upstream{
+		up := &upstream.Upstream{
 			Tag:  item.Tag,
 			Host: item.Host,
 			IPs:  ips,
@@ -245,7 +255,7 @@ func resolveUpstreams(ctx context.Context, cfg Config, resolver *Resolver) ([]*U
 }
 
 // buildUpstreamShapingEntries creates shaping entries from config and resolved upstreams.
-func buildUpstreamShapingEntries(cfgUpstreams []UpstreamConfig, resolvedUpstreams []*Upstream) []UpstreamShapingEntry {
+func buildUpstreamShapingEntries(cfgUpstreams []config.UpstreamConfig, resolvedUpstreams []*upstream.Upstream) []shaping.UpstreamShapingEntry {
 	// Create a map of tag -> resolved IPs for quick lookup
 	tagToIPs := make(map[string][]string, len(resolvedUpstreams))
 	for _, up := range resolvedUpstreams {
@@ -256,7 +266,7 @@ func buildUpstreamShapingEntries(cfgUpstreams []UpstreamConfig, resolvedUpstream
 		tagToIPs[up.Tag] = ips
 	}
 
-	entries := make([]UpstreamShapingEntry, 0)
+	entries := make([]shaping.UpstreamShapingEntry, 0)
 	for _, cfgUp := range cfgUpstreams {
 		// Only include upstreams that have shaping config
 		if cfgUp.Ingress == nil && cfgUp.Egress == nil {
@@ -266,7 +276,7 @@ func buildUpstreamShapingEntries(cfgUpstreams []UpstreamConfig, resolvedUpstream
 		if !ok || len(ips) == 0 {
 			continue
 		}
-		entries = append(entries, UpstreamShapingEntry{
+		entries = append(entries, shaping.UpstreamShapingEntry{
 			Tag:     cfgUp.Tag,
 			IPs:     ips,
 			Ingress: cfgUp.Ingress,
@@ -276,7 +286,7 @@ func buildUpstreamShapingEntries(cfgUpstreams []UpstreamConfig, resolvedUpstream
 	return entries
 }
 
-func upstreamHasShaping(cfgUpstreams []UpstreamConfig, tag string) bool {
+func upstreamHasShaping(cfgUpstreams []config.UpstreamConfig, tag string) bool {
 	for _, up := range cfgUpstreams {
 		if up.Tag != tag {
 			continue

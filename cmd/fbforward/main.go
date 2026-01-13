@@ -7,12 +7,16 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+
+	"github.com/NodePath81/fbforward/internal/app"
+	"github.com/NodePath81/fbforward/internal/util"
+	"github.com/NodePath81/fbforward/internal/version"
 )
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
 	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Println(Version)
+		fmt.Println(version.Version)
 		return
 	}
 	flag.Parse()
@@ -20,12 +24,12 @@ func main() {
 		*configPath = flag.Arg(0)
 	}
 
-	logger := NewLogger()
+	logger := util.NewLogger()
 	if runtime.GOOS != "linux" {
 		logger.Error("unsupported OS", "goos", runtime.GOOS)
 		os.Exit(1)
 	}
-	supervisor := NewSupervisor(*configPath, logger)
+	supervisor := app.NewSupervisor(*configPath, logger)
 	if err := supervisor.Start(); err != nil {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)

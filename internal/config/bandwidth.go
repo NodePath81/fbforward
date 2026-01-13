@@ -1,14 +1,14 @@
-package main
+package config
 
 import (
 	"fmt"
 	"strings"
 )
 
-// parseBandwidth parses a human-readable bandwidth string to bits/sec.
+// ParseBandwidth parses a human-readable bandwidth string to bits/sec.
 // Supports formats: "100", "100k", "100m", "100g" (case insensitive).
 // Units: k=1000, m=1000000, g=1000000000 (SI units, not binary).
-func parseBandwidth(s string) (uint64, error) {
+func ParseBandwidth(s string) (uint64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, nil
@@ -51,10 +51,10 @@ func parseBandwidth(s string) (uint64, error) {
 	return uint64(value * float64(multiplier)), nil
 }
 
-// parseSize parses a human-readable size string to bytes.
+// ParseSize parses a human-readable size string to bytes.
 // Supports formats: "100", "16k", "32m" (case insensitive).
 // Units: k=1024, m=1048576 (binary units for buffer sizes).
-func parseSize(s string) (uint32, error) {
+func ParseSize(s string) (uint32, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, nil

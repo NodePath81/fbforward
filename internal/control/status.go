@@ -1,10 +1,12 @@
-package main
+package control
 
 import (
 	"encoding/json"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/metrics"
 )
 
 type StatusEntry struct {
@@ -41,10 +43,10 @@ type StatusStore struct {
 	udpCloser map[string]func()
 	nextID    uint64
 	hub       *StatusHub
-	metrics   *Metrics
+	metrics   *metrics.Metrics
 }
 
-func NewStatusStore(hub *StatusHub, metrics *Metrics) *StatusStore {
+func NewStatusStore(hub *StatusHub, metrics *metrics.Metrics) *StatusStore {
 	return &StatusStore{
 		tcp:       make(map[string]*statusEntry),
 		udp:       make(map[string]*statusEntry),
