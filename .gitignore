@@ -1,7 +1,13 @@
 build/
+.gocache/
+.claude/
 deploy/packaging/debian/build/
 deploy/packaging/debian/*.deb
 deploy/packaging/debian/deb/**
+main.go.backup
+*.test
+*.prof
 web/dist/**
 web/node_modules/
-task-log/
+.vscode/
+.idea/

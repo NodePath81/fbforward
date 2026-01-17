@@ -1,10 +1,11 @@
 UI_DIR := web
 UI_VITE := $(UI_DIR)/node_modules/.bin/vite
-BIN_OUT ?= build/bin/fbforward
+FBFORWARD_BIN ?= build/bin/fbforward
+BWPROBE_BIN ?= build/bin/bwprobe
 VERSION ?= dev
 LDFLAGS ?= -X github.com/NodePath81/fbforward/internal/version.Version=$(VERSION)
 
-.PHONY: all ui-build build clean
+.PHONY: all ui-build build build-fbforward build-bwprobe clean test
 
 all: build
 
@@ -15,9 +16,18 @@ ui-build:
 		echo "vite not installed; skipping ui build and using existing web/dist"; \
 	fi
 
-build: ui-build
-	mkdir -p $(dir $(BIN_OUT))
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_OUT) ./cmd/fbforward
+build: build-fbforward build-bwprobe
+
+build-fbforward: ui-build
+	mkdir -p $(dir $(FBFORWARD_BIN))
+	go build -ldflags "$(LDFLAGS)" -o $(FBFORWARD_BIN) ./cmd/fbforward
+
+build-bwprobe:
+	mkdir -p $(dir $(BWPROBE_BIN))
+	go build -o $(BWPROBE_BIN) ./bwprobe/cmd/bwprobe
+
+test:
+	go test ./...
 
 clean:
-	rm -rf web/dist
+	rm -rf web/dist build/bin
