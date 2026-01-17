@@ -4,3 +4,4 @@ deploy/packaging/debian/*.deb
 deploy/packaging/debian/deb/**
 web/dist/**
 web/node_modules/
+task-log/
