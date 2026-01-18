@@ -12,6 +12,20 @@ export function formatBytes(value: number): string {
   return `${val.toFixed(1)} ${units[idx]}`;
 }
 
+export function formatBps(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '-';
+  }
+  const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
+  let idx = 0;
+  let val = value;
+  while (val >= 1000 && idx < units.length - 1) {
+    val /= 1000;
+    idx++;
+  }
+  return `${val.toFixed(1)} ${units[idx]}`;
+}
+
 export function formatPercent(value: number, digits = 1): string {
   if (!Number.isFinite(value)) {
     return '-';

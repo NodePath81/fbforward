@@ -1,21 +1,24 @@
 # Network Tools Monorepo
 
-This repository contains two Linux-only networking tools built in Go.
+This repository contains two Linux-only networking tools built in Go plus a measurement server binary.
 
 ## fbforward
 
-TCP/UDP port forwarder that selects the best upstream using ICMP-derived quality
-metrics (RTT, jitter, loss). It exposes Prometheus metrics, a token-protected
+TCP/UDP port forwarder that selects the best upstream using bwprobe-derived
+TCP/UDP metrics, with ICMP used for reachability only. It exposes Prometheus metrics, a token-protected
 RPC API, WebSocket status stream, and an embedded single-page Web UI.
 
 Behavior highlights:
 
 - NAT-style forwarding: clients connect to fbforward; upstream sees fbforward as source.
 - Multiple listeners, single global upstream list; outbound port matches listener port.
-- Probing is ICMP-only; upstream is unusable on 100% loss and recovers automatically.
-- Auto mode uses confirmation windows, score threshold, and a minimum hold time; manual mode rejects unusable tags.
-- Fast failover triggers on high loss windows or consecutive dial failures.
+- Probing uses bwprobe measurements for scoring; ICMP is reachability-only.
+- Auto mode uses time-based confirmation, score threshold, and a minimum hold time; manual mode rejects unusable tags.
+- Fast failover triggers on loss/retrans thresholds or consecutive dial failures.
 - TCP/UDP flows are pinned to the selected upstream until idle/expired.
+
+fbforward relies on the `fbmeasure` server binary running on each upstream host
+to provide TCP/UDP measurement endpoints.
 
 Docs: `docs/README.md` (see `docs/codebase.md` and `docs/configuration.md`).
 
@@ -41,15 +44,18 @@ Docs: `docs/bwprobe/` (start with `docs/bwprobe/readme.md`).
 make build            # build both binaries
 make build-fbforward  # build fbforward only (builds UI if available)
 make build-bwprobe    # build bwprobe only
+make build-fbmeasure  # build fbmeasure only
 
 # Or build directly:
 go build ./cmd/fbforward
-go build ./bwprobe/cmd/bwprobe
+go build ./bwprobe/cmd
+go build ./bwprobe/cmd/fbmeasure
 ```
 
 Outputs:
 - `build/bin/fbforward`
 - `build/bin/bwprobe`
+- `build/bin/fbmeasure`
 
 ## fbforward config (YAML)
 
@@ -75,7 +81,8 @@ control:
 ```
 
 Supported fields include: `resolver.servers`, `probe.interval/window_size/discovery_delay`,
-`scoring.ema_alpha/metric_ref_*/weights`, `switching.confirm_windows/failure_loss_threshold/switch_threshold/min_hold_seconds`,
+`measurement.interval/target_bandwidth_*/sample_bytes/tcp_enabled/udp_enabled/alternate_tcp`,
+`scoring.ref_*/weights_tcp/weights_udp/protocol_weight_*/utilization_*`, `switching.confirm_duration/failure_loss_threshold/failure_retrans_threshold/switch_threshold/min_hold_seconds`,
 `limits.max_tcp_conns/max_udp_mappings`, `timeouts.tcp_idle_seconds/udp_idle_seconds`,
 `webui.enabled`, `shaping.enabled/device/ifb/aggregate_bandwidth`, and
 `listeners.ingress/egress`.

@@ -14,11 +14,31 @@ import (
 )
 
 type UpstreamMetrics struct {
-	RTTMs    float64
-	JitterMs float64
-	Loss     float64
-	Score    float64
-	Unusable bool
+	Reachable        bool
+	BandwidthUpBps   float64
+	BandwidthDownBps float64
+	RTTMs            float64
+	JitterMs         float64
+	RetransRate      float64
+	LossRate         float64
+	Loss             float64
+	ScoreTCP         float64
+	ScoreUDP         float64
+	ScoreOverall     float64
+	Score            float64
+	Utilization      float64
+	Unusable         bool
+}
+
+type utilizationWindow struct {
+	mu      sync.Mutex
+	samples []utilizationSample
+}
+
+type utilizationSample struct {
+	timestamp time.Time
+	bytesUp   uint64
+	bytesDown uint64
 }
 
 type Metrics struct {
@@ -34,6 +54,7 @@ type Metrics struct {
 	bytesDownPerSec    map[string]uint64
 	lastBytesUpTotal   map[string]uint64
 	lastBytesDownTotal map[string]uint64
+	utilization        map[string]*utilizationWindow
 	memoryAllocBytes   uint64
 	startTime          time.Time
 }
@@ -46,6 +67,7 @@ func NewMetrics(tags []string) *Metrics {
 	bytesDownPerSec := make(map[string]uint64, len(tags))
 	lastBytesUp := make(map[string]uint64, len(tags))
 	lastBytesDown := make(map[string]uint64, len(tags))
+	utilization := make(map[string]*utilizationWindow, len(tags))
 	for _, tag := range tags {
 		upstreams[tag] = &UpstreamMetrics{}
 		bytesUpTotal[tag] = &atomic.Uint64{}
@@ -54,6 +76,7 @@ func NewMetrics(tags []string) *Metrics {
 		bytesDownPerSec[tag] = 0
 		lastBytesUp[tag] = 0
 		lastBytesDown[tag] = 0
+		utilization[tag] = &utilizationWindow{}
 	}
 	return &Metrics{
 		upstreams:          upstreams,
@@ -63,6 +86,7 @@ func NewMetrics(tags []string) *Metrics {
 		bytesDownPerSec:    bytesDownPerSec,
 		lastBytesUpTotal:   lastBytesUp,
 		lastBytesDownTotal: lastBytesDown,
+		utilization:        utilization,
 		startTime:          time.Now(),
 	}
 }
@@ -88,6 +112,7 @@ func (m *Metrics) updatePerSecond() {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now()
 	m.memoryAllocBytes = mem.Alloc
 	for tag, total := range m.bytesUpTotal {
 		current := total.Load()
@@ -101,6 +126,54 @@ func (m *Metrics) updatePerSecond() {
 		m.bytesDownPerSec[tag] = current - prev
 		m.lastBytesDownTotal[tag] = current
 	}
+	for tag := range m.upstreams {
+		window := m.utilization[tag]
+		if window == nil {
+			continue
+		}
+		window.addSample(now, m.bytesUpPerSec[tag], m.bytesDownPerSec[tag])
+	}
+}
+
+func (w *utilizationWindow) addSample(ts time.Time, bytesUp, bytesDown uint64) {
+	w.mu.Lock()
+	w.samples = append(w.samples, utilizationSample{timestamp: ts, bytesUp: bytesUp, bytesDown: bytesDown})
+	w.mu.Unlock()
+}
+
+func (m *Metrics) GetUtilization(tag string, empiricalBwUp, empiricalBwDn float64, window time.Duration) float64 {
+	if empiricalBwUp <= 0 || empiricalBwDn <= 0 || window <= 0 {
+		return 0
+	}
+	m.mu.Lock()
+	util := m.utilization[tag]
+	m.mu.Unlock()
+	if util == nil {
+		return 0
+	}
+	cutoff := time.Now().Add(-window)
+	util.mu.Lock()
+	defer util.mu.Unlock()
+	start := 0
+	for start < len(util.samples) && util.samples[start].timestamp.Before(cutoff) {
+		start++
+	}
+	if start > 0 {
+		util.samples = util.samples[start:]
+	}
+	var totalUp uint64
+	var totalDown uint64
+	for _, sample := range util.samples {
+		totalUp += sample.bytesUp
+		totalDown += sample.bytesDown
+	}
+	windowSeconds := window.Seconds()
+	utilUp := float64(totalUp*8) / (empiricalBwUp * windowSeconds)
+	utilDown := float64(totalDown*8) / (empiricalBwDn * windowSeconds)
+	if utilDown > utilUp {
+		return utilDown
+	}
+	return utilUp
 }
 
 func (m *Metrics) SetUpstreamMetrics(tag string, stats upstream.UpstreamStats) {
@@ -110,10 +183,19 @@ func (m *Metrics) SetUpstreamMetrics(tag string, stats upstream.UpstreamStats) {
 	if !ok {
 		return
 	}
+	up.Reachable = stats.Reachable
+	up.BandwidthUpBps = stats.BandwidthUpBps
+	up.BandwidthDownBps = stats.BandwidthDownBps
 	up.RTTMs = stats.RTTMs
 	up.JitterMs = stats.JitterMs
+	up.RetransRate = stats.RetransRate
+	up.LossRate = stats.LossRate
 	up.Loss = stats.Loss
-	up.Score = stats.Score
+	up.ScoreTCP = stats.ScoreTCP
+	up.ScoreUDP = stats.ScoreUDP
+	up.ScoreOverall = stats.ScoreOverall
+	up.Score = stats.ScoreOverall
+	up.Utilization = stats.Utilization
 	up.Unusable = !stats.Usable
 }
 
@@ -222,6 +304,38 @@ func (m *Metrics) Render() string {
 		b.WriteString(formatFloat(upstreams[tag].JitterMs))
 		b.WriteString("\n")
 	}
+	b.WriteString("# TYPE fbforward_upstream_bandwidth_up_bps gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_bandwidth_up_bps{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].BandwidthUpBps))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_bandwidth_down_bps gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_bandwidth_down_bps{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].BandwidthDownBps))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_retrans_rate gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_retrans_rate{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].RetransRate))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_loss_rate gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_loss_rate{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].LossRate))
+		b.WriteString("\n")
+	}
 	b.WriteString("# TYPE fbforward_upstream_loss gauge\n")
 	for _, tag := range tags {
 		b.WriteString("fbforward_upstream_loss{upstream=\"")
@@ -230,12 +344,56 @@ func (m *Metrics) Render() string {
 		b.WriteString(formatFloat(upstreams[tag].Loss))
 		b.WriteString("\n")
 	}
+	b.WriteString("# TYPE fbforward_upstream_score_tcp gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_score_tcp{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].ScoreTCP))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_score_udp gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_score_udp{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].ScoreUDP))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_score_overall gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_score_overall{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].ScoreOverall))
+		b.WriteString("\n")
+	}
 	b.WriteString("# TYPE fbforward_upstream_score gauge\n")
 	for _, tag := range tags {
 		b.WriteString("fbforward_upstream_score{upstream=\"")
 		b.WriteString(tag)
 		b.WriteString("\"} ")
 		b.WriteString(formatFloat(upstreams[tag].Score))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_utilization gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_utilization{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].Utilization))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_reachable gauge\n")
+	for _, tag := range tags {
+		val := "0"
+		if upstreams[tag].Reachable {
+			val = "1"
+		}
+		b.WriteString("fbforward_upstream_reachable{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(val)
 		b.WriteString("\n")
 	}
 	b.WriteString("# TYPE fbforward_upstream_unusable gauge\n")

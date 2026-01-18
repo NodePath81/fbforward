@@ -11,7 +11,7 @@ fbforward runs as a single process with three main planes:
   upstream, with per-connection or per-mapping pinning.
 - Control plane: HTTP server providing RPC, metrics, WebSocket status stream,
   and the embedded web UI.
-- Health/selection plane: ICMP probes, scoring, and upstream switching logic.
+- Measurement/selection plane: bwprobe-based TCP/UDP measurements plus ICMP reachability probes feeding upstream scoring and switching.
 - Optional shaping plane: Linux tc-based ingress/egress shaping via netlink.
 
 High-level startup flow:
@@ -20,7 +20,8 @@ High-level startup flow:
    the Supervisor.
 2. `Supervisor` loads config and constructs a `Runtime`.
 3. `Runtime` resolves upstreams, creates the `UpstreamManager`, `Metrics`,
-   `StatusStore`, and `ControlServer`, starts probes, DNS refresh, and listeners.
+   `StatusStore`, and `ControlServer`, runs fast-start selection, starts ICMP reachability probes,
+   measurement collectors, DNS refresh, and listeners.
 4. On shutdown or restart, the Runtime stops listeners and closes active flows.
 
 ## Code Structure (by file)
@@ -31,7 +32,9 @@ High-level startup flow:
 - `internal/config/config.go`: YAML config parsing, defaults, and validation.
 - `internal/config/bandwidth.go`: bandwidth/size parsing helpers.
 - `internal/resolver/resolver.go`: DNS resolution (custom servers or system), plus refresh.
-- `internal/probe/probe.go`: ICMP probe loop, windowing, jitter, and score updates.
+- `internal/probe/probe.go`: ICMP reachability probe loop (reachability only).
+- `internal/measure/collector.go`: bwprobe-based measurement loop (bandwidth, RTT, jitter, loss/retrans).
+- `internal/measure/fast_start.go`: fast-start RTT probe for initial primary selection.
 - `internal/upstream/upstream.go`: Upstream state, EMA metrics, scoring, and switching logic.
 - `internal/forwarding/forward_tcp.go`: TCP listener, per-connection proxying, idle handling.
 - `internal/forwarding/forward_udp.go`: UDP listener, per-mapping sockets, idle handling.
@@ -63,19 +66,19 @@ High-level startup flow:
   live stats and dial-failure tracking.
 - `UpstreamManager` owns:
   - `mode`: auto or manual.
-  - `activeTag`: current upstream tag.
-  - switch tracking: pending confirmation, hold time, thresholds.
+  - `activeTag`: current primary upstream tag.
+  - switch tracking: time-based confirmation, hold time, thresholds, warmup.
 
 Scoring and switching:
 
-- `ProbeLoop` feeds `WindowMetrics` into `UpdateWindow`.
-- `applyEMA` smooths RTT/jitter/loss once initialization happens.
-- `computeScore` uses weighted exponential subscores for RTT/jitter/loss.
+- `measure.Collector` feeds per-protocol measurements into `UpdateMeasurement`.
+- `applyEMA` smooths bandwidth/latency/loss metrics per protocol.
+- `computeFullScore` uses bandwidth + RTT/jitter + loss/retrans with utilization and bias.
 - Auto mode switching respects:
-  - `switching.confirm_windows` (consecutive windows).
+  - `switching.confirm_duration` (time-based confirmation).
   - `switching.switch_threshold` (minimum score gap).
   - `switching.min_hold_seconds` (avoid rapid flapping).
-  - `switching.failure_loss_threshold` (fast failover on heavy loss).
+  - `switching.failure_loss_threshold` / `failure_retrans_threshold` (fast failover).
 - Manual mode pins to the selected upstream; unusable or dial-failed upstreams
   reject selection.
 
@@ -100,14 +103,15 @@ Scoring and switching:
 - `udpMapping` handles upstream reads, client writes, idle expiration, and
   cleanup of mapping state.
 
-### Probing and Health
+### Measurement and Health
 
 - `ProbeLoop` uses raw ICMP sockets (IPv4/IPv6) and emits a probe every
-  `probe.interval`.
-- `probeWindow` aggregates `window_size` samples to compute loss, RTT average,
-  and jitter (mean absolute RTT difference).
-- 100% loss marks an upstream unusable; recovery happens automatically when
-  a later window is not 100% loss.
+  `probe.interval` for reachability only.
+- `measure.Collector` performs bwprobe upload/download tests on TCP/UDP to
+  compute bandwidth, RTT/jitter, and loss/retrans metrics for scoring.
+- Measurements require the `fbmeasure` server binary running on each upstream
+  (built from `bwprobe/cmd/fbmeasure`).
+- Upstream usability is based on reachability plus measurement freshness.
 
 ### Metrics and Status
 
@@ -145,7 +149,8 @@ Scoring and switching:
 ## Concurrency Model
 
 - Goroutines:
-  - One probe goroutine per upstream.
+  - One ICMP reachability probe goroutine per upstream.
+  - One measurement collector goroutine per upstream.
   - One goroutine per TCP connection (two proxy loops + idle watcher).
   - One goroutine per UDP mapping (read loop + idle watcher).
   - Worker pool for UDP packet handling.

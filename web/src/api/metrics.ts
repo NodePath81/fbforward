@@ -84,7 +84,16 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
         rtt: 0,
         jitter: 0,
         loss: 0,
+        lossRate: 0,
+        retransRate: 0,
         score: 0,
+        scoreTcp: 0,
+        scoreUdp: 0,
+        scoreOverall: 0,
+        bandwidthUpBps: 0,
+        bandwidthDownBps: 0,
+        utilization: 0,
+        reachable: false,
         unusable: true,
         active: activeTags.has(tag)
       };
@@ -108,6 +117,38 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     ensure(tag).jitter = item.value;
   }
 
+  for (const item of data['fbforward_upstream_bandwidth_up_bps'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).bandwidthUpBps = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_bandwidth_down_bps'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).bandwidthDownBps = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_retrans_rate'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).retransRate = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_loss_rate'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).lossRate = item.value;
+  }
+
   for (const item of data['fbforward_upstream_loss'] || []) {
     const tag = item.labels.upstream;
     if (!tag) {
@@ -116,12 +157,52 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     ensure(tag).loss = item.value;
   }
 
+  for (const item of data['fbforward_upstream_score_tcp'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).scoreTcp = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_score_udp'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).scoreUdp = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_score_overall'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).scoreOverall = item.value;
+  }
+
   for (const item of data['fbforward_upstream_score'] || []) {
     const tag = item.labels.upstream;
     if (!tag) {
       continue;
     }
     ensure(tag).score = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_utilization'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).utilization = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_reachable'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).reachable = item.value === 1;
   }
 
   for (const item of data['fbforward_upstream_unusable'] || []) {

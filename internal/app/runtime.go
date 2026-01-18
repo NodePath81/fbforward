@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"math/rand"
 	"net"
 	"sync"
@@ -11,6 +10,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/forwarding"
+	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/probe"
 	"github.com/NodePath81/fbforward/internal/resolver"
@@ -59,6 +59,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	manager := upstream.NewUpstreamManager(upstreams, rng)
 	manager.SetSwitching(cfg.Switching)
+	manager.SetMeasurementConfig(cfg.Measurement)
 
 	rt := &Runtime{
 		cfg:       cfg,
@@ -77,9 +78,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		rt.shaper = shaping.NewTrafficShaper(cfg.Shaping, cfg.Listeners, upstreamShaping, logger)
 	}
 
-		manager.SetCallbacks(func(oldTag, newTag string) {
-			if oldTag != newTag {
-				if newTag == "" {
+	manager.SetCallbacks(func(oldTag, newTag string) {
+		if oldTag != newTag {
+			if newTag == "" {
 				logger.Info("active upstream cleared")
 			} else {
 				logger.Info("active upstream changed", "from", oldTag, "to", newTag)
@@ -87,19 +88,17 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 			metrics.SetActive(newTag)
 		}
 	}, func(tag string, usable bool) {
-		if usable {
-			logger.Info("upstream marked usable", "upstream", tag)
-			return
+		logger.Info("upstream state changed", "upstream", tag, "usable", usable)
+		if !usable && cfg.Switching.CloseFlowsOnUnusable {
+			status.CloseByUpstream(tag)
 		}
-		logger.Info("upstream marked unusable", "upstream", tag)
-		status.CloseByUpstream(tag)
 	})
 
 	metrics.SetMode(upstream.ModeAuto)
 	manager.SetAuto()
 	metrics.Start(ctx.Done())
 
-	ctrl := control.NewControlServer(cfg.Control, cfg.WebUI.IsEnabled(), cfg.Hostname, manager, metrics, status, restartFn, logger)
+	ctrl := control.NewControlServer(cfg.Control, cfg.Measurement, cfg.WebUI.IsEnabled(), cfg.Hostname, manager, metrics, status, restartFn, logger)
 	rt.control = ctrl
 
 	return rt, nil
@@ -117,19 +116,10 @@ func (r *Runtime) Start() error {
 		}
 	}
 
+	r.runFastStart()
 	r.startProbes()
+	r.startMeasurement()
 	r.startDNSRefresh()
-
-	delay := r.cfg.Probe.DiscoveryDelay.Duration()
-	if delay > 0 {
-		r.logger.Info("waiting for discovery delay", "delay", delay)
-		select {
-		case <-time.After(delay):
-		case <-r.ctx.Done():
-			return errors.New("runtime stopped during discovery delay")
-		}
-	}
-	r.manager.PickInitial()
 
 	if err := r.startListeners(); err != nil {
 		r.Stop()
@@ -164,9 +154,53 @@ func (r *Runtime) startProbes() {
 		r.wg.Add(1)
 		go func(u *upstream.Upstream) {
 			defer r.wg.Done()
-			probe.ProbeLoop(r.ctx, u, r.cfg.Probe, r.cfg.Scoring, r.manager, r.metrics, r.logger)
+			probe.ProbeLoop(r.ctx, u, r.cfg.Probe, r.manager, r.metrics, r.logger)
 		}(up)
 	}
+}
+
+func (r *Runtime) startMeasurement() {
+	for _, up := range r.upstreams {
+		r.wg.Add(1)
+		go func(u *upstream.Upstream) {
+			defer r.wg.Done()
+			collector := measure.NewCollector(u, r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, r.logger)
+			collector.RunLoop(r.ctx)
+		}(up)
+	}
+}
+
+func (r *Runtime) runFastStart() {
+	ctx, cancel := context.WithTimeout(r.ctx, r.cfg.Measurement.FastStartTimeout.Duration()*time.Duration(len(r.upstreams)+1))
+	defer cancel()
+
+	var wg sync.WaitGroup
+	scores := make(map[string]float64)
+	var mu sync.Mutex
+
+	for _, up := range r.upstreams {
+		wg.Add(1)
+		go func(u *upstream.Upstream) {
+			defer wg.Done()
+			host := u.MeasureHost
+			if host == "" {
+				host = u.Host
+			}
+			port := u.MeasurePort
+			if port == 0 {
+				port = 9876
+			}
+			rtt, reachable := measure.FastStartProbe(ctx, host, port, r.cfg.Measurement.FastStartTimeout.Duration())
+			score := measure.FastStartScore(rtt, reachable, u.Priority)
+			mu.Lock()
+			scores[u.Tag] = score
+			mu.Unlock()
+		}(up)
+	}
+	wg.Wait()
+
+	r.manager.SelectByFastStart(scores)
+	r.manager.StartWarmup(r.cfg.Measurement.WarmupDuration.Duration())
 }
 
 func (r *Runtime) startListeners() error {
@@ -244,9 +278,13 @@ func resolveUpstreams(ctx context.Context, cfg config.Config, res *resolver.Reso
 			return nil, err
 		}
 		up := &upstream.Upstream{
-			Tag:  item.Tag,
-			Host: item.Host,
-			IPs:  ips,
+			Tag:         item.Tag,
+			Host:        item.Host,
+			MeasureHost: item.MeasureHost,
+			MeasurePort: item.MeasurePort,
+			Priority:    item.Priority,
+			Bias:        item.Bias,
+			IPs:         ips,
 		}
 		up.SetActiveIP(ips[0])
 		upstreams = append(upstreams, up)

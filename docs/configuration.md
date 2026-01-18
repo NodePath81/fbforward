@@ -19,6 +19,10 @@ listeners:
 upstreams:
   - tag: primary
     host: 203.0.113.10
+    measure_host: 203.0.113.10
+    measure_port: 9876
+    priority: 0
+    bias: 0
     egress:
       rate: 100m
     ingress:
@@ -32,20 +36,56 @@ probe:
   interval: 1s
   window_size: 5
   discovery_delay: 5s
+measurement:
+  interval: 2s
+  discovery_delay: 10s
+  target_bandwidth_up: 10m
+  target_bandwidth_down: 50m
+  sample_bytes: 500KB
+  samples: 1
+  tcp_enabled: true
+  udp_enabled: true
+  alternate_tcp: true
+  max_sample_duration: 10s
+  max_cycle_duration: 30s
+  fast_start_timeout: 500ms
+  warmup_duration: 15s
+  stale_threshold: 120s
+  fallback_to_icmp: true
 scoring:
-  ema_alpha: 0.357
-  metric_ref_rtt_ms: 7
-  metric_ref_jitter_ms: 1
-  metric_ref_loss: 0.05
-  weights:
-    rtt: 0.2
-    jitter: 0.45
-    loss: 0.35
+  ema_alpha: 0.2
+  ref_bandwidth_up: 10m
+  ref_bandwidth_down: 50m
+  ref_rtt_ms: 50
+  ref_jitter_ms: 10
+  ref_retrans_rate: 0.01
+  ref_loss_rate: 0.01
+  weights_tcp:
+    bandwidth_up: 0.15
+    bandwidth_down: 0.25
+    rtt: 0.25
+    jitter: 0.10
+    retrans: 0.25
+  weights_udp:
+    bandwidth_up: 0.10
+    bandwidth_down: 0.30
+    rtt: 0.15
+    jitter: 0.30
+    loss: 0.15
+  protocol_weight_tcp: 0.5
+  protocol_weight_udp: 0.5
+  utilization_enabled: true
+  utilization_min_mult: 0.3
+  utilization_threshold: 0.7
+  utilization_exponent: 2
+  bias_kappa: 0.693
 switching:
-  confirm_windows: 3
-  failure_loss_threshold: 0.8
-  switch_threshold: 1.0
-  min_hold_seconds: 5
+  confirm_duration: 15s
+  failure_loss_threshold: 0.2
+  failure_retrans_threshold: 0.2
+  switch_threshold: 5
+  min_hold_seconds: 30
+  close_flows_on_unusable: false
 limits:
   max_tcp_conns: 50
   max_udp_mappings: 500
@@ -70,7 +110,8 @@ shaping:
 - `listeners` (list, required): listener definitions.
 - `upstreams` (list, required): global upstream list.
 - `resolver` (object, optional): custom DNS settings.
-- `probe` (object, optional): ICMP probe scheduling.
+- `probe` (object, optional): ICMP reachability probe scheduling.
+- `measurement` (object, optional): bwprobe measurement scheduling + timeouts.
 - `scoring` (object, optional): scoring/EMA parameters.
 - `switching` (object, optional): auto switching behavior.
 - `limits` (object, optional): connection/mapping caps.
@@ -98,6 +139,10 @@ Each entry:
 
 - `tag` (string, required): stable identifier used in RPC/UI/metrics.
 - `host` (string, required): IP literal or hostname.
+- `measure_host` (string, optional): host/IP of the measurement server (defaults to `host`).
+- `measure_port` (int, optional): measurement server port (default: `9876`).
+- `priority` (float, optional): static priority bonus for fast start (default: `0`).
+- `bias` (float, optional): user bias in `[-1,1]` (default: `0`).
 - `ingress` (object, optional): per-upstream download shaping (traffic FROM upstream).
 - `egress` (object, optional): per-upstream upload shaping (traffic TO upstream).
 
@@ -116,41 +161,79 @@ Notes:
   - `prefer_ipv6`: use IPv6 (AAAA) results when present; fall back to IPv4 (A) when no IPv6 records exist.
   - If omitted, all resolved addresses are used in resolver order.
 
-## probe
+## probe (reachability only)
 
 - `interval` (duration, default: `1s`): ICMP probe interval per upstream.
-- `window_size` (int, default: `5`): number of probes per scoring window.
-- `discovery_delay` (duration, default: `window_size * interval`): wait before picking initial upstream.
+- `window_size` (int, default: `5`): number of probes per reachability window.
+- `discovery_delay` (duration, default: `window_size * interval`): wait before reachability-only initialization.
 
 Duration format:
 - String: Go duration (e.g., `500ms`, `2s`, `1m`).
 - Number: seconds (int/float).
 
+## measurement
+
+- `interval` (duration, default: `2s`): measurement cycle interval (`T0`).
+- `discovery_delay` (duration, default: `10s`): delay before starting measurements.
+- `target_bandwidth_up` (string, default: `10m`): target uplink bandwidth.
+- `target_bandwidth_down` (string, default: `50m`): target downlink bandwidth.
+- `sample_bytes` (string, default: `500KB`): payload bytes per sample.
+- `samples` (int, default: `1`): samples per direction per cycle.
+- `tcp_enabled` (bool, default: `true`): enable TCP measurements.
+- `udp_enabled` (bool, default: `true`): enable UDP measurements.
+- `alternate_tcp` (bool, default: `true`): alternate TCP/UDP each cycle; if false, run both each cycle.
+- `max_sample_duration` (duration, default: `10s`): per-sample timeout.
+- `max_cycle_duration` (duration, default: `30s`): per-cycle timeout.
+- `fast_start_timeout` (duration, default: `500ms`): fast-start probe timeout.
+- `warmup_duration` (duration, default: `15s`): warmup period for relaxed switching.
+- `stale_threshold` (duration, default: `120s`): metric staleness threshold.
+- `fallback_to_icmp` (bool, default: `true`): allow ICMP-only fallback when measurements fail.
+
+## scoring
 ## scoring
 
-- `ema_alpha` (float, default: `0.357`): EMA smoothing factor in `(0,1]`.
-- `metric_ref_rtt_ms` (float, default: `7`): RTT reference in ms.
-- `metric_ref_jitter_ms` (float, default: `1`): jitter reference in ms.
-- `metric_ref_loss` (float, default: `0.05`): loss reference as fraction.
-- `weights` (object, optional): weights for RTT/jitter/loss subscores.
-  - `rtt` (float, default: `0.2`)
-  - `jitter` (float, default: `0.45`)
-  - `loss` (float, default: `0.35`)
+- `ema_alpha` (float, default: `0.2`): EMA smoothing factor in `(0,1]`.
+- `ref_bandwidth_up` (string, default: `10m`): reference uplink bandwidth.
+- `ref_bandwidth_down` (string, default: `50m`): reference downlink bandwidth.
+- `ref_rtt_ms` (float, default: `50`): RTT reference in ms.
+- `ref_jitter_ms` (float, default: `10`): jitter reference in ms.
+- `ref_retrans_rate` (float, default: `0.01`): TCP retrans rate reference.
+- `ref_loss_rate` (float, default: `0.01`): UDP loss rate reference.
+- `weights_tcp` (object): per-metric weights for TCP scoring.
+  - `bandwidth_up` (float, default: `0.15`)
+  - `bandwidth_down` (float, default: `0.25`)
+  - `rtt` (float, default: `0.25`)
+  - `jitter` (float, default: `0.10`)
+  - `retrans` (float, default: `0.25`)
+- `weights_udp` (object): per-metric weights for UDP scoring.
+  - `bandwidth_up` (float, default: `0.10`)
+  - `bandwidth_down` (float, default: `0.30`)
+  - `rtt` (float, default: `0.15`)
+  - `jitter` (float, default: `0.30`)
+  - `loss` (float, default: `0.15`)
+- `protocol_weight_tcp` (float, default: `0.5`): overall blend weight for TCP.
+- `protocol_weight_udp` (float, default: `0.5`): overall blend weight for UDP.
+- `utilization_enabled` (bool, default: `true`): enable utilization penalty.
+- `utilization_min_mult` (float, default: `0.3`): minimum multiplier.
+- `utilization_threshold` (float, default: `0.7`): threshold `u^0` for penalty.
+- `utilization_exponent` (float, default: `2`): exponent `p` for penalty curve.
+- `bias_kappa` (float, default: `0.693`): bias multiplier coefficient.
 
 Notes:
 - Weights are normalized to sum to `1` if they do not already.
-- Loss is clamped to `[0,1]` before scoring.
-- Jitter is the mean absolute difference between consecutive RTT samples in a window.
+- Legacy fields `metric_ref_*` and `weights` are accepted for migration.
 
 ## switching
 
-- `confirm_windows` (int, default: `3`): number of best-score windows required before switching.
-- `failure_loss_threshold` (float, default: `0.8`): if active loss in a window is at/above this, fail over immediately.
-- `switch_threshold` (float, default: `1.0`): score delta required to consider a switch.
-- `min_hold_seconds` (int, default: `5`): minimum time to hold the active upstream before score-based switching.
+- `confirm_duration` (duration, default: `15s`): score gap must persist for this duration before switching.
+- `failure_loss_threshold` (float, default: `0.2`): UDP loss threshold for immediate failover.
+- `failure_retrans_threshold` (float, default: `0.2`): TCP retrans threshold for immediate failover.
+- `switch_threshold` (float, default: `5`): score delta required to consider a switch.
+- `min_hold_seconds` (int, default: `30`): minimum time to hold the active upstream before switching.
+- `close_flows_on_unusable` (bool, default: `false`): close pinned flows on unusable transitions.
 
 Notes:
-- `failure_loss_threshold` affects fast failover only; usability still uses loss == 1.
+- `confirm_windows` is still accepted for backward compatibility and is migrated into `confirm_duration`.
 
 ## limits
 

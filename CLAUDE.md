@@ -5,10 +5,12 @@ code in this repository.
 
 ## Repository Overview
 
-This repository contains two independent Linux-only networking tools:
+This repository contains two independent Linux-only networking tools plus a
+measurement server binary:
 
 1. **bwprobe** - Network quality measurement tool that tests at a user-specified bandwidth cap
-2. **fbforward** - TCP/UDP port forwarder with ICMP-based upstream quality selection
+2. **fbforward** - TCP/UDP port forwarder with bwprobe-based upstream selection
+3. **fbmeasure** - Measurement server used by fbforward for TCP/UDP link metrics
 
 Both projects are production-grade Go implementations focused on network
 quality measurement and management.
@@ -18,15 +20,20 @@ quality measurement and management.
 ### Monorepo
 
 ```bash
-# Build both binaries
+# Build all binaries
 make build
 
 # Build one binary
 make build-fbforward
 make build-bwprobe
+make build-fbmeasure
 
-# Run tests
+# Run all tests
 go test ./...
+
+# Run tests for specific package
+go test ./internal/upstream -v
+go test ./bwprobe/internal/network -run TestSenderFraming
 ```
 
 ### bwprobe
@@ -35,13 +42,10 @@ go test ./...
 # Build
 make build-bwprobe
 # or directly:
-go build -o build/bin/bwprobe ./bwprobe/cmd/bwprobe
+go build -o build/bin/bwprobe ./bwprobe/cmd
 
-# Run tests
-go test ./...
-
-# Run specific test
-go test ./bwprobe/internal/network -run TestSenderFraming
+# Run with specific flags
+./build/bin/bwprobe -server localhost:9876 -bandwidth 10m -samples 5
 ```
 
 ### fbforward
@@ -58,9 +62,30 @@ cd web
 npm install
 npm run build
 
+# Development mode for web UI (hot reload)
+cd web
+npm run dev  # Opens dev server on http://localhost:5173
+
 # Run with capabilities (required for ICMP probing)
 sudo setcap cap_net_raw+ep ./build/bin/fbforward
 ./build/bin/fbforward --config config.yaml
+
+# Build measurement server (required for fbforward operation)
+make build-fbmeasure
+go build -o build/bin/fbmeasure ./bwprobe/cmd/fbmeasure
+```
+
+### fbmeasure
+
+```bash
+# Build
+make build-fbmeasure
+
+# Run on upstream hosts
+./build/bin/fbmeasure --port 9876
+
+# Test connectivity
+./build/bin/bwprobe -server <upstream-host>:9876 -bandwidth 10m
 ```
 
 ## Platform Requirements
@@ -79,10 +104,10 @@ bwprobe uses separate control and data channels:
 
 - **Control channel**: JSON-RPC 2.0 over TCP for session setup and sample coordination
   - Supports fallback to legacy text protocol for compatibility
-  - Control methods: `bwprobe/internal/rpc/protocol.go`
+  - Control methods: [bwprobe/internal/rpc/protocol.go](bwprobe/internal/rpc/protocol.go)
 
 - **Data channel**: TCP or UDP stream with per-sample framing
-  - Frame headers: `bwprobe/internal/protocol/types.go`
+  - Frame headers: [bwprobe/internal/protocol/types.go](bwprobe/internal/protocol/types.go)
 
 ### Sample-Based Testing Model
 
@@ -91,7 +116,7 @@ Each test run executes a fixed number of samples:
 1. Client sends `SAMPLE_START` (or `SAMPLE_START_REVERSE`) via control channel
 2. Data transfer runs at target rate until `-sample-bytes` payload bytes sent
 3. Client sends `SAMPLE_STOP`
-4. Server aggregates data into 100ms intervals (fixed in `bwprobe/internal/rpc/session.go`)
+4. Server aggregates data into 100ms intervals (fixed in [bwprobe/internal/rpc/session.go](bwprobe/internal/rpc/session.go))
 5. Server returns per-sample report with interval stats and metrics
 
 ### Throughput Calculation
@@ -100,26 +125,26 @@ Each test run executes a fixed number of samples:
 - **P90/P80**: Percentiles of interval rates
 - **Sustained peak**: Max average rate over rolling 1-second window
 
-Logic: `bwprobe/internal/engine/samples.go`
+Logic: [bwprobe/internal/engine/samples.go](bwprobe/internal/engine/samples.go)
 
 ### Upload vs Download (Reverse Mode)
 
 - **Upload** (default): Client sends data to server
 - **Download** (`-reverse`): Server sends data to client, but client still drives control
   - TCP retransmit stats are reported by the server (it is the sender)
-  - Requires separate reverse data connection handling in `bwprobe/internal/transport/`
+  - Requires separate reverse data connection handling in [bwprobe/internal/transport/](bwprobe/internal/transport/)
 
 ### Package Responsibilities
 
-- `bwprobe/cmd/bwprobe/main.go`: CLI entry point, flag parsing, output formatting
-- `bwprobe/pkg/`: Public Go API for embedding (import path `github.com/NodePath81/fbforward/bwprobe/pkg`)
-- `bwprobe/internal/engine/`: Test orchestration, sample loop, metric computation
-- `bwprobe/internal/rpc/`: JSON-RPC client/server, session management
-- `bwprobe/internal/server/`: Control listener, data stream routing
-- `bwprobe/internal/transport/`: Reverse-mode connection handling
-- `bwprobe/internal/network/`: TCP/UDP senders with pacing
-- `bwprobe/internal/metrics/`: RTT sampler, TCP_INFO reader, UDP loss tracking
-- `bwprobe/internal/protocol/`: Data frame headers and constants
+- [bwprobe/cmd/main.go](bwprobe/cmd/main.go): CLI entry point, flag parsing, output formatting
+- [bwprobe/pkg/](bwprobe/pkg/): Public Go API for embedding (import path `github.com/NodePath81/fbforward/bwprobe/pkg`)
+- [bwprobe/internal/engine/](bwprobe/internal/engine/): Test orchestration, sample loop, metric computation
+- [bwprobe/internal/rpc/](bwprobe/internal/rpc/): JSON-RPC client/server, session management
+- [bwprobe/internal/server/](bwprobe/internal/server/): Control listener, data stream routing
+- [bwprobe/internal/transport/](bwprobe/internal/transport/): Reverse-mode connection handling
+- [bwprobe/internal/network/](bwprobe/internal/network/): TCP/UDP senders with pacing
+- [bwprobe/internal/metrics/](bwprobe/internal/metrics/): RTT sampler, TCP_INFO reader, UDP loss tracking
+- [bwprobe/internal/protocol/](bwprobe/internal/protocol/): Data frame headers and constants
 
 ## fbforward Architecture
 
@@ -129,51 +154,79 @@ fbforward runs as a single process with three main planes:
 
 1. **Data plane**: TCP/UDP listeners forward traffic to selected upstream with per-connection/mapping pinning
 2. **Control plane**: HTTP server providing RPC, metrics, WebSocket status stream, embedded web UI
-3. **Health/selection plane**: ICMP probes, scoring, and upstream switching logic
+3. **Health/selection plane**: ICMP reachability, bwprobe measurements, scoring, and switching logic
 4. **Shaping plane** (optional): Linux tc-based ingress/egress shaping via netlink
 
 ### Startup Flow
 
-1. `cmd/fbforward/main.go` loads config, creates logger, validates Linux, starts Supervisor
+1. [cmd/fbforward/main.go](cmd/fbforward/main.go) loads config, creates logger, validates Linux, starts Supervisor
 2. `Supervisor` loads config and constructs a `Runtime`
 3. `Runtime` resolves upstreams, creates `UpstreamManager`, `Metrics`, `StatusStore`, `ControlServer`, starts probes and listeners
 4. On shutdown/restart, Runtime stops listeners and closes active flows
 
+### Measurement Server Requirement
+
+**CRITICAL**: fbforward requires `fbmeasure` running on each upstream host:
+
+- fbmeasure provides TCP/UDP measurement endpoints for bwprobe tests
+- Default port: 9876 (configurable via `measure_port` in upstream config)
+- Deploy with: `make build-fbmeasure` then `./build/bin/fbmeasure --port 9876`
+- Without fbmeasure, fbforward falls back to ICMP-only reachability (degraded mode)
+
+### Flow Pinning Model
+
+**Key concept**: Once a flow (TCP connection or UDP 5-tuple mapping) is assigned to an upstream, it stays pinned to that upstream until termination/expiry, even if the primary upstream changes.
+
+- **Primary upstream**: The only upstream that receives **new** flow assignments
+- **Pinned flows**: Existing flows continue to their originally assigned upstream
+- **TCP lifecycle**: Create mapping on accept, remove on FIN/RST
+- **UDP lifecycle**: Create mapping on first packet, remove after idle timeout
+- **Admission rule**: New flows always go to current primary; switching only affects future flows
+
+This ensures in-flight connections are not disrupted during upstream switches.
+
 ### Scoring and Upstream Selection
 
-ICMP probing is used for upstream quality assessment:
+Upstream quality is based on bwprobe TCP/UDP measurements, with detailed algorithm in [docs/algorithm.md](docs/algorithm.md):
 
-- Each upstream accumulates fixed-size window of probe results
-- Window metrics: loss (clamped `[0,1]`), avg RTT, jitter (mean absolute difference)
-- Metrics smoothed using EMA: `metric = alpha*new + (1-alpha)*old`
-- Score formula: `100 * (s_rtt ^ w_rtt) * (s_jit ^ w_jit) * (s_los ^ w_los)`
-- Upstream unusable on 100% loss; recovers automatically
+- Each upstream runs periodic bwprobe upload/download tests over TCP/UDP
+- Metrics (bandwidth, RTT/jitter, loss/retrans) are smoothed with EMA
+- Score blends TCP/UDP sub-scores using exponential normalization with configurable weights
+- Protocol weight blends TCP and UDP scores (configurable, default 0.5 each)
+- Utilization penalty applied when actual traffic exceeds configured link capacity
+- Static priority and bias adjustments per upstream
+- **ICMP probing is reachability-only** and does not affect scores (migration from legacy ICMP scoring)
+
+**Fast-start mode**: At startup, uses lightweight ICMP RTT probes for immediate primary selection, then transitions to full bwprobe scoring after warmup period.
 
 **Auto mode** switching:
-- Requires confirmation windows, score delta threshold, minimum hold time
-- Fast failover on high loss windows or consecutive dial failures
+- Requires confirmation duration (time-based), score delta threshold, minimum hold time
+- Fast failover on high loss/retrans windows or consecutive dial failures
+- Unusable upstreams (100% loss, dial failures) automatically recover when probes succeed
 
 **Manual mode**:
 - Operator-selected tag must be usable; otherwise rejected
 
 ### Key Components
 
-- `internal/app/supervisor.go`: Owns Runtime, handles restart lifecycle
-- `internal/app/runtime.go`: Wires all runtime components, manages goroutines
-- `internal/probe/probe.go`: ICMP probing, windowing, jitter, score updates
-- `internal/upstream/upstream.go`: State, EMA metrics, scoring, switching logic
-- `internal/forwarding/forward_tcp.go`: TCP listener, per-connection proxying, idle handling
-- `internal/forwarding/forward_udp.go`: UDP listener, per-mapping sockets, idle handling
-- `internal/control/control.go`: HTTP API, auth, WebSocket status stream
-- `internal/metrics/metrics.go`: Prometheus metric aggregation
-- `web/handler.go`: Embedded UI handler
+- [internal/app/supervisor.go](internal/app/supervisor.go): Owns Runtime, handles restart lifecycle
+- [internal/app/runtime.go](internal/app/runtime.go): Wires all runtime components, manages goroutines
+- [internal/probe/probe.go](internal/probe/probe.go): ICMP probing for reachability (no scoring)
+- [internal/measure/collector.go](internal/measure/collector.go): bwprobe measurement loop and scoring inputs
+- [internal/measure/fast_start.go](internal/measure/fast_start.go): fast-start TCP RTT selection
+- [internal/upstream/upstream.go](internal/upstream/upstream.go): State, EMA metrics, scoring, switching logic
+- [internal/forwarding/forward_tcp.go](internal/forwarding/forward_tcp.go): TCP listener, per-connection proxying, idle handling, flow pinning
+- [internal/forwarding/forward_udp.go](internal/forwarding/forward_udp.go): UDP listener, per-mapping sockets, idle handling, flow pinning
+- [internal/control/control.go](internal/control/control.go): HTTP API, auth, WebSocket status stream
+- [internal/metrics/metrics.go](internal/metrics/metrics.go): Prometheus metric aggregation
+- [web/handler.go](web/handler.go): Embedded UI handler
 
 ### Control Plane
 
 - `GET /metrics`: Prometheus metrics (Bearer token required)
-- `POST /rpc`: JSON RPC methods: `SetUpstream`, `Restart`, `GetStatus`, `ListUpstreams` (token required)
+- `POST /rpc`: JSON RPC methods: `SetUpstream`, `Restart`, `GetStatus`, `ListUpstreams`, `GetMeasurementConfig` (token required)
 - `GET /status`: WebSocket stream (token required; browser UI uses WebSocket subprotocol)
-- `GET /`: Embedded SPA UI
+- `GET /`: Embedded SPA UI (Vite-built TypeScript)
 
 Auth uses Bearer tokens with constant-time comparison. WebSocket auth supports
 token embedded in subprotocol list.
@@ -184,32 +237,35 @@ token embedded in subprotocol list.
 
 When modifying behavior across control/data boundary:
 
-1. **Add new control method**: Update `bwprobe/internal/rpc/protocol.go`,
-   `bwprobe/internal/rpc/server.go`, `bwprobe/internal/rpc/client.go`,
-   `bwprobe/internal/engine/control.go`
+1. **Add new control method**: Update [bwprobe/internal/rpc/protocol.go](bwprobe/internal/rpc/protocol.go),
+   [bwprobe/internal/rpc/server.go](bwprobe/internal/rpc/server.go), [bwprobe/internal/rpc/client.go](bwprobe/internal/rpc/client.go),
+   [bwprobe/internal/engine/control.go](bwprobe/internal/engine/control.go)
 
-2. **Change throughput calculation**: Update `bwprobe/internal/engine/samples.go`
-   and ensure interval duration in `bwprobe/internal/rpc/session.go` matches
+2. **Change throughput calculation**: Update [bwprobe/internal/engine/samples.go](bwprobe/internal/engine/samples.go)
+   and ensure interval duration in [bwprobe/internal/rpc/session.go](bwprobe/internal/rpc/session.go) matches
 
-3. **Modify pacing or framing**: Update `bwprobe/internal/network/sender.go` and
-   verify chunk size logic aligns with headers in `bwprobe/internal/protocol/types.go`
+3. **Modify pacing or framing**: Update [bwprobe/internal/network/sender.go](bwprobe/internal/network/sender.go) and
+   verify chunk size logic aligns with headers in [bwprobe/internal/protocol/types.go](bwprobe/internal/protocol/types.go)
 
-4. **Extend server metrics**: Update session manager in `bwprobe/internal/rpc/session.go`
-   and metric collectors in `bwprobe/internal/metrics/`
+4. **Extend server metrics**: Update session manager in [bwprobe/internal/rpc/session.go](bwprobe/internal/rpc/session.go)
+   and metric collectors in [bwprobe/internal/metrics/](bwprobe/internal/metrics/)
 
 ### fbforward
 
 When extending functionality:
 
 1. **Switching behavior**: Adjust `SwitchingConfig` and `UpstreamManager` logic in
-   `internal/upstream/upstream.go`
+   [internal/upstream/upstream.go](internal/upstream/upstream.go). See [docs/algorithm.md](docs/algorithm.md) for scoring details.
 
-2. **Control API**: Add new RPC methods in `internal/control/control.go`
+2. **Control API**: Add new RPC methods in [internal/control/control.go](internal/control/control.go)
 
 3. **Observability**: Extend `Metrics` or `StatusStore` for new telemetry
 
 4. **Data plane**: Add new protocol listeners following TCP/UDP patterns in
-   `internal/forwarding/`
+   [internal/forwarding/](internal/forwarding/), ensuring flow pinning semantics
+
+5. **Scoring algorithm**: Modify normalization or weights in [internal/upstream/upstream.go](internal/upstream/upstream.go),
+   update config schema in [internal/config/config.go](internal/config/config.go)
 
 ## Implementation Principles
 
@@ -226,3 +282,4 @@ When extending functionality:
 - **Flow pinning**: TCP/UDP flows pinned to selected upstream until idle/expired
 - **Fast failover**: Immediate switch on high loss windows or dial failures
 - **Auto recovery**: Unusable upstreams recover automatically when probes succeed
+- **Measurement-driven**: ICMP for reachability only; bwprobe measurements drive all scoring

@@ -1,6 +1,6 @@
 import type { UpstreamSnapshot, UpstreamMetrics } from '../../types';
 import { createEl, clearChildren } from '../../utils/dom';
-import { formatMs, formatPercent, formatScore } from '../../utils/format';
+import { formatBps, formatMs, formatPercent, formatScore } from '../../utils/format';
 
 export interface BestFlags {
   bestRtt: boolean;
@@ -33,29 +33,47 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
 
   const list = createEl('div', 'metric-list');
   const rows = {
+    bwUp: createMetricRow('Bandwidth up'),
+    bwDown: createMetricRow('Bandwidth down'),
     rtt: createMetricRow('RTT'),
     jitter: createMetricRow('Jitter'),
+    retrans: createMetricRow('Retrans'),
     loss: createMetricRow('Loss'),
     score: createMetricRow('Score'),
-    status: createMetricRow('Status')
+    scoreTcp: createMetricRow('Score TCP'),
+    scoreUdp: createMetricRow('Score UDP'),
+    utilization: createMetricRow('Utilization'),
+    reachable: createMetricRow('Reachable')
   };
 
+  list.appendChild(rows.bwUp.row);
+  list.appendChild(rows.bwDown.row);
   list.appendChild(rows.rtt.row);
   list.appendChild(rows.jitter.row);
+  list.appendChild(rows.retrans.row);
   list.appendChild(rows.loss.row);
   list.appendChild(rows.score.row);
-  list.appendChild(rows.status.row);
+  list.appendChild(rows.scoreTcp.row);
+  list.appendChild(rows.scoreUdp.row);
+  list.appendChild(rows.utilization.row);
+  list.appendChild(rows.reachable.row);
 
   card.appendChild(header);
   card.appendChild(scoreTrack);
   card.appendChild(list);
 
   const update = (metrics: UpstreamMetrics, flags: BestFlags) => {
+    rows.bwUp.value.textContent = formatBps(metrics.bandwidthUpBps);
+    rows.bwDown.value.textContent = formatBps(metrics.bandwidthDownBps);
     rows.rtt.value.textContent = formatMs(metrics.rtt);
     rows.jitter.value.textContent = formatMs(metrics.jitter);
-    rows.loss.value.textContent = formatPercent(metrics.loss, 1);
+    rows.retrans.value.textContent = formatPercent(metrics.retransRate, 2);
+    rows.loss.value.textContent = formatPercent(metrics.loss, 2);
     rows.score.value.textContent = formatScore(metrics.score);
-    rows.status.value.textContent = metrics.unusable ? 'unusable' : 'ok';
+    rows.scoreTcp.value.textContent = formatScore(metrics.scoreTcp);
+    rows.scoreUdp.value.textContent = formatScore(metrics.scoreUdp);
+    rows.utilization.value.textContent = formatPercent(metrics.utilization, 1);
+    rows.reachable.value.textContent = metrics.reachable ? 'yes' : 'no';
 
     scoreFill.style.width = `${Math.max(0, Math.min(100, metrics.score))}%`;
     card.classList.toggle('active', metrics.active);

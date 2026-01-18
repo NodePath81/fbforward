@@ -4,6 +4,8 @@
 
 - [Codebase Overview](codebase.md)
 - [Configuration Reference](configuration.md)
+- [Selection Algorithm](algorithm.md)
+- [Measurement Migration Guide](migration-measurement.md)
 
 ## bwprobe
 

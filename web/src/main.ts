@@ -498,7 +498,16 @@ function defaultMetrics(tag: string, activeTag: string): UpstreamMetrics {
     rtt: 0,
     jitter: 0,
     loss: 0,
+    lossRate: 0,
+    retransRate: 0,
     score: 0,
+    scoreTcp: 0,
+    scoreUdp: 0,
+    scoreOverall: 0,
+    bandwidthUpBps: 0,
+    bandwidthDownBps: 0,
+    utilization: 0,
+    reachable: false,
     unusable: true,
     active: tag === activeTag
   };

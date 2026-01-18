@@ -36,6 +36,7 @@ const (
 
 type ControlServer struct {
 	cfg          config.ControlConfig
+	measurement  config.MeasurementConfig
 	webUIEnabled bool
 	hostname     string
 	manager      *upstream.UpstreamManager
@@ -47,9 +48,10 @@ type ControlServer struct {
 	limiter      *rateLimiter
 }
 
-func NewControlServer(cfg config.ControlConfig, webUIEnabled bool, hostname string, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
+func NewControlServer(cfg config.ControlConfig, measurement config.MeasurementConfig, webUIEnabled bool, hostname string, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
 	return &ControlServer{
 		cfg:          cfg,
+		measurement:  measurement,
 		webUIEnabled: webUIEnabled,
 		hostname:     hostname,
 		manager:      manager,
@@ -115,10 +117,10 @@ type setUpstreamParams struct {
 }
 
 type statusResponse struct {
-	Mode           string             `json:"mode"`
-	ActiveUpstream string             `json:"active_upstream"`
+	Mode           string                      `json:"mode"`
+	ActiveUpstream string                      `json:"active_upstream"`
 	Upstreams      []upstream.UpstreamSnapshot `json:"upstreams"`
-	Counts         statusCounts       `json:"counts"`
+	Counts         statusCounts                `json:"counts"`
 }
 
 type statusCounts struct {
@@ -198,10 +200,33 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
+	case "GetMeasurementConfig":
+		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getMeasurementConfig()})
 	case "ListUpstreams":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
 	default:
 		writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "unknown method"})
+	}
+}
+
+func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
+	cfg := c.measurement
+	return map[string]interface{}{
+		"interval":              cfg.Interval.Duration().String(),
+		"discovery_delay":       cfg.DiscoveryDelay.Duration().String(),
+		"target_bandwidth_up":   cfg.TargetBandwidthUp,
+		"target_bandwidth_down": cfg.TargetBandwidthDown,
+		"sample_bytes":          cfg.SampleBytes,
+		"samples":               cfg.Samples,
+		"tcp_enabled":           boolValue(cfg.TCPEnabled, true),
+		"udp_enabled":           boolValue(cfg.UDPEnabled, true),
+		"alternate_tcp":         boolValue(cfg.AlternateTCP, true),
+		"max_sample_duration":   cfg.MaxSampleDuration.Duration().String(),
+		"max_cycle_duration":    cfg.MaxCycleDuration.Duration().String(),
+		"fast_start_timeout":    cfg.FastStartTimeout.Duration().String(),
+		"warmup_duration":       cfg.WarmupDuration.Duration().String(),
+		"stale_threshold":       cfg.StaleThreshold.Duration().String(),
+		"fallback_to_icmp":      boolValue(cfg.FallbackToICMP, true),
 	}
 }
 
@@ -443,6 +468,13 @@ func (c *ControlServer) originAllowed(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Host, r.Host)
+}
+
+func boolValue(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func writeJSON(w http.ResponseWriter, status int, resp rpcResponse) {

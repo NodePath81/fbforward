@@ -16,10 +16,10 @@ import (
 )
 
 type probeWindow struct {
-	size     int
-	samples  int
-	lost     int
-	rttsMs   []float64
+	size    int
+	samples int
+	lost    int
+	rttsMs  []float64
 }
 
 func newProbeWindow(size int) *probeWindow {
@@ -80,7 +80,7 @@ func computeJitter(samples []float64) float64 {
 	return sum / float64(len(samples)-1)
 }
 
-func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.ProbeConfig, scoring config.ScoringConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, logger util.Logger) {
+func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.ProbeConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, logger util.Logger) {
 	timeout := cfg.Interval.Duration()
 	if timeout <= 0 {
 		timeout = time.Second
@@ -154,8 +154,10 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.ProbeConfi
 				window.addSample(ok, rtt)
 				if window.complete() {
 					wm := window.metrics()
-					stats := manager.UpdateWindow(up.Tag, wm, scoring)
-					metrics.SetUpstreamMetrics(up.Tag, stats)
+					stats := manager.UpdateReachability(up.Tag, wm.Loss < 1)
+					if metrics != nil {
+						metrics.SetUpstreamMetrics(up.Tag, stats)
+					}
 					window.reset()
 				}
 			}

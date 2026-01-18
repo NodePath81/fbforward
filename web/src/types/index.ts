@@ -6,20 +6,27 @@ export interface ControlState {
   isTransitioning: boolean;
 }
 
-export interface UpstreamStats {
-  rtt_ms: number;
-  jitter_ms: number;
-  loss: number;
-  score: number;
-  usable: boolean;
-}
-
 export interface UpstreamSnapshot {
   tag: string;
   host: string;
   ips: string[];
   active_ip: string;
-  stats: UpstreamStats;
+  active: boolean;
+  usable: boolean;
+  reachable: boolean;
+  bandwidth_up_bps: number;
+  bandwidth_down_bps: number;
+  rtt_ms: number;
+  jitter_ms: number;
+  retrans_rate: number;
+  loss_rate: number;
+  loss: number;
+  score_tcp: number;
+  score_udp: number;
+  score: number;
+  utilization: number;
+  last_tcp_update?: string;
+  last_udp_update?: string;
 }
 
 export interface UpstreamConfig {
@@ -33,7 +40,16 @@ export interface UpstreamMetrics {
   rtt: number;
   jitter: number;
   loss: number;
+  lossRate: number;
+  retransRate: number;
   score: number;
+  scoreTcp: number;
+  scoreUdp: number;
+  scoreOverall: number;
+  bandwidthUpBps: number;
+  bandwidthDownBps: number;
+  utilization: number;
+  reachable: boolean;
   unusable: boolean;
   active: boolean;
 }
@@ -62,7 +78,7 @@ export interface RawConnectionEntry {
   kind: 'tcp' | 'udp';
 }
 
-export type RPCMethod = 'GetStatus' | 'SetUpstream' | 'Restart';
+export type RPCMethod = 'GetStatus' | 'SetUpstream' | 'Restart' | 'ListUpstreams' | 'GetMeasurementConfig';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;

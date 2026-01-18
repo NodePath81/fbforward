@@ -5,7 +5,7 @@ key integration points for maintenance.
 
 ## Top-level layout
 
-- `bwprobe/cmd/bwprobe/main.go`: CLI entry point and output formatting.
+- `bwprobe/cmd/main.go`: CLI entry point and output formatting.
 - `bwprobe/pkg/`: Public Go API for embedding bwprobe in other tools (package `probe`).
 - `bwprobe/internal/`: Core implementation packages.
 - `docs/bwprobe/`: Documentation and design notes.
@@ -51,7 +51,7 @@ key integration points for maintenance.
 
 ## Data flow summary
 
-1. `bwprobe/cmd/bwprobe/main.go` builds a `probe.Config` and calls `probe.RunWithProgress`.
+1. `bwprobe/cmd/main.go` builds a `probe.Config` and calls `probe.RunWithProgress`.
 2. `probe.Run` converts to `internal/engine.Config` and starts RTT sampling.
 3. `internal/engine.Run` selects upload or download and runs `runSampleSeries`.
 4. For each sample, the control channel issues `StartSample`/`StopSample`.
@@ -79,7 +79,7 @@ key integration points for maintenance.
 - Change throughput math: `bwprobe/internal/engine/samples.go`.
 - Update pacing/chunk logic: `bwprobe/internal/network/sender.go`.
 - Extend server metrics: `bwprobe/internal/rpc/session.go` and `bwprobe/internal/metrics/*`.
-- Update CLI output: `bwprobe/cmd/bwprobe/main.go`.
+- Update CLI output: `bwprobe/cmd/main.go`.
 
 ## Tests
 

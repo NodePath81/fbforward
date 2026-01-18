@@ -15,6 +15,12 @@ upstreams:
   # Global upstream list shared by all listeners.
   - tag: primary
     host: 203.0.113.10
+    # Optional measurement host/port (defaults to host/9876).
+    measure_host: 203.0.113.10
+    measure_port: 9876
+    # Optional tuning.
+    priority: 0
+    bias: 0
     # Optional per-upstream shaping (requires shaping.enabled).
     # Limits bandwidth to/from this upstream's IP address.
     egress:
@@ -36,28 +42,69 @@ resolver:
   # If omitted, both A and AAAA results are used.
   # strategy: ipv4_only
 probe:
-  # ICMP probe interval and window size for scoring.
+  # ICMP reachability probe interval/window.
   interval: 1s
   window_size: 5
-  # Delay before selecting the initial upstream.
+  # Delay before starting ICMP probes.
   discovery_delay: 5s
+measurement:
+  # Measurement cycle interval and startup delay.
+  interval: 2s
+  discovery_delay: 10s
+  # Target bandwidth and sample sizes.
+  target_bandwidth_up: 10m
+  target_bandwidth_down: 50m
+  sample_bytes: 500KB
+  samples: 1
+  # Protocol scheduling.
+  tcp_enabled: true
+  udp_enabled: true
+  alternate_tcp: true
+  # Timeouts.
+  max_sample_duration: 10s
+  max_cycle_duration: 30s
+  # Fast start + warmup.
+  fast_start_timeout: 500ms
+  warmup_duration: 15s
+  # Staleness and fallback.
+  stale_threshold: 120s
+  fallback_to_icmp: true
 scoring:
-  # EMA smoothing and score reference values.
-  ema_alpha: 0.357
-  metric_ref_rtt_ms: 7
-  metric_ref_jitter_ms: 1
-  metric_ref_loss: 0.05
-  weights:
-    # Weights are normalized to sum to 1 if needed.
-    rtt: 0.2
-    jitter: 0.45
-    loss: 0.35
+  # EMA smoothing and reference values.
+  ema_alpha: 0.2
+  ref_bandwidth_up: 10m
+  ref_bandwidth_down: 50m
+  ref_rtt_ms: 50
+  ref_jitter_ms: 10
+  ref_retrans_rate: 0.01
+  ref_loss_rate: 0.01
+  weights_tcp:
+    bandwidth_up: 0.15
+    bandwidth_down: 0.25
+    rtt: 0.25
+    jitter: 0.10
+    retrans: 0.25
+  weights_udp:
+    bandwidth_up: 0.10
+    bandwidth_down: 0.30
+    rtt: 0.15
+    jitter: 0.30
+    loss: 0.15
+  protocol_weight_tcp: 0.5
+  protocol_weight_udp: 0.5
+  utilization_enabled: true
+  utilization_min_mult: 0.3
+  utilization_threshold: 0.7
+  utilization_exponent: 2
+  bias_kappa: 0.693
 switching:
   # Auto mode switch confirmation and failover behavior.
-  confirm_windows: 3
-  failure_loss_threshold: 0.8
-  switch_threshold: 1.0
-  min_hold_seconds: 5
+  confirm_duration: 15s
+  failure_loss_threshold: 0.2
+  failure_retrans_threshold: 0.2
+  switch_threshold: 5
+  min_hold_seconds: 30
+  close_flows_on_unusable: false
 limits:
   # Concurrency caps.
   max_tcp_conns: 50
