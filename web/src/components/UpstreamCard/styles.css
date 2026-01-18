@@ -30,7 +30,7 @@
 
 .upstream-card.disabled {
   opacity: 0.6;
-  pointer-events: none;
+  cursor: default;
 }
 
 .upstream-card.unusable {
@@ -136,4 +136,36 @@
 .metric-dual-item {
   min-width: 84px;
   text-align: right;
+}
+
+.upstream-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+}
+
+.btn-test {
+  flex: 1;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-dark);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.btn-test:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: white;
+}
+
+.btn-test:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }

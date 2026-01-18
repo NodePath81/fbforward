@@ -1,4 +1,4 @@
-import { callRPC } from './api/rpc';
+import { callRPC, runMeasurement } from './api/rpc';
 import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
 import { createConnectionTable } from './components/ConnectionTable';
@@ -143,6 +143,18 @@ function startApp(token: string) {
     clearChildren(upstreamGrid);
     for (const upstream of state.upstreams) {
       const card = createUpstreamCard(upstream);
+      card.onTestTCP = async () => {
+        const result = await runMeasurement(token, upstream.tag, 'tcp');
+        if (!result.ok) {
+          toast.show(result.error || 'TCP test failed.', 'error');
+        }
+      };
+      card.onTestUDP = async () => {
+        const result = await runMeasurement(token, upstream.tag, 'udp');
+        if (!result.ok) {
+          toast.show(result.error || 'UDP test failed.', 'error');
+        }
+      };
       card.element.addEventListener('click', () => {
         handleUpstreamSelect(upstream.tag);
       });

@@ -34,6 +34,7 @@ type Runtime struct {
 	shaper    *shaping.TrafficShaper
 	upstreams []*upstream.Upstream
 	listeners []closer
+	collector *measure.Collector
 	wg        sync.WaitGroup
 }
 
@@ -215,12 +216,19 @@ func (r *Runtime) startMeasurement() {
 		Protocols:           protocols,
 		RateWindow:          rateWindow,
 	}, r.metrics, r.upstreams, nil)
+	if r.control != nil {
+		r.control.SetScheduler(scheduler)
+	}
+
+	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, r.logger)
+	if r.control != nil {
+		r.control.SetCollector(r.collector)
+	}
 
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		collector := measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, r.logger)
-		collector.RunLoop(r.ctx)
+		r.collector.RunLoop(r.ctx)
 	}()
 }
 

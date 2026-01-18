@@ -15,3 +15,11 @@ export async function callRPC<T>(token: string, method: RPCMethod, params: unkno
     return { ok: false, error: 'network error' };
   }
 }
+
+export async function runMeasurement(
+  token: string,
+  tag: string,
+  protocol: 'tcp' | 'udp'
+): Promise<RPCResponse<void>> {
+  return callRPC<void>(token, 'RunMeasurement', { tag, protocol });
+}

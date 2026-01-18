@@ -231,6 +231,12 @@ func (m *UpstreamManager) ActiveTag() string {
 	return m.activeTag
 }
 
+func (m *UpstreamManager) Get(tag string) *Upstream {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.upstreams[tag]
+}
+
 func (m *UpstreamManager) SetAuto() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

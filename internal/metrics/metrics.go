@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"math"
 	"net/http"
 	"runtime"
 	"sort"
@@ -65,6 +66,10 @@ type Metrics struct {
 	bytesUDP           map[string]*protocolBytes
 	bytesUpPerSec      map[string]uint64
 	bytesDownPerSec    map[string]uint64
+	bytesTCPUpPerSec   map[string]uint64
+	bytesTCPDownPerSec map[string]uint64
+	bytesUDPUpPerSec   map[string]uint64
+	bytesUDPDownPerSec map[string]uint64
 	lastBytesUpTotal   map[string]uint64
 	lastBytesDownTotal map[string]uint64
 	lastBytesTCPUp     map[string]uint64
@@ -72,8 +77,16 @@ type Metrics struct {
 	lastBytesUDPUp     map[string]uint64
 	lastBytesUDPDown   map[string]uint64
 	utilization        map[string]*utilizationWindow
+	schedule           ScheduleMetrics
 	memoryAllocBytes   uint64
 	startTime          time.Time
+}
+
+type ScheduleMetrics struct {
+	QueueSize     int
+	SkippedTotal  uint64
+	NextScheduled time.Time
+	LastRun       map[string]time.Time
 }
 
 type UpstreamRates struct {
@@ -93,6 +106,10 @@ func NewMetrics(tags []string) *Metrics {
 	bytesUDP := make(map[string]*protocolBytes, len(tags))
 	bytesUpPerSec := make(map[string]uint64, len(tags))
 	bytesDownPerSec := make(map[string]uint64, len(tags))
+	bytesTCPUpPerSec := make(map[string]uint64, len(tags))
+	bytesTCPDownPerSec := make(map[string]uint64, len(tags))
+	bytesUDPUpPerSec := make(map[string]uint64, len(tags))
+	bytesUDPDownPerSec := make(map[string]uint64, len(tags))
 	lastBytesUp := make(map[string]uint64, len(tags))
 	lastBytesDown := make(map[string]uint64, len(tags))
 	lastBytesTCPUp := make(map[string]uint64, len(tags))
@@ -108,6 +125,10 @@ func NewMetrics(tags []string) *Metrics {
 		bytesUDP[tag] = &protocolBytes{}
 		bytesUpPerSec[tag] = 0
 		bytesDownPerSec[tag] = 0
+		bytesTCPUpPerSec[tag] = 0
+		bytesTCPDownPerSec[tag] = 0
+		bytesUDPUpPerSec[tag] = 0
+		bytesUDPDownPerSec[tag] = 0
 		lastBytesUp[tag] = 0
 		lastBytesDown[tag] = 0
 		lastBytesTCPUp[tag] = 0
@@ -124,6 +145,10 @@ func NewMetrics(tags []string) *Metrics {
 		bytesUDP:           bytesUDP,
 		bytesUpPerSec:      bytesUpPerSec,
 		bytesDownPerSec:    bytesDownPerSec,
+		bytesTCPUpPerSec:   bytesTCPUpPerSec,
+		bytesTCPDownPerSec: bytesTCPDownPerSec,
+		bytesUDPUpPerSec:   bytesUDPUpPerSec,
+		bytesUDPDownPerSec: bytesUDPDownPerSec,
 		lastBytesUpTotal:   lastBytesUp,
 		lastBytesDownTotal: lastBytesDown,
 		lastBytesTCPUp:     lastBytesTCPUp,
@@ -185,22 +210,26 @@ func (m *Metrics) updatePerSecond() {
 			prev := m.lastBytesTCPUp[tag]
 			tcpUpDelta = current - prev
 			m.lastBytesTCPUp[tag] = current
+			m.bytesTCPUpPerSec[tag] = tcpUpDelta
 
 			current = counter.down.Load()
 			prev = m.lastBytesTCPDown[tag]
 			tcpDownDelta = current - prev
 			m.lastBytesTCPDown[tag] = current
+			m.bytesTCPDownPerSec[tag] = tcpDownDelta
 		}
 		if counter, ok := m.bytesUDP[tag]; ok {
 			current := counter.up.Load()
 			prev := m.lastBytesUDPUp[tag]
 			udpUpDelta = current - prev
 			m.lastBytesUDPUp[tag] = current
+			m.bytesUDPUpPerSec[tag] = udpUpDelta
 
 			current = counter.down.Load()
 			prev = m.lastBytesUDPDown[tag]
 			udpDownDelta = current - prev
 			m.lastBytesUDPDown[tag] = current
+			m.bytesUDPDownPerSec[tag] = udpDownDelta
 		}
 
 		window.addSample(now, tcpUpDelta, tcpDownDelta, udpUpDelta, udpDownDelta)
@@ -239,15 +268,27 @@ func (m *Metrics) GetUtilization(tag string, empiricalBwUp, empiricalBwDn float6
 	if start > 0 {
 		util.samples = util.samples[start:]
 	}
-	var totalUp uint64
-	var totalDown uint64
+	var weightedUp float64
+	var weightedDown float64
+	var totalWeight float64
+	now := time.Now()
+	halfLife := 2.0
 	for _, sample := range util.samples {
-		totalUp += sample.tcpUp + sample.udpUp
-		totalDown += sample.tcpDown + sample.udpDown
+		age := now.Sub(sample.timestamp).Seconds()
+		weight := math.Exp(-age / halfLife)
+		upRate := float64(sample.tcpUp+sample.udpUp) * 8
+		downRate := float64(sample.tcpDown+sample.udpDown) * 8
+		weightedUp += upRate * weight
+		weightedDown += downRate * weight
+		totalWeight += weight
 	}
-	windowSeconds := window.Seconds()
-	utilUp := float64(totalUp*8) / (empiricalBwUp * windowSeconds)
-	utilDown := float64(totalDown*8) / (empiricalBwDn * windowSeconds)
+	if totalWeight <= 0 {
+		return 0
+	}
+	avgUpRate := weightedUp / totalWeight
+	avgDownRate := weightedDown / totalWeight
+	utilUp := avgUpRate / empiricalBwUp
+	utilDown := avgDownRate / empiricalBwDn
 	if utilDown > utilUp {
 		return utilDown
 	}
@@ -365,6 +406,23 @@ func (m *Metrics) GetUpstreamMetrics(tag string) (UpstreamMetrics, bool) {
 	return *up, true
 }
 
+func (m *Metrics) SetScheduleMetrics(stats ScheduleMetrics) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schedule.QueueSize = stats.QueueSize
+	m.schedule.SkippedTotal = stats.SkippedTotal
+	m.schedule.NextScheduled = stats.NextScheduled
+	if stats.LastRun == nil {
+		m.schedule.LastRun = nil
+		return
+	}
+	copied := make(map[string]time.Time, len(stats.LastRun))
+	for key, ts := range stats.LastRun {
+		copied[key] = ts
+	}
+	m.schedule.LastRun = copied
+}
+
 func (m *Metrics) SetMode(mode upstream.Mode) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -459,6 +517,11 @@ func (m *Metrics) Render() string {
 	}
 	bytesUpPerSec := copyUint64Map(m.bytesUpPerSec)
 	bytesDownPerSec := copyUint64Map(m.bytesDownPerSec)
+	bytesTCPUpPerSec := copyUint64Map(m.bytesTCPUpPerSec)
+	bytesTCPDownPerSec := copyUint64Map(m.bytesTCPDownPerSec)
+	bytesUDPUpPerSec := copyUint64Map(m.bytesUDPUpPerSec)
+	bytesUDPDownPerSec := copyUint64Map(m.bytesUDPDownPerSec)
+	schedule := m.schedule
 	memoryAlloc := m.memoryAllocBytes
 	startTime := m.startTime
 	m.mu.Unlock()
@@ -685,6 +748,64 @@ func (m *Metrics) Render() string {
 		b.WriteString(strconv.FormatUint(bytesDownPerSec[tag], 10))
 		b.WriteString("\n")
 	}
+	b.WriteString("# TYPE fbforward_upstream_tcp_up_rate_bps gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_tcp_up_rate_bps{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(float64(bytesTCPUpPerSec[tag]) * 8))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_tcp_down_rate_bps gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_tcp_down_rate_bps{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(float64(bytesTCPDownPerSec[tag]) * 8))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_udp_up_rate_bps gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_udp_up_rate_bps{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(float64(bytesUDPUpPerSec[tag]) * 8))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_udp_down_rate_bps gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_udp_down_rate_bps{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(float64(bytesUDPDownPerSec[tag]) * 8))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_measurement_queue_size gauge\n")
+	b.WriteString("fbforward_measurement_queue_size ")
+	b.WriteString(strconv.Itoa(schedule.QueueSize))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_measurement_skipped_total counter\n")
+	b.WriteString("fbforward_measurement_skipped_total ")
+	b.WriteString(strconv.FormatUint(schedule.SkippedTotal, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_measurement_last_run_seconds gauge\n")
+	now := time.Now()
+	for key, ts := range schedule.LastRun {
+		if ts.IsZero() {
+			continue
+		}
+		tag, proto, ok := splitScheduleKey(key)
+		if !ok {
+			continue
+		}
+		b.WriteString("fbforward_measurement_last_run_seconds{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\",protocol=\"")
+		b.WriteString(proto)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(now.Sub(ts).Seconds()))
+		b.WriteString("\n")
+	}
 	b.WriteString("# TYPE fbforward_memory_alloc_bytes gauge\n")
 	b.WriteString("fbforward_memory_alloc_bytes ")
 	b.WriteString(strconv.FormatUint(memoryAlloc, 10))
@@ -710,4 +831,12 @@ func copyUint64Map(src map[string]uint64) map[string]uint64 {
 
 func formatFloat(val float64) string {
 	return strconv.FormatFloat(val, 'f', 6, 64)
+}
+
+func splitScheduleKey(key string) (string, string, bool) {
+	tag, proto, ok := strings.Cut(key, ":")
+	if !ok || tag == "" || proto == "" {
+		return "", "", false
+	}
+	return tag, proto, true
 }

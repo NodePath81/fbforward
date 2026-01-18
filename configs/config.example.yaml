@@ -63,6 +63,9 @@ measurement:
   tcp_target_bandwidth_down: 50m
   udp_target_bandwidth_up: 10m
   udp_target_bandwidth_down: 50m
+  # Chunk sizes (bytes; 0 uses bwprobe default).
+  tcp_chunk_size: 1200
+  udp_chunk_size: 1200
   sample_bytes: 500KB
   samples: 1
   # Protocol scheduling.
@@ -76,7 +79,7 @@ measurement:
   fast_start_timeout: 500ms
   warmup_duration: 15s
   # Staleness and fallback.
-  stale_threshold: 120s
+  stale_threshold: 60m
   fallback_to_icmp: true
 scoring:
   # EMA smoothing and reference values.

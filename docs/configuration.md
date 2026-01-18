@@ -58,7 +58,7 @@ measurement:
   max_cycle_duration: 30s
   fast_start_timeout: 500ms
   warmup_duration: 15s
-  stale_threshold: 120s
+  stale_threshold: 60m
   fallback_to_icmp: true
 scoring:
   ema_alpha: 0.2
@@ -195,6 +195,8 @@ Duration format:
 - `tcp_target_bandwidth_down` (string, default: `50m`): target TCP downlink bandwidth.
 - `udp_target_bandwidth_up` (string, default: `10m`): target UDP uplink bandwidth.
 - `udp_target_bandwidth_down` (string, default: `50m`): target UDP downlink bandwidth.
+- `tcp_chunk_size` (string, default: `1200`): TCP chunk size in bytes (includes headers).
+- `udp_chunk_size` (string, default: `1200`): UDP chunk size in bytes (includes headers).
 - `sample_bytes` (string, default: `500KB`): payload bytes per sample.
 - `samples` (int, default: `1`): samples per direction per cycle.
 - `tcp_enabled` (bool, default: `true`): enable TCP measurements.
@@ -204,7 +206,7 @@ Duration format:
 - `max_cycle_duration` (duration, default: `30s`): per-cycle timeout.
 - `fast_start_timeout` (duration, default: `500ms`): fast-start probe timeout.
 - `warmup_duration` (duration, default: `15s`): warmup period for relaxed switching.
-- `stale_threshold` (duration, default: `120s`): metric staleness threshold.
+- `stale_threshold` (duration, default: `60m`): metric staleness threshold.
 - `fallback_to_icmp` (bool, default: `true`): allow ICMP-only fallback when measurements fail.
 
 Notes:

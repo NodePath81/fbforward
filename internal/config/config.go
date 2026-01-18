@@ -20,6 +20,8 @@ const (
 	defaultMeasurementTargetUp       = "10m"
 	defaultMeasurementTargetDown     = "50m"
 	defaultMeasurementSampleBytes    = "500KB"
+	defaultMeasurementTCPChunkSize   = "1200"
+	defaultMeasurementUDPChunkSize   = "1200"
 	defaultMeasurementSamples        = 1
 	defaultMeasurementTCPEnabled     = true
 	defaultMeasurementUDPEnabled     = true
@@ -28,7 +30,7 @@ const (
 	defaultMeasurementMaxCycle       = 30 * time.Second
 	defaultMeasurementFastStart      = 500 * time.Millisecond
 	defaultMeasurementWarmup         = 15 * time.Second
-	defaultMeasurementStale          = 120 * time.Second
+	defaultMeasurementStale          = 60 * time.Minute
 	defaultMeasurementFallbackICMP   = true
 	defaultScheduleMinInterval       = 15 * time.Minute
 	defaultScheduleMaxInterval       = 45 * time.Minute
@@ -183,6 +185,8 @@ type MeasurementConfig struct {
 	TCPTargetBandwidthDown string `yaml:"tcp_target_bandwidth_down"`
 	UDPTargetBandwidthUp   string `yaml:"udp_target_bandwidth_up"`
 	UDPTargetBandwidthDown string `yaml:"udp_target_bandwidth_down"`
+	TCPChunkSize           string `yaml:"tcp_chunk_size"`
+	UDPChunkSize           string `yaml:"udp_chunk_size"`
 	SampleBytes            string `yaml:"sample_bytes"`
 	Samples                int    `yaml:"samples"`
 
@@ -375,6 +379,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.Measurement.UDPTargetBandwidthDown == "" {
 		c.Measurement.UDPTargetBandwidthDown = defaultMeasurementTargetDown
+	}
+	if c.Measurement.TCPChunkSize == "" {
+		c.Measurement.TCPChunkSize = defaultMeasurementTCPChunkSize
+	}
+	if c.Measurement.UDPChunkSize == "" {
+		c.Measurement.UDPChunkSize = defaultMeasurementUDPChunkSize
 	}
 	if c.Measurement.SampleBytes == "" {
 		c.Measurement.SampleBytes = defaultMeasurementSampleBytes
@@ -830,6 +840,12 @@ func (c *Config) validate() error {
 	}
 	if _, err := ParseBandwidth(c.Measurement.UDPTargetBandwidthDown); err != nil {
 		return fmt.Errorf("measurement.udp_target_bandwidth_down: %w", err)
+	}
+	if _, err := ParseSize(c.Measurement.TCPChunkSize); err != nil {
+		return fmt.Errorf("measurement.tcp_chunk_size: %w", err)
+	}
+	if _, err := ParseSize(c.Measurement.UDPChunkSize); err != nil {
+		return fmt.Errorf("measurement.udp_chunk_size: %w", err)
 	}
 	if _, err := ParseSize(c.Measurement.SampleBytes); err != nil {
 		return fmt.Errorf("measurement.sample_bytes: %w", err)

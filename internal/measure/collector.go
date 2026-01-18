@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	probe "github.com/NodePath81/fbforward/bwprobe/pkg"
@@ -23,7 +24,8 @@ type Collector struct {
 	logger    util.Logger
 	scheduler *Scheduler
 
-	failures map[string]*failureState
+	failuresMu sync.Mutex
+	failures   map[string]*failureState
 }
 
 type failureState struct {
@@ -61,12 +63,21 @@ func (c *Collector) RunLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.scheduler.Schedule()
+			if c.metrics != nil {
+				status := c.scheduler.Status()
+				c.metrics.SetScheduleMetrics(metrics.ScheduleMetrics{
+					QueueSize:     status.QueueLength,
+					SkippedTotal:  status.SkippedTotal,
+					NextScheduled: status.NextScheduled,
+					LastRun:       status.LastRun,
+				})
+			}
 			next, ok := c.scheduler.NextReady()
 			if !ok {
 				continue
 			}
 			measurement := *next
-			if err := c.runProtocol(ctx, measurement.upstream, measurement.protocol); err != nil {
+			if err := c.RunProtocol(ctx, measurement.upstream, measurement.protocol); err != nil {
 				c.scheduler.Requeue(measurement, retryDelay)
 				continue
 			}
@@ -75,7 +86,8 @@ func (c *Collector) RunLoop(ctx context.Context) {
 	}
 }
 
-func (c *Collector) runProtocol(ctx context.Context, up *upstream.Upstream, network string) error {
+// RunProtocol executes a measurement cycle for the given upstream and protocol.
+func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, network string) error {
 	cycleCtx, cancel := context.WithTimeout(ctx, c.cfg.MaxCycleDuration.Duration())
 	defer cancel()
 
@@ -137,11 +149,23 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 	if err != nil {
 		return nil, fmt.Errorf("parse sample_bytes: %w", err)
 	}
+	chunkSize, err := c.chunkSize(network)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s chunk_size: %w", network, err)
+	}
 
 	result := &upstream.MeasurementResult{
 		Timestamp: time.Now(),
 		Network:   network,
 	}
+
+	c.logger.Info("measurement started",
+		"upstream", up.Tag,
+		"network", network,
+		"direction", "upload",
+		"target_bps", bwUp,
+		"sample_bytes", sampleBytes,
+	)
 
 	upCfg := probe.Config{
 		Target:       target,
@@ -151,12 +175,22 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		Reverse:      false,
 		SampleBytes:  int64(sampleBytes),
 		Samples:      c.cfg.Samples,
+		ChunkSize:    int64(chunkSize),
 	}
 
 	sampleCtx, cancel := context.WithTimeout(ctx, c.cfg.MaxSampleDuration.Duration())
+	uploadStart := time.Now()
 	upResult, err := probe.Run(sampleCtx, upCfg)
 	cancel()
+	uploadDuration := time.Since(uploadStart)
 	if err != nil {
+		c.logger.Warn("measurement upload failed",
+			"upstream", up.Tag,
+			"network", network,
+			"direction", "upload",
+			"duration_ms", uploadDuration.Milliseconds(),
+			"error", err,
+		)
 		return nil, err
 	}
 
@@ -170,6 +204,21 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		result.LossRate = upResult.Loss.LossRate
 	}
 
+	lossOrRetrans := result.LossRate
+	if network == "tcp" {
+		lossOrRetrans = result.RetransRate
+	}
+	c.logger.Info("measurement upload completed",
+		"upstream", up.Tag,
+		"network", network,
+		"direction", "upload",
+		"duration_ms", uploadDuration.Milliseconds(),
+		"bandwidth_bps", result.BandwidthUpBps,
+		"rtt_ms", result.RTTMs,
+		"jitter_ms", result.JitterMs,
+		"loss_or_retrans", lossOrRetrans,
+	)
+
 	dnCfg := probe.Config{
 		Target:       target,
 		Port:         port,
@@ -178,16 +227,41 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		Reverse:      true,
 		SampleBytes:  int64(sampleBytes),
 		Samples:      c.cfg.Samples,
+		ChunkSize:    int64(chunkSize),
 	}
 
+	c.logger.Info("measurement started",
+		"upstream", up.Tag,
+		"network", network,
+		"direction", "download",
+		"target_bps", bwDown,
+		"sample_bytes", sampleBytes,
+	)
+
 	sampleCtx, cancel = context.WithTimeout(ctx, c.cfg.MaxSampleDuration.Duration())
+	downloadStart := time.Now()
 	dnResult, err := probe.Run(sampleCtx, dnCfg)
 	cancel()
+	downloadDuration := time.Since(downloadStart)
 	if err != nil {
+		c.logger.Warn("measurement download failed",
+			"upstream", up.Tag,
+			"network", network,
+			"direction", "download",
+			"duration_ms", downloadDuration.Milliseconds(),
+			"error", err,
+		)
 		return nil, err
 	}
 
 	result.BandwidthDownBps = dnResult.Throughput.AchievedBps
+	c.logger.Info("measurement download completed",
+		"upstream", up.Tag,
+		"network", network,
+		"direction", "download",
+		"duration_ms", downloadDuration.Milliseconds(),
+		"bandwidth_bps", result.BandwidthDownBps,
+	)
 
 	return result, nil
 }
@@ -220,7 +294,21 @@ func (c *Collector) targetBandwidth(network, direction string) (uint64, error) {
 	return config.ParseBandwidth(raw)
 }
 
+func (c *Collector) chunkSize(network string) (uint32, error) {
+	network = strings.ToLower(network)
+	var raw string
+	switch network {
+	case "tcp":
+		raw = c.cfg.TCPChunkSize
+	case "udp":
+		raw = c.cfg.UDPChunkSize
+	}
+	return config.ParseSize(raw)
+}
+
 func (c *Collector) failure(tag string) *failureState {
+	c.failuresMu.Lock()
+	defer c.failuresMu.Unlock()
 	if c.failures[tag] == nil {
 		c.failures[tag] = &failureState{}
 	}

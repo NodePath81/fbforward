@@ -86,7 +86,14 @@ export interface RawConnectionEntry {
   kind: 'tcp' | 'udp';
 }
 
-export type RPCMethod = 'GetStatus' | 'SetUpstream' | 'Restart' | 'ListUpstreams' | 'GetMeasurementConfig';
+export type RPCMethod =
+  | 'GetStatus'
+  | 'SetUpstream'
+  | 'Restart'
+  | 'ListUpstreams'
+  | 'GetMeasurementConfig'
+  | 'GetScheduleStatus'
+  | 'RunMeasurement';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;

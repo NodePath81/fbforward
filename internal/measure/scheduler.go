@@ -33,6 +33,7 @@ type Scheduler struct {
 	mu            sync.Mutex
 	queue         []scheduledMeasurement
 	lastRun       map[string]time.Time
+	skippedTotal  uint64
 	rng           *rand.Rand
 	nextAvailable time.Time
 }
@@ -41,6 +42,13 @@ type scheduledMeasurement struct {
 	upstream *upstream.Upstream
 	protocol string
 	dueAt    time.Time
+}
+
+type SchedulerStatus struct {
+	QueueLength   int
+	NextScheduled time.Time
+	LastRun       map[string]time.Time
+	SkippedTotal  uint64
 }
 
 func NewScheduler(cfg SchedulerConfig, metrics *metrics.Metrics, upstreams []*upstream.Upstream, rng *rand.Rand) *Scheduler {
@@ -106,6 +114,7 @@ func (s *Scheduler) NextReady() (*scheduledMeasurement, bool) {
 		return nil, false
 	}
 	if !s.hasCapacityLocked(next.upstream, next.protocol) {
+		s.skippedTotal++
 		next.dueAt = now.Add(retryDelay)
 		s.queue[0] = next
 		sort.Slice(s.queue, func(i, j int) bool {
@@ -137,6 +146,25 @@ func (s *Scheduler) Requeue(measurement scheduledMeasurement, delay time.Duratio
 	})
 }
 
+func (s *Scheduler) Status() SchedulerStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := SchedulerStatus{
+		QueueLength:  len(s.queue),
+		SkippedTotal: s.skippedTotal,
+	}
+	if len(s.queue) > 0 {
+		status.NextScheduled = s.queue[0].dueAt
+	}
+	if len(s.lastRun) > 0 {
+		status.LastRun = make(map[string]time.Time, len(s.lastRun))
+		for key, ts := range s.lastRun {
+			status.LastRun[key] = ts
+		}
+	}
+	return status
+}
+
 func (s *Scheduler) nextInterval() time.Duration {
 	if s.cfg.MaxInterval <= s.cfg.MinInterval {
 		return s.cfg.MinInterval
@@ -156,6 +184,18 @@ func (s *Scheduler) hasCapacityLocked(up *upstream.Upstream, protocol string) bo
 	}
 	rates := s.metrics.GetRates(up.Tag, window)
 	metricsSnapshot, ok := s.metrics.GetUpstreamMetrics(up.Tag)
+	if !ok || (metricsSnapshot.BandwidthUpBps <= 0 && metricsSnapshot.BandwidthDownBps <= 0) {
+		return true
+	}
+	if protocol == "tcp" {
+		if metricsSnapshot.BandwidthTCPUpBps <= 0 && metricsSnapshot.BandwidthTCPDownBps <= 0 {
+			return true
+		}
+	} else if protocol == "udp" {
+		if metricsSnapshot.BandwidthUDPUpBps <= 0 && metricsSnapshot.BandwidthUDPDownBps <= 0 {
+			return true
+		}
+	}
 
 	targetUp := s.cfg.TCPTargetUpBps
 	targetDown := s.cfg.TCPTargetDownBps

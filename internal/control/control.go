@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
@@ -46,6 +47,10 @@ type ControlServer struct {
 	logger       util.Logger
 	server       *http.Server
 	limiter      *rateLimiter
+	schedulerMu  sync.RWMutex
+	scheduler    *measure.Scheduler
+	collectorMu  sync.RWMutex
+	collector    *measure.Collector
 }
 
 func NewControlServer(cfg config.ControlConfig, measurement config.MeasurementConfig, webUIEnabled bool, hostname string, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
@@ -100,6 +105,18 @@ func (c *ControlServer) Shutdown(ctx context.Context) error {
 	return c.server.Shutdown(ctx)
 }
 
+func (c *ControlServer) SetScheduler(scheduler *measure.Scheduler) {
+	c.schedulerMu.Lock()
+	defer c.schedulerMu.Unlock()
+	c.scheduler = scheduler
+}
+
+func (c *ControlServer) SetCollector(collector *measure.Collector) {
+	c.collectorMu.Lock()
+	defer c.collectorMu.Unlock()
+	c.collector = collector
+}
+
 type rpcRequest struct {
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
@@ -114,6 +131,11 @@ type rpcResponse struct {
 type setUpstreamParams struct {
 	Mode string `json:"mode"`
 	Tag  string `json:"tag,omitempty"`
+}
+
+type runMeasurementParams struct {
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol"`
 }
 
 type statusResponse struct {
@@ -202,8 +224,48 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 	case "GetMeasurementConfig":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getMeasurementConfig()})
+	case "GetScheduleStatus":
+		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
 	case "ListUpstreams":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
+	case "RunMeasurement":
+		c.collectorMu.RLock()
+		collector := c.collector
+		c.collectorMu.RUnlock()
+		if collector == nil {
+			writeJSON(w, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: "collector not ready"})
+			return
+		}
+
+		var params runMeasurementParams
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "invalid params"})
+			return
+		}
+		tag := strings.TrimSpace(params.Tag)
+		protocol := strings.ToLower(strings.TrimSpace(params.Protocol))
+		if protocol != "tcp" && protocol != "udp" {
+			writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "protocol must be tcp or udp"})
+			return
+		}
+		up := c.manager.Get(tag)
+		if up == nil {
+			writeJSON(w, http.StatusNotFound, rpcResponse{Ok: false, Error: "upstream not found"})
+			return
+		}
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			c.logger.Info("manual measurement triggered", "upstream", tag, "protocol", protocol, "source", "ui")
+			if err := collector.RunProtocol(ctx, up, protocol); err != nil {
+				c.logger.Warn("manual measurement failed", "upstream", tag, "protocol", protocol, "error", err)
+				return
+			}
+			c.logger.Info("manual measurement completed", "upstream", tag, "protocol", protocol)
+		}()
+
+		writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
 	default:
 		writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "unknown method"})
 	}
@@ -220,6 +282,8 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 		"tcp_target_bandwidth_down": cfg.TCPTargetBandwidthDown,
 		"udp_target_bandwidth_up":   cfg.UDPTargetBandwidthUp,
 		"udp_target_bandwidth_down": cfg.UDPTargetBandwidthDown,
+		"tcp_chunk_size":            cfg.TCPChunkSize,
+		"udp_chunk_size":            cfg.UDPChunkSize,
 		"sample_bytes":              cfg.SampleBytes,
 		"samples":                   cfg.Samples,
 		"tcp_enabled":               util.BoolValue(cfg.TCPEnabled, true),
@@ -232,6 +296,31 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 		"stale_threshold":           cfg.StaleThreshold.Duration().String(),
 		"fallback_to_icmp":          util.BoolValue(cfg.FallbackToICMP, true),
 	}
+}
+
+func (c *ControlServer) getScheduleStatus() map[string]interface{} {
+	c.schedulerMu.RLock()
+	scheduler := c.scheduler
+	c.schedulerMu.RUnlock()
+	if scheduler == nil {
+		return map[string]interface{}{
+			"queue_length":      0,
+			"next_scheduled":    nil,
+			"last_measurements": map[string]time.Time{},
+			"skipped_total":     0,
+		}
+	}
+	status := scheduler.Status()
+	result := map[string]interface{}{
+		"queue_length":      status.QueueLength,
+		"next_scheduled":    nil,
+		"last_measurements": status.LastRun,
+		"skipped_total":     status.SkippedTotal,
+	}
+	if !status.NextScheduled.IsZero() {
+		result["next_scheduled"] = status.NextScheduled
+	}
+	return result
 }
 
 func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
