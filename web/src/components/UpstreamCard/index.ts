@@ -33,8 +33,8 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
 
   const list = createEl('div', 'metric-list');
   const rows = {
-    bwUp: createMetricRow('Bandwidth up'),
-    bwDown: createMetricRow('Bandwidth down'),
+    bwTcp: createMetricDualRow('TCP'),
+    bwUdp: createMetricDualRow('UDP'),
     rtt: createMetricRow('RTT'),
     jitter: createMetricRow('Jitter'),
     retrans: createMetricRow('Retrans'),
@@ -46,8 +46,8 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
     reachable: createMetricRow('Reachable')
   };
 
-  list.appendChild(rows.bwUp.row);
-  list.appendChild(rows.bwDown.row);
+  list.appendChild(rows.bwTcp.row);
+  list.appendChild(rows.bwUdp.row);
   list.appendChild(rows.rtt.row);
   list.appendChild(rows.jitter.row);
   list.appendChild(rows.retrans.row);
@@ -63,8 +63,10 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
   card.appendChild(list);
 
   const update = (metrics: UpstreamMetrics, flags: BestFlags) => {
-    rows.bwUp.value.textContent = formatBps(metrics.bandwidthUpBps);
-    rows.bwDown.value.textContent = formatBps(metrics.bandwidthDownBps);
+    rows.bwTcp.up.textContent = `${formatBps(metrics.bandwidthTcpUpBps)} \u2191`;
+    rows.bwTcp.down.textContent = `${formatBps(metrics.bandwidthTcpDownBps)} \u2193`;
+    rows.bwUdp.up.textContent = `${formatBps(metrics.bandwidthUdpUpBps)} \u2191`;
+    rows.bwUdp.down.textContent = `${formatBps(metrics.bandwidthUdpDownBps)} \u2193`;
     rows.rtt.value.textContent = formatMs(metrics.rtt);
     rows.jitter.value.textContent = formatMs(metrics.jitter);
     rows.retrans.value.textContent = formatPercent(metrics.retransRate, 2);
@@ -109,6 +111,22 @@ function createMetricRow(label: string) {
   row.appendChild(name);
   row.appendChild(value);
   return { row, value };
+}
+
+function createMetricDualRow(label: string) {
+  const row = createEl('div', 'metric-row');
+  const name = createEl('span');
+  name.textContent = label;
+  const value = createEl('strong', 'metric-dual');
+  const up = createEl('span', 'metric-dual-item');
+  const down = createEl('span', 'metric-dual-item');
+  up.textContent = '-';
+  down.textContent = '-';
+  value.appendChild(up);
+  value.appendChild(down);
+  row.appendChild(name);
+  row.appendChild(value);
+  return { row, up, down };
 }
 
 function createBadge(text: string, variant: string) {

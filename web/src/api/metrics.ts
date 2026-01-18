@@ -92,6 +92,10 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
         scoreOverall: 0,
         bandwidthUpBps: 0,
         bandwidthDownBps: 0,
+        bandwidthTcpUpBps: 0,
+        bandwidthTcpDownBps: 0,
+        bandwidthUdpUpBps: 0,
+        bandwidthUdpDownBps: 0,
         utilization: 0,
         reachable: false,
         unusable: true,
@@ -131,6 +135,38 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
       continue;
     }
     ensure(tag).bandwidthDownBps = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_bandwidth_tcp_up_bps'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).bandwidthTcpUpBps = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_bandwidth_tcp_down_bps'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).bandwidthTcpDownBps = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_bandwidth_udp_up_bps'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).bandwidthUdpUpBps = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_bandwidth_udp_down_bps'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).bandwidthUdpDownBps = item.value;
   }
 
   for (const item of data['fbforward_upstream_retrans_rate'] || []) {

@@ -160,14 +160,68 @@ func (r *Runtime) startProbes() {
 }
 
 func (r *Runtime) startMeasurement() {
-	for _, up := range r.upstreams {
-		r.wg.Add(1)
-		go func(u *upstream.Upstream) {
-			defer r.wg.Done()
-			collector := measure.NewCollector(u, r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, r.logger)
-			collector.RunLoop(r.ctx)
-		}(up)
+	protocols := make([]string, 0, 2)
+	if util.BoolValue(r.cfg.Measurement.TCPEnabled, true) {
+		protocols = append(protocols, "tcp")
 	}
+	if util.BoolValue(r.cfg.Measurement.UDPEnabled, true) {
+		protocols = append(protocols, "udp")
+	}
+	if len(protocols) == 0 {
+		return
+	}
+
+	tcpTargetUpBps, err := config.ParseBandwidth(r.cfg.Measurement.TCPTargetBandwidthUp)
+	if err != nil {
+		r.logger.Error("invalid measurement tcp_target_bandwidth_up", "error", err)
+		return
+	}
+	tcpTargetDownBps, err := config.ParseBandwidth(r.cfg.Measurement.TCPTargetBandwidthDown)
+	if err != nil {
+		r.logger.Error("invalid measurement tcp_target_bandwidth_down", "error", err)
+		return
+	}
+	udpTargetUpBps, err := config.ParseBandwidth(r.cfg.Measurement.UDPTargetBandwidthUp)
+	if err != nil {
+		r.logger.Error("invalid measurement udp_target_bandwidth_up", "error", err)
+		return
+	}
+	udpTargetDownBps, err := config.ParseBandwidth(r.cfg.Measurement.UDPTargetBandwidthDown)
+	if err != nil {
+		r.logger.Error("invalid measurement udp_target_bandwidth_down", "error", err)
+		return
+	}
+	requiredHeadroomBps, err := config.ParseBandwidth(r.cfg.Measurement.Schedule.RequiredHeadroom)
+	if err != nil {
+		r.logger.Error("invalid measurement schedule required_headroom", "error", err)
+		return
+	}
+
+	rateWindow := time.Duration(r.cfg.Scoring.UtilizationWindowSec) * time.Second
+	if rateWindow <= 0 {
+		rateWindow = 5 * time.Second
+	}
+
+	scheduler := measure.NewScheduler(measure.SchedulerConfig{
+		MinInterval:         r.cfg.Measurement.Schedule.MinInterval.Duration(),
+		MaxInterval:         r.cfg.Measurement.Schedule.MaxInterval.Duration(),
+		InterUpstreamGap:    r.cfg.Measurement.Schedule.InterUpstreamGap.Duration(),
+		MaxUtilization:      r.cfg.Measurement.Schedule.MaxUtilization,
+		RequiredHeadroomBps: int64(requiredHeadroomBps),
+		TCPTargetUpBps:      int64(tcpTargetUpBps),
+		TCPTargetDownBps:    int64(tcpTargetDownBps),
+		UDPTargetUpBps:      int64(udpTargetUpBps),
+		UDPTargetDownBps:    int64(udpTargetDownBps),
+		Protocols:           protocols,
+		RateWindow:          rateWindow,
+	}, r.metrics, r.upstreams, nil)
+
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		collector := measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, r.logger)
+		collector.RunLoop(r.ctx)
+	}()
 }
 
 func (r *Runtime) runFastStart() {

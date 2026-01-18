@@ -212,21 +212,25 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 	cfg := c.measurement
 	return map[string]interface{}{
-		"interval":              cfg.Interval.Duration().String(),
-		"discovery_delay":       cfg.DiscoveryDelay.Duration().String(),
-		"target_bandwidth_up":   cfg.TargetBandwidthUp,
-		"target_bandwidth_down": cfg.TargetBandwidthDown,
-		"sample_bytes":          cfg.SampleBytes,
-		"samples":               cfg.Samples,
-		"tcp_enabled":           boolValue(cfg.TCPEnabled, true),
-		"udp_enabled":           boolValue(cfg.UDPEnabled, true),
-		"alternate_tcp":         boolValue(cfg.AlternateTCP, true),
-		"max_sample_duration":   cfg.MaxSampleDuration.Duration().String(),
-		"max_cycle_duration":    cfg.MaxCycleDuration.Duration().String(),
-		"fast_start_timeout":    cfg.FastStartTimeout.Duration().String(),
-		"warmup_duration":       cfg.WarmupDuration.Duration().String(),
-		"stale_threshold":       cfg.StaleThreshold.Duration().String(),
-		"fallback_to_icmp":      boolValue(cfg.FallbackToICMP, true),
+		"interval":                  cfg.Interval.Duration().String(),
+		"discovery_delay":           cfg.DiscoveryDelay.Duration().String(),
+		"target_bandwidth_up":       cfg.TargetBandwidthUp,
+		"target_bandwidth_down":     cfg.TargetBandwidthDown,
+		"tcp_target_bandwidth_up":   cfg.TCPTargetBandwidthUp,
+		"tcp_target_bandwidth_down": cfg.TCPTargetBandwidthDown,
+		"udp_target_bandwidth_up":   cfg.UDPTargetBandwidthUp,
+		"udp_target_bandwidth_down": cfg.UDPTargetBandwidthDown,
+		"sample_bytes":              cfg.SampleBytes,
+		"samples":                   cfg.Samples,
+		"tcp_enabled":               util.BoolValue(cfg.TCPEnabled, true),
+		"udp_enabled":               util.BoolValue(cfg.UDPEnabled, true),
+		"alternate_tcp":             util.BoolValue(cfg.AlternateTCP, true),
+		"max_sample_duration":       cfg.MaxSampleDuration.Duration().String(),
+		"max_cycle_duration":        cfg.MaxCycleDuration.Duration().String(),
+		"fast_start_timeout":        cfg.FastStartTimeout.Duration().String(),
+		"warmup_duration":           cfg.WarmupDuration.Duration().String(),
+		"stale_threshold":           cfg.StaleThreshold.Duration().String(),
+		"fallback_to_icmp":          util.BoolValue(cfg.FallbackToICMP, true),
 	}
 }
 
@@ -468,13 +472,6 @@ func (c *ControlServer) originAllowed(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Host, r.Host)
-}
-
-func boolValue(value *bool, fallback bool) bool {
-	if value == nil {
-		return fallback
-	}
-	return *value
 }
 
 func writeJSON(w http.ResponseWriter, status int, resp rpcResponse) {

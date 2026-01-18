@@ -3,6 +3,7 @@ package measure
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	probe "github.com/NodePath81/fbforward/bwprobe/pkg"
@@ -15,27 +16,30 @@ import (
 const maxConsecutiveFailures = 3
 
 type Collector struct {
-	upstream *upstream.Upstream
-	cfg      config.MeasurementConfig
-	scoring  config.ScoringConfig
-	manager  *upstream.UpstreamManager
-	metrics  *metrics.Metrics
-	logger   util.Logger
+	cfg       config.MeasurementConfig
+	scoring   config.ScoringConfig
+	manager   *upstream.UpstreamManager
+	metrics   *metrics.Metrics
+	logger    util.Logger
+	scheduler *Scheduler
 
-	nextTCP             bool
+	failures map[string]*failureState
+}
+
+type failureState struct {
 	consecutiveFailures int
 	inFallbackMode      bool
 }
 
-func NewCollector(up *upstream.Upstream, cfg config.MeasurementConfig, scoring config.ScoringConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, logger util.Logger) *Collector {
+func NewCollector(cfg config.MeasurementConfig, scoring config.ScoringConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, scheduler *Scheduler, logger util.Logger) *Collector {
 	return &Collector{
-		upstream: up,
-		cfg:      cfg,
-		scoring:  scoring,
-		manager:  manager,
-		metrics:  metrics,
-		logger:   logger,
-		nextTCP:  true,
+		cfg:       cfg,
+		scoring:   scoring,
+		manager:   manager,
+		metrics:   metrics,
+		scheduler: scheduler,
+		logger:    logger,
+		failures:  make(map[string]*failureState),
 	}
 }
 
@@ -48,7 +52,7 @@ func (c *Collector) RunLoop(ctx context.Context) {
 		case <-time.After(delay):
 		}
 	}
-	ticker := time.NewTicker(c.cfg.Interval.Duration())
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -56,93 +60,78 @@ func (c *Collector) RunLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.runCycle(ctx)
+			c.scheduler.Schedule()
+			next, ok := c.scheduler.NextReady()
+			if !ok {
+				continue
+			}
+			measurement := *next
+			if err := c.runProtocol(ctx, measurement.upstream, measurement.protocol); err != nil {
+				c.scheduler.Requeue(measurement, retryDelay)
+				continue
+			}
+			c.scheduler.MarkRun(measurement)
 		}
 	}
 }
 
-func (c *Collector) runCycle(ctx context.Context) {
+func (c *Collector) runProtocol(ctx context.Context, up *upstream.Upstream, network string) error {
 	cycleCtx, cancel := context.WithTimeout(ctx, c.cfg.MaxCycleDuration.Duration())
 	defer cancel()
 
-	if boolValue(c.cfg.AlternateTCP, true) {
-		tcpEnabled := boolValue(c.cfg.TCPEnabled, true)
-		udpEnabled := boolValue(c.cfg.UDPEnabled, true)
-		if tcpEnabled && udpEnabled {
-			if c.nextTCP {
-				c.runProtocol(cycleCtx, "tcp")
-			} else {
-				c.runProtocol(cycleCtx, "udp")
-			}
-			c.nextTCP = !c.nextTCP
-			return
-		}
-		if tcpEnabled {
-			c.runProtocol(cycleCtx, "tcp")
-			return
-		}
-		if udpEnabled {
-			c.runProtocol(cycleCtx, "udp")
-			return
-		}
-		return
-	}
-
-	if boolValue(c.cfg.TCPEnabled, true) {
-		c.runProtocol(cycleCtx, "tcp")
-	}
-	if boolValue(c.cfg.UDPEnabled, true) {
-		c.runProtocol(cycleCtx, "udp")
-	}
-}
-
-func (c *Collector) runProtocol(ctx context.Context, network string) {
-	result, err := c.runMeasurement(ctx, network)
+	result, err := c.runMeasurement(cycleCtx, up, network)
 	if err != nil {
-		c.consecutiveFailures++
-		c.logger.Warn("measurement failed", "upstream", c.upstream.Tag, "network", network, "error", err, "failures", c.consecutiveFailures)
-		if boolValue(c.cfg.FallbackToICMP, true) && c.consecutiveFailures >= maxConsecutiveFailures {
-			if !c.inFallbackMode {
-				c.logger.Warn("falling back to ICMP-only mode", "upstream", c.upstream.Tag)
+		state := c.failure(up.Tag)
+		state.consecutiveFailures++
+		c.logger.Warn("measurement failed", "upstream", up.Tag, "network", network, "error", err, "failures", state.consecutiveFailures)
+		if util.BoolValue(c.cfg.FallbackToICMP, true) && state.consecutiveFailures >= maxConsecutiveFailures {
+			if !state.inFallbackMode {
+				c.logger.Warn("falling back to ICMP-only mode", "upstream", up.Tag)
 			}
-			c.inFallbackMode = true
+			state.inFallbackMode = true
 		}
-		return
+		return err
 	}
 
-	c.consecutiveFailures = 0
-	if c.inFallbackMode {
-		c.logger.Info("recovered from ICMP fallback", "upstream", c.upstream.Tag)
-		c.inFallbackMode = false
+	state := c.failure(up.Tag)
+	state.consecutiveFailures = 0
+	if state.inFallbackMode {
+		c.logger.Info("recovered from ICMP fallback", "upstream", up.Tag)
+		state.inFallbackMode = false
 	}
 
 	utilization := 0.0
 	if c.metrics != nil {
-		utilization = c.metrics.GetUtilization(c.upstream.Tag, result.BandwidthUpBps, result.BandwidthDownBps, c.cfg.Interval.Duration())
+		utilWindow := time.Duration(c.scoring.UtilizationWindowSec) * time.Second
+		if utilWindow <= 0 {
+			utilWindow = 5 * time.Second
+		}
+		utilization = c.metrics.GetUtilization(up.Tag, result.BandwidthUpBps, result.BandwidthDownBps, utilWindow)
 	}
-	stats := c.manager.UpdateMeasurement(c.upstream.Tag, result, c.scoring, utilization)
+	stats := c.manager.UpdateMeasurement(up.Tag, result, c.scoring, utilization)
 	if c.metrics != nil {
-		c.metrics.SetUpstreamMetrics(c.upstream.Tag, stats)
+		c.metrics.SetUpstreamMetrics(up.Tag, stats)
 	}
+	return nil
 }
 
-func (c *Collector) runMeasurement(ctx context.Context, network string) (*upstream.MeasurementResult, error) {
-	target := c.upstream.MeasureHost
+func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string) (*upstream.MeasurementResult, error) {
+	target := up.MeasureHost
 	if target == "" {
-		target = c.upstream.Host
+		target = up.Host
 	}
-	port := c.upstream.MeasurePort
+	port := up.MeasurePort
 	if port == 0 {
 		port = 9876
 	}
 
-	bwUp, err := config.ParseBandwidth(c.cfg.TargetBandwidthUp)
+	bwUp, err := c.targetBandwidth(network, "up")
 	if err != nil {
-		return nil, fmt.Errorf("parse target_bandwidth_up: %w", err)
+		return nil, fmt.Errorf("parse %s target_bandwidth_up: %w", network, err)
 	}
-	bwDown, err := config.ParseBandwidth(c.cfg.TargetBandwidthDown)
+	bwDown, err := c.targetBandwidth(network, "down")
 	if err != nil {
-		return nil, fmt.Errorf("parse target_bandwidth_down: %w", err)
+		return nil, fmt.Errorf("parse %s target_bandwidth_down: %w", network, err)
 	}
 	sampleBytes, err := config.ParseSize(c.cfg.SampleBytes)
 	if err != nil {
@@ -203,9 +192,37 @@ func (c *Collector) runMeasurement(ctx context.Context, network string) (*upstre
 	return result, nil
 }
 
-func boolValue(value *bool, fallback bool) bool {
-	if value == nil {
-		return fallback
+func (c *Collector) targetBandwidth(network, direction string) (uint64, error) {
+	network = strings.ToLower(network)
+	direction = strings.ToLower(direction)
+	var raw string
+	switch network {
+	case "tcp":
+		if direction == "down" {
+			raw = c.cfg.TCPTargetBandwidthDown
+		} else {
+			raw = c.cfg.TCPTargetBandwidthUp
+		}
+	case "udp":
+		if direction == "down" {
+			raw = c.cfg.UDPTargetBandwidthDown
+		} else {
+			raw = c.cfg.UDPTargetBandwidthUp
+		}
 	}
-	return *value
+	if raw == "" {
+		if direction == "down" {
+			raw = c.cfg.TargetBandwidthDown
+		} else {
+			raw = c.cfg.TargetBandwidthUp
+		}
+	}
+	return config.ParseBandwidth(raw)
+}
+
+func (c *Collector) failure(tag string) *failureState {
+	if c.failures[tag] == nil {
+		c.failures[tag] = &failureState{}
+	}
+	return c.failures[tag]
 }

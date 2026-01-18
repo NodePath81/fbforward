@@ -16,6 +16,10 @@ export interface UpstreamSnapshot {
   reachable: boolean;
   bandwidth_up_bps: number;
   bandwidth_down_bps: number;
+  bandwidth_up_bps_tcp?: number;
+  bandwidth_down_bps_tcp?: number;
+  bandwidth_up_bps_udp?: number;
+  bandwidth_down_bps_udp?: number;
   rtt_ms: number;
   jitter_ms: number;
   retrans_rate: number;
@@ -48,6 +52,10 @@ export interface UpstreamMetrics {
   scoreOverall: number;
   bandwidthUpBps: number;
   bandwidthDownBps: number;
+  bandwidthTcpUpBps: number;
+  bandwidthTcpDownBps: number;
+  bandwidthUdpUpBps: number;
+  bandwidthUdpDownBps: number;
   utilization: number;
   reachable: boolean;
   unusable: boolean;

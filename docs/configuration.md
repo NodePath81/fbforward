@@ -39,8 +39,16 @@ probe:
 measurement:
   interval: 2s
   discovery_delay: 10s
-  target_bandwidth_up: 10m
-  target_bandwidth_down: 50m
+  schedule:
+    min_interval: 15m
+    max_interval: 45m
+    inter_upstream_gap: 5s
+    max_utilization: 0.7
+    required_headroom: "0"
+  tcp_target_bandwidth_up: 10m
+  tcp_target_bandwidth_down: 50m
+  udp_target_bandwidth_up: 10m
+  udp_target_bandwidth_down: 50m
   sample_bytes: 500KB
   samples: 1
   tcp_enabled: true
@@ -54,6 +62,8 @@ measurement:
   fallback_to_icmp: true
 scoring:
   ema_alpha: 0.2
+  utilization_window_sec: 5
+  utilization_update_sec: 1
   ref_bandwidth_up: 10m
   ref_bandwidth_down: 50m
   ref_rtt_ms: 50
@@ -173,10 +183,18 @@ Duration format:
 
 ## measurement
 
-- `interval` (duration, default: `2s`): measurement cycle interval (`T0`).
+- `interval` (duration, default: `2s`): legacy measurement cycle interval (deprecated; use `schedule.min_interval`).
 - `discovery_delay` (duration, default: `10s`): delay before starting measurements.
-- `target_bandwidth_up` (string, default: `10m`): target uplink bandwidth.
-- `target_bandwidth_down` (string, default: `50m`): target downlink bandwidth.
+- `schedule` (object): randomized measurement scheduling.
+  - `min_interval` (duration, default: `15m`): minimum interval between measurements.
+  - `max_interval` (duration, default: `45m`): maximum interval between measurements.
+  - `inter_upstream_gap` (duration, default: `5s`): gap between measurements across upstreams.
+  - `max_utilization` (float, default: `0.7`): utilization cap before deferring measurements.
+  - `required_headroom` (string, default: `"0"`): minimum headroom in bps; `"0"` uses target bandwidth.
+- `tcp_target_bandwidth_up` (string, default: `10m`): target TCP uplink bandwidth.
+- `tcp_target_bandwidth_down` (string, default: `50m`): target TCP downlink bandwidth.
+- `udp_target_bandwidth_up` (string, default: `10m`): target UDP uplink bandwidth.
+- `udp_target_bandwidth_down` (string, default: `50m`): target UDP downlink bandwidth.
 - `sample_bytes` (string, default: `500KB`): payload bytes per sample.
 - `samples` (int, default: `1`): samples per direction per cycle.
 - `tcp_enabled` (bool, default: `true`): enable TCP measurements.
@@ -188,6 +206,9 @@ Duration format:
 - `warmup_duration` (duration, default: `15s`): warmup period for relaxed switching.
 - `stale_threshold` (duration, default: `120s`): metric staleness threshold.
 - `fallback_to_icmp` (bool, default: `true`): allow ICMP-only fallback when measurements fail.
+
+Notes:
+- Legacy `target_bandwidth_up`/`target_bandwidth_down` are accepted and migrated to the per-protocol fields.
 
 ## scoring
 ## scoring
@@ -217,6 +238,8 @@ Duration format:
 - `utilization_min_mult` (float, default: `0.3`): minimum multiplier.
 - `utilization_threshold` (float, default: `0.7`): threshold `u^0` for penalty.
 - `utilization_exponent` (float, default: `2`): exponent `p` for penalty curve.
+- `utilization_window_sec` (int, default: `5`): utilization sampling window in seconds.
+- `utilization_update_sec` (int, default: `1`): utilization sampling granularity in seconds.
 - `bias_kappa` (float, default: `0.693`): bias multiplier coefficient.
 
 Notes:

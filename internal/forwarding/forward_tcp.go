@@ -244,10 +244,10 @@ func applyTCPOptions(conn *net.TCPConn) {
 
 func (c *tcpConn) touch(n uint64, up bool) {
 	if up {
-		c.metrics.AddBytesUp(c.upstreamTag, n)
+		c.metrics.AddBytesUp(c.upstreamTag, n, "tcp")
 		c.status.UpdateTCP(c.id, n, 0)
 	} else {
-		c.metrics.AddBytesDown(c.upstreamTag, n)
+		c.metrics.AddBytesDown(c.upstreamTag, n, "tcp")
 		c.status.UpdateTCP(c.id, 0, n)
 	}
 	select {

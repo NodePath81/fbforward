@@ -49,11 +49,20 @@ probe:
   discovery_delay: 5s
 measurement:
   # Measurement cycle interval and startup delay.
+  # interval is deprecated; schedule.min_interval takes precedence.
   interval: 2s
   discovery_delay: 10s
-  # Target bandwidth and sample sizes.
-  target_bandwidth_up: 10m
-  target_bandwidth_down: 50m
+  schedule:
+    min_interval: 15m
+    max_interval: 45m
+    inter_upstream_gap: 5s
+    max_utilization: 0.7
+    required_headroom: "0"
+  # Target bandwidth and sample sizes (per protocol, per direction).
+  tcp_target_bandwidth_up: 10m
+  tcp_target_bandwidth_down: 50m
+  udp_target_bandwidth_up: 10m
+  udp_target_bandwidth_down: 50m
   sample_bytes: 500KB
   samples: 1
   # Protocol scheduling.
@@ -72,6 +81,8 @@ measurement:
 scoring:
   # EMA smoothing and reference values.
   ema_alpha: 0.2
+  utilization_window_sec: 5
+  utilization_update_sec: 1
   ref_bandwidth_up: 10m
   ref_bandwidth_down: 50m
   ref_rtt_ms: 50

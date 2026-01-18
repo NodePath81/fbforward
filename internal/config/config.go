@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/util"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,6 +30,11 @@ const (
 	defaultMeasurementWarmup         = 15 * time.Second
 	defaultMeasurementStale          = 120 * time.Second
 	defaultMeasurementFallbackICMP   = true
+	defaultScheduleMinInterval       = 15 * time.Minute
+	defaultScheduleMaxInterval       = 45 * time.Minute
+	defaultScheduleInterGap          = 5 * time.Second
+	defaultScheduleMaxUtil           = 0.7
+	defaultScheduleHeadroom          = "0"
 
 	defaultEMAAlpha             = 0.2
 	defaultRefBandwidthUp       = "10m"
@@ -54,6 +60,8 @@ const (
 	defaultUtilizationThreshold = 0.7
 	defaultUtilizationExponent  = 2.0
 	defaultBiasKappa            = 0.693147
+	defaultUtilizationWindowSec = 5
+	defaultUtilizationUpdateSec = 1
 
 	defaultMaxTCPConns        = 50
 	defaultMaxUDPMappings     = 500
@@ -156,14 +164,27 @@ type ProbeConfig struct {
 	DiscoveryDelay Duration `yaml:"discovery_delay"`
 }
 
-type MeasurementConfig struct {
-	Interval       Duration `yaml:"interval"`
-	DiscoveryDelay Duration `yaml:"discovery_delay"`
+type MeasurementScheduleConfig struct {
+	MinInterval      Duration `yaml:"min_interval"`
+	MaxInterval      Duration `yaml:"max_interval"`
+	InterUpstreamGap Duration `yaml:"inter_upstream_gap"`
+	MaxUtilization   float64  `yaml:"max_utilization"`
+	RequiredHeadroom string   `yaml:"required_headroom"`
+}
 
-	TargetBandwidthUp   string `yaml:"target_bandwidth_up"`
-	TargetBandwidthDown string `yaml:"target_bandwidth_down"`
-	SampleBytes         string `yaml:"sample_bytes"`
-	Samples             int    `yaml:"samples"`
+type MeasurementConfig struct {
+	Interval       Duration                  `yaml:"interval"`
+	DiscoveryDelay Duration                  `yaml:"discovery_delay"`
+	Schedule       MeasurementScheduleConfig `yaml:"schedule"`
+
+	TargetBandwidthUp      string `yaml:"target_bandwidth_up"`
+	TargetBandwidthDown    string `yaml:"target_bandwidth_down"`
+	TCPTargetBandwidthUp   string `yaml:"tcp_target_bandwidth_up"`
+	TCPTargetBandwidthDown string `yaml:"tcp_target_bandwidth_down"`
+	UDPTargetBandwidthUp   string `yaml:"udp_target_bandwidth_up"`
+	UDPTargetBandwidthDown string `yaml:"udp_target_bandwidth_down"`
+	SampleBytes            string `yaml:"sample_bytes"`
+	Samples                int    `yaml:"samples"`
 
 	TCPEnabled   *bool `yaml:"tcp_enabled"`
 	UDPEnabled   *bool `yaml:"udp_enabled"`
@@ -196,10 +217,12 @@ type ScoringConfig struct {
 	ProtocolWeightTCP float64 `yaml:"protocol_weight_tcp"`
 	ProtocolWeightUDP float64 `yaml:"protocol_weight_udp"`
 
-	UtilizationEnabled  *bool   `yaml:"utilization_enabled"`
-	UtilizationMinMult  float64 `yaml:"utilization_min_mult"`
-	UtilizationThresh   float64 `yaml:"utilization_threshold"`
-	UtilizationExponent float64 `yaml:"utilization_exponent"`
+	UtilizationEnabled   *bool   `yaml:"utilization_enabled"`
+	UtilizationMinMult   float64 `yaml:"utilization_min_mult"`
+	UtilizationThresh    float64 `yaml:"utilization_threshold"`
+	UtilizationExponent  float64 `yaml:"utilization_exponent"`
+	UtilizationWindowSec int     `yaml:"utilization_window_sec"`
+	UtilizationUpdateSec int     `yaml:"utilization_update_sec"`
 
 	BiasKappa float64 `yaml:"bias_kappa"`
 
@@ -341,6 +364,18 @@ func (c *Config) setDefaults() {
 	if c.Measurement.TargetBandwidthDown == "" {
 		c.Measurement.TargetBandwidthDown = defaultMeasurementTargetDown
 	}
+	if c.Measurement.TCPTargetBandwidthUp == "" {
+		c.Measurement.TCPTargetBandwidthUp = defaultMeasurementTargetUp
+	}
+	if c.Measurement.TCPTargetBandwidthDown == "" {
+		c.Measurement.TCPTargetBandwidthDown = defaultMeasurementTargetDown
+	}
+	if c.Measurement.UDPTargetBandwidthUp == "" {
+		c.Measurement.UDPTargetBandwidthUp = defaultMeasurementTargetUp
+	}
+	if c.Measurement.UDPTargetBandwidthDown == "" {
+		c.Measurement.UDPTargetBandwidthDown = defaultMeasurementTargetDown
+	}
 	if c.Measurement.SampleBytes == "" {
 		c.Measurement.SampleBytes = defaultMeasurementSampleBytes
 	}
@@ -377,6 +412,21 @@ func (c *Config) setDefaults() {
 	if c.Measurement.FallbackToICMP == nil {
 		val := defaultMeasurementFallbackICMP
 		c.Measurement.FallbackToICMP = &val
+	}
+	if c.Measurement.Schedule.MinInterval == 0 {
+		c.Measurement.Schedule.MinInterval = Duration(defaultScheduleMinInterval)
+	}
+	if c.Measurement.Schedule.MaxInterval == 0 {
+		c.Measurement.Schedule.MaxInterval = Duration(defaultScheduleMaxInterval)
+	}
+	if c.Measurement.Schedule.InterUpstreamGap == 0 {
+		c.Measurement.Schedule.InterUpstreamGap = Duration(defaultScheduleInterGap)
+	}
+	if c.Measurement.Schedule.MaxUtilization == 0 {
+		c.Measurement.Schedule.MaxUtilization = defaultScheduleMaxUtil
+	}
+	if c.Measurement.Schedule.RequiredHeadroom == "" {
+		c.Measurement.Schedule.RequiredHeadroom = defaultScheduleHeadroom
 	}
 
 	if c.Scoring.EMAAlpha == 0 {
@@ -434,6 +484,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.Scoring.UtilizationExponent == 0 {
 		c.Scoring.UtilizationExponent = defaultUtilizationExponent
+	}
+	if c.Scoring.UtilizationWindowSec == 0 {
+		c.Scoring.UtilizationWindowSec = defaultUtilizationWindowSec
+	}
+	if c.Scoring.UtilizationUpdateSec == 0 {
+		c.Scoring.UtilizationUpdateSec = defaultUtilizationUpdateSec
 	}
 	if c.Scoring.BiasKappa == 0 {
 		c.Scoring.BiasKappa = defaultBiasKappa
@@ -501,6 +557,33 @@ func (c *Config) applyMigration() {
 	if c.Measurement.Interval.Duration() == 0 && c.Probe.Interval.Duration() != 0 {
 		c.Measurement.Interval = c.Probe.Interval
 		fmt.Fprintln(os.Stderr, "DEPRECATED: probe.interval migrated to measurement.interval")
+	}
+	if c.Measurement.TargetBandwidthUp != "" || c.Measurement.TargetBandwidthDown != "" {
+		usedLegacy := false
+		if c.Measurement.TCPTargetBandwidthUp == "" && c.Measurement.TargetBandwidthUp != "" {
+			c.Measurement.TCPTargetBandwidthUp = c.Measurement.TargetBandwidthUp
+			usedLegacy = true
+		}
+		if c.Measurement.TCPTargetBandwidthDown == "" && c.Measurement.TargetBandwidthDown != "" {
+			c.Measurement.TCPTargetBandwidthDown = c.Measurement.TargetBandwidthDown
+			usedLegacy = true
+		}
+		if c.Measurement.UDPTargetBandwidthUp == "" && c.Measurement.TargetBandwidthUp != "" {
+			c.Measurement.UDPTargetBandwidthUp = c.Measurement.TargetBandwidthUp
+			usedLegacy = true
+		}
+		if c.Measurement.UDPTargetBandwidthDown == "" && c.Measurement.TargetBandwidthDown != "" {
+			c.Measurement.UDPTargetBandwidthDown = c.Measurement.TargetBandwidthDown
+			usedLegacy = true
+		}
+		if usedLegacy {
+			fmt.Fprintln(os.Stderr, "DEPRECATED: measurement.target_bandwidth_* migrated to tcp_/udp_target_bandwidth_*")
+		}
+	}
+	if c.Measurement.Interval.Duration() != 0 && c.Measurement.Schedule.MinInterval.Duration() == 0 {
+		c.Measurement.Schedule.MinInterval = c.Measurement.Interval
+		c.Measurement.Schedule.MaxInterval = Duration(c.Measurement.Interval.Duration() * 2)
+		fmt.Fprintln(os.Stderr, "DEPRECATED: measurement.interval migrated to measurement.schedule.min_interval/max_interval")
 	}
 	if weightsLegacyZero(c.Scoring.Weights) {
 		// no legacy weights set
@@ -736,17 +819,41 @@ func (c *Config) validate() error {
 	if c.Measurement.StaleThreshold.Duration() <= 0 {
 		return errors.New("measurement.stale_threshold must be > 0")
 	}
-	if _, err := ParseBandwidth(c.Measurement.TargetBandwidthUp); err != nil {
-		return fmt.Errorf("measurement.target_bandwidth_up: %w", err)
+	if _, err := ParseBandwidth(c.Measurement.TCPTargetBandwidthUp); err != nil {
+		return fmt.Errorf("measurement.tcp_target_bandwidth_up: %w", err)
 	}
-	if _, err := ParseBandwidth(c.Measurement.TargetBandwidthDown); err != nil {
-		return fmt.Errorf("measurement.target_bandwidth_down: %w", err)
+	if _, err := ParseBandwidth(c.Measurement.TCPTargetBandwidthDown); err != nil {
+		return fmt.Errorf("measurement.tcp_target_bandwidth_down: %w", err)
+	}
+	if _, err := ParseBandwidth(c.Measurement.UDPTargetBandwidthUp); err != nil {
+		return fmt.Errorf("measurement.udp_target_bandwidth_up: %w", err)
+	}
+	if _, err := ParseBandwidth(c.Measurement.UDPTargetBandwidthDown); err != nil {
+		return fmt.Errorf("measurement.udp_target_bandwidth_down: %w", err)
 	}
 	if _, err := ParseSize(c.Measurement.SampleBytes); err != nil {
 		return fmt.Errorf("measurement.sample_bytes: %w", err)
 	}
-	tcpEnabled := boolValue(c.Measurement.TCPEnabled, defaultMeasurementTCPEnabled)
-	udpEnabled := boolValue(c.Measurement.UDPEnabled, defaultMeasurementUDPEnabled)
+	if c.Measurement.Schedule.MinInterval.Duration() <= 0 {
+		return errors.New("measurement.schedule.min_interval must be > 0")
+	}
+	if c.Measurement.Schedule.MaxInterval.Duration() <= 0 {
+		return errors.New("measurement.schedule.max_interval must be > 0")
+	}
+	if c.Measurement.Schedule.MaxInterval.Duration() < c.Measurement.Schedule.MinInterval.Duration() {
+		return errors.New("measurement.schedule.max_interval must be >= min_interval")
+	}
+	if c.Measurement.Schedule.InterUpstreamGap.Duration() < 0 {
+		return errors.New("measurement.schedule.inter_upstream_gap must be >= 0")
+	}
+	if c.Measurement.Schedule.MaxUtilization <= 0 || c.Measurement.Schedule.MaxUtilization > 1 {
+		return errors.New("measurement.schedule.max_utilization must be in (0,1]")
+	}
+	if _, err := ParseBandwidth(c.Measurement.Schedule.RequiredHeadroom); err != nil {
+		return fmt.Errorf("measurement.schedule.required_headroom: %w", err)
+	}
+	tcpEnabled := util.BoolValue(c.Measurement.TCPEnabled, defaultMeasurementTCPEnabled)
+	udpEnabled := util.BoolValue(c.Measurement.UDPEnabled, defaultMeasurementUDPEnabled)
 	if !tcpEnabled && !udpEnabled {
 		return errors.New("measurement requires at least one protocol (tcp_enabled or udp_enabled)")
 	}
@@ -803,6 +910,12 @@ func (c *Config) validate() error {
 	}
 	if c.Scoring.UtilizationExponent <= 0 {
 		return errors.New("scoring.utilization_exponent must be > 0")
+	}
+	if c.Scoring.UtilizationWindowSec <= 0 {
+		return errors.New("scoring.utilization_window_sec must be > 0")
+	}
+	if c.Scoring.UtilizationUpdateSec <= 0 {
+		return errors.New("scoring.utilization_update_sec must be > 0")
 	}
 	if c.Scoring.BiasKappa <= 0 {
 		return errors.New("scoring.bias_kappa must be > 0")
@@ -865,11 +978,4 @@ func weightsUDPZero(cfg WeightsUDPConfig) bool {
 
 func weightsLegacyZero(cfg WeightsLegacy) bool {
 	return cfg.RTT == 0 && cfg.Jitter == 0 && cfg.Loss == 0
-}
-
-func boolValue(value *bool, fallback bool) bool {
-	if value == nil {
-		return fallback
-	}
-	return *value
 }

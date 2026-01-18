@@ -26,8 +26,10 @@ to the TCP/UDP measurement pipeline. ICMP remains reachability-only.
 ```yaml
 measurement:
   interval: 2s
-  target_bandwidth_up: 10m
-  target_bandwidth_down: 50m
+  tcp_target_bandwidth_up: 10m
+  tcp_target_bandwidth_down: 50m
+  udp_target_bandwidth_up: 10m
+  udp_target_bandwidth_down: 50m
   sample_bytes: 500KB
   tcp_enabled: true
   udp_enabled: true
@@ -67,6 +69,8 @@ switching:
 - `switching.confirm_windows` is deprecated. Use `confirm_duration`.
 - `probe.interval` may be reused as `measurement.interval` if not set. A
   warning is logged when migration occurs.
+- Legacy `target_bandwidth_up`/`target_bandwidth_down` are migrated to
+  `tcp_target_bandwidth_*` and `udp_target_bandwidth_*` when set.
 
 ## Validation checklist
 

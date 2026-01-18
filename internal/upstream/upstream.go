@@ -35,8 +35,12 @@ type UpstreamStats struct {
 	Reachable     bool      `json:"reachable"`
 	LastReachable time.Time `json:"last_reachable"`
 
-	BandwidthUpBps   float64 `json:"bandwidth_up_bps"`
-	BandwidthDownBps float64 `json:"bandwidth_down_bps"`
+	BandwidthUpBps      float64 `json:"bandwidth_up_bps"`
+	BandwidthDownBps    float64 `json:"bandwidth_down_bps"`
+	BandwidthUpBpsTCP   float64 `json:"bandwidth_up_bps_tcp"`
+	BandwidthDownBpsTCP float64 `json:"bandwidth_down_bps_tcp"`
+	BandwidthUpBpsUDP   float64 `json:"bandwidth_up_bps_udp"`
+	BandwidthDownBpsUDP float64 `json:"bandwidth_down_bps_udp"`
 
 	RTTMs    float64 `json:"rtt_ms"`
 	JitterMs float64 `json:"jitter_ms"`
@@ -334,9 +338,13 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 	up.stats.JitterMs = applyEMA(result.JitterMs, up.stats.JitterMs, scoring.EMAAlpha, &up.jitInit)
 
 	if result.Network == "tcp" {
+		up.stats.BandwidthUpBpsTCP = result.BandwidthUpBps
+		up.stats.BandwidthDownBpsTCP = result.BandwidthDownBps
 		up.stats.RetransRate = applyEMA(result.RetransRate, up.stats.RetransRate, scoring.EMAAlpha, &up.retransInit)
 		up.stats.LastTCPUpdate = now
 	} else {
+		up.stats.BandwidthUpBpsUDP = result.BandwidthUpBps
+		up.stats.BandwidthDownBpsUDP = result.BandwidthDownBps
 		up.stats.LossRate = applyEMA(result.LossRate, up.stats.LossRate, scoring.EMAAlpha, &up.lossInit)
 		up.stats.LastUDPUpdate = now
 	}
@@ -505,26 +513,30 @@ func (m *UpstreamManager) Snapshot() []UpstreamSnapshot {
 		}
 		active := tag == m.activeTag
 		out = append(out, UpstreamSnapshot{
-			Tag:              up.Tag,
-			Host:             up.Host,
-			IPs:              ips,
-			ActiveIP:         activeIP,
-			Active:           active,
-			Usable:           up.stats.Usable,
-			Reachable:        up.stats.Reachable,
-			BandwidthUpBps:   up.stats.BandwidthUpBps,
-			BandwidthDownBps: up.stats.BandwidthDownBps,
-			RTTMs:            up.stats.RTTMs,
-			JitterMs:         up.stats.JitterMs,
-			RetransRate:      up.stats.RetransRate,
-			LossRate:         up.stats.LossRate,
-			Loss:             up.stats.Loss,
-			ScoreTCP:         up.stats.ScoreTCP,
-			ScoreUDP:         up.stats.ScoreUDP,
-			Score:            up.stats.ScoreOverall,
-			Utilization:      up.stats.Utilization,
-			LastTCPUpdate:    up.stats.LastTCPUpdate,
-			LastUDPUpdate:    up.stats.LastUDPUpdate,
+			Tag:                 up.Tag,
+			Host:                up.Host,
+			IPs:                 ips,
+			ActiveIP:            activeIP,
+			Active:              active,
+			Usable:              up.stats.Usable,
+			Reachable:           up.stats.Reachable,
+			BandwidthUpBps:      up.stats.BandwidthUpBps,
+			BandwidthDownBps:    up.stats.BandwidthDownBps,
+			BandwidthUpBpsTCP:   up.stats.BandwidthUpBpsTCP,
+			BandwidthDownBpsTCP: up.stats.BandwidthDownBpsTCP,
+			BandwidthUpBpsUDP:   up.stats.BandwidthUpBpsUDP,
+			BandwidthDownBpsUDP: up.stats.BandwidthDownBpsUDP,
+			RTTMs:               up.stats.RTTMs,
+			JitterMs:            up.stats.JitterMs,
+			RetransRate:         up.stats.RetransRate,
+			LossRate:            up.stats.LossRate,
+			Loss:                up.stats.Loss,
+			ScoreTCP:            up.stats.ScoreTCP,
+			ScoreUDP:            up.stats.ScoreUDP,
+			Score:               up.stats.ScoreOverall,
+			Utilization:         up.stats.Utilization,
+			LastTCPUpdate:       up.stats.LastTCPUpdate,
+			LastUDPUpdate:       up.stats.LastUDPUpdate,
 		})
 	}
 	return out
@@ -709,8 +721,12 @@ type UpstreamSnapshot struct {
 	Usable    bool     `json:"usable"`
 	Reachable bool     `json:"reachable"`
 
-	BandwidthUpBps   float64 `json:"bandwidth_up_bps"`
-	BandwidthDownBps float64 `json:"bandwidth_down_bps"`
+	BandwidthUpBps      float64 `json:"bandwidth_up_bps"`
+	BandwidthDownBps    float64 `json:"bandwidth_down_bps"`
+	BandwidthUpBpsTCP   float64 `json:"bandwidth_up_bps_tcp"`
+	BandwidthDownBpsTCP float64 `json:"bandwidth_down_bps_tcp"`
+	BandwidthUpBpsUDP   float64 `json:"bandwidth_up_bps_udp"`
+	BandwidthDownBpsUDP float64 `json:"bandwidth_down_bps_udp"`
 
 	RTTMs    float64 `json:"rtt_ms"`
 	JitterMs float64 `json:"jitter_ms"`
