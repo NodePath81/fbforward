@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type Mode int
@@ -102,18 +103,17 @@ type MeasurementResult struct {
 }
 
 type UpstreamManager struct {
-	mu                  sync.RWMutex
-	upstreams           map[string]*Upstream
-	order               []string
-	mode                Mode
-	manualTag           string
-	activeTag           string
-	rng                 *rand.Rand
-	onSelect            func(oldTag, newTag string)
-	onStateChange       func(tag string, usable bool)
-	switching           config.SwitchingConfig
-	staleThreshold      time.Duration
-	measurementInterval time.Duration
+	mu             sync.RWMutex
+	upstreams      map[string]*Upstream
+	order          []string
+	mode           Mode
+	manualTag      string
+	activeTag      string
+	rng            *rand.Rand
+	onSelect       func(oldTag, newTag string)
+	onStateChange  func(tag string, usable bool)
+	switching      config.SwitchingConfig
+	staleThreshold time.Duration
 
 	pendingSwitch  string
 	pendingSince   time.Time
@@ -148,20 +148,20 @@ func (m *UpstreamManager) SetSwitching(cfg config.SwitchingConfig) {
 	defer m.mu.Unlock()
 	defaults := config.DefaultSwitchingConfig()
 	m.switching = cfg
-	if m.switching.ConfirmDuration.Duration() < 0 {
-		m.switching.ConfirmDuration = defaults.ConfirmDuration
+	if m.switching.Auto.ConfirmDuration.Duration() < 0 {
+		m.switching.Auto.ConfirmDuration = defaults.Auto.ConfirmDuration
 	}
-	if m.switching.FailureLossThreshold <= 0 || m.switching.FailureLossThreshold > 1 {
-		m.switching.FailureLossThreshold = defaults.FailureLossThreshold
+	if m.switching.Failover.LossRateThreshold <= 0 || m.switching.Failover.LossRateThreshold > 1 {
+		m.switching.Failover.LossRateThreshold = defaults.Failover.LossRateThreshold
 	}
-	if m.switching.FailureRetransThresh <= 0 || m.switching.FailureRetransThresh > 1 {
-		m.switching.FailureRetransThresh = defaults.FailureRetransThresh
+	if m.switching.Failover.RetransmitRateThreshold <= 0 || m.switching.Failover.RetransmitRateThreshold > 1 {
+		m.switching.Failover.RetransmitRateThreshold = defaults.Failover.RetransmitRateThreshold
 	}
-	if m.switching.SwitchThreshold < 0 {
-		m.switching.SwitchThreshold = defaults.SwitchThreshold
+	if m.switching.Auto.ScoreDeltaThreshold < 0 {
+		m.switching.Auto.ScoreDeltaThreshold = defaults.Auto.ScoreDeltaThreshold
 	}
-	if m.switching.MinHoldSeconds < 0 {
-		m.switching.MinHoldSeconds = defaults.MinHoldSeconds
+	if m.switching.Auto.MinHoldTime.Duration() < 0 {
+		m.switching.Auto.MinHoldTime = defaults.Auto.MinHoldTime
 	}
 	m.resetPendingLocked()
 }
@@ -172,10 +172,6 @@ func (m *UpstreamManager) SetMeasurementConfig(cfg config.MeasurementConfig) {
 	m.staleThreshold = cfg.StaleThreshold.Duration()
 	if m.staleThreshold <= 0 {
 		m.staleThreshold = 2 * time.Minute
-	}
-	m.measurementInterval = cfg.Interval.Duration()
-	if m.measurementInterval <= 0 {
-		m.measurementInterval = 2 * time.Second
 	}
 }
 
@@ -338,20 +334,20 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 	}
 
 	now := result.Timestamp
-	up.stats.BandwidthUpBps = applyEMA(result.BandwidthUpBps, up.stats.BandwidthUpBps, scoring.EMAAlpha, &up.bwUpInit)
-	up.stats.BandwidthDownBps = applyEMA(result.BandwidthDownBps, up.stats.BandwidthDownBps, scoring.EMAAlpha, &up.bwDnInit)
-	up.stats.RTTMs = applyEMA(result.RTTMs, up.stats.RTTMs, scoring.EMAAlpha, &up.rttInit)
-	up.stats.JitterMs = applyEMA(result.JitterMs, up.stats.JitterMs, scoring.EMAAlpha, &up.jitInit)
+	up.stats.BandwidthUpBps = applyEMA(result.BandwidthUpBps, up.stats.BandwidthUpBps, scoring.Smoothing.Alpha, &up.bwUpInit)
+	up.stats.BandwidthDownBps = applyEMA(result.BandwidthDownBps, up.stats.BandwidthDownBps, scoring.Smoothing.Alpha, &up.bwDnInit)
+	up.stats.RTTMs = applyEMA(result.RTTMs, up.stats.RTTMs, scoring.Smoothing.Alpha, &up.rttInit)
+	up.stats.JitterMs = applyEMA(result.JitterMs, up.stats.JitterMs, scoring.Smoothing.Alpha, &up.jitInit)
 
 	if result.Network == "tcp" {
 		up.stats.BandwidthUpBpsTCP = result.BandwidthUpBps
 		up.stats.BandwidthDownBpsTCP = result.BandwidthDownBps
-		up.stats.RetransRate = applyEMA(result.RetransRate, up.stats.RetransRate, scoring.EMAAlpha, &up.retransInit)
+		up.stats.RetransRate = applyEMA(result.RetransRate, up.stats.RetransRate, scoring.Smoothing.Alpha, &up.retransInit)
 		up.stats.LastTCPUpdate = now
 	} else {
 		up.stats.BandwidthUpBpsUDP = result.BandwidthUpBps
 		up.stats.BandwidthDownBpsUDP = result.BandwidthDownBps
-		up.stats.LossRate = applyEMA(result.LossRate, up.stats.LossRate, scoring.EMAAlpha, &up.lossInit)
+		up.stats.LossRate = applyEMA(result.LossRate, up.stats.LossRate, scoring.Smoothing.Alpha, &up.lossInit)
 		up.stats.LastUDPUpdate = now
 	}
 
@@ -378,7 +374,7 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 
 	active := m.upstreams[m.activeTag]
 	if active != nil && updatedTag == m.activeTag {
-		if stats.RetransRate >= m.switching.FailureRetransThresh || stats.LossRate >= m.switching.FailureLossThreshold {
+		if stats.RetransRate >= m.switching.Failover.RetransmitRateThreshold || stats.LossRate >= m.switching.Failover.LossRateThreshold {
 			m.immediateFailoverLocked()
 			return
 		}
@@ -395,7 +391,7 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 		activeScore = active.stats.ScoreOverall
 	}
 
-	threshold := m.switching.SwitchThreshold
+	threshold := m.switching.Auto.ScoreDeltaThreshold
 	if m.isInWarmupLocked() {
 		threshold /= 2
 	}
@@ -410,7 +406,7 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 		return
 	}
 
-	confirmDur := m.switching.ConfirmDuration.Duration()
+	confirmDur := m.switching.Auto.ConfirmDuration.Duration()
 	if m.isInWarmupLocked() {
 		confirmDur = 0
 	}
@@ -418,7 +414,7 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 		return
 	}
 
-	holdDur := time.Duration(m.switching.MinHoldSeconds) * time.Second
+	holdDur := m.switching.Auto.MinHoldTime.Duration()
 	if m.isInWarmupLocked() {
 		holdDur = 0
 	}
@@ -612,70 +608,102 @@ func (s *UpstreamStats) ComputeUsable(staleThresh time.Duration) bool {
 func computeFullScore(stats UpstreamStats, cfg config.ScoringConfig, bias float64, utilization float64, staleThresh time.Duration) (float64, float64, float64) {
 	const epsilon = 0.001
 
-	refBwUp, err := config.ParseBandwidth(cfg.RefBandwidthUp)
-	if err != nil || refBwUp == 0 {
-		refBwUp = 1
+	refTCPUp, err := config.ParseBandwidth(cfg.Reference.TCP.Bandwidth.Upload)
+	if err != nil || refTCPUp == 0 {
+		refTCPUp = 1
 	}
-	refBwDn, err := config.ParseBandwidth(cfg.RefBandwidthDown)
-	if err != nil || refBwDn == 0 {
-		refBwDn = 1
+	refTCPDn, err := config.ParseBandwidth(cfg.Reference.TCP.Bandwidth.Download)
+	if err != nil || refTCPDn == 0 {
+		refTCPDn = 1
+	}
+	refUDPUp, err := config.ParseBandwidth(cfg.Reference.UDP.Bandwidth.Upload)
+	if err != nil || refUDPUp == 0 {
+		refUDPUp = 1
+	}
+	refUDPDn, err := config.ParseBandwidth(cfg.Reference.UDP.Bandwidth.Download)
+	if err != nil || refUDPDn == 0 {
+		refUDPDn = 1
 	}
 
-	bwUp := stats.BandwidthUpBps
-	bwDn := stats.BandwidthDownBps
-	rtt := stats.RTTMs
-	jit := stats.JitterMs
+	tcpBwUp := stats.BandwidthUpBpsTCP
+	tcpBwDn := stats.BandwidthDownBpsTCP
+	if tcpBwUp <= 0 {
+		tcpBwUp = stats.BandwidthUpBps
+	}
+	if tcpBwDn <= 0 {
+		tcpBwDn = stats.BandwidthDownBps
+	}
+
+	udpBwUp := stats.BandwidthUpBpsUDP
+	udpBwDn := stats.BandwidthDownBpsUDP
+	if udpBwUp <= 0 {
+		udpBwUp = stats.BandwidthUpBps
+	}
+	if udpBwDn <= 0 {
+		udpBwDn = stats.BandwidthDownBps
+	}
+
+	tcpRtt := stats.RTTMs
+	tcpJit := stats.JitterMs
+	udpRtt := stats.RTTMs
+	udpJit := stats.JitterMs
 	retrans := stats.RetransRate
 	loss := stats.LossRate
 
 	tcpStale := staleThresh > 0 && (stats.LastTCPUpdate.IsZero() || time.Since(stats.LastTCPUpdate) > staleThresh)
 	if tcpStale {
-		bwUp = float64(refBwUp) * 0.5
-		bwDn = float64(refBwDn) * 0.5
-		rtt = cfg.RefRTTMs * 2
-		jit = cfg.RefJitterMs * 2
-		retrans = cfg.RefRetransRate * 2
+		tcpBwUp = float64(refTCPUp) * 0.5
+		tcpBwDn = float64(refTCPDn) * 0.5
+		tcpRtt = cfg.Reference.TCP.Latency.RTT * 2
+		tcpJit = cfg.Reference.TCP.Latency.Jitter * 2
+		retrans = cfg.Reference.TCP.RetransmitRate * 2
 	}
 
 	udpStale := staleThresh > 0 && (stats.LastUDPUpdate.IsZero() || time.Since(stats.LastUDPUpdate) > staleThresh)
 	if udpStale {
-		loss = cfg.RefLossRate * 2
+		udpBwUp = float64(refUDPUp) * 0.5
+		udpBwDn = float64(refUDPDn) * 0.5
+		udpRtt = cfg.Reference.UDP.Latency.RTT * 2
+		udpJit = cfg.Reference.UDP.Latency.Jitter * 2
+		loss = cfg.Reference.UDP.LossRate * 2
 	}
 
-	sBwUp := maxFloat(1-math.Exp(-bwUp/float64(refBwUp)), epsilon)
-	sBwDn := maxFloat(1-math.Exp(-bwDn/float64(refBwDn)), epsilon)
-	sRTT := maxFloat(math.Exp(-rtt/cfg.RefRTTMs), epsilon)
-	sJit := maxFloat(math.Exp(-jit/cfg.RefJitterMs), epsilon)
-	sRetrans := maxFloat(math.Exp(-retrans/cfg.RefRetransRate), epsilon)
-	sLoss := maxFloat(math.Exp(-loss/cfg.RefLossRate), epsilon)
+	sBwUpTCP := maxFloat(1-math.Exp(-tcpBwUp/float64(refTCPUp)), epsilon)
+	sBwDnTCP := maxFloat(1-math.Exp(-tcpBwDn/float64(refTCPDn)), epsilon)
+	sRTTTCP := maxFloat(math.Exp(-tcpRtt/cfg.Reference.TCP.Latency.RTT), epsilon)
+	sJitTCP := maxFloat(math.Exp(-tcpJit/cfg.Reference.TCP.Latency.Jitter), epsilon)
+	sRetrans := maxFloat(math.Exp(-retrans/cfg.Reference.TCP.RetransmitRate), epsilon)
 
-	wTCP := cfg.WeightsTCP
-	tcpScore := 100 * math.Pow(sBwUp, wTCP.BandwidthUp) *
-		math.Pow(sBwDn, wTCP.BandwidthDown) *
-		math.Pow(sRTT, wTCP.RTT) *
-		math.Pow(sJit, wTCP.Jitter) *
-		math.Pow(sRetrans, wTCP.Retrans)
+	sBwUpUDP := maxFloat(1-math.Exp(-udpBwUp/float64(refUDPUp)), epsilon)
+	sBwDnUDP := maxFloat(1-math.Exp(-udpBwDn/float64(refUDPDn)), epsilon)
+	sRTTUDP := maxFloat(math.Exp(-udpRtt/cfg.Reference.UDP.Latency.RTT), epsilon)
+	sJitUDP := maxFloat(math.Exp(-udpJit/cfg.Reference.UDP.Latency.Jitter), epsilon)
+	sLoss := maxFloat(math.Exp(-loss/cfg.Reference.UDP.LossRate), epsilon)
 
-	wUDP := cfg.WeightsUDP
-	udpScore := 100 * math.Pow(sBwUp, wUDP.BandwidthUp) *
-		math.Pow(sBwDn, wUDP.BandwidthDown) *
-		math.Pow(sRTT, wUDP.RTT) *
-		math.Pow(sJit, wUDP.Jitter) *
-		math.Pow(sLoss, wUDP.Loss)
+	wTCP := cfg.Weights.TCP
+	tcpScore := 100 * math.Pow(sBwUpTCP, wTCP.BandwidthUpload) *
+		math.Pow(sBwDnTCP, wTCP.BandwidthDownload) *
+		math.Pow(sRTTTCP, wTCP.RTT) *
+		math.Pow(sJitTCP, wTCP.Jitter) *
+		math.Pow(sRetrans, wTCP.RetransmitRate)
+
+	wUDP := cfg.Weights.UDP
+	udpScore := 100 * math.Pow(sBwUpUDP, wUDP.BandwidthUpload) *
+		math.Pow(sBwDnUDP, wUDP.BandwidthDownload) *
+		math.Pow(sRTTUDP, wUDP.RTT) *
+		math.Pow(sJitUDP, wUDP.Jitter) *
+		math.Pow(sLoss, wUDP.LossRate)
 
 	mult := 1.0
-	utilEnabled := true
-	if cfg.UtilizationEnabled != nil {
-		utilEnabled = *cfg.UtilizationEnabled
-	}
+	utilEnabled := util.BoolValue(cfg.UtilizationPenalty.Enabled, true)
 	if utilEnabled && utilization > 0 {
-		mMin := cfg.UtilizationMinMult
-		u0 := cfg.UtilizationThresh
-		p := cfg.UtilizationExponent
+		mMin := cfg.UtilizationPenalty.MinMultiplier
+		u0 := cfg.UtilizationPenalty.Threshold
+		p := cfg.UtilizationPenalty.Exponent
 		mult = mMin + (1-mMin)*math.Exp(-math.Pow(utilization/u0, p))
 	}
 
-	biasMult := math.Exp(cfg.BiasKappa * bias)
+	biasMult := math.Exp(cfg.BiasTransform.Kappa * bias)
 	biasMult = clampFloat(biasMult, 0.67, 1.5)
 
 	tcpScore = clampFloat(tcpScore*mult*biasMult, 0, 100)
@@ -687,7 +715,7 @@ func computeFullScore(stats UpstreamStats, cfg config.ScoringConfig, bias float6
 	} else if udpStale && !tcpStale {
 		overall = tcpScore
 	} else {
-		overall = cfg.ProtocolWeightTCP*tcpScore + cfg.ProtocolWeightUDP*udpScore
+		overall = cfg.Weights.ProtocolBlend.TCPWeight*tcpScore + cfg.Weights.ProtocolBlend.UDPWeight*udpScore
 	}
 
 	return tcpScore, udpScore, overall

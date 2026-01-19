@@ -36,47 +36,47 @@ const (
 )
 
 type ControlServer struct {
-	cfg          config.ControlConfig
-	measurement  config.MeasurementConfig
-	webUIEnabled bool
-	hostname     string
-	manager      *upstream.UpstreamManager
-	metrics      *metrics.Metrics
-	status       *StatusStore
-	restartFn    func() error
-	logger       util.Logger
-	server       *http.Server
-	limiter      *rateLimiter
-	schedulerMu  sync.RWMutex
-	scheduler    *measure.Scheduler
-	collectorMu  sync.RWMutex
-	collector    *measure.Collector
+	cfg         config.ControlConfig
+	measurement config.MeasurementConfig
+	hostname    string
+	manager     *upstream.UpstreamManager
+	metrics     *metrics.Metrics
+	status      *StatusStore
+	restartFn   func() error
+	logger      util.Logger
+	server      *http.Server
+	limiter     *rateLimiter
+	schedulerMu sync.RWMutex
+	scheduler   *measure.Scheduler
+	collectorMu sync.RWMutex
+	collector   *measure.Collector
 }
 
-func NewControlServer(cfg config.ControlConfig, measurement config.MeasurementConfig, webUIEnabled bool, hostname string, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
+func NewControlServer(cfg config.ControlConfig, measurement config.MeasurementConfig, hostname string, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
 	return &ControlServer{
-		cfg:          cfg,
-		measurement:  measurement,
-		webUIEnabled: webUIEnabled,
-		hostname:     hostname,
-		manager:      manager,
-		metrics:      metrics,
-		status:       status,
-		restartFn:    restartFn,
-		logger:       logger,
-		limiter:      newRateLimiter(rpcRatePerSecond, rpcRateBurst, 5*time.Minute),
+		cfg:         cfg,
+		measurement: measurement,
+		hostname:    hostname,
+		manager:     manager,
+		metrics:     metrics,
+		status:      status,
+		restartFn:   restartFn,
+		logger:      logger,
+		limiter:     newRateLimiter(rpcRatePerSecond, rpcRateBurst, 5*time.Minute),
 	}
 }
 
 func (c *ControlServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/metrics", c.handleMetrics)
+	if c.cfg.Metrics.IsEnabled() {
+		mux.HandleFunc("/metrics", c.handleMetrics)
+	}
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/status", c.handleStatus)
 	mux.HandleFunc("/identity", c.handleIdentity)
-	mux.Handle("/", web.WebUIHandler(c.webUIEnabled))
+	mux.Handle("/", web.WebUIHandler(c.cfg.WebUI.IsEnabled()))
 
-	addr := util.NetJoin(c.cfg.Addr, c.cfg.Port)
+	addr := util.NetJoin(c.cfg.BindAddr, c.cfg.BindPort)
 	c.server = &http.Server{
 		Addr:    addr,
 		Handler: mux,
@@ -274,27 +274,56 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 	cfg := c.measurement
 	return map[string]interface{}{
-		"interval":                  cfg.Interval.Duration().String(),
-		"discovery_delay":           cfg.DiscoveryDelay.Duration().String(),
-		"target_bandwidth_up":       cfg.TargetBandwidthUp,
-		"target_bandwidth_down":     cfg.TargetBandwidthDown,
-		"tcp_target_bandwidth_up":   cfg.TCPTargetBandwidthUp,
-		"tcp_target_bandwidth_down": cfg.TCPTargetBandwidthDown,
-		"udp_target_bandwidth_up":   cfg.UDPTargetBandwidthUp,
-		"udp_target_bandwidth_down": cfg.UDPTargetBandwidthDown,
-		"tcp_chunk_size":            cfg.TCPChunkSize,
-		"udp_chunk_size":            cfg.UDPChunkSize,
-		"sample_bytes":              cfg.SampleBytes,
-		"samples":                   cfg.Samples,
-		"tcp_enabled":               util.BoolValue(cfg.TCPEnabled, true),
-		"udp_enabled":               util.BoolValue(cfg.UDPEnabled, true),
-		"alternate_tcp":             util.BoolValue(cfg.AlternateTCP, true),
-		"max_sample_duration":       cfg.MaxSampleDuration.Duration().String(),
-		"max_cycle_duration":        cfg.MaxCycleDuration.Duration().String(),
-		"fast_start_timeout":        cfg.FastStartTimeout.Duration().String(),
-		"warmup_duration":           cfg.WarmupDuration.Duration().String(),
+		"startup_delay":             cfg.StartupDelay.Duration().String(),
 		"stale_threshold":           cfg.StaleThreshold.Duration().String(),
-		"fallback_to_icmp":          util.BoolValue(cfg.FallbackToICMP, true),
+		"fallback_to_icmp_on_stale": util.BoolValue(cfg.FallbackToICMPOnStale, true),
+		"schedule": map[string]interface{}{
+			"interval": map[string]interface{}{
+				"min": cfg.Schedule.Interval.Min.Duration().String(),
+				"max": cfg.Schedule.Interval.Max.Duration().String(),
+			},
+			"upstream_gap": cfg.Schedule.UpstreamGap.Duration().String(),
+			"headroom": map[string]interface{}{
+				"max_link_utilization":    cfg.Schedule.Headroom.MaxLinkUtilization,
+				"required_free_bandwidth": cfg.Schedule.Headroom.RequiredFreeBandwidth,
+			},
+		},
+		"fast_start": map[string]interface{}{
+			"enabled":         util.BoolValue(cfg.FastStart.Enabled, true),
+			"timeout":         cfg.FastStart.Timeout.Duration().String(),
+			"warmup_duration": cfg.FastStart.WarmupDuration.Duration().String(),
+		},
+		"protocols": map[string]interface{}{
+			"tcp": map[string]interface{}{
+				"enabled":   util.BoolValue(cfg.Protocols.TCP.Enabled, true),
+				"alternate": util.BoolValue(cfg.Protocols.TCP.Alternate, true),
+				"target_bandwidth": map[string]interface{}{
+					"upload":   cfg.Protocols.TCP.TargetBandwidth.Upload,
+					"download": cfg.Protocols.TCP.TargetBandwidth.Download,
+				},
+				"chunk_size":   cfg.Protocols.TCP.ChunkSize,
+				"sample_size":  cfg.Protocols.TCP.SampleSize,
+				"sample_count": cfg.Protocols.TCP.SampleCount,
+				"timeout": map[string]interface{}{
+					"per_sample": cfg.Protocols.TCP.Timeout.PerSample.Duration().String(),
+					"per_cycle":  cfg.Protocols.TCP.Timeout.PerCycle.Duration().String(),
+				},
+			},
+			"udp": map[string]interface{}{
+				"enabled": util.BoolValue(cfg.Protocols.UDP.Enabled, true),
+				"target_bandwidth": map[string]interface{}{
+					"upload":   cfg.Protocols.UDP.TargetBandwidth.Upload,
+					"download": cfg.Protocols.UDP.TargetBandwidth.Download,
+				},
+				"chunk_size":   cfg.Protocols.UDP.ChunkSize,
+				"sample_size":  cfg.Protocols.UDP.SampleSize,
+				"sample_count": cfg.Protocols.UDP.SampleCount,
+				"timeout": map[string]interface{}{
+					"per_sample": cfg.Protocols.UDP.Timeout.PerSample.Duration().String(),
+					"per_cycle":  cfg.Protocols.UDP.Timeout.PerCycle.Duration().String(),
+				},
+			},
+		},
 	}
 }
 
@@ -497,15 +526,15 @@ func (c *ControlServer) checkAuth(r *http.Request) bool {
 	if !ok {
 		return false
 	}
-	return secureTokenEqual(token, c.cfg.Token)
+	return secureTokenEqual(token, c.cfg.AuthToken)
 }
 
 func (c *ControlServer) checkStatusAuth(r *http.Request) bool {
 	if token, ok := bearerToken(r); ok {
-		return secureTokenEqual(token, c.cfg.Token)
+		return secureTokenEqual(token, c.cfg.AuthToken)
 	}
 	if token, ok := tokenFromWebSocketProtocols(r); ok {
-		return secureTokenEqual(token, c.cfg.Token)
+		return secureTokenEqual(token, c.cfg.AuthToken)
 	}
 	return false
 }

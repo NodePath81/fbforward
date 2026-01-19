@@ -44,7 +44,7 @@ type closer interface {
 
 func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (*Runtime, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	resolver := resolver.NewResolver(cfg.Resolver)
+	resolver := resolver.NewResolver(cfg.DNS)
 	upstreams, err := resolveUpstreams(ctx, cfg, resolver)
 	if err != nil {
 		cancel()
@@ -76,7 +76,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	if cfg.Shaping.Enabled {
 		// Build upstream shaping entries with resolved IPs
 		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
-		rt.shaper = shaping.NewTrafficShaper(cfg.Shaping, cfg.Listeners, upstreamShaping, logger)
+		rt.shaper = shaping.NewTrafficShaper(cfg.Shaping, cfg.Forwarding.Listeners, upstreamShaping, logger)
 	}
 
 	manager.SetCallbacks(func(oldTag, newTag string) {
@@ -90,7 +90,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 	}, func(tag string, usable bool) {
 		logger.Info("upstream state changed", "upstream", tag, "usable", usable)
-		if !usable && cfg.Switching.CloseFlowsOnUnusable {
+		if !usable && cfg.Switching.CloseFlowsOnFailover {
 			status.CloseByUpstream(tag)
 		}
 	})
@@ -99,7 +99,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	manager.SetAuto()
 	metrics.Start(ctx.Done())
 
-	ctrl := control.NewControlServer(cfg.Control, cfg.Measurement, cfg.WebUI.IsEnabled(), cfg.Hostname, manager, metrics, status, restartFn, logger)
+	ctrl := control.NewControlServer(cfg.Control, cfg.Measurement, cfg.Hostname, manager, metrics, status, restartFn, logger)
 	rt.control = ctrl
 
 	return rt, nil
@@ -155,59 +155,62 @@ func (r *Runtime) startProbes() {
 		r.wg.Add(1)
 		go func(u *upstream.Upstream) {
 			defer r.wg.Done()
-			probe.ProbeLoop(r.ctx, u, r.cfg.Probe, r.manager, r.metrics, r.logger)
+			probe.ProbeLoop(r.ctx, u, r.cfg.Reachability, r.manager, r.metrics, r.logger)
 		}(up)
 	}
 }
 
 func (r *Runtime) startMeasurement() {
+	tcpCfg := r.cfg.Measurement.Protocols.TCP
+	udpCfg := r.cfg.Measurement.Protocols.UDP
+
 	protocols := make([]string, 0, 2)
-	if util.BoolValue(r.cfg.Measurement.TCPEnabled, true) {
+	if util.BoolValue(tcpCfg.Enabled, true) {
 		protocols = append(protocols, "tcp")
 	}
-	if util.BoolValue(r.cfg.Measurement.UDPEnabled, true) {
+	if util.BoolValue(udpCfg.Enabled, true) {
 		protocols = append(protocols, "udp")
 	}
 	if len(protocols) == 0 {
 		return
 	}
 
-	tcpTargetUpBps, err := config.ParseBandwidth(r.cfg.Measurement.TCPTargetBandwidthUp)
+	tcpTargetUpBps, err := config.ParseBandwidth(tcpCfg.TargetBandwidth.Upload)
 	if err != nil {
-		r.logger.Error("invalid measurement tcp_target_bandwidth_up", "error", err)
+		r.logger.Error("invalid measurement protocols.tcp.target_bandwidth.upload", "error", err)
 		return
 	}
-	tcpTargetDownBps, err := config.ParseBandwidth(r.cfg.Measurement.TCPTargetBandwidthDown)
+	tcpTargetDownBps, err := config.ParseBandwidth(tcpCfg.TargetBandwidth.Download)
 	if err != nil {
-		r.logger.Error("invalid measurement tcp_target_bandwidth_down", "error", err)
+		r.logger.Error("invalid measurement protocols.tcp.target_bandwidth.download", "error", err)
 		return
 	}
-	udpTargetUpBps, err := config.ParseBandwidth(r.cfg.Measurement.UDPTargetBandwidthUp)
+	udpTargetUpBps, err := config.ParseBandwidth(udpCfg.TargetBandwidth.Upload)
 	if err != nil {
-		r.logger.Error("invalid measurement udp_target_bandwidth_up", "error", err)
+		r.logger.Error("invalid measurement protocols.udp.target_bandwidth.upload", "error", err)
 		return
 	}
-	udpTargetDownBps, err := config.ParseBandwidth(r.cfg.Measurement.UDPTargetBandwidthDown)
+	udpTargetDownBps, err := config.ParseBandwidth(udpCfg.TargetBandwidth.Download)
 	if err != nil {
-		r.logger.Error("invalid measurement udp_target_bandwidth_down", "error", err)
+		r.logger.Error("invalid measurement protocols.udp.target_bandwidth.download", "error", err)
 		return
 	}
-	requiredHeadroomBps, err := config.ParseBandwidth(r.cfg.Measurement.Schedule.RequiredHeadroom)
+	requiredHeadroomBps, err := config.ParseBandwidth(r.cfg.Measurement.Schedule.Headroom.RequiredFreeBandwidth)
 	if err != nil {
-		r.logger.Error("invalid measurement schedule required_headroom", "error", err)
+		r.logger.Error("invalid measurement schedule headroom.required_free_bandwidth", "error", err)
 		return
 	}
 
-	rateWindow := time.Duration(r.cfg.Scoring.UtilizationWindowSec) * time.Second
+	rateWindow := r.cfg.Scoring.UtilizationPenalty.WindowDuration.Duration()
 	if rateWindow <= 0 {
 		rateWindow = 5 * time.Second
 	}
 
 	scheduler := measure.NewScheduler(measure.SchedulerConfig{
-		MinInterval:         r.cfg.Measurement.Schedule.MinInterval.Duration(),
-		MaxInterval:         r.cfg.Measurement.Schedule.MaxInterval.Duration(),
-		InterUpstreamGap:    r.cfg.Measurement.Schedule.InterUpstreamGap.Duration(),
-		MaxUtilization:      r.cfg.Measurement.Schedule.MaxUtilization,
+		MinInterval:         r.cfg.Measurement.Schedule.Interval.Min.Duration(),
+		MaxInterval:         r.cfg.Measurement.Schedule.Interval.Max.Duration(),
+		InterUpstreamGap:    r.cfg.Measurement.Schedule.UpstreamGap.Duration(),
+		MaxUtilization:      r.cfg.Measurement.Schedule.Headroom.MaxLinkUtilization,
 		RequiredHeadroomBps: int64(requiredHeadroomBps),
 		TCPTargetUpBps:      int64(tcpTargetUpBps),
 		TCPTargetDownBps:    int64(tcpTargetDownBps),
@@ -233,7 +236,11 @@ func (r *Runtime) startMeasurement() {
 }
 
 func (r *Runtime) runFastStart() {
-	ctx, cancel := context.WithTimeout(r.ctx, r.cfg.Measurement.FastStartTimeout.Duration()*time.Duration(len(r.upstreams)+1))
+	if !util.BoolValue(r.cfg.Measurement.FastStart.Enabled, true) {
+		return
+	}
+	timeout := r.cfg.Measurement.FastStart.Timeout.Duration()
+	ctx, cancel := context.WithTimeout(r.ctx, timeout*time.Duration(len(r.upstreams)+1))
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -252,7 +259,7 @@ func (r *Runtime) runFastStart() {
 			if port == 0 {
 				port = 9876
 			}
-			rtt, reachable := measure.FastStartProbe(ctx, host, port, r.cfg.Measurement.FastStartTimeout.Duration())
+			rtt, reachable := measure.FastStartProbe(ctx, host, port, timeout)
 			score := measure.FastStartScore(rtt, reachable, u.Priority)
 			mu.Lock()
 			scores[u.Tag] = score
@@ -262,21 +269,21 @@ func (r *Runtime) runFastStart() {
 	wg.Wait()
 
 	r.manager.SelectByFastStart(scores)
-	r.manager.StartWarmup(r.cfg.Measurement.WarmupDuration.Duration())
+	r.manager.StartWarmup(r.cfg.Measurement.FastStart.WarmupDuration.Duration())
 }
 
 func (r *Runtime) startListeners() error {
 	r.listeners = nil
-	for _, ln := range r.cfg.Listeners {
+	for _, ln := range r.cfg.Forwarding.Listeners {
 		switch ln.Protocol {
 		case "tcp":
-			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Limits, time.Duration(r.cfg.Timeouts.TCPIdleSeconds)*time.Second, r.manager, r.metrics, r.status, r.logger)
+			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.manager, r.metrics, r.status, r.logger)
 			if err := tcpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
 			r.listeners = append(r.listeners, tcpListener)
 		case "udp":
-			udpListener := forwarding.NewUDPListener(ln, r.cfg.Limits, time.Duration(r.cfg.Timeouts.UDPIdleSeconds)*time.Second, r.manager, r.metrics, r.status, r.logger)
+			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.manager, r.metrics, r.status, r.logger)
 			if err := udpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
@@ -335,15 +342,15 @@ func (r *Runtime) startDNSRefresh() {
 func resolveUpstreams(ctx context.Context, cfg config.Config, res *resolver.Resolver) ([]*upstream.Upstream, error) {
 	upstreams := make([]*upstream.Upstream, 0, len(cfg.Upstreams))
 	for _, item := range cfg.Upstreams {
-		ips, err := res.ResolveHost(ctx, item.Host)
+		ips, err := res.ResolveHost(ctx, item.Destination.Host)
 		if err != nil {
 			return nil, err
 		}
 		up := &upstream.Upstream{
 			Tag:         item.Tag,
-			Host:        item.Host,
-			MeasureHost: item.MeasureHost,
-			MeasurePort: item.MeasurePort,
+			Host:        item.Destination.Host,
+			MeasureHost: item.Measurement.Host,
+			MeasurePort: item.Measurement.Port,
 			Priority:    item.Priority,
 			Bias:        item.Bias,
 			IPs:         ips,
@@ -369,7 +376,7 @@ func buildUpstreamShapingEntries(cfgUpstreams []config.UpstreamConfig, resolvedU
 	entries := make([]shaping.UpstreamShapingEntry, 0)
 	for _, cfgUp := range cfgUpstreams {
 		// Only include upstreams that have shaping config
-		if cfgUp.Ingress == nil && cfgUp.Egress == nil {
+		if cfgUp.Shaping == nil {
 			continue
 		}
 		ips, ok := tagToIPs[cfgUp.Tag]
@@ -377,10 +384,10 @@ func buildUpstreamShapingEntries(cfgUpstreams []config.UpstreamConfig, resolvedU
 			continue
 		}
 		entries = append(entries, shaping.UpstreamShapingEntry{
-			Tag:     cfgUp.Tag,
-			IPs:     ips,
-			Ingress: cfgUp.Ingress,
-			Egress:  cfgUp.Egress,
+			Tag:           cfgUp.Tag,
+			IPs:           ips,
+			UploadLimit:   cfgUp.Shaping.UploadLimit,
+			DownloadLimit: cfgUp.Shaping.DownloadLimit,
 		})
 	}
 	return entries
@@ -391,7 +398,7 @@ func upstreamHasShaping(cfgUpstreams []config.UpstreamConfig, tag string) bool {
 		if up.Tag != tag {
 			continue
 		}
-		return up.Ingress != nil || up.Egress != nil
+		return up.Shaping != nil
 	}
 	return false
 }

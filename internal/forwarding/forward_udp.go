@@ -42,7 +42,7 @@ var udpPacketPool = sync.Pool{
 	},
 }
 
-func NewUDPListener(cfg config.ListenerConfig, limits config.LimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *UDPListener {
+func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *UDPListener {
 	return &UDPListener{
 		cfg:      cfg,
 		manager:  manager,
@@ -56,7 +56,7 @@ func NewUDPListener(cfg config.ListenerConfig, limits config.LimitsConfig, timeo
 }
 
 func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
-	addr := net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port))
+	addr := net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort))
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return err
@@ -128,7 +128,7 @@ func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 func (l *UDPListener) Close() error {
 	if l.conn != nil {
 		err := l.conn.Close()
-		l.logger.Info("udp listener stopped", "addr", net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port)))
+		l.logger.Info("udp listener stopped", "addr", net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)))
 		return err
 	}
 	return nil
@@ -172,7 +172,7 @@ func (l *UDPListener) createMapping(ctx context.Context, clientAddr *net.UDPAddr
 	if ip == nil {
 		return nil, errors.New("upstream has no resolved IP")
 	}
-	upAddr := &net.UDPAddr{IP: ip, Port: l.cfg.Port}
+	upAddr := &net.UDPAddr{IP: ip, Port: l.cfg.BindPort}
 	upConn, err := net.DialUDP("udp", nil, upAddr)
 	if err != nil {
 		l.manager.MarkDialFailure(up.Tag, udpDialFailureCooldown)
@@ -191,7 +191,7 @@ func (l *UDPListener) createMapping(ctx context.Context, clientAddr *net.UDPAddr
 		activityCh:   make(chan struct{}, 1),
 		done:         make(chan struct{}),
 	}
-	mapping.id = l.status.AddUDP(clientAddr.String(), up.Tag, l.cfg.Port, mapping.close)
+	mapping.id = l.status.AddUDP(clientAddr.String(), up.Tag, l.cfg.BindPort, mapping.close)
 	l.mu.Lock()
 	l.mappings[clientAddr.String()] = mapping
 	l.mu.Unlock()

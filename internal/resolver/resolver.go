@@ -18,7 +18,7 @@ type Resolver struct {
 	strategy string
 }
 
-func NewResolver(cfg config.ResolverConfig) *Resolver {
+func NewResolver(cfg config.DNSConfig) *Resolver {
 	strategy := strings.ToLower(strings.TrimSpace(cfg.Strategy))
 	if len(cfg.Servers) == 0 {
 		return &Resolver{resolver: net.DefaultResolver, strategy: strategy}
@@ -53,8 +53,8 @@ func NewResolver(cfg config.ResolverConfig) *Resolver {
 
 func (r *Resolver) ResolveHost(ctx context.Context, host string) ([]net.IP, error) {
 	if ip := net.ParseIP(host); ip != nil {
-		if r.strategy == config.ResolverStrategyIPv4Only && ip.To4() == nil {
-			return nil, fmt.Errorf("ipv6 address not allowed for resolver.strategy=%s", r.strategy)
+		if r.strategy == config.DNSStrategyIPv4Only && ip.To4() == nil {
+			return nil, fmt.Errorf("ipv6 address not allowed for dns.strategy=%s", r.strategy)
 		}
 		return []net.IP{ip}, nil
 	}
@@ -83,9 +83,9 @@ func applyResolverStrategy(ips []net.IP, strategy string) []net.IP {
 		return ips
 	}
 	switch strategy {
-	case config.ResolverStrategyIPv4Only:
+	case config.DNSStrategyIPv4Only:
 		return filterIPv4(ips)
-	case config.ResolverStrategyPreferV6:
+	case config.DNSStrategyPreferV6:
 		v6 := filterIPv6(ips)
 		if len(v6) > 0 {
 			return v6

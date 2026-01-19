@@ -2,6 +2,7 @@
 
 This guide describes how to migrate fbforward from legacy ICMP-based scoring
 to the TCP/UDP measurement pipeline. ICMP remains reachability-only.
+It assumes the V2 configuration layout; legacy field migration is not supported.
 
 ## Prerequisites
 
@@ -14,63 +15,102 @@ to the TCP/UDP measurement pipeline. ICMP remains reachability-only.
 
 ## Configuration changes
 
-1) Add the `measurement` block with bandwidth targets and timeouts.
-2) Keep `probe` for ICMP reachability, but do not use it for scoring.
-3) Update `scoring` to the new TCP/UDP weight structure.
-4) Update `switching` to use `confirm_duration`.
-5) Optionally set `measure_host`, `measure_port`, `priority`, and `bias` per
-   upstream.
+1) Add the `measurement` block with protocol parameters and scheduling.
+2) Keep `reachability` for ICMP probes, but do not use ICMP for scoring.
+3) Update `scoring` to protocol-specific references and weights.
+4) Update `switching` to the auto/failover layout.
+5) Optionally set per-upstream measurement host/port, priority, and bias.
 
-### Example updates
+## Example updates
 
 ```yaml
+reachability:
+  probe_interval: 1s
+  window_size: 5
+
 measurement:
-  interval: 2s
-  tcp_target_bandwidth_up: 10m
-  tcp_target_bandwidth_down: 50m
-  udp_target_bandwidth_up: 10m
-  udp_target_bandwidth_down: 50m
-  sample_bytes: 500KB
-  tcp_enabled: true
-  udp_enabled: true
-  alternate_tcp: true
-  fallback_to_icmp: true
+  startup_delay: 10s
+  stale_threshold: 60m
+  fallback_to_icmp_on_stale: true
+  schedule:
+    interval:
+      min: 15m
+      max: 45m
+    upstream_gap: 5s
+    headroom:
+      max_link_utilization: 0.7
+      required_free_bandwidth: "0"
+  protocols:
+    tcp:
+      enabled: true
+      alternate: true
+      target_bandwidth:
+        upload: 10m
+        download: 50m
+      chunk_size: 1200
+      sample_size: 500kb
+      sample_count: 1
+      timeout:
+        per_sample: 10s
+        per_cycle: 30s
+    udp:
+      enabled: true
+      target_bandwidth:
+        upload: 10m
+        download: 50m
+      chunk_size: 1200
+      sample_size: 500kb
+      sample_count: 1
+      timeout:
+        per_sample: 10s
+        per_cycle: 30s
 
 scoring:
-  ref_bandwidth_up: 10m
-  ref_bandwidth_down: 50m
-  ref_rtt_ms: 50
-  ref_jitter_ms: 10
-  ref_retrans_rate: 0.01
-  ref_loss_rate: 0.01
-  weights_tcp:
-    bandwidth_up: 0.15
-    bandwidth_down: 0.25
-    rtt: 0.25
-    jitter: 0.10
-    retrans: 0.25
-  weights_udp:
-    bandwidth_up: 0.10
-    bandwidth_down: 0.30
-    rtt: 0.15
-    jitter: 0.30
-    loss: 0.15
+  smoothing:
+    alpha: 0.2
+  reference:
+    tcp:
+      bandwidth:
+        upload: 10m
+        download: 50m
+      latency:
+        rtt: 50
+        jitter: 10
+      retransmit_rate: 0.01
+    udp:
+      bandwidth:
+        upload: 10m
+        download: 50m
+      latency:
+        rtt: 50
+        jitter: 10
+      loss_rate: 0.01
+  weights:
+    tcp:
+      bandwidth_upload: 0.15
+      bandwidth_download: 0.25
+      rtt: 0.25
+      jitter: 0.10
+      retransmit_rate: 0.25
+    udp:
+      bandwidth_upload: 0.10
+      bandwidth_download: 0.30
+      rtt: 0.15
+      jitter: 0.30
+      loss_rate: 0.15
+    protocol_blend:
+      tcp_weight: 0.5
+      udp_weight: 0.5
 
 switching:
-  confirm_duration: 15s
-  failure_loss_threshold: 0.2
-  failure_retrans_threshold: 0.2
+  auto:
+    confirm_duration: 15s
+    score_delta_threshold: 5
+    min_hold_time: 30s
+  failover:
+    loss_rate_threshold: 0.2
+    retransmit_rate_threshold: 0.2
 ```
-
-## Legacy field migration
-
-- `scoring.metric_ref_*` is deprecated. Use `scoring.ref_*` instead.
-- `scoring.weights` is deprecated. Use `weights_tcp` and `weights_udp`.
-- `switching.confirm_windows` is deprecated. Use `confirm_duration`.
-- `probe.interval` may be reused as `measurement.interval` if not set. A
-  warning is logged when migration occurs.
-- Legacy `target_bandwidth_up`/`target_bandwidth_down` are migrated to
-  `tcp_target_bandwidth_*` and `udp_target_bandwidth_*` when set.
 
 ## Validation checklist
 

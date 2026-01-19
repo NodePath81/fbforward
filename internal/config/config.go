@@ -12,31 +12,31 @@ import (
 )
 
 const (
-	defaultProbeInterval   = 1 * time.Second
-	defaultProbeWindowSize = 5
+	defaultReachabilityInterval   = 1 * time.Second
+	defaultReachabilityWindowSize = 5
 
-	defaultMeasurementInterval       = 2 * time.Second
-	defaultMeasurementDiscoveryDelay = 10 * time.Second
-	defaultMeasurementTargetUp       = "10m"
-	defaultMeasurementTargetDown     = "50m"
-	defaultMeasurementSampleBytes    = "500KB"
-	defaultMeasurementTCPChunkSize   = "1200"
-	defaultMeasurementUDPChunkSize   = "1200"
-	defaultMeasurementSamples        = 1
-	defaultMeasurementTCPEnabled     = true
-	defaultMeasurementUDPEnabled     = true
-	defaultMeasurementAlternateTCP   = true
-	defaultMeasurementMaxSample      = 10 * time.Second
-	defaultMeasurementMaxCycle       = 30 * time.Second
-	defaultMeasurementFastStart      = 500 * time.Millisecond
-	defaultMeasurementWarmup         = 15 * time.Second
-	defaultMeasurementStale          = 60 * time.Minute
-	defaultMeasurementFallbackICMP   = true
-	defaultScheduleMinInterval       = 15 * time.Minute
-	defaultScheduleMaxInterval       = 45 * time.Minute
-	defaultScheduleInterGap          = 5 * time.Second
-	defaultScheduleMaxUtil           = 0.7
-	defaultScheduleHeadroom          = "0"
+	defaultMeasurementStartupDelay           = 10 * time.Second
+	defaultMeasurementStaleThreshold         = 60 * time.Minute
+	defaultMeasurementFallbackToICMPOnStale  = true
+	defaultMeasurementScheduleMinInterval    = 15 * time.Minute
+	defaultMeasurementScheduleMaxInterval    = 45 * time.Minute
+	defaultMeasurementScheduleUpstreamGap    = 5 * time.Second
+	defaultMeasurementScheduleMaxUtilization = 0.7
+	defaultMeasurementRequiredFreeBandwidth  = "0"
+	defaultFastStartEnabled                  = true
+	defaultFastStartTimeout                  = 500 * time.Millisecond
+	defaultWarmupDuration                    = 15 * time.Second
+
+	defaultMeasurementTargetUp   = "10m"
+	defaultMeasurementTargetDown = "50m"
+	defaultMeasurementChunkSize  = "1200"
+	defaultMeasurementSampleSize = "500kb"
+	defaultMeasurementSampleCnt  = 1
+	defaultMeasurementPerSample  = 10 * time.Second
+	defaultMeasurementPerCycle   = 30 * time.Second
+	defaultMeasurementTCPEnabled = true
+	defaultMeasurementUDPEnabled = true
+	defaultMeasurementTCPAlt     = true
 
 	defaultEMAAlpha             = 0.2
 	defaultRefBandwidthUp       = "10m"
@@ -58,30 +58,36 @@ const (
 	defaultProtocolWeightTCP    = 0.5
 	defaultProtocolWeightUDP    = 0.5
 	defaultUtilizationEnabled   = true
-	defaultUtilizationMinMult   = 0.3
+	defaultUtilizationWindow    = 5 * time.Second
+	defaultUtilizationUpdate    = 1 * time.Second
 	defaultUtilizationThreshold = 0.7
+	defaultUtilizationMinMult   = 0.3
 	defaultUtilizationExponent  = 2.0
 	defaultBiasKappa            = 0.693147
-	defaultUtilizationWindowSec = 5
-	defaultUtilizationUpdateSec = 1
 
-	defaultMaxTCPConns        = 50
-	defaultMaxUDPMappings     = 500
-	defaultTCPIdleSeconds     = 60
-	defaultUDPIdleSeconds     = 30
-	defaultControlAddr        = "127.0.0.1"
-	defaultControlPort        = 8080
-	defaultConfirmDuration    = 15 * time.Second
-	defaultFailureLoss        = 0.2
-	defaultFailureRetrans     = 0.2
-	defaultSwitchThreshold    = 5.0
-	defaultMinHoldSeconds     = 30
-	defaultMeasurePort        = 9876
-	DefaultShapingIFB         = "ifb0"
-	DefaultAggregateBandwidth = "1g"
-	maxListeners              = 45
-	ResolverStrategyIPv4Only  = "ipv4_only"
-	ResolverStrategyPreferV6  = "prefer_ipv6"
+	defaultSwitchConfirmDuration = 15 * time.Second
+	defaultSwitchScoreDelta      = 5.0
+	defaultSwitchMinHold         = 30 * time.Second
+	defaultFailureLoss           = 0.2
+	defaultFailureRetrans        = 0.2
+
+	defaultForwardingMaxTCPConnections = 50
+	defaultForwardingMaxUDPMappings    = 500
+	defaultForwardingTCPIdle           = 60 * time.Second
+	defaultForwardingUDPIdle           = 30 * time.Second
+
+	defaultControlAddr           = "127.0.0.1"
+	defaultControlPort           = 8080
+	defaultControlWebUIEnabled   = true
+	defaultControlMetricsEnabled = true
+
+	defaultMeasurePort    = 9876
+	DefaultShapingIFB     = "ifb0"
+	DefaultAggregateLimit = "1g"
+	maxListeners          = 45
+
+	DNSStrategyIPv4Only = "ipv4_only"
+	DNSStrategyPreferV6 = "prefer_ipv6"
 )
 
 type Duration time.Duration
@@ -121,211 +127,253 @@ func (d Duration) Duration() time.Duration {
 }
 
 type Config struct {
-	Hostname    string            `yaml:"hostname"`
-	Listeners   []ListenerConfig  `yaml:"listeners"`
-	Upstreams   []UpstreamConfig  `yaml:"upstreams"`
-	Resolver    ResolverConfig    `yaml:"resolver"`
-	Probe       ProbeConfig       `yaml:"probe"`
-	Measurement MeasurementConfig `yaml:"measurement"`
-	Scoring     ScoringConfig     `yaml:"scoring"`
-	Switching   SwitchingConfig   `yaml:"switching"`
-	Limits      LimitsConfig      `yaml:"limits"`
-	Timeouts    TimeoutsConfig    `yaml:"timeouts"`
-	Control     ControlConfig     `yaml:"control"`
-	WebUI       WebUIConfig       `yaml:"webui"`
-	Shaping     ShapingConfig     `yaml:"shaping"`
+	Hostname     string             `yaml:"hostname"`
+	Forwarding   ForwardingConfig   `yaml:"forwarding"`
+	Upstreams    []UpstreamConfig   `yaml:"upstreams"`
+	DNS          DNSConfig          `yaml:"dns"`
+	Reachability ReachabilityConfig `yaml:"reachability"`
+	Measurement  MeasurementConfig  `yaml:"measurement"`
+	Scoring      ScoringConfig      `yaml:"scoring"`
+	Switching    SwitchingConfig    `yaml:"switching"`
+	Control      ControlConfig      `yaml:"control"`
+	Shaping      ShapingConfig      `yaml:"shaping"`
+}
+
+type ForwardingConfig struct {
+	Listeners   []ListenerConfig       `yaml:"listeners"`
+	Limits      ForwardingLimitsConfig `yaml:"limits"`
+	IdleTimeout IdleTimeoutConfig      `yaml:"idle_timeout"`
+}
+
+type ForwardingLimitsConfig struct {
+	MaxTCPConnections int `yaml:"max_tcp_connections"`
+	MaxUDPMappings    int `yaml:"max_udp_mappings"`
+}
+
+type IdleTimeoutConfig struct {
+	TCP Duration `yaml:"tcp"`
+	UDP Duration `yaml:"udp"`
 }
 
 type ListenerConfig struct {
-	Addr     string           `yaml:"addr"`
-	Port     int              `yaml:"port"`
-	Protocol string           `yaml:"protocol"`
-	Ingress  *BandwidthConfig `yaml:"ingress"`
-	Egress   *BandwidthConfig `yaml:"egress"`
+	BindAddr string              `yaml:"bind_addr"`
+	BindPort int                 `yaml:"bind_port"`
+	Protocol string              `yaml:"protocol"`
+	Shaping  *ShapingLimitConfig `yaml:"shaping"`
 }
 
 type UpstreamConfig struct {
-	Tag         string           `yaml:"tag"`
-	Host        string           `yaml:"host"`
-	MeasureHost string           `yaml:"measure_host"`
-	MeasurePort int              `yaml:"measure_port"`
-	Priority    float64          `yaml:"priority"`
-	Bias        float64          `yaml:"bias"`
-	Ingress     *BandwidthConfig `yaml:"ingress"`
-	Egress      *BandwidthConfig `yaml:"egress"`
+	Tag         string                    `yaml:"tag"`
+	Destination DestinationConfig         `yaml:"destination"`
+	Measurement UpstreamMeasurementConfig `yaml:"measurement"`
+	Priority    float64                   `yaml:"priority"`
+	Bias        float64                   `yaml:"bias"`
+	Shaping     *ShapingLimitConfig       `yaml:"shaping"`
 }
 
-type ResolverConfig struct {
+type DestinationConfig struct {
+	Host string `yaml:"host"`
+}
+
+type UpstreamMeasurementConfig struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+}
+
+type DNSConfig struct {
 	Servers  []string `yaml:"servers"`
 	Strategy string   `yaml:"strategy"`
 }
 
-type ProbeConfig struct {
-	Interval       Duration `yaml:"interval"`
-	WindowSize     int      `yaml:"window_size"`
-	DiscoveryDelay Duration `yaml:"discovery_delay"`
-}
-
-type MeasurementScheduleConfig struct {
-	MinInterval      Duration `yaml:"min_interval"`
-	MaxInterval      Duration `yaml:"max_interval"`
-	InterUpstreamGap Duration `yaml:"inter_upstream_gap"`
-	MaxUtilization   float64  `yaml:"max_utilization"`
-	RequiredHeadroom string   `yaml:"required_headroom"`
+type ReachabilityConfig struct {
+	ProbeInterval Duration `yaml:"probe_interval"`
+	WindowSize    int      `yaml:"window_size"`
+	StartupDelay  Duration `yaml:"startup_delay"`
 }
 
 type MeasurementConfig struct {
-	Interval       Duration                  `yaml:"interval"`
-	DiscoveryDelay Duration                  `yaml:"discovery_delay"`
-	Schedule       MeasurementScheduleConfig `yaml:"schedule"`
+	StartupDelay          Duration                   `yaml:"startup_delay"`
+	StaleThreshold        Duration                   `yaml:"stale_threshold"`
+	FallbackToICMPOnStale *bool                      `yaml:"fallback_to_icmp_on_stale"`
+	Schedule              MeasurementScheduleConfig  `yaml:"schedule"`
+	FastStart             MeasurementFastStartConfig `yaml:"fast_start"`
+	Protocols             MeasurementProtocolsConfig `yaml:"protocols"`
+}
 
-	TargetBandwidthUp      string `yaml:"target_bandwidth_up"`
-	TargetBandwidthDown    string `yaml:"target_bandwidth_down"`
-	TCPTargetBandwidthUp   string `yaml:"tcp_target_bandwidth_up"`
-	TCPTargetBandwidthDown string `yaml:"tcp_target_bandwidth_down"`
-	UDPTargetBandwidthUp   string `yaml:"udp_target_bandwidth_up"`
-	UDPTargetBandwidthDown string `yaml:"udp_target_bandwidth_down"`
-	TCPChunkSize           string `yaml:"tcp_chunk_size"`
-	UDPChunkSize           string `yaml:"udp_chunk_size"`
-	SampleBytes            string `yaml:"sample_bytes"`
-	Samples                int    `yaml:"samples"`
+type MeasurementScheduleConfig struct {
+	Interval    MeasurementIntervalConfig `yaml:"interval"`
+	UpstreamGap Duration                  `yaml:"upstream_gap"`
+	Headroom    MeasurementHeadroomConfig `yaml:"headroom"`
+}
 
-	TCPEnabled   *bool `yaml:"tcp_enabled"`
-	UDPEnabled   *bool `yaml:"udp_enabled"`
-	AlternateTCP *bool `yaml:"alternate_tcp"`
+type MeasurementIntervalConfig struct {
+	Min Duration `yaml:"min"`
+	Max Duration `yaml:"max"`
+}
 
-	MaxSampleDuration Duration `yaml:"max_sample_duration"`
-	MaxCycleDuration  Duration `yaml:"max_cycle_duration"`
+type MeasurementHeadroomConfig struct {
+	MaxLinkUtilization    float64 `yaml:"max_link_utilization"`
+	RequiredFreeBandwidth string  `yaml:"required_free_bandwidth"`
+}
 
-	FastStartTimeout Duration `yaml:"fast_start_timeout"`
-	WarmupDuration   Duration `yaml:"warmup_duration"`
+type MeasurementFastStartConfig struct {
+	Enabled        *bool    `yaml:"enabled"`
+	Timeout        Duration `yaml:"timeout"`
+	WarmupDuration Duration `yaml:"warmup_duration"`
+}
 
-	StaleThreshold Duration `yaml:"stale_threshold"`
+type MeasurementProtocolsConfig struct {
+	TCP MeasurementProtocolConfig `yaml:"tcp"`
+	UDP MeasurementProtocolConfig `yaml:"udp"`
+}
 
-	FallbackToICMP *bool `yaml:"fallback_to_icmp"`
+type MeasurementProtocolConfig struct {
+	Enabled         *bool                      `yaml:"enabled"`
+	Alternate       *bool                      `yaml:"alternate"`
+	TargetBandwidth MeasurementBandwidthConfig `yaml:"target_bandwidth"`
+	ChunkSize       string                     `yaml:"chunk_size"`
+	SampleSize      string                     `yaml:"sample_size"`
+	SampleCount     int                        `yaml:"sample_count"`
+	Timeout         MeasurementTimeoutConfig   `yaml:"timeout"`
+}
+
+type MeasurementBandwidthConfig struct {
+	Upload   string `yaml:"upload"`
+	Download string `yaml:"download"`
+}
+
+type MeasurementTimeoutConfig struct {
+	PerSample Duration `yaml:"per_sample"`
+	PerCycle  Duration `yaml:"per_cycle"`
 }
 
 type ScoringConfig struct {
-	EMAAlpha float64 `yaml:"ema_alpha"`
+	Smoothing          ScoringSmoothingConfig   `yaml:"smoothing"`
+	Reference          ScoringReferenceConfig   `yaml:"reference"`
+	Weights            ScoringWeightsConfig     `yaml:"weights"`
+	UtilizationPenalty UtilizationPenaltyConfig `yaml:"utilization_penalty"`
+	BiasTransform      BiasTransformConfig      `yaml:"bias_transform"`
+}
 
-	RefBandwidthUp   string  `yaml:"ref_bandwidth_up"`
-	RefBandwidthDown string  `yaml:"ref_bandwidth_down"`
-	RefRTTMs         float64 `yaml:"ref_rtt_ms"`
-	RefJitterMs      float64 `yaml:"ref_jitter_ms"`
-	RefRetransRate   float64 `yaml:"ref_retrans_rate"`
-	RefLossRate      float64 `yaml:"ref_loss_rate"`
+type ScoringSmoothingConfig struct {
+	Alpha float64 `yaml:"alpha"`
+}
 
-	WeightsTCP WeightsTCPConfig `yaml:"weights_tcp"`
-	WeightsUDP WeightsUDPConfig `yaml:"weights_udp"`
+type ScoringReferenceConfig struct {
+	TCP ProtocolReferenceConfig `yaml:"tcp"`
+	UDP ProtocolReferenceConfig `yaml:"udp"`
+}
 
-	ProtocolWeightTCP float64 `yaml:"protocol_weight_tcp"`
-	ProtocolWeightUDP float64 `yaml:"protocol_weight_udp"`
+type ProtocolReferenceConfig struct {
+	Bandwidth      ReferenceBandwidthConfig `yaml:"bandwidth"`
+	Latency        ReferenceLatencyConfig   `yaml:"latency"`
+	RetransmitRate float64                  `yaml:"retransmit_rate"`
+	LossRate       float64                  `yaml:"loss_rate"`
+}
 
-	UtilizationEnabled   *bool   `yaml:"utilization_enabled"`
-	UtilizationMinMult   float64 `yaml:"utilization_min_mult"`
-	UtilizationThresh    float64 `yaml:"utilization_threshold"`
-	UtilizationExponent  float64 `yaml:"utilization_exponent"`
-	UtilizationWindowSec int     `yaml:"utilization_window_sec"`
-	UtilizationUpdateSec int     `yaml:"utilization_update_sec"`
+type ReferenceBandwidthConfig struct {
+	Upload   string `yaml:"upload"`
+	Download string `yaml:"download"`
+}
 
-	BiasKappa float64 `yaml:"bias_kappa"`
+type ReferenceLatencyConfig struct {
+	RTT    float64 `yaml:"rtt"`
+	Jitter float64 `yaml:"jitter"`
+}
 
-	MetricRefRTTMs    float64       `yaml:"metric_ref_rtt_ms,omitempty"`
-	MetricRefJitterMs float64       `yaml:"metric_ref_jitter_ms,omitempty"`
-	MetricRefLoss     float64       `yaml:"metric_ref_loss,omitempty"`
-	Weights           WeightsLegacy `yaml:"weights,omitempty"`
+type ScoringWeightsConfig struct {
+	TCP           WeightsTCPConfig    `yaml:"tcp"`
+	UDP           WeightsUDPConfig    `yaml:"udp"`
+	ProtocolBlend ProtocolBlendConfig `yaml:"protocol_blend"`
 }
 
 type WeightsTCPConfig struct {
-	BandwidthUp   float64 `yaml:"bandwidth_up"`
-	BandwidthDown float64 `yaml:"bandwidth_down"`
-	RTT           float64 `yaml:"rtt"`
-	Jitter        float64 `yaml:"jitter"`
-	Retrans       float64 `yaml:"retrans"`
+	BandwidthUpload   float64 `yaml:"bandwidth_upload"`
+	BandwidthDownload float64 `yaml:"bandwidth_download"`
+	RTT               float64 `yaml:"rtt"`
+	Jitter            float64 `yaml:"jitter"`
+	RetransmitRate    float64 `yaml:"retransmit_rate"`
 }
 
 type WeightsUDPConfig struct {
-	BandwidthUp   float64 `yaml:"bandwidth_up"`
-	BandwidthDown float64 `yaml:"bandwidth_down"`
-	RTT           float64 `yaml:"rtt"`
-	Jitter        float64 `yaml:"jitter"`
-	Loss          float64 `yaml:"loss"`
+	BandwidthUpload   float64 `yaml:"bandwidth_upload"`
+	BandwidthDownload float64 `yaml:"bandwidth_download"`
+	RTT               float64 `yaml:"rtt"`
+	Jitter            float64 `yaml:"jitter"`
+	LossRate          float64 `yaml:"loss_rate"`
 }
 
-type WeightsLegacy struct {
-	RTT    float64 `yaml:"rtt"`
-	Jitter float64 `yaml:"jitter"`
-	Loss   float64 `yaml:"loss"`
+type ProtocolBlendConfig struct {
+	TCPWeight float64 `yaml:"tcp_weight"`
+	UDPWeight float64 `yaml:"udp_weight"`
+}
+
+type UtilizationPenaltyConfig struct {
+	Enabled        *bool    `yaml:"enabled"`
+	WindowDuration Duration `yaml:"window_duration"`
+	UpdateInterval Duration `yaml:"update_interval"`
+	Threshold      float64  `yaml:"threshold"`
+	MinMultiplier  float64  `yaml:"min_multiplier"`
+	Exponent       float64  `yaml:"exponent"`
+}
+
+type BiasTransformConfig struct {
+	Kappa float64 `yaml:"kappa"`
 }
 
 type SwitchingConfig struct {
-	ConfirmDuration      Duration `yaml:"confirm_duration"`
-	SwitchThreshold      float64  `yaml:"switch_threshold"`
-	MinHoldSeconds       int      `yaml:"min_hold_seconds"`
-	FailureLossThreshold float64  `yaml:"failure_loss_threshold"`
-	FailureRetransThresh float64  `yaml:"failure_retrans_threshold"`
-	CloseFlowsOnUnusable bool     `yaml:"close_flows_on_unusable"`
-
-	ConfirmWindows int `yaml:"confirm_windows,omitempty"`
+	Auto                 SwitchingAutoConfig     `yaml:"auto"`
+	Failover             SwitchingFailoverConfig `yaml:"failover"`
+	CloseFlowsOnFailover bool                    `yaml:"close_flows_on_failover"`
 }
 
-func DefaultSwitchingConfig() SwitchingConfig {
-	return SwitchingConfig{
-		ConfirmDuration:      Duration(defaultConfirmDuration),
-		SwitchThreshold:      defaultSwitchThreshold,
-		MinHoldSeconds:       defaultMinHoldSeconds,
-		FailureLossThreshold: defaultFailureLoss,
-		FailureRetransThresh: defaultFailureRetrans,
-		CloseFlowsOnUnusable: false,
-	}
+type SwitchingAutoConfig struct {
+	ConfirmDuration     Duration `yaml:"confirm_duration"`
+	ScoreDeltaThreshold float64  `yaml:"score_delta_threshold"`
+	MinHoldTime         Duration `yaml:"min_hold_time"`
 }
 
-type LimitsConfig struct {
-	MaxTCPConns    int `yaml:"max_tcp_conns"`
-	MaxUDPMappings int `yaml:"max_udp_mappings"`
-}
-
-type TimeoutsConfig struct {
-	TCPIdleSeconds int `yaml:"tcp_idle_seconds"`
-	UDPIdleSeconds int `yaml:"udp_idle_seconds"`
+type SwitchingFailoverConfig struct {
+	LossRateThreshold       float64 `yaml:"loss_rate_threshold"`
+	RetransmitRateThreshold float64 `yaml:"retransmit_rate_threshold"`
 }
 
 type ControlConfig struct {
-	Addr  string `yaml:"addr"`
-	Port  int    `yaml:"port"`
-	Token string `yaml:"token"`
+	BindAddr  string               `yaml:"bind_addr"`
+	BindPort  int                  `yaml:"bind_port"`
+	AuthToken string               `yaml:"auth_token"`
+	WebUI     ControlWebUIConfig   `yaml:"webui"`
+	Metrics   ControlMetricsConfig `yaml:"metrics"`
 }
 
-type WebUIConfig struct {
+type ControlWebUIConfig struct {
 	Enabled *bool `yaml:"enabled"`
 }
 
-func (w WebUIConfig) IsEnabled() bool {
-	if w.Enabled == nil {
-		return true
-	}
-	return *w.Enabled
+type ControlMetricsConfig struct {
+	Enabled *bool `yaml:"enabled"`
 }
 
 type ShapingConfig struct {
-	Enabled            bool   `yaml:"enabled"`
-	Device             string `yaml:"device"`
-	IFB                string `yaml:"ifb"`
-	AggregateBandwidth string `yaml:"aggregate_bandwidth"`
+	Enabled        bool   `yaml:"enabled"`
+	Interface      string `yaml:"interface"`
+	IFBDevice      string `yaml:"ifb_device"`
+	AggregateLimit string `yaml:"aggregate_limit"`
 
-	AggregateBandwidthBits uint64 `yaml:"-"`
+	AggregateLimitBits uint64 `yaml:"-"`
 }
 
-type BandwidthConfig struct {
-	Rate   string `yaml:"rate"`
-	Ceil   string `yaml:"ceil"`
-	Burst  string `yaml:"burst"`
-	Cburst string `yaml:"cburst"`
+type ShapingLimitConfig struct {
+	UploadLimit   string `yaml:"upload_limit"`
+	DownloadLimit string `yaml:"download_limit"`
+}
 
-	RateBits    uint64 `yaml:"-"`
-	CeilBits    uint64 `yaml:"-"`
-	BurstBytes  uint32 `yaml:"-"`
-	CburstBytes uint32 `yaml:"-"`
+func (w ControlWebUIConfig) IsEnabled() bool {
+	return util.BoolValue(w.Enabled, defaultControlWebUIEnabled)
+}
+
+func (m ControlMetricsConfig) IsEnabled() bool {
+	return util.BoolValue(m.Enabled, defaultControlMetricsEnabled)
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -337,7 +385,6 @@ func LoadConfig(path string) (Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, err
 	}
-	cfg.applyMigration()
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -346,652 +393,623 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c *Config) setDefaults() {
-	if c.Probe.Interval == 0 {
-		c.Probe.Interval = Duration(defaultProbeInterval)
+	if c.Forwarding.Limits.MaxTCPConnections == 0 {
+		c.Forwarding.Limits.MaxTCPConnections = defaultForwardingMaxTCPConnections
 	}
-	if c.Probe.WindowSize == 0 {
-		c.Probe.WindowSize = defaultProbeWindowSize
+	if c.Forwarding.Limits.MaxUDPMappings == 0 {
+		c.Forwarding.Limits.MaxUDPMappings = defaultForwardingMaxUDPMappings
 	}
-	if c.Probe.DiscoveryDelay == 0 {
-		c.Probe.DiscoveryDelay = Duration(time.Duration(c.Probe.WindowSize) * c.Probe.Interval.Duration())
+	if c.Forwarding.IdleTimeout.TCP == 0 {
+		c.Forwarding.IdleTimeout.TCP = Duration(defaultForwardingTCPIdle)
+	}
+	if c.Forwarding.IdleTimeout.UDP == 0 {
+		c.Forwarding.IdleTimeout.UDP = Duration(defaultForwardingUDPIdle)
 	}
 
-	if c.Measurement.Interval == 0 {
-		c.Measurement.Interval = Duration(defaultMeasurementInterval)
+	if c.Reachability.ProbeInterval == 0 {
+		c.Reachability.ProbeInterval = Duration(defaultReachabilityInterval)
 	}
-	if c.Measurement.DiscoveryDelay == 0 {
-		c.Measurement.DiscoveryDelay = Duration(defaultMeasurementDiscoveryDelay)
+	if c.Reachability.WindowSize == 0 {
+		c.Reachability.WindowSize = defaultReachabilityWindowSize
 	}
-	if c.Measurement.TargetBandwidthUp == "" {
-		c.Measurement.TargetBandwidthUp = defaultMeasurementTargetUp
+	if c.Reachability.StartupDelay == 0 {
+		c.Reachability.StartupDelay = Duration(time.Duration(c.Reachability.WindowSize) * c.Reachability.ProbeInterval.Duration())
 	}
-	if c.Measurement.TargetBandwidthDown == "" {
-		c.Measurement.TargetBandwidthDown = defaultMeasurementTargetDown
-	}
-	if c.Measurement.TCPTargetBandwidthUp == "" {
-		c.Measurement.TCPTargetBandwidthUp = defaultMeasurementTargetUp
-	}
-	if c.Measurement.TCPTargetBandwidthDown == "" {
-		c.Measurement.TCPTargetBandwidthDown = defaultMeasurementTargetDown
-	}
-	if c.Measurement.UDPTargetBandwidthUp == "" {
-		c.Measurement.UDPTargetBandwidthUp = defaultMeasurementTargetUp
-	}
-	if c.Measurement.UDPTargetBandwidthDown == "" {
-		c.Measurement.UDPTargetBandwidthDown = defaultMeasurementTargetDown
-	}
-	if c.Measurement.TCPChunkSize == "" {
-		c.Measurement.TCPChunkSize = defaultMeasurementTCPChunkSize
-	}
-	if c.Measurement.UDPChunkSize == "" {
-		c.Measurement.UDPChunkSize = defaultMeasurementUDPChunkSize
-	}
-	if c.Measurement.SampleBytes == "" {
-		c.Measurement.SampleBytes = defaultMeasurementSampleBytes
-	}
-	if c.Measurement.Samples == 0 {
-		c.Measurement.Samples = defaultMeasurementSamples
-	}
-	if c.Measurement.TCPEnabled == nil {
-		val := defaultMeasurementTCPEnabled
-		c.Measurement.TCPEnabled = &val
-	}
-	if c.Measurement.UDPEnabled == nil {
-		val := defaultMeasurementUDPEnabled
-		c.Measurement.UDPEnabled = &val
-	}
-	if c.Measurement.AlternateTCP == nil {
-		val := defaultMeasurementAlternateTCP
-		c.Measurement.AlternateTCP = &val
-	}
-	if c.Measurement.MaxSampleDuration == 0 {
-		c.Measurement.MaxSampleDuration = Duration(defaultMeasurementMaxSample)
-	}
-	if c.Measurement.MaxCycleDuration == 0 {
-		c.Measurement.MaxCycleDuration = Duration(defaultMeasurementMaxCycle)
-	}
-	if c.Measurement.FastStartTimeout == 0 {
-		c.Measurement.FastStartTimeout = Duration(defaultMeasurementFastStart)
-	}
-	if c.Measurement.WarmupDuration == 0 {
-		c.Measurement.WarmupDuration = Duration(defaultMeasurementWarmup)
+
+	if c.Measurement.StartupDelay == 0 {
+		c.Measurement.StartupDelay = Duration(defaultMeasurementStartupDelay)
 	}
 	if c.Measurement.StaleThreshold == 0 {
-		c.Measurement.StaleThreshold = Duration(defaultMeasurementStale)
+		c.Measurement.StaleThreshold = Duration(defaultMeasurementStaleThreshold)
 	}
-	if c.Measurement.FallbackToICMP == nil {
-		val := defaultMeasurementFallbackICMP
-		c.Measurement.FallbackToICMP = &val
-	}
-	if c.Measurement.Schedule.MinInterval == 0 {
-		c.Measurement.Schedule.MinInterval = Duration(defaultScheduleMinInterval)
-	}
-	if c.Measurement.Schedule.MaxInterval == 0 {
-		c.Measurement.Schedule.MaxInterval = Duration(defaultScheduleMaxInterval)
-	}
-	if c.Measurement.Schedule.InterUpstreamGap == 0 {
-		c.Measurement.Schedule.InterUpstreamGap = Duration(defaultScheduleInterGap)
-	}
-	if c.Measurement.Schedule.MaxUtilization == 0 {
-		c.Measurement.Schedule.MaxUtilization = defaultScheduleMaxUtil
-	}
-	if c.Measurement.Schedule.RequiredHeadroom == "" {
-		c.Measurement.Schedule.RequiredHeadroom = defaultScheduleHeadroom
+	if c.Measurement.FallbackToICMPOnStale == nil {
+		val := defaultMeasurementFallbackToICMPOnStale
+		c.Measurement.FallbackToICMPOnStale = &val
 	}
 
-	if c.Scoring.EMAAlpha == 0 {
-		c.Scoring.EMAAlpha = defaultEMAAlpha
+	if c.Measurement.Schedule.Interval.Min == 0 {
+		c.Measurement.Schedule.Interval.Min = Duration(defaultMeasurementScheduleMinInterval)
 	}
-	if c.Scoring.RefBandwidthUp == "" {
-		c.Scoring.RefBandwidthUp = defaultRefBandwidthUp
+	if c.Measurement.Schedule.Interval.Max == 0 {
+		c.Measurement.Schedule.Interval.Max = Duration(defaultMeasurementScheduleMaxInterval)
 	}
-	if c.Scoring.RefBandwidthDown == "" {
-		c.Scoring.RefBandwidthDown = defaultRefBandwidthDn
+	if c.Measurement.Schedule.UpstreamGap == 0 {
+		c.Measurement.Schedule.UpstreamGap = Duration(defaultMeasurementScheduleUpstreamGap)
 	}
-	if c.Scoring.RefRTTMs == 0 {
-		c.Scoring.RefRTTMs = defaultRefRTTMs
+	if c.Measurement.Schedule.Headroom.MaxLinkUtilization == 0 {
+		c.Measurement.Schedule.Headroom.MaxLinkUtilization = defaultMeasurementScheduleMaxUtilization
 	}
-	if c.Scoring.RefJitterMs == 0 {
-		c.Scoring.RefJitterMs = defaultRefJitterMs
+	if c.Measurement.Schedule.Headroom.RequiredFreeBandwidth == "" {
+		c.Measurement.Schedule.Headroom.RequiredFreeBandwidth = defaultMeasurementRequiredFreeBandwidth
 	}
-	if c.Scoring.RefRetransRate == 0 {
-		c.Scoring.RefRetransRate = defaultRefRetransRate
+
+	if c.Measurement.FastStart.Enabled == nil {
+		val := defaultFastStartEnabled
+		c.Measurement.FastStart.Enabled = &val
 	}
-	if c.Scoring.RefLossRate == 0 {
-		c.Scoring.RefLossRate = defaultRefLossRate
+	if c.Measurement.FastStart.Timeout == 0 {
+		c.Measurement.FastStart.Timeout = Duration(defaultFastStartTimeout)
 	}
-	if weightsTCPZero(c.Scoring.WeightsTCP) {
-		c.Scoring.WeightsTCP = WeightsTCPConfig{
-			BandwidthUp:   defaultWeightTCPBwUp,
-			BandwidthDown: defaultWeightTCPBwDn,
-			RTT:           defaultWeightTCPRTT,
-			Jitter:        defaultWeightTCPJitter,
-			Retrans:       defaultWeightTCPRetrans,
+	if c.Measurement.FastStart.WarmupDuration == 0 {
+		c.Measurement.FastStart.WarmupDuration = Duration(defaultWarmupDuration)
+	}
+
+	setProtocolDefaults(&c.Measurement.Protocols.TCP, true)
+	setProtocolDefaults(&c.Measurement.Protocols.UDP, false)
+
+	if c.Scoring.Smoothing.Alpha == 0 {
+		c.Scoring.Smoothing.Alpha = defaultEMAAlpha
+	}
+	if c.Scoring.Reference.TCP.Bandwidth.Upload == "" {
+		c.Scoring.Reference.TCP.Bandwidth.Upload = defaultRefBandwidthUp
+	}
+	if c.Scoring.Reference.TCP.Bandwidth.Download == "" {
+		c.Scoring.Reference.TCP.Bandwidth.Download = defaultRefBandwidthDn
+	}
+	if c.Scoring.Reference.TCP.Latency.RTT == 0 {
+		c.Scoring.Reference.TCP.Latency.RTT = defaultRefRTTMs
+	}
+	if c.Scoring.Reference.TCP.Latency.Jitter == 0 {
+		c.Scoring.Reference.TCP.Latency.Jitter = defaultRefJitterMs
+	}
+	if c.Scoring.Reference.TCP.RetransmitRate == 0 {
+		c.Scoring.Reference.TCP.RetransmitRate = defaultRefRetransRate
+	}
+	if c.Scoring.Reference.UDP.Bandwidth.Upload == "" {
+		c.Scoring.Reference.UDP.Bandwidth.Upload = defaultRefBandwidthUp
+	}
+	if c.Scoring.Reference.UDP.Bandwidth.Download == "" {
+		c.Scoring.Reference.UDP.Bandwidth.Download = defaultRefBandwidthDn
+	}
+	if c.Scoring.Reference.UDP.Latency.RTT == 0 {
+		c.Scoring.Reference.UDP.Latency.RTT = defaultRefRTTMs
+	}
+	if c.Scoring.Reference.UDP.Latency.Jitter == 0 {
+		c.Scoring.Reference.UDP.Latency.Jitter = defaultRefJitterMs
+	}
+	if c.Scoring.Reference.UDP.LossRate == 0 {
+		c.Scoring.Reference.UDP.LossRate = defaultRefLossRate
+	}
+
+	if weightsTCPZero(c.Scoring.Weights.TCP) {
+		c.Scoring.Weights.TCP = WeightsTCPConfig{
+			BandwidthUpload:   defaultWeightTCPBwUp,
+			BandwidthDownload: defaultWeightTCPBwDn,
+			RTT:               defaultWeightTCPRTT,
+			Jitter:            defaultWeightTCPJitter,
+			RetransmitRate:    defaultWeightTCPRetrans,
 		}
 	}
-	if weightsUDPZero(c.Scoring.WeightsUDP) {
-		c.Scoring.WeightsUDP = WeightsUDPConfig{
-			BandwidthUp:   defaultWeightUDPBwUp,
-			BandwidthDown: defaultWeightUDPBwDn,
-			RTT:           defaultWeightUDPRTT,
-			Jitter:        defaultWeightUDPJitter,
-			Loss:          defaultWeightUDPLoss,
+	if weightsUDPZero(c.Scoring.Weights.UDP) {
+		c.Scoring.Weights.UDP = WeightsUDPConfig{
+			BandwidthUpload:   defaultWeightUDPBwUp,
+			BandwidthDownload: defaultWeightUDPBwDn,
+			RTT:               defaultWeightUDPRTT,
+			Jitter:            defaultWeightUDPJitter,
+			LossRate:          defaultWeightUDPLoss,
 		}
 	}
-	if c.Scoring.ProtocolWeightTCP == 0 && c.Scoring.ProtocolWeightUDP == 0 {
-		c.Scoring.ProtocolWeightTCP = defaultProtocolWeightTCP
-		c.Scoring.ProtocolWeightUDP = defaultProtocolWeightUDP
+	if c.Scoring.Weights.ProtocolBlend.TCPWeight == 0 && c.Scoring.Weights.ProtocolBlend.UDPWeight == 0 {
+		c.Scoring.Weights.ProtocolBlend.TCPWeight = defaultProtocolWeightTCP
+		c.Scoring.Weights.ProtocolBlend.UDPWeight = defaultProtocolWeightUDP
 	}
-	if c.Scoring.UtilizationEnabled == nil {
+
+	if c.Scoring.UtilizationPenalty.Enabled == nil {
 		val := defaultUtilizationEnabled
-		c.Scoring.UtilizationEnabled = &val
+		c.Scoring.UtilizationPenalty.Enabled = &val
 	}
-	if c.Scoring.UtilizationMinMult == 0 {
-		c.Scoring.UtilizationMinMult = defaultUtilizationMinMult
+	if c.Scoring.UtilizationPenalty.WindowDuration == 0 {
+		c.Scoring.UtilizationPenalty.WindowDuration = Duration(defaultUtilizationWindow)
 	}
-	if c.Scoring.UtilizationThresh == 0 {
-		c.Scoring.UtilizationThresh = defaultUtilizationThreshold
+	if c.Scoring.UtilizationPenalty.UpdateInterval == 0 {
+		c.Scoring.UtilizationPenalty.UpdateInterval = Duration(defaultUtilizationUpdate)
 	}
-	if c.Scoring.UtilizationExponent == 0 {
-		c.Scoring.UtilizationExponent = defaultUtilizationExponent
+	if c.Scoring.UtilizationPenalty.Threshold == 0 {
+		c.Scoring.UtilizationPenalty.Threshold = defaultUtilizationThreshold
 	}
-	if c.Scoring.UtilizationWindowSec == 0 {
-		c.Scoring.UtilizationWindowSec = defaultUtilizationWindowSec
+	if c.Scoring.UtilizationPenalty.MinMultiplier == 0 {
+		c.Scoring.UtilizationPenalty.MinMultiplier = defaultUtilizationMinMult
 	}
-	if c.Scoring.UtilizationUpdateSec == 0 {
-		c.Scoring.UtilizationUpdateSec = defaultUtilizationUpdateSec
+	if c.Scoring.UtilizationPenalty.Exponent == 0 {
+		c.Scoring.UtilizationPenalty.Exponent = defaultUtilizationExponent
 	}
-	if c.Scoring.BiasKappa == 0 {
-		c.Scoring.BiasKappa = defaultBiasKappa
-	}
-
-	if c.Switching.ConfirmDuration == 0 {
-		c.Switching.ConfirmDuration = Duration(defaultConfirmDuration)
-	}
-	if c.Switching.FailureLossThreshold == 0 {
-		c.Switching.FailureLossThreshold = defaultFailureLoss
-	}
-	if c.Switching.FailureRetransThresh == 0 {
-		c.Switching.FailureRetransThresh = defaultFailureRetrans
-	}
-	if c.Switching.SwitchThreshold == 0 {
-		c.Switching.SwitchThreshold = defaultSwitchThreshold
-	}
-	if c.Switching.MinHoldSeconds == 0 {
-		c.Switching.MinHoldSeconds = defaultMinHoldSeconds
+	if c.Scoring.BiasTransform.Kappa == 0 {
+		c.Scoring.BiasTransform.Kappa = defaultBiasKappa
 	}
 
-	if c.Limits.MaxTCPConns == 0 {
-		c.Limits.MaxTCPConns = defaultMaxTCPConns
+	if c.Switching.Auto.ConfirmDuration == 0 {
+		c.Switching.Auto.ConfirmDuration = Duration(defaultSwitchConfirmDuration)
 	}
-	if c.Limits.MaxUDPMappings == 0 {
-		c.Limits.MaxUDPMappings = defaultMaxUDPMappings
+	if c.Switching.Auto.ScoreDeltaThreshold == 0 {
+		c.Switching.Auto.ScoreDeltaThreshold = defaultSwitchScoreDelta
 	}
-	if c.Timeouts.TCPIdleSeconds == 0 {
-		c.Timeouts.TCPIdleSeconds = defaultTCPIdleSeconds
+	if c.Switching.Auto.MinHoldTime == 0 {
+		c.Switching.Auto.MinHoldTime = Duration(defaultSwitchMinHold)
 	}
-	if c.Timeouts.UDPIdleSeconds == 0 {
-		c.Timeouts.UDPIdleSeconds = defaultUDPIdleSeconds
+	if c.Switching.Failover.LossRateThreshold == 0 {
+		c.Switching.Failover.LossRateThreshold = defaultFailureLoss
+	}
+	if c.Switching.Failover.RetransmitRateThreshold == 0 {
+		c.Switching.Failover.RetransmitRateThreshold = defaultFailureRetrans
 	}
 
-	if c.Control.Addr == "" {
-		c.Control.Addr = defaultControlAddr
+	if c.Control.BindAddr == "" {
+		c.Control.BindAddr = defaultControlAddr
 	}
-	if c.Control.Port == 0 {
-		c.Control.Port = defaultControlPort
+	if c.Control.BindPort == 0 {
+		c.Control.BindPort = defaultControlPort
 	}
-	if c.WebUI.Enabled == nil {
-		enabled := true
-		c.WebUI.Enabled = &enabled
+	if c.Control.WebUI.Enabled == nil {
+		enabled := defaultControlWebUIEnabled
+		c.Control.WebUI.Enabled = &enabled
 	}
+	if c.Control.Metrics.Enabled == nil {
+		enabled := defaultControlMetricsEnabled
+		c.Control.Metrics.Enabled = &enabled
+	}
+
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
-		if up.MeasureHost == "" {
-			up.MeasureHost = up.Host
+		if up.Measurement.Host == "" {
+			up.Measurement.Host = up.Destination.Host
 		}
-		if up.MeasurePort == 0 {
-			up.MeasurePort = defaultMeasurePort
+		if up.Measurement.Port == 0 {
+			up.Measurement.Port = defaultMeasurePort
 		}
 	}
+
 	if c.Shaping.Enabled {
-		if c.Shaping.IFB == "" {
-			c.Shaping.IFB = DefaultShapingIFB
+		if c.Shaping.IFBDevice == "" {
+			c.Shaping.IFBDevice = DefaultShapingIFB
 		}
-		if c.Shaping.AggregateBandwidth == "" {
-			c.Shaping.AggregateBandwidth = DefaultAggregateBandwidth
+		if c.Shaping.AggregateLimit == "" {
+			c.Shaping.AggregateLimit = DefaultAggregateLimit
 		}
 	}
 }
 
-func (c *Config) applyMigration() {
-	if c.Measurement.Interval.Duration() == 0 && c.Probe.Interval.Duration() != 0 {
-		c.Measurement.Interval = c.Probe.Interval
-		fmt.Fprintln(os.Stderr, "DEPRECATED: probe.interval migrated to measurement.interval")
+func weightsTCPZero(cfg WeightsTCPConfig) bool {
+	return cfg.BandwidthUpload == 0 &&
+		cfg.BandwidthDownload == 0 &&
+		cfg.RTT == 0 &&
+		cfg.Jitter == 0 &&
+		cfg.RetransmitRate == 0
+}
+
+func weightsUDPZero(cfg WeightsUDPConfig) bool {
+	return cfg.BandwidthUpload == 0 &&
+		cfg.BandwidthDownload == 0 &&
+		cfg.RTT == 0 &&
+		cfg.Jitter == 0 &&
+		cfg.LossRate == 0
+}
+
+func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
+	if cfg.Enabled == nil {
+		val := defaultMeasurementTCPEnabled
+		if !isTCP {
+			val = defaultMeasurementUDPEnabled
+		}
+		cfg.Enabled = &val
 	}
-	if c.Measurement.TargetBandwidthUp != "" || c.Measurement.TargetBandwidthDown != "" {
-		usedLegacy := false
-		if c.Measurement.TCPTargetBandwidthUp == "" && c.Measurement.TargetBandwidthUp != "" {
-			c.Measurement.TCPTargetBandwidthUp = c.Measurement.TargetBandwidthUp
-			usedLegacy = true
-		}
-		if c.Measurement.TCPTargetBandwidthDown == "" && c.Measurement.TargetBandwidthDown != "" {
-			c.Measurement.TCPTargetBandwidthDown = c.Measurement.TargetBandwidthDown
-			usedLegacy = true
-		}
-		if c.Measurement.UDPTargetBandwidthUp == "" && c.Measurement.TargetBandwidthUp != "" {
-			c.Measurement.UDPTargetBandwidthUp = c.Measurement.TargetBandwidthUp
-			usedLegacy = true
-		}
-		if c.Measurement.UDPTargetBandwidthDown == "" && c.Measurement.TargetBandwidthDown != "" {
-			c.Measurement.UDPTargetBandwidthDown = c.Measurement.TargetBandwidthDown
-			usedLegacy = true
-		}
-		if usedLegacy {
-			fmt.Fprintln(os.Stderr, "DEPRECATED: measurement.target_bandwidth_* migrated to tcp_/udp_target_bandwidth_*")
-		}
+	if isTCP && cfg.Alternate == nil {
+		val := defaultMeasurementTCPAlt
+		cfg.Alternate = &val
 	}
-	if c.Measurement.Interval.Duration() != 0 && c.Measurement.Schedule.MinInterval.Duration() == 0 {
-		c.Measurement.Schedule.MinInterval = c.Measurement.Interval
-		c.Measurement.Schedule.MaxInterval = Duration(c.Measurement.Interval.Duration() * 2)
-		fmt.Fprintln(os.Stderr, "DEPRECATED: measurement.interval migrated to measurement.schedule.min_interval/max_interval")
+	if cfg.TargetBandwidth.Upload == "" {
+		cfg.TargetBandwidth.Upload = defaultMeasurementTargetUp
 	}
-	if weightsLegacyZero(c.Scoring.Weights) {
-		// no legacy weights set
-	} else if weightsTCPZero(c.Scoring.WeightsTCP) {
-		c.Scoring.WeightsTCP.RTT = c.Scoring.Weights.RTT
-		c.Scoring.WeightsTCP.Jitter = c.Scoring.Weights.Jitter
-		c.Scoring.WeightsTCP.Retrans = c.Scoring.Weights.Loss
-		fmt.Fprintln(os.Stderr, "DEPRECATED: scoring.weights migrated to scoring.weights_tcp")
+	if cfg.TargetBandwidth.Download == "" {
+		cfg.TargetBandwidth.Download = defaultMeasurementTargetDown
 	}
-	if c.Scoring.MetricRefRTTMs != 0 && c.Scoring.RefRTTMs == 0 {
-		c.Scoring.RefRTTMs = c.Scoring.MetricRefRTTMs
-		c.Scoring.RefJitterMs = c.Scoring.MetricRefJitterMs
-		c.Scoring.RefLossRate = c.Scoring.MetricRefLoss
-		fmt.Fprintln(os.Stderr, "DEPRECATED: scoring.metric_ref_* migrated to scoring.ref_*")
+	if cfg.ChunkSize == "" {
+		cfg.ChunkSize = defaultMeasurementChunkSize
 	}
-	if c.Switching.ConfirmWindows != 0 && c.Switching.ConfirmDuration.Duration() == 0 {
-		interval := c.Measurement.Interval.Duration()
-		if interval == 0 {
-			interval = defaultMeasurementInterval
-		}
-		c.Switching.ConfirmDuration = Duration(time.Duration(c.Switching.ConfirmWindows) * interval)
-		fmt.Fprintln(os.Stderr, "DEPRECATED: switching.confirm_windows migrated to switching.confirm_duration")
+	if cfg.SampleSize == "" {
+		cfg.SampleSize = defaultMeasurementSampleSize
+	}
+	if cfg.SampleCount == 0 {
+		cfg.SampleCount = defaultMeasurementSampleCnt
+	}
+	if cfg.Timeout.PerSample == 0 {
+		cfg.Timeout.PerSample = Duration(defaultMeasurementPerSample)
+	}
+	if cfg.Timeout.PerCycle == 0 {
+		cfg.Timeout.PerCycle = Duration(defaultMeasurementPerCycle)
 	}
 }
 
 func (c *Config) validate() error {
-	c.Hostname = strings.TrimSpace(c.Hostname)
-	if len(c.Listeners) == 0 {
-		return errors.New("at least one listener is required")
+	if len(c.Forwarding.Listeners) == 0 {
+		return errors.New("forwarding.listeners must not be empty")
 	}
-	if len(c.Listeners) > maxListeners {
-		return fmt.Errorf("listeners cannot exceed %d entries", maxListeners)
+	if len(c.Forwarding.Listeners) > maxListeners {
+		return fmt.Errorf("too many listeners: %d (max %d)", len(c.Forwarding.Listeners), maxListeners)
 	}
 	if len(c.Upstreams) == 0 {
-		return errors.New("at least one upstream is required")
+		return errors.New("upstreams must not be empty")
 	}
+	if c.Forwarding.Limits.MaxTCPConnections <= 0 || c.Forwarding.Limits.MaxUDPMappings <= 0 {
+		return errors.New("forwarding.limits.max_tcp_connections and max_udp_mappings must be > 0")
+	}
+	if c.Forwarding.IdleTimeout.TCP.Duration() <= 0 || c.Forwarding.IdleTimeout.UDP.Duration() <= 0 {
+		return errors.New("forwarding.idle_timeout.tcp and udp must be > 0")
+	}
+
 	seenTags := make(map[string]struct{}, len(c.Upstreams))
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
 		up.Tag = strings.TrimSpace(up.Tag)
-		up.Host = strings.TrimSpace(up.Host)
-		up.MeasureHost = strings.TrimSpace(up.MeasureHost)
-		if up.Tag == "" || up.Host == "" {
-			return fmt.Errorf("upstream tag and host are required")
+		if up.Tag == "" {
+			return errors.New("upstreams.tag must not be empty")
 		}
-		if up.MeasureHost == "" {
-			up.MeasureHost = up.Host
-		}
-		if up.MeasurePort <= 0 || up.MeasurePort > 65535 {
-			return fmt.Errorf("upstream %s measure_port must be in 1..65535", up.Tag)
-		}
-		if up.Priority < 0 {
-			return fmt.Errorf("upstream %s priority must be >= 0", up.Tag)
-		}
-		if up.Bias < -1 || up.Bias > 1 {
-			return fmt.Errorf("upstream %s bias must be in [-1,1]", up.Tag)
-		}
-		if _, exists := seenTags[up.Tag]; exists {
+		if _, ok := seenTags[up.Tag]; ok {
 			return fmt.Errorf("duplicate upstream tag: %s", up.Tag)
 		}
 		seenTags[up.Tag] = struct{}{}
-
-		// Validate upstream shaping configs
-		hasShaping := up.Ingress != nil || up.Egress != nil
-		if hasShaping && !c.Shaping.Enabled {
-			return fmt.Errorf("upstream %s has shaping config but shaping.enabled is false", up.Tag)
+		up.Destination.Host = strings.TrimSpace(up.Destination.Host)
+		if up.Destination.Host == "" {
+			return fmt.Errorf("upstreams[%s].destination.host must not be empty", up.Tag)
 		}
-		if up.Ingress != nil {
-			if strings.TrimSpace(up.Ingress.Rate) == "" {
-				return fmt.Errorf("upstream %s ingress.rate is required", up.Tag)
-			}
-			if _, err := ParseBandwidth(up.Ingress.Rate); err != nil {
-				return fmt.Errorf("upstream %s ingress.rate: %w", up.Tag, err)
-			}
-			if up.Ingress.Ceil != "" {
-				if _, err := ParseBandwidth(up.Ingress.Ceil); err != nil {
-					return fmt.Errorf("upstream %s ingress.ceil: %w", up.Tag, err)
-				}
-			}
-			if up.Ingress.Burst != "" {
-				if _, err := ParseSize(up.Ingress.Burst); err != nil {
-					return fmt.Errorf("upstream %s ingress.burst: %w", up.Tag, err)
-				}
-			}
-			if up.Ingress.Cburst != "" {
-				if _, err := ParseSize(up.Ingress.Cburst); err != nil {
-					return fmt.Errorf("upstream %s ingress.cburst: %w", up.Tag, err)
-				}
-			}
+		if up.Measurement.Port <= 0 || up.Measurement.Port > 65535 {
+			return fmt.Errorf("upstreams[%s].measurement.port must be in 1..65535", up.Tag)
 		}
-		if up.Egress != nil {
-			if strings.TrimSpace(up.Egress.Rate) == "" {
-				return fmt.Errorf("upstream %s egress.rate is required", up.Tag)
-			}
-			if _, err := ParseBandwidth(up.Egress.Rate); err != nil {
-				return fmt.Errorf("upstream %s egress.rate: %w", up.Tag, err)
-			}
-			if up.Egress.Ceil != "" {
-				if _, err := ParseBandwidth(up.Egress.Ceil); err != nil {
-					return fmt.Errorf("upstream %s egress.ceil: %w", up.Tag, err)
-				}
-			}
-			if up.Egress.Burst != "" {
-				if _, err := ParseSize(up.Egress.Burst); err != nil {
-					return fmt.Errorf("upstream %s egress.burst: %w", up.Tag, err)
-				}
-			}
-			if up.Egress.Cburst != "" {
-				if _, err := ParseSize(up.Egress.Cburst); err != nil {
-					return fmt.Errorf("upstream %s egress.cburst: %w", up.Tag, err)
-				}
+		if up.Priority < 0 {
+			return fmt.Errorf("upstreams[%s].priority must be >= 0", up.Tag)
+		}
+		if up.Bias < -1 || up.Bias > 1 {
+			return fmt.Errorf("upstreams[%s].bias must be in [-1,1]", up.Tag)
+		}
+		if up.Shaping != nil && !c.Shaping.Enabled {
+			return fmt.Errorf("upstreams[%s].shaping requires shaping.enabled", up.Tag)
+		}
+		if up.Shaping != nil {
+			if err := validateShapingLimits(up.Shaping, fmt.Sprintf("upstreams[%s].shaping", up.Tag)); err != nil {
+				return err
 			}
 		}
 	}
-	seenListeners := make(map[string]struct{}, len(c.Listeners))
-	shapeKeys := make(map[string]struct{})
-	for i := range c.Listeners {
-		ln := &c.Listeners[i]
+
+	seenListeners := make(map[string]struct{}, len(c.Forwarding.Listeners))
+	for i := range c.Forwarding.Listeners {
+		ln := &c.Forwarding.Listeners[i]
 		ln.Protocol = strings.ToLower(strings.TrimSpace(ln.Protocol))
-		ln.Addr = strings.TrimSpace(ln.Addr)
-		if ln.Addr == "" || ln.Port <= 0 {
-			return fmt.Errorf("listener addr and port are required")
-		}
-		if ln.Port > 65535 {
-			return fmt.Errorf("listener port must be <= 65535")
-		}
-		if ln.Protocol != "tcp" && ln.Protocol != "udp" {
-			return fmt.Errorf("listener protocol must be tcp or udp")
-		}
-		key := fmt.Sprintf("%s:%d:%s", ln.Addr, ln.Port, ln.Protocol)
-		if _, exists := seenListeners[key]; exists {
+		key := fmt.Sprintf("%s:%d:%s", ln.BindAddr, ln.BindPort, ln.Protocol)
+		if _, ok := seenListeners[key]; ok {
 			return fmt.Errorf("duplicate listener: %s", key)
 		}
 		seenListeners[key] = struct{}{}
+		if ln.BindPort <= 0 || ln.BindPort > 65535 {
+			return fmt.Errorf("listener %s:%d bind_port must be in 1..65535", ln.BindAddr, ln.BindPort)
+		}
+		if ln.Protocol != "tcp" && ln.Protocol != "udp" {
+			return fmt.Errorf("listener %s:%d protocol must be tcp or udp", ln.BindAddr, ln.BindPort)
+		}
+		if ln.Shaping != nil && !c.Shaping.Enabled {
+			return fmt.Errorf("listener %s:%d shaping requires shaping.enabled", ln.BindAddr, ln.BindPort)
+		}
+		if ln.Shaping != nil {
+			if err := validateShapingLimits(ln.Shaping, fmt.Sprintf("forwarding.listeners[%d].shaping", i)); err != nil {
+				return err
+			}
+		}
+	}
 
-		hasShaping := ln.Ingress != nil || ln.Egress != nil
-		if hasShaping && !c.Shaping.Enabled {
-			return fmt.Errorf("listener %s has shaping config but shaping.enabled is false", key)
-		}
-		if ln.Ingress != nil {
-			if strings.TrimSpace(ln.Ingress.Rate) == "" {
-				return fmt.Errorf("listener %s ingress.rate is required", key)
-			}
-			if _, err := ParseBandwidth(ln.Ingress.Rate); err != nil {
-				return fmt.Errorf("listener %s ingress.rate: %w", key, err)
-			}
-			if ln.Ingress.Ceil != "" {
-				if _, err := ParseBandwidth(ln.Ingress.Ceil); err != nil {
-					return fmt.Errorf("listener %s ingress.ceil: %w", key, err)
-				}
-			}
-			if ln.Ingress.Burst != "" {
-				if _, err := ParseSize(ln.Ingress.Burst); err != nil {
-					return fmt.Errorf("listener %s ingress.burst: %w", key, err)
-				}
-			}
-			if ln.Ingress.Cburst != "" {
-				if _, err := ParseSize(ln.Ingress.Cburst); err != nil {
-					return fmt.Errorf("listener %s ingress.cburst: %w", key, err)
-				}
-			}
-			shapeKey := fmt.Sprintf("ingress:%s:%d", ln.Protocol, ln.Port)
-			if _, exists := shapeKeys[shapeKey]; exists {
-				return fmt.Errorf("duplicate ingress shaping rule for %s:%d", ln.Protocol, ln.Port)
-			}
-			shapeKeys[shapeKey] = struct{}{}
-		}
-		if ln.Egress != nil {
-			if strings.TrimSpace(ln.Egress.Rate) == "" {
-				return fmt.Errorf("listener %s egress.rate is required", key)
-			}
-			if _, err := ParseBandwidth(ln.Egress.Rate); err != nil {
-				return fmt.Errorf("listener %s egress.rate: %w", key, err)
-			}
-			if ln.Egress.Ceil != "" {
-				if _, err := ParseBandwidth(ln.Egress.Ceil); err != nil {
-					return fmt.Errorf("listener %s egress.ceil: %w", key, err)
-				}
-			}
-			if ln.Egress.Burst != "" {
-				if _, err := ParseSize(ln.Egress.Burst); err != nil {
-					return fmt.Errorf("listener %s egress.burst: %w", key, err)
-				}
-			}
-			if ln.Egress.Cburst != "" {
-				if _, err := ParseSize(ln.Egress.Cburst); err != nil {
-					return fmt.Errorf("listener %s egress.cburst: %w", key, err)
-				}
-			}
-			shapeKey := fmt.Sprintf("egress:%s:%d", ln.Protocol, ln.Port)
-			if _, exists := shapeKeys[shapeKey]; exists {
-				return fmt.Errorf("duplicate egress shaping rule for %s:%d", ln.Protocol, ln.Port)
-			}
-			shapeKeys[shapeKey] = struct{}{}
-		}
+	if c.Control.AuthToken == "" {
+		return errors.New("control.auth_token must not be empty")
 	}
-	if c.Control.Token == "" {
-		return errors.New("control.token is required")
+	if c.Control.BindPort <= 0 || c.Control.BindPort > 65535 {
+		return errors.New("control.bind_port must be in 1..65535")
 	}
-	if c.Control.Port <= 0 || c.Control.Port > 65535 {
-		return errors.New("control.port must be in 1..65535")
+
+	if c.Reachability.ProbeInterval.Duration() <= 0 {
+		return errors.New("reachability.probe_interval must be > 0")
 	}
-	if c.Probe.Interval.Duration() <= 0 {
-		return errors.New("probe.interval must be > 0")
+	if c.Reachability.WindowSize <= 0 {
+		return errors.New("reachability.window_size must be > 0")
 	}
-	if c.Probe.WindowSize <= 0 {
-		return errors.New("probe.window_size must be > 0")
+	if c.Reachability.StartupDelay.Duration() < 0 {
+		return errors.New("reachability.startup_delay must be >= 0")
 	}
-	if c.Probe.DiscoveryDelay.Duration() < 0 {
-		return errors.New("probe.discovery_delay must be >= 0")
-	}
-	if c.Measurement.Interval.Duration() <= 0 {
-		return errors.New("measurement.interval must be > 0")
-	}
-	if c.Measurement.DiscoveryDelay.Duration() < 0 {
-		return errors.New("measurement.discovery_delay must be >= 0")
-	}
-	if c.Measurement.Samples <= 0 {
-		return errors.New("measurement.samples must be > 0")
-	}
-	if c.Measurement.MaxSampleDuration.Duration() <= 0 {
-		return errors.New("measurement.max_sample_duration must be > 0")
-	}
-	if c.Measurement.MaxCycleDuration.Duration() <= 0 {
-		return errors.New("measurement.max_cycle_duration must be > 0")
-	}
-	if c.Measurement.FastStartTimeout.Duration() <= 0 {
-		return errors.New("measurement.fast_start_timeout must be > 0")
-	}
-	if c.Measurement.WarmupDuration.Duration() < 0 {
-		return errors.New("measurement.warmup_duration must be >= 0")
+
+	if c.Measurement.StartupDelay.Duration() < 0 {
+		return errors.New("measurement.startup_delay must be >= 0")
 	}
 	if c.Measurement.StaleThreshold.Duration() <= 0 {
 		return errors.New("measurement.stale_threshold must be > 0")
 	}
-	if _, err := ParseBandwidth(c.Measurement.TCPTargetBandwidthUp); err != nil {
-		return fmt.Errorf("measurement.tcp_target_bandwidth_up: %w", err)
+	if c.Measurement.FastStart.Timeout.Duration() <= 0 {
+		return errors.New("measurement.fast_start.timeout must be > 0")
 	}
-	if _, err := ParseBandwidth(c.Measurement.TCPTargetBandwidthDown); err != nil {
-		return fmt.Errorf("measurement.tcp_target_bandwidth_down: %w", err)
+	if c.Measurement.FastStart.WarmupDuration.Duration() < 0 {
+		return errors.New("measurement.fast_start.warmup_duration must be >= 0")
 	}
-	if _, err := ParseBandwidth(c.Measurement.UDPTargetBandwidthUp); err != nil {
-		return fmt.Errorf("measurement.udp_target_bandwidth_up: %w", err)
+
+	if c.Measurement.Schedule.Interval.Min.Duration() <= 0 {
+		return errors.New("measurement.schedule.interval.min must be > 0")
 	}
-	if _, err := ParseBandwidth(c.Measurement.UDPTargetBandwidthDown); err != nil {
-		return fmt.Errorf("measurement.udp_target_bandwidth_down: %w", err)
+	if c.Measurement.Schedule.Interval.Max.Duration() <= 0 {
+		return errors.New("measurement.schedule.interval.max must be > 0")
 	}
-	if _, err := ParseSize(c.Measurement.TCPChunkSize); err != nil {
-		return fmt.Errorf("measurement.tcp_chunk_size: %w", err)
+	if c.Measurement.Schedule.Interval.Max.Duration() < c.Measurement.Schedule.Interval.Min.Duration() {
+		return errors.New("measurement.schedule.interval.max must be >= min")
 	}
-	if _, err := ParseSize(c.Measurement.UDPChunkSize); err != nil {
-		return fmt.Errorf("measurement.udp_chunk_size: %w", err)
+	if c.Measurement.Schedule.UpstreamGap.Duration() < 0 {
+		return errors.New("measurement.schedule.upstream_gap must be >= 0")
 	}
-	if _, err := ParseSize(c.Measurement.SampleBytes); err != nil {
-		return fmt.Errorf("measurement.sample_bytes: %w", err)
+	if c.Measurement.Schedule.Headroom.MaxLinkUtilization <= 0 || c.Measurement.Schedule.Headroom.MaxLinkUtilization > 1 {
+		return errors.New("measurement.schedule.headroom.max_link_utilization must be in (0,1]")
 	}
-	if c.Measurement.Schedule.MinInterval.Duration() <= 0 {
-		return errors.New("measurement.schedule.min_interval must be > 0")
+	if _, err := ParseBandwidth(c.Measurement.Schedule.Headroom.RequiredFreeBandwidth); err != nil {
+		return fmt.Errorf("measurement.schedule.headroom.required_free_bandwidth: %w", err)
 	}
-	if c.Measurement.Schedule.MaxInterval.Duration() <= 0 {
-		return errors.New("measurement.schedule.max_interval must be > 0")
-	}
-	if c.Measurement.Schedule.MaxInterval.Duration() < c.Measurement.Schedule.MinInterval.Duration() {
-		return errors.New("measurement.schedule.max_interval must be >= min_interval")
-	}
-	if c.Measurement.Schedule.InterUpstreamGap.Duration() < 0 {
-		return errors.New("measurement.schedule.inter_upstream_gap must be >= 0")
-	}
-	if c.Measurement.Schedule.MaxUtilization <= 0 || c.Measurement.Schedule.MaxUtilization > 1 {
-		return errors.New("measurement.schedule.max_utilization must be in (0,1]")
-	}
-	if _, err := ParseBandwidth(c.Measurement.Schedule.RequiredHeadroom); err != nil {
-		return fmt.Errorf("measurement.schedule.required_headroom: %w", err)
-	}
-	tcpEnabled := util.BoolValue(c.Measurement.TCPEnabled, defaultMeasurementTCPEnabled)
-	udpEnabled := util.BoolValue(c.Measurement.UDPEnabled, defaultMeasurementUDPEnabled)
+
+	tcpEnabled := util.BoolValue(c.Measurement.Protocols.TCP.Enabled, defaultMeasurementTCPEnabled)
+	udpEnabled := util.BoolValue(c.Measurement.Protocols.UDP.Enabled, defaultMeasurementUDPEnabled)
 	if !tcpEnabled && !udpEnabled {
-		return errors.New("measurement requires at least one protocol (tcp_enabled or udp_enabled)")
+		return errors.New("measurement requires at least one protocol enabled")
 	}
-	if c.Scoring.EMAAlpha <= 0 || c.Scoring.EMAAlpha > 1 {
-		return errors.New("scoring.ema_alpha must be in (0,1]")
+	if err := validateProtocolConfig("tcp", c.Measurement.Protocols.TCP, tcpEnabled); err != nil {
+		return err
 	}
-	if _, err := ParseBandwidth(c.Scoring.RefBandwidthUp); err != nil {
-		return fmt.Errorf("scoring.ref_bandwidth_up: %w", err)
+	if err := validateProtocolConfig("udp", c.Measurement.Protocols.UDP, udpEnabled); err != nil {
+		return err
 	}
-	if _, err := ParseBandwidth(c.Scoring.RefBandwidthDown); err != nil {
-		return fmt.Errorf("scoring.ref_bandwidth_down: %w", err)
+
+	if c.Scoring.Smoothing.Alpha <= 0 || c.Scoring.Smoothing.Alpha > 1 {
+		return errors.New("scoring.smoothing.alpha must be in (0,1]")
 	}
-	if c.Scoring.RefRTTMs <= 0 || c.Scoring.RefJitterMs <= 0 {
-		return errors.New("scoring ref rtt/jitter must be > 0")
+	if err := validateReferenceConfig("tcp", c.Scoring.Reference.TCP); err != nil {
+		return err
 	}
-	if c.Scoring.RefRetransRate <= 0 || c.Scoring.RefLossRate <= 0 {
-		return errors.New("scoring ref retrans/loss must be > 0")
+	if err := validateReferenceConfig("udp", c.Scoring.Reference.UDP); err != nil {
+		return err
 	}
-	tcpWeightSum := c.Scoring.WeightsTCP.BandwidthUp + c.Scoring.WeightsTCP.BandwidthDown + c.Scoring.WeightsTCP.RTT + c.Scoring.WeightsTCP.Jitter + c.Scoring.WeightsTCP.Retrans
-	if tcpWeightSum <= 0 {
-		return errors.New("scoring.weights_tcp must sum to > 0")
+
+	if err := normalizeTCPWeights(&c.Scoring.Weights.TCP); err != nil {
+		return err
 	}
-	if diff := tcpWeightSum - 1; diff > 0.001 || diff < -0.001 {
-		c.Scoring.WeightsTCP.BandwidthUp /= tcpWeightSum
-		c.Scoring.WeightsTCP.BandwidthDown /= tcpWeightSum
-		c.Scoring.WeightsTCP.RTT /= tcpWeightSum
-		c.Scoring.WeightsTCP.Jitter /= tcpWeightSum
-		c.Scoring.WeightsTCP.Retrans /= tcpWeightSum
+	if err := normalizeUDPWeights(&c.Scoring.Weights.UDP); err != nil {
+		return err
 	}
-	udpWeightSum := c.Scoring.WeightsUDP.BandwidthUp + c.Scoring.WeightsUDP.BandwidthDown + c.Scoring.WeightsUDP.RTT + c.Scoring.WeightsUDP.Jitter + c.Scoring.WeightsUDP.Loss
-	if udpWeightSum <= 0 {
-		return errors.New("scoring.weights_udp must sum to > 0")
+	if err := normalizeProtocolBlend(&c.Scoring.Weights.ProtocolBlend); err != nil {
+		return err
 	}
-	if diff := udpWeightSum - 1; diff > 0.001 || diff < -0.001 {
-		c.Scoring.WeightsUDP.BandwidthUp /= udpWeightSum
-		c.Scoring.WeightsUDP.BandwidthDown /= udpWeightSum
-		c.Scoring.WeightsUDP.RTT /= udpWeightSum
-		c.Scoring.WeightsUDP.Jitter /= udpWeightSum
-		c.Scoring.WeightsUDP.Loss /= udpWeightSum
+
+	if c.Scoring.UtilizationPenalty.MinMultiplier <= 0 || c.Scoring.UtilizationPenalty.MinMultiplier > 1 {
+		return errors.New("scoring.utilization_penalty.min_multiplier must be in (0,1]")
 	}
-	protocolSum := c.Scoring.ProtocolWeightTCP + c.Scoring.ProtocolWeightUDP
-	if protocolSum <= 0 {
-		return errors.New("scoring protocol weights must sum to > 0")
+	if c.Scoring.UtilizationPenalty.Threshold <= 0 {
+		return errors.New("scoring.utilization_penalty.threshold must be > 0")
 	}
-	if diff := protocolSum - 1; diff > 0.001 || diff < -0.001 {
-		c.Scoring.ProtocolWeightTCP /= protocolSum
-		c.Scoring.ProtocolWeightUDP /= protocolSum
+	if c.Scoring.UtilizationPenalty.Exponent <= 0 {
+		return errors.New("scoring.utilization_penalty.exponent must be > 0")
 	}
-	if c.Scoring.UtilizationMinMult <= 0 || c.Scoring.UtilizationMinMult > 1 {
-		return errors.New("scoring.utilization_min_mult must be in (0,1]")
+	if c.Scoring.UtilizationPenalty.WindowDuration.Duration() <= 0 {
+		return errors.New("scoring.utilization_penalty.window_duration must be > 0")
 	}
-	if c.Scoring.UtilizationThresh <= 0 {
-		return errors.New("scoring.utilization_threshold must be > 0")
+	if c.Scoring.UtilizationPenalty.UpdateInterval.Duration() <= 0 {
+		return errors.New("scoring.utilization_penalty.update_interval must be > 0")
 	}
-	if c.Scoring.UtilizationExponent <= 0 {
-		return errors.New("scoring.utilization_exponent must be > 0")
+	if c.Scoring.BiasTransform.Kappa <= 0 {
+		return errors.New("scoring.bias_transform.kappa must be > 0")
 	}
-	if c.Scoring.UtilizationWindowSec <= 0 {
-		return errors.New("scoring.utilization_window_sec must be > 0")
+
+	if c.Switching.Auto.ConfirmDuration.Duration() < 0 {
+		return errors.New("switching.auto.confirm_duration must be >= 0")
 	}
-	if c.Scoring.UtilizationUpdateSec <= 0 {
-		return errors.New("scoring.utilization_update_sec must be > 0")
+	if c.Switching.Auto.MinHoldTime.Duration() < 0 {
+		return errors.New("switching.auto.min_hold_time must be >= 0")
 	}
-	if c.Scoring.BiasKappa <= 0 {
-		return errors.New("scoring.bias_kappa must be > 0")
+	if c.Switching.Failover.LossRateThreshold <= 0 || c.Switching.Failover.LossRateThreshold > 1 {
+		return errors.New("switching.failover.loss_rate_threshold must be in (0,1]")
 	}
-	if c.Limits.MaxTCPConns <= 0 || c.Limits.MaxUDPMappings <= 0 {
-		return errors.New("limits must be > 0")
+	if c.Switching.Failover.RetransmitRateThreshold <= 0 || c.Switching.Failover.RetransmitRateThreshold > 1 {
+		return errors.New("switching.failover.retransmit_rate_threshold must be in (0,1]")
 	}
-	if c.Timeouts.TCPIdleSeconds <= 0 || c.Timeouts.UDPIdleSeconds <= 0 {
-		return errors.New("timeouts must be > 0")
-	}
-	if c.Switching.ConfirmDuration.Duration() < 0 {
-		return errors.New("switching.confirm_duration must be >= 0")
-	}
-	if c.Switching.FailureLossThreshold <= 0 || c.Switching.FailureLossThreshold > 1 {
-		return errors.New("switching.failure_loss_threshold must be in (0,1]")
-	}
-	if c.Switching.FailureRetransThresh <= 0 || c.Switching.FailureRetransThresh > 1 {
-		return errors.New("switching.failure_retrans_threshold must be in (0,1]")
-	}
-	if c.Switching.SwitchThreshold < 0 {
-		return errors.New("switching.switch_threshold must be >= 0")
-	}
-	if c.Switching.MinHoldSeconds < 0 {
-		return errors.New("switching.min_hold_seconds must be >= 0")
-	}
-	c.Resolver.Strategy = strings.ToLower(strings.TrimSpace(c.Resolver.Strategy))
-	if c.Resolver.Strategy != "" {
-		switch c.Resolver.Strategy {
-		case ResolverStrategyIPv4Only, ResolverStrategyPreferV6:
+
+	c.DNS.Strategy = strings.ToLower(strings.TrimSpace(c.DNS.Strategy))
+	if c.DNS.Strategy != "" {
+		switch c.DNS.Strategy {
+		case DNSStrategyIPv4Only, DNSStrategyPreferV6:
 		default:
-			return fmt.Errorf("resolver.strategy must be %q or %q", ResolverStrategyIPv4Only, ResolverStrategyPreferV6)
+			return errors.New("dns.strategy must be ipv4_only or prefer_ipv6")
 		}
 	}
+
 	if c.Shaping.Enabled {
-		c.Shaping.Device = strings.TrimSpace(c.Shaping.Device)
-		c.Shaping.IFB = strings.TrimSpace(c.Shaping.IFB)
-		c.Shaping.AggregateBandwidth = strings.TrimSpace(c.Shaping.AggregateBandwidth)
-		if c.Shaping.Device == "" {
-			return errors.New("shaping.device is required when shaping.enabled is true")
+		c.Shaping.Interface = strings.TrimSpace(c.Shaping.Interface)
+		c.Shaping.IFBDevice = strings.TrimSpace(c.Shaping.IFBDevice)
+		c.Shaping.AggregateLimit = strings.TrimSpace(c.Shaping.AggregateLimit)
+		if c.Shaping.Interface == "" {
+			return errors.New("shaping.interface is required")
 		}
-		if c.Shaping.IFB == "" {
-			return errors.New("shaping.ifb is required when shaping.enabled is true")
+		if c.Shaping.IFBDevice == "" {
+			return errors.New("shaping.ifb_device is required")
 		}
-		if c.Shaping.AggregateBandwidth != "" {
-			if _, err := ParseBandwidth(c.Shaping.AggregateBandwidth); err != nil {
-				return fmt.Errorf("shaping.aggregate_bandwidth: %w", err)
+		if c.Shaping.AggregateLimit != "" {
+			if _, err := ParseBandwidth(c.Shaping.AggregateLimit); err != nil {
+				return fmt.Errorf("shaping.aggregate_limit: %w", err)
 			}
+		}
+	}
+
+	return nil
+}
+
+func validateProtocolConfig(proto string, cfg MeasurementProtocolConfig, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	bwUp, err := ParseBandwidth(cfg.TargetBandwidth.Upload)
+	if err != nil {
+		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.upload: %w", proto, err)
+	}
+	if bwUp <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.upload must be > 0", proto)
+	}
+	bwDown, err := ParseBandwidth(cfg.TargetBandwidth.Download)
+	if err != nil {
+		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.download: %w", proto, err)
+	}
+	if bwDown <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.download must be > 0", proto)
+	}
+	chunkSize, err := ParseSize(cfg.ChunkSize)
+	if err != nil {
+		return fmt.Errorf("measurement.protocols.%s.chunk_size: %w", proto, err)
+	}
+	if chunkSize <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.chunk_size must be > 0", proto)
+	}
+	sampleSize, err := ParseSize(cfg.SampleSize)
+	if err != nil {
+		return fmt.Errorf("measurement.protocols.%s.sample_size: %w", proto, err)
+	}
+	if sampleSize <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.sample_size must be > 0", proto)
+	}
+	if cfg.SampleCount <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.sample_count must be > 0", proto)
+	}
+	if cfg.Timeout.PerSample.Duration() <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.timeout.per_sample must be > 0", proto)
+	}
+	if cfg.Timeout.PerCycle.Duration() <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.timeout.per_cycle must be > 0", proto)
+	}
+	return nil
+}
+
+func validateReferenceConfig(proto string, cfg ProtocolReferenceConfig) error {
+	bwUp, err := ParseBandwidth(cfg.Bandwidth.Upload)
+	if err != nil {
+		return fmt.Errorf("scoring.reference.%s.bandwidth.upload: %w", proto, err)
+	}
+	if bwUp <= 0 {
+		return fmt.Errorf("scoring.reference.%s.bandwidth.upload must be > 0", proto)
+	}
+	bwDown, err := ParseBandwidth(cfg.Bandwidth.Download)
+	if err != nil {
+		return fmt.Errorf("scoring.reference.%s.bandwidth.download: %w", proto, err)
+	}
+	if bwDown <= 0 {
+		return fmt.Errorf("scoring.reference.%s.bandwidth.download must be > 0", proto)
+	}
+	if cfg.Latency.RTT <= 0 || cfg.Latency.Jitter <= 0 {
+		return fmt.Errorf("scoring.reference.%s.latency.rtt/jitter must be > 0", proto)
+	}
+	if proto == "tcp" {
+		if cfg.RetransmitRate <= 0 || cfg.RetransmitRate > 1 {
+			return fmt.Errorf("scoring.reference.%s.retransmit_rate must be in (0,1]", proto)
+		}
+	}
+	if proto == "udp" {
+		if cfg.LossRate <= 0 || cfg.LossRate > 1 {
+			return fmt.Errorf("scoring.reference.%s.loss_rate must be in (0,1]", proto)
 		}
 	}
 	return nil
 }
 
-func weightsTCPZero(cfg WeightsTCPConfig) bool {
-	return cfg.BandwidthUp == 0 && cfg.BandwidthDown == 0 && cfg.RTT == 0 && cfg.Jitter == 0 && cfg.Retrans == 0
+func validateShapingLimits(cfg *ShapingLimitConfig, path string) error {
+	if cfg.UploadLimit == "" && cfg.DownloadLimit == "" {
+		return fmt.Errorf("%s must specify upload_limit or download_limit", path)
+	}
+	if cfg.UploadLimit != "" {
+		bits, err := ParseBandwidth(cfg.UploadLimit)
+		if err != nil {
+			return fmt.Errorf("%s.upload_limit: %w", path, err)
+		}
+		if bits == 0 {
+			return fmt.Errorf("%s.upload_limit must be > 0", path)
+		}
+	}
+	if cfg.DownloadLimit != "" {
+		bits, err := ParseBandwidth(cfg.DownloadLimit)
+		if err != nil {
+			return fmt.Errorf("%s.download_limit: %w", path, err)
+		}
+		if bits == 0 {
+			return fmt.Errorf("%s.download_limit must be > 0", path)
+		}
+	}
+	return nil
 }
 
-func weightsUDPZero(cfg WeightsUDPConfig) bool {
-	return cfg.BandwidthUp == 0 && cfg.BandwidthDown == 0 && cfg.RTT == 0 && cfg.Jitter == 0 && cfg.Loss == 0
+func normalizeTCPWeights(cfg *WeightsTCPConfig) error {
+	sum := cfg.BandwidthUpload + cfg.BandwidthDownload + cfg.RTT + cfg.Jitter + cfg.RetransmitRate
+	if sum <= 0 {
+		return errors.New("scoring.weights.tcp must sum to > 0")
+	}
+	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
+		cfg.BandwidthUpload /= sum
+		cfg.BandwidthDownload /= sum
+		cfg.RTT /= sum
+		cfg.Jitter /= sum
+		cfg.RetransmitRate /= sum
+	}
+	return nil
 }
 
-func weightsLegacyZero(cfg WeightsLegacy) bool {
-	return cfg.RTT == 0 && cfg.Jitter == 0 && cfg.Loss == 0
+func normalizeUDPWeights(cfg *WeightsUDPConfig) error {
+	sum := cfg.BandwidthUpload + cfg.BandwidthDownload + cfg.RTT + cfg.Jitter + cfg.LossRate
+	if sum <= 0 {
+		return errors.New("scoring.weights.udp must sum to > 0")
+	}
+	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
+		cfg.BandwidthUpload /= sum
+		cfg.BandwidthDownload /= sum
+		cfg.RTT /= sum
+		cfg.Jitter /= sum
+		cfg.LossRate /= sum
+	}
+	return nil
+}
+
+func normalizeProtocolBlend(cfg *ProtocolBlendConfig) error {
+	sum := cfg.TCPWeight + cfg.UDPWeight
+	if sum <= 0 {
+		return errors.New("scoring.weights.protocol_blend must sum to > 0")
+	}
+	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
+		cfg.TCPWeight /= sum
+		cfg.UDPWeight /= sum
+	}
+	return nil
+}
+
+func DefaultSwitchingConfig() SwitchingConfig {
+	return SwitchingConfig{
+		Auto: SwitchingAutoConfig{
+			ConfirmDuration:     Duration(defaultSwitchConfirmDuration),
+			ScoreDeltaThreshold: defaultSwitchScoreDelta,
+			MinHoldTime:         Duration(defaultSwitchMinHold),
+		},
+		Failover: SwitchingFailoverConfig{
+			LossRateThreshold:       defaultFailureLoss,
+			RetransmitRateThreshold: defaultFailureRetrans,
+		},
+		CloseFlowsOnFailover: false,
+	}
 }

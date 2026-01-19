@@ -75,10 +75,10 @@ Scoring and switching:
 - `applyEMA` smooths bandwidth/latency/loss metrics per protocol.
 - `computeFullScore` uses bandwidth + RTT/jitter + loss/retrans with utilization and bias.
 - Auto mode switching respects:
-  - `switching.confirm_duration` (time-based confirmation).
-  - `switching.switch_threshold` (minimum score gap).
-  - `switching.min_hold_seconds` (avoid rapid flapping).
-  - `switching.failure_loss_threshold` / `failure_retrans_threshold` (fast failover).
+  - `switching.auto.confirm_duration` (time-based confirmation).
+  - `switching.auto.score_delta_threshold` (minimum score gap).
+  - `switching.auto.min_hold_time` (avoid rapid flapping).
+  - `switching.failover.loss_rate_threshold` / `retransmit_rate_threshold` (fast failover).
 - Manual mode pins to the selected upstream; unusable or dial-failed upstreams
   reject selection.
 
@@ -106,7 +106,7 @@ Scoring and switching:
 ### Measurement and Health
 
 - `ProbeLoop` uses raw ICMP sockets (IPv4/IPv6) and emits a probe every
-  `probe.interval` for reachability only.
+  `reachability.probe_interval` for reachability only.
 - `measure.Collector` performs bwprobe upload/download tests on TCP/UDP to
   compute bandwidth, RTT/jitter, and loss/retrans metrics for scoring.
 - Measurements require the `fbmeasure` server binary running on each upstream
@@ -142,7 +142,7 @@ Scoring and switching:
 ### Traffic Shaping (Optional)
 
 - `TrafficShaper` applies HTB + fq_codel shaping per-port using netlink.
-- Listener `ingress`/`egress` settings are converted into per-port classes.
+- Listener `upload_limit`/`download_limit` settings are converted into per-port classes.
 - Egress shaping is applied on the device; ingress shaping uses IFB redirect.
 - Enabling shaping resets root/ingress qdiscs for the configured device/IFB.
 

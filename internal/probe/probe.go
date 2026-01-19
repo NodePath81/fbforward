@@ -80,8 +80,15 @@ func computeJitter(samples []float64) float64 {
 	return sum / float64(len(samples)-1)
 }
 
-func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.ProbeConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, logger util.Logger) {
-	timeout := cfg.Interval.Duration()
+func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.ReachabilityConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, logger util.Logger) {
+	if delay := cfg.StartupDelay.Duration(); delay > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+	}
+	timeout := cfg.ProbeInterval.Duration()
 	if timeout <= 0 {
 		timeout = time.Second
 	}
@@ -134,7 +141,7 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.ProbeConfi
 		}
 
 		window := newProbeWindow(cfg.WindowSize)
-		ticker := time.NewTicker(cfg.Interval.Duration())
+		ticker := time.NewTicker(cfg.ProbeInterval.Duration())
 	probeLoop:
 		for {
 			select {

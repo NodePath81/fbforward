@@ -62,30 +62,32 @@ Outputs:
 Minimal example:
 
 ```yaml
-listeners:
-  - addr: 0.0.0.0
-    port: 9000
-    protocol: tcp
-  - addr: 0.0.0.0
-    port: 9000
-    protocol: udp
+forwarding:
+  listeners:
+    - bind_addr: 0.0.0.0
+      bind_port: 9000
+      protocol: tcp
+    - bind_addr: 0.0.0.0
+      bind_port: 9000
+      protocol: udp
 upstreams:
   - tag: primary
-    host: 203.0.113.10
+    destination:
+      host: 203.0.113.10
   - tag: backup
-    host: example.net
+    destination:
+      host: example.net
 control:
-  addr: 127.0.0.1
-  port: 8080
-  token: "change-me"
+  bind_addr: 127.0.0.1
+  bind_port: 8080
+  auth_token: "change-me"
+  webui:
+    enabled: true
+  metrics:
+    enabled: true
 ```
 
-Supported fields include: `resolver.servers`, `probe.interval/window_size/discovery_delay`,
-`measurement.interval/tcp_target_bandwidth_*/udp_target_bandwidth_*/sample_bytes/tcp_enabled/udp_enabled/alternate_tcp`,
-`scoring.ref_*/weights_tcp/weights_udp/protocol_weight_*/utilization_*`, `switching.confirm_duration/failure_loss_threshold/failure_retrans_threshold/switch_threshold/min_hold_seconds`,
-`limits.max_tcp_conns/max_udp_mappings`, `timeouts.tcp_idle_seconds/udp_idle_seconds`,
-`webui.enabled`, `shaping.enabled/device/ifb/aggregate_bandwidth`, and
-`listeners.ingress/egress`.
+See `docs/configuration.md` for the full schema (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `shaping`).
 
 ## Run (fbforward)
 

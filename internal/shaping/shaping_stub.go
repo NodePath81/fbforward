@@ -11,10 +11,10 @@ import (
 
 // UpstreamShapingEntry holds upstream config with resolved IPs for shaping.
 type UpstreamShapingEntry struct {
-	Tag     string
-	IPs     []string
-	Ingress *config.BandwidthConfig
-	Egress  *config.BandwidthConfig
+	Tag           string
+	IPs           []string
+	UploadLimit   string
+	DownloadLimit string
 }
 
 type TrafficShaper struct {

@@ -46,7 +46,7 @@ func NewCollector(cfg config.MeasurementConfig, scoring config.ScoringConfig, ma
 }
 
 func (c *Collector) RunLoop(ctx context.Context) {
-	delay := c.cfg.DiscoveryDelay.Duration()
+	delay := c.cfg.StartupDelay.Duration()
 	if delay > 0 {
 		select {
 		case <-ctx.Done():
@@ -88,15 +88,20 @@ func (c *Collector) RunLoop(ctx context.Context) {
 
 // RunProtocol executes a measurement cycle for the given upstream and protocol.
 func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, network string) error {
-	cycleCtx, cancel := context.WithTimeout(ctx, c.cfg.MaxCycleDuration.Duration())
+	protoCfg, err := c.protocolConfig(network)
+	if err != nil {
+		return err
+	}
+
+	cycleCtx, cancel := context.WithTimeout(ctx, protoCfg.Timeout.PerCycle.Duration())
 	defer cancel()
 
-	result, err := c.runMeasurement(cycleCtx, up, network)
+	result, err := c.runMeasurement(cycleCtx, up, network, protoCfg)
 	if err != nil {
 		state := c.failure(up.Tag)
 		state.consecutiveFailures++
 		c.logger.Warn("measurement failed", "upstream", up.Tag, "network", network, "error", err, "failures", state.consecutiveFailures)
-		if util.BoolValue(c.cfg.FallbackToICMP, true) && state.consecutiveFailures >= maxConsecutiveFailures {
+		if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
 			if !state.inFallbackMode {
 				c.logger.Warn("falling back to ICMP-only mode", "upstream", up.Tag)
 			}
@@ -114,7 +119,7 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 
 	utilization := 0.0
 	if c.metrics != nil {
-		utilWindow := time.Duration(c.scoring.UtilizationWindowSec) * time.Second
+		utilWindow := c.scoring.UtilizationPenalty.WindowDuration.Duration()
 		if utilWindow <= 0 {
 			utilWindow = 5 * time.Second
 		}
@@ -127,7 +132,7 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 	return nil
 }
 
-func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string) (*upstream.MeasurementResult, error) {
+func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string, protoCfg config.MeasurementProtocolConfig) (*upstream.MeasurementResult, error) {
 	target := up.MeasureHost
 	if target == "" {
 		target = up.Host
@@ -137,19 +142,19 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		port = 9876
 	}
 
-	bwUp, err := c.targetBandwidth(network, "up")
+	bwUp, err := config.ParseBandwidth(protoCfg.TargetBandwidth.Upload)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s target_bandwidth_up: %w", network, err)
+		return nil, fmt.Errorf("parse %s target_bandwidth.upload: %w", network, err)
 	}
-	bwDown, err := c.targetBandwidth(network, "down")
+	bwDown, err := config.ParseBandwidth(protoCfg.TargetBandwidth.Download)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s target_bandwidth_down: %w", network, err)
+		return nil, fmt.Errorf("parse %s target_bandwidth.download: %w", network, err)
 	}
-	sampleBytes, err := config.ParseSize(c.cfg.SampleBytes)
+	sampleBytes, err := config.ParseSize(protoCfg.SampleSize)
 	if err != nil {
-		return nil, fmt.Errorf("parse sample_bytes: %w", err)
+		return nil, fmt.Errorf("parse sample_size: %w", err)
 	}
-	chunkSize, err := c.chunkSize(network)
+	chunkSize, err := config.ParseSize(protoCfg.ChunkSize)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s chunk_size: %w", network, err)
 	}
@@ -174,11 +179,11 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		BandwidthBps: int64(bwUp),
 		Reverse:      false,
 		SampleBytes:  int64(sampleBytes),
-		Samples:      c.cfg.Samples,
+		Samples:      protoCfg.SampleCount,
 		ChunkSize:    int64(chunkSize),
 	}
 
-	sampleCtx, cancel := context.WithTimeout(ctx, c.cfg.MaxSampleDuration.Duration())
+	sampleCtx, cancel := context.WithTimeout(ctx, protoCfg.Timeout.PerSample.Duration())
 	uploadStart := time.Now()
 	upResult, err := probe.Run(sampleCtx, upCfg)
 	cancel()
@@ -226,7 +231,7 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		BandwidthBps: int64(bwDown),
 		Reverse:      true,
 		SampleBytes:  int64(sampleBytes),
-		Samples:      c.cfg.Samples,
+		Samples:      protoCfg.SampleCount,
 		ChunkSize:    int64(chunkSize),
 	}
 
@@ -238,7 +243,7 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		"sample_bytes", sampleBytes,
 	)
 
-	sampleCtx, cancel = context.WithTimeout(ctx, c.cfg.MaxSampleDuration.Duration())
+	sampleCtx, cancel = context.WithTimeout(ctx, protoCfg.Timeout.PerSample.Duration())
 	downloadStart := time.Now()
 	dnResult, err := probe.Run(sampleCtx, dnCfg)
 	cancel()
@@ -266,44 +271,15 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 	return result, nil
 }
 
-func (c *Collector) targetBandwidth(network, direction string) (uint64, error) {
-	network = strings.ToLower(network)
-	direction = strings.ToLower(direction)
-	var raw string
-	switch network {
+func (c *Collector) protocolConfig(network string) (config.MeasurementProtocolConfig, error) {
+	switch strings.ToLower(strings.TrimSpace(network)) {
 	case "tcp":
-		if direction == "down" {
-			raw = c.cfg.TCPTargetBandwidthDown
-		} else {
-			raw = c.cfg.TCPTargetBandwidthUp
-		}
+		return c.cfg.Protocols.TCP, nil
 	case "udp":
-		if direction == "down" {
-			raw = c.cfg.UDPTargetBandwidthDown
-		} else {
-			raw = c.cfg.UDPTargetBandwidthUp
-		}
+		return c.cfg.Protocols.UDP, nil
+	default:
+		return config.MeasurementProtocolConfig{}, fmt.Errorf("unsupported protocol %q", network)
 	}
-	if raw == "" {
-		if direction == "down" {
-			raw = c.cfg.TargetBandwidthDown
-		} else {
-			raw = c.cfg.TargetBandwidthUp
-		}
-	}
-	return config.ParseBandwidth(raw)
-}
-
-func (c *Collector) chunkSize(network string) (uint32, error) {
-	network = strings.ToLower(network)
-	var raw string
-	switch network {
-	case "tcp":
-		raw = c.cfg.TCPChunkSize
-	case "udp":
-		raw = c.cfg.UDPChunkSize
-	}
-	return config.ParseSize(raw)
 }
 
 func (c *Collector) failure(tag string) *failureState {

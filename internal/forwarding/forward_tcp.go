@@ -40,20 +40,20 @@ var tcpBufPool = sync.Pool{
 	},
 }
 
-func NewTCPListener(cfg config.ListenerConfig, limits config.LimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *TCPListener {
+func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *TCPListener {
 	return &TCPListener{
 		cfg:     cfg,
 		manager: manager,
 		metrics: metrics,
 		status:  status,
 		timeout: timeout,
-		sem:     make(chan struct{}, limits.MaxTCPConns),
+		sem:     make(chan struct{}, limits.MaxTCPConnections),
 		logger:  logger,
 	}
 }
 
 func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
-	addr := net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port))
+	addr := net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -93,7 +93,7 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 func (l *TCPListener) Close() error {
 	if l.listener != nil {
 		err := l.listener.Close()
-		l.logger.Info("tcp listener stopped", "addr", net.JoinHostPort(l.cfg.Addr, util.FormatPort(l.cfg.Port)))
+		l.logger.Info("tcp listener stopped", "addr", net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)))
 		return err
 	}
 	return nil
@@ -116,7 +116,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		_ = client.Close()
 		return
 	}
-	remoteAddr := net.JoinHostPort(ip.String(), util.FormatPort(l.cfg.Port))
+	remoteAddr := net.JoinHostPort(ip.String(), util.FormatPort(l.cfg.BindPort))
 	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond)
 	if err != nil {
 		l.logger.Debug("tcp dial failed", "upstream", up.Tag, "error", err)
@@ -130,7 +130,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		client:      client,
 		upstream:    upConn,
 		upstreamTag: up.Tag,
-		listenPort:  l.cfg.Port,
+		listenPort:  l.cfg.BindPort,
 		timeout:     l.timeout,
 		metrics:     l.metrics,
 		status:      l.status,

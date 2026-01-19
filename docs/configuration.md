@@ -1,305 +1,285 @@
 # fbforward configuration reference
 
-This document describes every YAML field supported by `fbforward`, its purpose, and allowed values.
+This document describes the YAML configuration schema for `fbforward`.
+
+## Units
+
+- Bandwidth (bits/sec): `k`, `m`, `g` suffixes (SI). Examples: `500k`, `10m`, `1g`.
+- Data size (bytes): `kb`, `mb` suffixes (SI) or bare bytes. Examples: `1200`, `500kb`, `1mb`.
+- Duration: Go duration strings (e.g., `500ms`, `15s`, `5m`) or bare numbers (seconds).
 
 ## Example configuration
 
 ```yaml
-listeners:
-  - addr: 0.0.0.0
-    port: 9000
-    protocol: tcp
-    egress:
-      rate: 50m
-    ingress:
-      rate: 200m
-  - addr: 0.0.0.0
-    port: 9000
-    protocol: udp
+hostname: fbforward-01
+
+forwarding:
+  listeners:
+    - bind_addr: 0.0.0.0
+      bind_port: 9000
+      protocol: tcp
+      shaping:
+        upload_limit: 50m
+        download_limit: 200m
+    - bind_addr: 0.0.0.0
+      bind_port: 9000
+      protocol: udp
+  limits:
+    max_tcp_connections: 50
+    max_udp_mappings: 500
+  idle_timeout:
+    tcp: 60s
+    udp: 30s
+
 upstreams:
   - tag: primary
-    host: 203.0.113.10
-    measure_host: 203.0.113.10
-    measure_port: 9876
+    destination:
+      host: 203.0.113.10
+    measurement:
+      port: 9876
     priority: 0
     bias: 0
-    egress:
-      rate: 100m
-    ingress:
-      rate: 500m
-  - tag: backup
-    host: example.net
-resolver:
-  servers:
-    - 1.1.1.1
-probe:
-  interval: 1s
+
+reachability:
+  probe_interval: 1s
   window_size: 5
-  discovery_delay: 5s
+
 measurement:
-  interval: 2s
-  discovery_delay: 10s
-  schedule:
-    min_interval: 15m
-    max_interval: 45m
-    inter_upstream_gap: 5s
-    max_utilization: 0.7
-    required_headroom: "0"
-  tcp_target_bandwidth_up: 10m
-  tcp_target_bandwidth_down: 50m
-  udp_target_bandwidth_up: 10m
-  udp_target_bandwidth_down: 50m
-  sample_bytes: 500KB
-  samples: 1
-  tcp_enabled: true
-  udp_enabled: true
-  alternate_tcp: true
-  max_sample_duration: 10s
-  max_cycle_duration: 30s
-  fast_start_timeout: 500ms
-  warmup_duration: 15s
+  startup_delay: 10s
   stale_threshold: 60m
-  fallback_to_icmp: true
+  fallback_to_icmp_on_stale: true
+  schedule:
+    interval:
+      min: 15m
+      max: 45m
+    upstream_gap: 5s
+    headroom:
+      max_link_utilization: 0.7
+      required_free_bandwidth: "0"
+  protocols:
+    tcp:
+      enabled: true
+      alternate: true
+      target_bandwidth:
+        upload: 10m
+        download: 50m
+      chunk_size: 1200
+      sample_size: 500kb
+      sample_count: 1
+      timeout:
+        per_sample: 10s
+        per_cycle: 30s
+    udp:
+      enabled: true
+      target_bandwidth:
+        upload: 10m
+        download: 50m
+      chunk_size: 1200
+      sample_size: 500kb
+      sample_count: 1
+      timeout:
+        per_sample: 10s
+        per_cycle: 30s
+
 scoring:
-  ema_alpha: 0.2
-  utilization_window_sec: 5
-  utilization_update_sec: 1
-  ref_bandwidth_up: 10m
-  ref_bandwidth_down: 50m
-  ref_rtt_ms: 50
-  ref_jitter_ms: 10
-  ref_retrans_rate: 0.01
-  ref_loss_rate: 0.01
-  weights_tcp:
-    bandwidth_up: 0.15
-    bandwidth_down: 0.25
-    rtt: 0.25
-    jitter: 0.10
-    retrans: 0.25
-  weights_udp:
-    bandwidth_up: 0.10
-    bandwidth_down: 0.30
-    rtt: 0.15
-    jitter: 0.30
-    loss: 0.15
-  protocol_weight_tcp: 0.5
-  protocol_weight_udp: 0.5
-  utilization_enabled: true
-  utilization_min_mult: 0.3
-  utilization_threshold: 0.7
-  utilization_exponent: 2
-  bias_kappa: 0.693
+  smoothing:
+    alpha: 0.2
+  reference:
+    tcp:
+      bandwidth:
+        upload: 10m
+        download: 50m
+      latency:
+        rtt: 50
+        jitter: 10
+      retransmit_rate: 0.01
+    udp:
+      bandwidth:
+        upload: 10m
+        download: 50m
+      latency:
+        rtt: 50
+        jitter: 10
+      loss_rate: 0.01
+  weights:
+    tcp:
+      bandwidth_upload: 0.15
+      bandwidth_download: 0.25
+      rtt: 0.25
+      jitter: 0.10
+      retransmit_rate: 0.25
+    udp:
+      bandwidth_upload: 0.10
+      bandwidth_download: 0.30
+      rtt: 0.15
+      jitter: 0.30
+      loss_rate: 0.15
+    protocol_blend:
+      tcp_weight: 0.5
+      udp_weight: 0.5
+  utilization_penalty:
+    enabled: true
+    window_duration: 5s
+    update_interval: 1s
+    threshold: 0.7
+    min_multiplier: 0.3
+    exponent: 2
+  bias_transform:
+    kappa: 0.693
+
 switching:
-  confirm_duration: 15s
-  failure_loss_threshold: 0.2
-  failure_retrans_threshold: 0.2
-  switch_threshold: 5
-  min_hold_seconds: 30
-  close_flows_on_unusable: false
-limits:
-  max_tcp_conns: 50
-  max_udp_mappings: 500
-timeouts:
-  tcp_idle_seconds: 60
-  udp_idle_seconds: 30
+  auto:
+    confirm_duration: 15s
+    score_delta_threshold: 5
+    min_hold_time: 30s
+  failover:
+    loss_rate_threshold: 0.2
+    retransmit_rate_threshold: 0.2
+  close_flows_on_failover: false
+
 control:
-  addr: 127.0.0.1
-  port: 8080
-  token: "change-me"
-webui:
-  enabled: true
+  bind_addr: 127.0.0.1
+  bind_port: 8080
+  auth_token: "change-me"
+  webui:
+    enabled: true
+  metrics:
+    enabled: true
+
 shaping:
   enabled: false
-  device: eth0
-  ifb: ifb0
-  aggregate_bandwidth: 1g
+  interface: eth0
+  ifb_device: ifb0
+  aggregate_limit: 1g
 ```
 
 ## Top-level
 
+- `hostname` (string, optional): override hostname for identity endpoints.
+- `forwarding` (object, required): listener definitions and flow limits.
+- `upstreams` (list, required): upstream destinations.
+- `dns` (object, optional): custom DNS settings.
+- `reachability` (object, optional): ICMP reachability probing.
+- `measurement` (object, optional): bwprobe-based measurement scheduling.
+- `scoring` (object, optional): scoring parameters and weights.
+- `switching` (object, optional): auto switching and failover behavior.
+- `control` (object, required): control plane bind + auth.
+- `shaping` (object, optional): Linux `tc` shaping configuration.
+
+## forwarding
+
 - `listeners` (list, required): listener definitions.
-- `upstreams` (list, required): global upstream list.
-- `resolver` (object, optional): custom DNS settings.
-- `probe` (object, optional): ICMP reachability probe scheduling.
-- `measurement` (object, optional): bwprobe measurement scheduling + timeouts.
-- `scoring` (object, optional): scoring/EMA parameters.
-- `switching` (object, optional): auto switching behavior.
-- `limits` (object, optional): connection/mapping caps.
-- `timeouts` (object, optional): idle timeouts in seconds.
-- `control` (object, required): control plane bind + token.
-- `webui` (object, optional): SPA enable/disable.
-- `shaping` (object, optional): traffic shaping via Linux `tc`.
-
-## listeners
-
-Each entry:
-
-- `addr` (string, required): bind address (IPv4/IPv6 literal or hostname).
-- `port` (int, required): listener port, forwarded to upstream host on same port.
-- `protocol` (string, required): `tcp` or `udp`.
-- `ingress` (object, optional): per-listener download shaping.
-- `egress` (object, optional): per-listener upload shaping.
-
-Notes:
-- `ingress`/`egress` require `shaping.enabled: true` and a valid `shaping.device`.
+  - `bind_addr` (string, required): bind address.
+  - `bind_port` (int, required): listener port (forwarded 1:1).
+  - `protocol` (string, required): `tcp` or `udp`.
+  - `shaping` (object, optional): per-listener shaping (requires `shaping.enabled`).
+    - `upload_limit` (string): client upload cap.
+    - `download_limit` (string): client download cap.
+- `limits` (object, optional): flow caps.
+  - `max_tcp_connections` (int, default: `50`).
+  - `max_udp_mappings` (int, default: `500`).
+- `idle_timeout` (object, optional): flow idle timeouts.
+  - `tcp` (duration, default: `60s`).
+  - `udp` (duration, default: `30s`).
 
 ## upstreams
 
 Each entry:
 
 - `tag` (string, required): stable identifier used in RPC/UI/metrics.
-- `host` (string, required): IP literal or hostname.
-- `measure_host` (string, optional): host/IP of the measurement server (defaults to `host`).
-- `measure_port` (int, optional): measurement server port (default: `9876`).
-- `priority` (float, optional): static priority bonus for fast start (default: `0`).
+- `destination.host` (string, required): IP literal or hostname.
+- `measurement.host` (string, optional): measurement server host (defaults to destination host).
+- `measurement.port` (int, optional, default: `9876`).
+- `priority` (float, optional): fast-start priority bonus (default: `0`).
 - `bias` (float, optional): user bias in `[-1,1]` (default: `0`).
-- `ingress` (object, optional): per-upstream download shaping (traffic FROM upstream).
-- `egress` (object, optional): per-upstream upload shaping (traffic TO upstream).
+- `shaping` (object, optional): per-upstream shaping (requires `shaping.enabled`).
+  - `upload_limit` (string): fbforward -> upstream cap.
+  - `download_limit` (string): upstream -> fbforward cap.
 
 Notes:
-- `ingress`/`egress` require `shaping.enabled: true` and a valid `shaping.device`.
-- For hostname upstreams, shaping is applied to all resolved IPs.
-- Upstream shaping uses IP-based flower filters (lower priority than port-based listener shaping).
+- Upstream shaping applies to all resolved IPs of a hostname.
 
-## resolver
+## dns
 
-- `servers` (list of string, optional): custom DNS servers. Each entry can be `ip` or `ip:port`.
-  - If `ip` is provided, port `53` is used.
-  - If omitted or empty, system DNS is used.
-- `strategy` (string, optional): address selection strategy.
-  - `ipv4_only`: use only IPv4 (A) results; ignore AAAA records.
-  - `prefer_ipv6`: use IPv6 (AAAA) results when present; fall back to IPv4 (A) when no IPv6 records exist.
-  - If omitted, all resolved addresses are used in resolver order.
+- `servers` (list, optional): custom DNS servers (`ip` or `ip:port`).
+- `strategy` (string, optional): `ipv4_only` or `prefer_ipv6`.
 
-## probe (reachability only)
+## reachability
 
-- `interval` (duration, default: `1s`): ICMP probe interval per upstream.
-- `window_size` (int, default: `5`): number of probes per reachability window.
-- `discovery_delay` (duration, default: `window_size * interval`): wait before reachability-only initialization.
-
-Duration format:
-- String: Go duration (e.g., `500ms`, `2s`, `1m`).
-- Number: seconds (int/float).
+- `probe_interval` (duration, default: `1s`): ICMP probe interval.
+- `window_size` (int, default: `5`): probes per reachability window.
+- `startup_delay` (duration, default: `window_size * probe_interval`).
 
 ## measurement
 
-- `interval` (duration, default: `2s`): legacy measurement cycle interval (deprecated; use `schedule.min_interval`).
-- `discovery_delay` (duration, default: `10s`): delay before starting measurements.
-- `schedule` (object): randomized measurement scheduling.
-  - `min_interval` (duration, default: `15m`): minimum interval between measurements.
-  - `max_interval` (duration, default: `45m`): maximum interval between measurements.
-  - `inter_upstream_gap` (duration, default: `5s`): gap between measurements across upstreams.
-  - `max_utilization` (float, default: `0.7`): utilization cap before deferring measurements.
-  - `required_headroom` (string, default: `"0"`): minimum headroom in bps; `"0"` uses target bandwidth.
-- `tcp_target_bandwidth_up` (string, default: `10m`): target TCP uplink bandwidth.
-- `tcp_target_bandwidth_down` (string, default: `50m`): target TCP downlink bandwidth.
-- `udp_target_bandwidth_up` (string, default: `10m`): target UDP uplink bandwidth.
-- `udp_target_bandwidth_down` (string, default: `50m`): target UDP downlink bandwidth.
-- `tcp_chunk_size` (string, default: `1200`): TCP chunk size in bytes (includes headers).
-- `udp_chunk_size` (string, default: `1200`): UDP chunk size in bytes (includes headers).
-- `sample_bytes` (string, default: `500KB`): payload bytes per sample.
-- `samples` (int, default: `1`): samples per direction per cycle.
-- `tcp_enabled` (bool, default: `true`): enable TCP measurements.
-- `udp_enabled` (bool, default: `true`): enable UDP measurements.
-- `alternate_tcp` (bool, default: `true`): alternate TCP/UDP each cycle; if false, run both each cycle.
-- `max_sample_duration` (duration, default: `10s`): per-sample timeout.
-- `max_cycle_duration` (duration, default: `30s`): per-cycle timeout.
-- `fast_start_timeout` (duration, default: `500ms`): fast-start probe timeout.
-- `warmup_duration` (duration, default: `15s`): warmup period for relaxed switching.
+- `startup_delay` (duration, default: `10s`): delay before first measurement.
 - `stale_threshold` (duration, default: `60m`): metric staleness threshold.
-- `fallback_to_icmp` (bool, default: `true`): allow ICMP-only fallback when measurements fail.
+- `fallback_to_icmp_on_stale` (bool, default: `true`).
+- `schedule.interval.min` (duration, default: `15m`).
+- `schedule.interval.max` (duration, default: `45m`).
+- `schedule.upstream_gap` (duration, default: `5s`).
+- `schedule.headroom.max_link_utilization` (float, default: `0.7`).
+- `schedule.headroom.required_free_bandwidth` (string, default: `"0"`): minimum free bandwidth.
+- `fast_start.enabled` (bool, default: `true`).
+- `fast_start.timeout` (duration, default: `500ms`).
+- `fast_start.warmup_duration` (duration, default: `15s`).
 
-Notes:
-- Legacy `target_bandwidth_up`/`target_bandwidth_down` are accepted and migrated to the per-protocol fields.
+Protocol settings (`measurement.protocols.tcp` / `measurement.protocols.udp`):
+
+- `enabled` (bool, default: `true`).
+- `alternate` (bool, TCP only, default: `true`).
+- `target_bandwidth.upload` (string, default: `10m`).
+- `target_bandwidth.download` (string, default: `50m`).
+- `chunk_size` (string, default: `1200`).
+- `sample_size` (string, default: `500kb`).
+- `sample_count` (int, default: `1`).
+- `timeout.per_sample` (duration, default: `10s`).
+- `timeout.per_cycle` (duration, default: `30s`).
 
 ## scoring
-## scoring
 
-- `ema_alpha` (float, default: `0.2`): EMA smoothing factor in `(0,1]`.
-- `ref_bandwidth_up` (string, default: `10m`): reference uplink bandwidth.
-- `ref_bandwidth_down` (string, default: `50m`): reference downlink bandwidth.
-- `ref_rtt_ms` (float, default: `50`): RTT reference in ms.
-- `ref_jitter_ms` (float, default: `10`): jitter reference in ms.
-- `ref_retrans_rate` (float, default: `0.01`): TCP retrans rate reference.
-- `ref_loss_rate` (float, default: `0.01`): UDP loss rate reference.
-- `weights_tcp` (object): per-metric weights for TCP scoring.
-  - `bandwidth_up` (float, default: `0.15`)
-  - `bandwidth_down` (float, default: `0.25`)
-  - `rtt` (float, default: `0.25`)
-  - `jitter` (float, default: `0.10`)
-  - `retrans` (float, default: `0.25`)
-- `weights_udp` (object): per-metric weights for UDP scoring.
-  - `bandwidth_up` (float, default: `0.10`)
-  - `bandwidth_down` (float, default: `0.30`)
-  - `rtt` (float, default: `0.15`)
-  - `jitter` (float, default: `0.30`)
-  - `loss` (float, default: `0.15`)
-- `protocol_weight_tcp` (float, default: `0.5`): overall blend weight for TCP.
-- `protocol_weight_udp` (float, default: `0.5`): overall blend weight for UDP.
-- `utilization_enabled` (bool, default: `true`): enable utilization penalty.
-- `utilization_min_mult` (float, default: `0.3`): minimum multiplier.
-- `utilization_threshold` (float, default: `0.7`): threshold `u^0` for penalty.
-- `utilization_exponent` (float, default: `2`): exponent `p` for penalty curve.
-- `utilization_window_sec` (int, default: `5`): utilization sampling window in seconds.
-- `utilization_update_sec` (int, default: `1`): utilization sampling granularity in seconds.
-- `bias_kappa` (float, default: `0.693`): bias multiplier coefficient.
-
-Notes:
-- Weights are normalized to sum to `1` if they do not already.
-- Legacy fields `metric_ref_*` and `weights` are accepted for migration.
+- `smoothing.alpha` (float, default: `0.2`): EMA smoothing factor.
+- `reference.tcp.bandwidth.upload` / `download` (string).
+- `reference.tcp.latency.rtt` / `jitter` (ms).
+- `reference.tcp.retransmit_rate` (float, 0..1].
+- `reference.udp.bandwidth.upload` / `download` (string).
+- `reference.udp.latency.rtt` / `jitter` (ms).
+- `reference.udp.loss_rate` (float, 0..1].
+- `weights.tcp` and `weights.udp`: per-metric weights (normalized if needed).
+- `weights.protocol_blend.tcp_weight` / `udp_weight` (sum to 1).
+- `utilization_penalty.enabled` (bool, default: `true`).
+- `utilization_penalty.window_duration` (duration, default: `5s`).
+- `utilization_penalty.update_interval` (duration, default: `1s`).
+- `utilization_penalty.threshold` (float, default: `0.7`).
+- `utilization_penalty.min_multiplier` (float, default: `0.3`).
+- `utilization_penalty.exponent` (float, default: `2`).
+- `bias_transform.kappa` (float, default: `0.693`).
 
 ## switching
 
-- `confirm_duration` (duration, default: `15s`): score gap must persist for this duration before switching.
-- `failure_loss_threshold` (float, default: `0.2`): UDP loss threshold for immediate failover.
-- `failure_retrans_threshold` (float, default: `0.2`): TCP retrans threshold for immediate failover.
-- `switch_threshold` (float, default: `5`): score delta required to consider a switch.
-- `min_hold_seconds` (int, default: `30`): minimum time to hold the active upstream before switching.
-- `close_flows_on_unusable` (bool, default: `false`): close pinned flows on unusable transitions.
-
-Notes:
-- `confirm_windows` is still accepted for backward compatibility and is migrated into `confirm_duration`.
-
-## limits
-
-- `max_tcp_conns` (int, default: `50`): maximum concurrent TCP connections.
-- `max_udp_mappings` (int, default: `500`): maximum concurrent UDP mappings.
-
-## timeouts
-
-- `tcp_idle_seconds` (int, default: `60`): close TCP conns after idle.
-- `udp_idle_seconds` (int, default: `30`): expire UDP mappings after idle.
+- `auto.confirm_duration` (duration, default: `15s`).
+- `auto.score_delta_threshold` (float, default: `5`).
+- `auto.min_hold_time` (duration, default: `30s`).
+- `failover.loss_rate_threshold` (float, default: `0.2`).
+- `failover.retransmit_rate_threshold` (float, default: `0.2`).
+- `close_flows_on_failover` (bool, default: `false`).
 
 ## control
 
-- `addr` (string, default: `127.0.0.1`): control server bind address.
-- `port` (int, default: `8080`): control server port.
-- `token` (string, required): bearer token for `/rpc` and `/status`.
-
-## webui
-
-- `enabled` (bool, default: `true`): serve the embedded SPA.
+- `bind_addr` (string, default: `127.0.0.1`).
+- `bind_port` (int, default: `8080`).
+- `auth_token` (string, required): bearer token for `/rpc` and `/status`.
+- `webui.enabled` (bool, default: `true`).
+- `metrics.enabled` (bool, default: `true`).
 
 ## shaping
 
-- `enabled` (bool, default: `false`): enable tc-based shaping.
-- `device` (string, required when enabled): interface to shape (e.g. `eth0`).
-- `ifb` (string, default: `ifb0`): IFB device used for ingress shaping.
-- `aggregate_bandwidth` (string, default: `1g`): root cap for each direction.
-  - Format: `100`, `100k`, `100m`, `1g` (bits/sec, SI units).
-
-`egress` / `ingress` fields (defined on listeners or upstreams):
-- `rate` (string, required): guaranteed rate (bits/sec).
-- `ceil` (string, optional): maximum rate, defaults to `rate`.
-- `burst` (string, optional): burst size in bytes (e.g. `16k`).
-- `cburst` (string, optional): ceil burst size in bytes.
+- `enabled` (bool, default: `false`).
+- `interface` (string, required when enabled): network device to shape.
+- `ifb_device` (string, default: `ifb0`).
+- `aggregate_limit` (string, default: `1g`).
 
 Notes:
-- Shaping uses HTB + fq_codel and requires `CAP_NET_ADMIN` (or root).
-- Ingress is handled via IFB redirection; existing root/ingress qdiscs are reset
-  on the configured device and IFB.
-- On shutdown, the program clears root/ingress qdiscs on the configured device
-  and IFB.
-- Both IPv4 and IPv6 traffic is supported for upstream shaping.
-- Listener shaping uses port-based flower filters (priority 1, IPv4 only).
-- Upstream shaping uses IP-based flower filters (priority 2, IPv4 or IPv6 based on upstream address).
+- Shaping uses HTB + fq_codel and requires `CAP_NET_ADMIN`.
+- Listener shaping uses per-port rules; upstream shaping uses per-IP rules.
+- Enabling shaping resets root/ingress qdiscs on the device and IFB.
