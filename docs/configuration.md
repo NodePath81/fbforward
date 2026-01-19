@@ -218,8 +218,8 @@ Notes:
 - `schedule.interval.min` (duration, default: `15m`).
 - `schedule.interval.max` (duration, default: `45m`).
 - `schedule.upstream_gap` (duration, default: `5s`).
-- `schedule.headroom.max_link_utilization` (float, default: `0.7`).
-- `schedule.headroom.required_free_bandwidth` (string, default: `"0"`): minimum free bandwidth.
+- `schedule.headroom.max_link_utilization` (float, default: `0.7`): current-load threshold; if current utilization exceeds this value, measurements are skipped. If utilization is below the threshold, the measurement still must fit in remaining capacity.
+- `schedule.headroom.required_free_bandwidth` (string, default: `"0"`): extra headroom required beyond target bandwidth (example: target 100m + 10m headroom requires 110m remaining).
 - `fast_start.enabled` (bool, default: `true`).
 - `fast_start.timeout` (duration, default: `500ms`).
 - `fast_start.warmup_duration` (duration, default: `15s`).

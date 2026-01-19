@@ -93,6 +93,7 @@ export type RPCMethod =
   | 'ListUpstreams'
   | 'GetMeasurementConfig'
   | 'GetScheduleStatus'
+  | 'GetQueueStatus'
   | 'RunMeasurement';
 
 export interface RPCResponse<T = unknown> {
@@ -109,6 +110,28 @@ export interface StatusResponse {
     udp_active: number;
   };
   upstreams: UpstreamSnapshot[];
+}
+
+export interface QueueStatus {
+  queueDepth: number;
+  skippedTotal: number;
+  nextDue: string | null;
+  running: RunningTest[];
+  pending: PendingTest[];
+}
+
+export interface RunningTest {
+  upstream: string;
+  protocol: 'tcp' | 'udp';
+  direction: 'upload' | 'download';
+  elapsedMs: number;
+}
+
+export interface PendingTest {
+  upstream: string;
+  protocol: 'tcp' | 'udp';
+  direction: 'upload' | 'download';
+  scheduledAt: string;
 }
 
 export interface IdentityResponse {

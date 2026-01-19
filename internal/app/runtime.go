@@ -206,6 +206,59 @@ func (r *Runtime) startMeasurement() {
 		rateWindow = 5 * time.Second
 	}
 
+	var aggregateLimitBps int64
+	var upstreamLimits map[string]measure.UpstreamLimit
+	if r.cfg.Shaping.Enabled {
+		aggregateLimit := r.cfg.Shaping.AggregateLimit
+		if aggregateLimit == "" {
+			aggregateLimit = config.DefaultAggregateLimit
+		}
+		aggBits, err := config.ParseBandwidth(aggregateLimit)
+		if err != nil {
+			r.logger.Warn("invalid shaping.aggregate_limit", "value", aggregateLimit, "error", err)
+		} else if aggBits == 0 {
+			aggBits, err = config.ParseBandwidth(config.DefaultAggregateLimit)
+			if err != nil {
+				r.logger.Warn("invalid default shaping.aggregate_limit", "value", config.DefaultAggregateLimit, "error", err)
+			}
+		}
+		aggregateLimitBps = int64(aggBits)
+
+		upstreamLimits = make(map[string]measure.UpstreamLimit)
+		for _, upCfg := range r.cfg.Upstreams {
+			if upCfg.Shaping == nil {
+				continue
+			}
+			var uploadBps int64
+			var downloadBps int64
+			if upCfg.Shaping.UploadLimit != "" {
+				limit, err := config.ParseBandwidth(upCfg.Shaping.UploadLimit)
+				if err != nil {
+					r.logger.Warn("invalid upstream shaping upload_limit", "tag", upCfg.Tag, "value", upCfg.Shaping.UploadLimit, "error", err)
+				} else if limit > 0 {
+					uploadBps = int64(limit)
+				}
+			}
+			if upCfg.Shaping.DownloadLimit != "" {
+				limit, err := config.ParseBandwidth(upCfg.Shaping.DownloadLimit)
+				if err != nil {
+					r.logger.Warn("invalid upstream shaping download_limit", "tag", upCfg.Tag, "value", upCfg.Shaping.DownloadLimit, "error", err)
+				} else if limit > 0 {
+					downloadBps = int64(limit)
+				}
+			}
+			if uploadBps > 0 || downloadBps > 0 {
+				upstreamLimits[upCfg.Tag] = measure.UpstreamLimit{
+					UploadLimitBps:   uploadBps,
+					DownloadLimitBps: downloadBps,
+				}
+			}
+		}
+		if len(upstreamLimits) == 0 {
+			upstreamLimits = nil
+		}
+	}
+
 	scheduler := measure.NewScheduler(measure.SchedulerConfig{
 		MinInterval:         r.cfg.Measurement.Schedule.Interval.Min.Duration(),
 		MaxInterval:         r.cfg.Measurement.Schedule.Interval.Max.Duration(),
@@ -218,6 +271,8 @@ func (r *Runtime) startMeasurement() {
 		UDPTargetDownBps:    int64(udpTargetDownBps),
 		Protocols:           protocols,
 		RateWindow:          rateWindow,
+		AggregateLimitBps:   aggregateLimitBps,
+		UpstreamLimits:      upstreamLimits,
 	}, r.metrics, r.upstreams, nil)
 	if r.control != nil {
 		r.control.SetScheduler(scheduler)

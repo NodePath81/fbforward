@@ -29,11 +29,16 @@ make build-bwprobe
 make build-fbmeasure
 
 # Run all tests
+make test
+# or directly:
 go test ./...
 
 # Run tests for specific package
 go test ./internal/upstream -v
 go test ./bwprobe/internal/network -run TestSenderFraming
+
+# Clean build artifacts and web UI
+make clean
 ```
 
 ### bwprobe
@@ -62,9 +67,11 @@ cd web
 npm install
 npm run build
 
-# Development mode for web UI (hot reload)
+# Development mode for web UI (hot reload with Vite)
 cd web
+npm install  # First time only
 npm run dev  # Opens dev server on http://localhost:5173
+# Note: UI is TypeScript-based, built with Vite, and embedded via web/handler.go
 
 # Run with capabilities (required for ICMP probing)
 sudo setcap cap_net_raw+ep ./build/bin/fbforward
@@ -283,3 +290,10 @@ When extending functionality:
 - **Fast failover**: Immediate switch on high loss windows or dial failures
 - **Auto recovery**: Unusable upstreams recover automatically when probes succeed
 - **Measurement-driven**: ICMP for reachability only; bwprobe measurements drive all scoring
+
+## Notes on Other Documentation Files
+
+- **AGENT.md**: Contains outdated information about ICMP-based scoring (pre-bwprobe migration). Refer to this CLAUDE.md and [docs/migration-measurement.md](docs/migration-measurement.md) for current architecture.
+- **docs/algorithm.md**: Authoritative specification for scoring algorithm and flow pinning
+- **docs/configuration.md**: Complete config schema reference
+- **docs/codebase.md**: Architecture overview and component descriptions

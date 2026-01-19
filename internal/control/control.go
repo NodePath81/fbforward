@@ -150,6 +150,28 @@ type statusCounts struct {
 	UDPActive int `json:"udp_active"`
 }
 
+type queueStatusResponse struct {
+	QueueDepth   int                `json:"queue_depth"`
+	SkippedTotal uint64             `json:"skipped_total"`
+	NextDue      *time.Time         `json:"next_due,omitempty"`
+	Running      []runningTestEntry `json:"running"`
+	Pending      []pendingEntry     `json:"pending"`
+}
+
+type runningTestEntry struct {
+	Upstream  string `json:"upstream"`
+	Protocol  string `json:"protocol"`
+	Direction string `json:"direction"`
+	ElapsedMs int64  `json:"elapsed_ms"`
+}
+
+type pendingEntry struct {
+	Upstream    string    `json:"upstream"`
+	Protocol    string    `json:"protocol"`
+	Direction   string    `json:"direction"`
+	ScheduledAt time.Time `json:"scheduled_at"`
+}
+
 type identityResponse struct {
 	Hostname string   `json:"hostname"`
 	IPs      []string `json:"ips"`
@@ -226,6 +248,8 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getMeasurementConfig()})
 	case "GetScheduleStatus":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
+	case "GetQueueStatus":
+		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getQueueStatus()})
 	case "ListUpstreams":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
 	case "RunMeasurement":
@@ -350,6 +374,61 @@ func (c *ControlServer) getScheduleStatus() map[string]interface{} {
 		result["next_scheduled"] = status.NextScheduled
 	}
 	return result
+}
+
+func (c *ControlServer) getQueueStatus() queueStatusResponse {
+	c.schedulerMu.RLock()
+	scheduler := c.scheduler
+	c.schedulerMu.RUnlock()
+
+	c.collectorMu.RLock()
+	collector := c.collector
+	c.collectorMu.RUnlock()
+
+	response := queueStatusResponse{
+		QueueDepth:   0,
+		SkippedTotal: 0,
+		NextDue:      nil,
+		Running:      []runningTestEntry{},
+		Pending:      []pendingEntry{},
+	}
+
+	if scheduler != nil {
+		status := scheduler.Status()
+		response.QueueDepth = status.QueueLength
+		response.SkippedTotal = status.SkippedTotal
+		if !status.NextScheduled.IsZero() {
+			next := status.NextScheduled
+			response.NextDue = &next
+		}
+		entries := make([]pendingEntry, 0, len(status.Pending))
+		for _, item := range status.Pending {
+			entries = append(entries, pendingEntry{
+				Upstream:    item.Upstream,
+				Protocol:    item.Protocol,
+				Direction:   item.Direction,
+				ScheduledAt: item.ScheduledAt,
+			})
+		}
+		response.Pending = entries
+	}
+
+	if collector != nil {
+		running := collector.RunningTests()
+		entries := make([]runningTestEntry, 0, len(running))
+		now := time.Now()
+		for _, test := range running {
+			entries = append(entries, runningTestEntry{
+				Upstream:  test.Upstream,
+				Protocol:  test.Protocol,
+				Direction: test.Direction,
+				ElapsedMs: now.Sub(test.StartTime).Milliseconds(),
+			})
+		}
+		response.Running = entries
+	}
+
+	return response
 }
 
 func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {

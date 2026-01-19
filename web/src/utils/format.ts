@@ -80,6 +80,37 @@ export function formatDuration(seconds: number): string {
   return parts.join(' ');
 }
 
+export function formatScheduledTime(isoString: string): string {
+  const scheduled = new Date(isoString);
+  if (Number.isNaN(scheduled.getTime())) {
+    return '-';
+  }
+  const now = new Date();
+  const diffMs = scheduled.getTime() - now.getTime();
+
+  if (diffMs < 0) {
+    return 'due now';
+  }
+
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) {
+    return `in ${diffSec}s`;
+  }
+
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) {
+    return `in ${diffMin}m`;
+  }
+
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) {
+    return `in ${diffHour}h`;
+  }
+
+  const diffDay = Math.floor(diffHour / 24);
+  return `in ${diffDay}d`;
+}
+
 export function formatTime(ms: number): string {
   if (!Number.isFinite(ms)) {
     return '-';

@@ -24,6 +24,8 @@ type SchedulerConfig struct {
 	UDPTargetDownBps    int64
 	Protocols           []string
 	RateWindow          time.Duration
+	AggregateLimitBps   int64
+	UpstreamLimits      map[string]UpstreamLimit
 }
 
 type Scheduler struct {
@@ -39,9 +41,15 @@ type Scheduler struct {
 }
 
 type scheduledMeasurement struct {
-	upstream *upstream.Upstream
-	protocol string
-	dueAt    time.Time
+	upstream  *upstream.Upstream
+	protocol  string
+	direction string
+	dueAt     time.Time
+}
+
+type UpstreamLimit struct {
+	UploadLimitBps   int64
+	DownloadLimitBps int64
 }
 
 type SchedulerStatus struct {
@@ -49,6 +57,14 @@ type SchedulerStatus struct {
 	NextScheduled time.Time
 	LastRun       map[string]time.Time
 	SkippedTotal  uint64
+	Pending       []PendingItem
+}
+
+type PendingItem struct {
+	Upstream    string
+	Protocol    string
+	Direction   string
+	ScheduledAt time.Time
 }
 
 func NewScheduler(cfg SchedulerConfig, metrics *metrics.Metrics, upstreams []*upstream.Upstream, rng *rand.Rand) *Scheduler {
@@ -71,25 +87,29 @@ func (s *Scheduler) Schedule() {
 	now := time.Now()
 	queued := make(map[string]struct{}, len(s.queue))
 	for _, item := range s.queue {
-		queued[s.key(item.upstream.Tag, item.protocol)] = struct{}{}
+		queued[s.key(item.upstream.Tag, item.protocol, item.direction)] = struct{}{}
 	}
 
+	directions := []string{"upload", "download"}
 	for _, up := range s.upstreams {
 		for _, proto := range s.cfg.Protocols {
-			key := s.key(up.Tag, proto)
-			if _, ok := queued[key]; ok {
-				continue
+			for _, direction := range directions {
+				key := s.key(up.Tag, proto, direction)
+				if _, ok := queued[key]; ok {
+					continue
+				}
+				if last, ok := s.lastRun[key]; ok && now.Sub(last) < s.cfg.MinInterval {
+					continue
+				}
+				dueAt := now.Add(s.nextInterval())
+				s.queue = append(s.queue, scheduledMeasurement{
+					upstream:  up,
+					protocol:  proto,
+					direction: direction,
+					dueAt:     dueAt,
+				})
+				queued[key] = struct{}{}
 			}
-			if last, ok := s.lastRun[key]; ok && now.Sub(last) < s.cfg.MinInterval {
-				continue
-			}
-			dueAt := now.Add(s.nextInterval())
-			s.queue = append(s.queue, scheduledMeasurement{
-				upstream: up,
-				protocol: proto,
-				dueAt:    dueAt,
-			})
-			queued[key] = struct{}{}
 		}
 	}
 
@@ -113,7 +133,7 @@ func (s *Scheduler) NextReady() (*scheduledMeasurement, bool) {
 	if now.Before(next.dueAt) {
 		return nil, false
 	}
-	if !s.hasCapacityLocked(next.upstream, next.protocol) {
+	if !s.hasCapacityLocked(next.upstream, next.protocol, next.direction) {
 		s.skippedTotal++
 		next.dueAt = now.Add(retryDelay)
 		s.queue[0] = next
@@ -133,7 +153,7 @@ func (s *Scheduler) NextReady() (*scheduledMeasurement, bool) {
 func (s *Scheduler) MarkRun(measurement scheduledMeasurement) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastRun[s.key(measurement.upstream.Tag, measurement.protocol)] = time.Now()
+	s.lastRun[s.key(measurement.upstream.Tag, measurement.protocol, measurement.direction)] = time.Now()
 }
 
 func (s *Scheduler) Requeue(measurement scheduledMeasurement, delay time.Duration) {
@@ -152,9 +172,18 @@ func (s *Scheduler) Status() SchedulerStatus {
 	status := SchedulerStatus{
 		QueueLength:  len(s.queue),
 		SkippedTotal: s.skippedTotal,
+		Pending:      make([]PendingItem, 0, len(s.queue)),
 	}
 	if len(s.queue) > 0 {
 		status.NextScheduled = s.queue[0].dueAt
+		for _, item := range s.queue {
+			status.Pending = append(status.Pending, PendingItem{
+				Upstream:    item.upstream.Tag,
+				Protocol:    item.protocol,
+				Direction:   item.direction,
+				ScheduledAt: item.dueAt,
+			})
+		}
 	}
 	if len(s.lastRun) > 0 {
 		status.LastRun = make(map[string]time.Time, len(s.lastRun))
@@ -174,7 +203,7 @@ func (s *Scheduler) nextInterval() time.Duration {
 	return s.cfg.MinInterval + jitter
 }
 
-func (s *Scheduler) hasCapacityLocked(up *upstream.Upstream, protocol string) bool {
+func (s *Scheduler) hasCapacityLocked(up *upstream.Upstream, protocol, direction string) bool {
 	if s.metrics == nil {
 		return true
 	}
@@ -183,59 +212,85 @@ func (s *Scheduler) hasCapacityLocked(up *upstream.Upstream, protocol string) bo
 		window = 5 * time.Second
 	}
 	rates := s.metrics.GetRates(up.Tag, window)
-	metricsSnapshot, ok := s.metrics.GetUpstreamMetrics(up.Tag)
-	if !ok || (metricsSnapshot.BandwidthUpBps <= 0 && metricsSnapshot.BandwidthDownBps <= 0) {
+
+	var upCapacity float64
+	var downCapacity float64
+	if limit, ok := s.cfg.UpstreamLimits[up.Tag]; ok {
+		if limit.UploadLimitBps > 0 {
+			upCapacity = float64(limit.UploadLimitBps)
+		}
+		if limit.DownloadLimitBps > 0 {
+			downCapacity = float64(limit.DownloadLimitBps)
+		}
+	}
+
+	if s.cfg.AggregateLimitBps > 0 {
+		aggCap := float64(s.cfg.AggregateLimitBps)
+		if upCapacity <= 0 || aggCap < upCapacity {
+			upCapacity = aggCap
+		}
+		if downCapacity <= 0 || aggCap < downCapacity {
+			downCapacity = aggCap
+		}
+	}
+
+	if upCapacity <= 0 && downCapacity <= 0 {
+		metricsSnapshot, ok := s.metrics.GetUpstreamMetrics(up.Tag)
+		if !ok || (metricsSnapshot.BandwidthUpBps <= 0 && metricsSnapshot.BandwidthDownBps <= 0) {
+			return true
+		}
+		upCapacity = metricsSnapshot.BandwidthUpBps
+		downCapacity = metricsSnapshot.BandwidthDownBps
+	}
+
+	if upCapacity <= 0 && downCapacity <= 0 {
 		return true
 	}
-	if protocol == "tcp" {
-		if metricsSnapshot.BandwidthTCPUpBps <= 0 && metricsSnapshot.BandwidthTCPDownBps <= 0 {
-			return true
-		}
-	} else if protocol == "udp" {
-		if metricsSnapshot.BandwidthUDPUpBps <= 0 && metricsSnapshot.BandwidthUDPDownBps <= 0 {
-			return true
-		}
-	}
 
-	targetUp := s.cfg.TCPTargetUpBps
-	targetDown := s.cfg.TCPTargetDownBps
-	if protocol == "udp" {
+	var targetUp int64
+	var targetDown int64
+	if protocol == "tcp" {
+		targetUp = s.cfg.TCPTargetUpBps
+		targetDown = s.cfg.TCPTargetDownBps
+	} else if protocol == "udp" {
 		targetUp = s.cfg.UDPTargetUpBps
 		targetDown = s.cfg.UDPTargetDownBps
+	} else {
+		return true
 	}
 
-	upCapacity := float64(targetUp)
-	downCapacity := float64(targetDown)
-	if ok {
-		if metricsSnapshot.BandwidthUpBps > 0 {
-			upCapacity = metricsSnapshot.BandwidthUpBps
+	switch direction {
+	case "upload":
+		if upCapacity > 0 {
+			currentUtilUp := rates.TotalUpBps / upCapacity
+			if currentUtilUp > s.cfg.MaxUtilization {
+				return false
+			}
 		}
-		if metricsSnapshot.BandwidthDownBps > 0 {
-			downCapacity = metricsSnapshot.BandwidthDownBps
+		requiredUp := float64(targetUp) + float64(s.cfg.RequiredHeadroomBps)
+		remainingUp := upCapacity - rates.TotalUpBps
+		if upCapacity > 0 && remainingUp < requiredUp {
+			return false
 		}
+		return true
+	case "download":
+		if downCapacity > 0 {
+			currentUtilDown := rates.TotalDownBps / downCapacity
+			if currentUtilDown > s.cfg.MaxUtilization {
+				return false
+			}
+		}
+		requiredDown := float64(targetDown) + float64(s.cfg.RequiredHeadroomBps)
+		remainingDown := downCapacity - rates.TotalDownBps
+		if downCapacity > 0 && remainingDown < requiredDown {
+			return false
+		}
+		return true
+	default:
+		return true
 	}
-
-	required := float64(s.cfg.RequiredHeadroomBps)
-	if required <= 0 {
-		if targetUp > targetDown {
-			required = float64(targetUp)
-		} else {
-			required = float64(targetDown)
-		}
-	}
-	if required <= 0 {
-		if upCapacity > downCapacity {
-			required = upCapacity
-		} else {
-			required = downCapacity
-		}
-	}
-
-	availableUp := upCapacity*s.cfg.MaxUtilization - rates.TotalUpBps
-	availableDown := downCapacity*s.cfg.MaxUtilization - rates.TotalDownBps
-	return availableUp > required && availableDown > required
 }
 
-func (s *Scheduler) key(tag, protocol string) string {
-	return tag + ":" + protocol
+func (s *Scheduler) key(tag, protocol, direction string) string {
+	return tag + ":" + protocol + ":" + direction
 }

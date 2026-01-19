@@ -1,7 +1,8 @@
-import { callRPC, runMeasurement } from './api/rpc';
+import { callRPC, getQueueStatus, runMeasurement } from './api/rpc';
 import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
 import { createConnectionTable } from './components/ConnectionTable';
+import { createQueueWidget } from './components/QueueWidget';
 import { createUpstreamCard } from './components/UpstreamCard';
 import { renderStatusCard } from './components/StatusCard';
 import { createToastManager } from './components/Toast';
@@ -30,6 +31,7 @@ function startApp(token: string) {
   const store = new Store(createInitialState(token));
 
   const statusCard = renderStatusCard(qs<HTMLElement>(document, '#statusCard'));
+  const queueWidget = createQueueWidget(qs<HTMLElement>(document, '#queueWidget'));
   const upstreamGrid = qs<HTMLElement>(document, '#upstreamGrid');
   const upstreamSummary = qs<HTMLElement>(document, '#upstreamSummary');
   const connectionsSummary = qs<HTMLElement>(document, '#connectionsSummary');
@@ -383,6 +385,19 @@ function startApp(token: string) {
       updateStatusCard();
       updateUpstreamCards();
     } catch (err) {
+      queueWidget(null);
+    }
+  }
+
+  async function pollQueue(): Promise<void> {
+    try {
+      const resp = await getQueueStatus(token);
+      if (resp.ok && resp.result) {
+        queueWidget(resp.result);
+      } else {
+        queueWidget(null);
+      }
+    } catch (err) {
       // ignore polling errors
     }
   }
@@ -450,10 +465,14 @@ function startApp(token: string) {
     if (pollTimer !== null) {
       window.clearInterval(pollTimer);
     }
-    pollTimer = window.setInterval(pollMetrics, pollIntervalMs);
+    pollTimer = window.setInterval(() => {
+      pollMetrics();
+      pollQueue();
+    }, pollIntervalMs);
   }
 
   pollMetrics();
+  pollQueue();
   startPolling();
 }
 
