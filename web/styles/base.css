@@ -140,6 +140,16 @@ img {
   font-size: var(--text-lg);
 }
 
+.poll-status {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  min-height: 18px;
+}
+
+.poll-status.error {
+  color: var(--color-warning);
+}
+
 .mode-card .panel-header {
   margin-bottom: 0;
 }

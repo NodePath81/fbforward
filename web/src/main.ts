@@ -39,6 +39,7 @@ function startApp(token: string) {
   const connectionSearch = qs<HTMLInputElement>(document, '#connectionSearch');
   const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
   const restartButton = qs<HTMLButtonElement>(document, '#restartButton');
+  const pollStatus = qs<HTMLElement>(document, '#pollStatus');
   const sortButtons = Array.from(
     document.querySelectorAll<HTMLButtonElement>('.sort-button')
   );
@@ -49,7 +50,29 @@ function startApp(token: string) {
     document.querySelectorAll<HTMLButtonElement>('.polling-button')
   );
   let pollTimer: number | null = null;
-  let pollIntervalMs = 1000;
+  let pollInProgress = false;
+  let statusSocket: ReturnType<typeof connectStatusSocket> | null = null;
+
+  function getDefaultPollInterval(): number {
+    const stored = localStorage.getItem('fbforward_poll_interval_ms');
+    if (stored) {
+      const parsed = Number.parseInt(stored, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    for (const button of intervalButtons) {
+      if (button.getAttribute('aria-pressed') === 'true') {
+        const value = Number.parseInt(button.dataset.interval || '', 10);
+        if (Number.isFinite(value) && value > 0) {
+          return value * 1000;
+        }
+      }
+    }
+    return 1000;
+  }
+
+  let pollIntervalMs = getDefaultPollInterval();
 
   let upstreamCards = new Map<string, ReturnType<typeof createUpstreamCard>>();
   const entryOrder = new Map<string, number>();
@@ -85,8 +108,10 @@ function startApp(token: string) {
 
   function setPollInterval(seconds: number): void {
     pollIntervalMs = seconds * 1000;
+    localStorage.setItem('fbforward_poll_interval_ms', pollIntervalMs.toString());
     updatePollIntervalUI();
     startPolling();
+    statusSocket?.updateSnapshotInterval(pollIntervalMs);
   }
 
   function updatePollIntervalUI(): void {
@@ -131,6 +156,7 @@ function startApp(token: string) {
       memoryBytes: state.memoryBytes
     });
     updateHeaderStats();
+    updatePollStatus();
 
     upstreamSummary.textContent = `${state.upstreams.length} upstreams`;
 
@@ -366,9 +392,21 @@ function startApp(token: string) {
     totalDownEl.textContent = formatBytes(state.totalBytesDown);
   }
 
+  function updatePollStatus(): void {
+    const state = store.getState();
+    if (state.pollErrors.metrics || state.pollErrors.queue) {
+      pollStatus.textContent = 'Connection issues';
+      pollStatus.classList.add('error');
+    } else {
+      pollStatus.textContent = '';
+      pollStatus.classList.remove('error');
+    }
+  }
+
   async function pollMetrics(): Promise<void> {
     try {
-      const text = await fetchText('/metrics', token);
+      const timeoutMs = Math.max(1000, pollIntervalMs - 1000);
+      const text = await fetchText('/metrics', token, {}, timeoutMs);
       const parsed = parseMetrics(text);
       const snapshot = extractMetrics(parsed);
 
@@ -382,23 +420,55 @@ function startApp(token: string) {
         totalBytesUp: snapshot.totalBytesUp,
         totalBytesDown: snapshot.totalBytesDown
       });
+      const pollErrors = store.getState().pollErrors;
+      store.setState({
+        pollErrors: { ...pollErrors, metrics: null }
+      });
       updateStatusCard();
       updateUpstreamCards();
     } catch (err) {
-      queueWidget(null);
+      const pollErrors = store.getState().pollErrors;
+      store.setState({
+        pollErrors: {
+          ...pollErrors,
+          metrics: err instanceof Error ? err.message : 'Failed to fetch metrics'
+        }
+      });
+      updatePollStatus();
     }
   }
 
   async function pollQueue(): Promise<void> {
     try {
-      const resp = await getQueueStatus(token);
+      const timeoutMs = Math.max(1000, pollIntervalMs - 1000);
+      const resp = await getQueueStatus(token, timeoutMs);
       if (resp.ok && resp.result) {
         queueWidget(resp.result);
+        const pollErrors = store.getState().pollErrors;
+        store.setState({
+          pollErrors: { ...pollErrors, queue: null }
+        });
       } else {
         queueWidget(null);
+        const pollErrors = store.getState().pollErrors;
+        store.setState({
+          pollErrors: {
+            ...pollErrors,
+            queue: resp.error || 'Failed to fetch queue status'
+          }
+        });
       }
+      updatePollStatus();
     } catch (err) {
-      // ignore polling errors
+      queueWidget(null);
+      const pollErrors = store.getState().pollErrors;
+      store.setState({
+        pollErrors: {
+          ...pollErrors,
+          queue: err instanceof Error ? err.message : 'Failed to fetch queue status'
+        }
+      });
+      updatePollStatus();
     }
   }
 
@@ -453,10 +523,13 @@ function startApp(token: string) {
     updateTables();
   }
 
-  connectStatusSocket({
-    token,
-    onMessage: handleStatusMessage
-  });
+  statusSocket = connectStatusSocket(
+    {
+      token,
+      onMessage: handleStatusMessage
+    },
+    pollIntervalMs
+  );
 
   loadStatus();
   loadIdentity();
@@ -466,13 +539,23 @@ function startApp(token: string) {
       window.clearInterval(pollTimer);
     }
     pollTimer = window.setInterval(() => {
-      pollMetrics();
-      pollQueue();
+      void executePollCycle();
     }, pollIntervalMs);
   }
 
-  pollMetrics();
-  pollQueue();
+  async function executePollCycle(): Promise<void> {
+    if (pollInProgress) {
+      return;
+    }
+    pollInProgress = true;
+    try {
+      await Promise.allSettled([pollMetrics(), pollQueue()]);
+    } finally {
+      pollInProgress = false;
+    }
+  }
+
+  void executePollCycle();
   startPolling();
 }
 

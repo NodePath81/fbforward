@@ -57,6 +57,8 @@ export interface UpstreamMetrics {
   bandwidthUdpUpBps: number;
   bandwidthUdpDownBps: number;
   utilization: number;
+  utilizationUp: number;
+  utilizationDown: number;
   reachable: boolean;
   unusable: boolean;
   active: boolean;

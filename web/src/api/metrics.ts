@@ -97,6 +97,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
         bandwidthUdpUpBps: 0,
         bandwidthUdpDownBps: 0,
         utilization: 0,
+        utilizationUp: 0,
+        utilizationDown: 0,
         reachable: false,
         unusable: true,
         active: activeTags.has(tag)
@@ -231,6 +233,35 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
       continue;
     }
     ensure(tag).utilization = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_utilization_up'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).utilizationUp = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_utilization_down'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).utilizationDown = item.value;
+  }
+
+  const hasUtilUp = (data['fbforward_upstream_utilization_up'] || []).length > 0;
+  const hasUtilDown = (data['fbforward_upstream_utilization_down'] || []).length > 0;
+  if (!hasUtilUp || !hasUtilDown) {
+    for (const tag of Object.keys(upstreams)) {
+      if (!hasUtilUp) {
+        upstreams[tag].utilizationUp = upstreams[tag].utilization;
+      }
+      if (!hasUtilDown) {
+        upstreams[tag].utilizationDown = upstreams[tag].utilization;
+      }
+    }
   }
 
   for (const item of data['fbforward_upstream_reachable'] || []) {

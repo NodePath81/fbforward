@@ -201,6 +201,7 @@ Upstream quality is based on bwprobe TCP/UDP measurements, with detailed algorit
 - Score blends TCP/UDP sub-scores using exponential normalization with configurable weights
 - Protocol weight blends TCP and UDP scores (configurable, default 0.5 each)
 - Utilization penalty applied when actual traffic exceeds configured link capacity
+- Utilization telemetry is computed on-demand from recent traffic samples using the last measured bandwidth baseline
 - Static priority and bias adjustments per upstream
 - **ICMP probing is reachability-only** and does not affect scores (migration from legacy ICMP scoring)
 

@@ -55,6 +55,8 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		tags = append(tags, up.Tag)
 	}
 	metrics := metrics.NewMetrics(tags)
+	utilWindow := cfg.Scoring.UtilizationPenalty.WindowDuration.Duration()
+	metrics.SetUtilizationWindow(utilWindow)
 	statusHub := control.NewStatusHub(ctx.Done())
 	status := control.NewStatusStore(statusHub, metrics)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))

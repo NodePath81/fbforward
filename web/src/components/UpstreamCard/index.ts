@@ -44,7 +44,7 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
     score: createMetricRow('Score'),
     scoreTcp: createMetricRow('Score TCP'),
     scoreUdp: createMetricRow('Score UDP'),
-    utilization: createMetricRow('Utilization'),
+    utilization: createMetricDualRow('Utilization'),
     reachable: createMetricRow('Reachable')
   };
 
@@ -130,7 +130,8 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
     rows.score.value.textContent = formatScore(metrics.score);
     rows.scoreTcp.value.textContent = formatScore(metrics.scoreTcp);
     rows.scoreUdp.value.textContent = formatScore(metrics.scoreUdp);
-    rows.utilization.value.textContent = formatPercent(metrics.utilization, 1);
+    rows.utilization.up.textContent = `${formatPercent(metrics.utilizationUp, 1)} \u2191`;
+    rows.utilization.down.textContent = `${formatPercent(metrics.utilizationDown, 1)} \u2193`;
     rows.reachable.value.textContent = metrics.reachable ? 'yes' : 'no';
 
     scoreFill.style.width = `${Math.max(0, Math.min(100, metrics.score))}%`;

@@ -7,12 +7,24 @@ interface StatusSocketOptions {
   onClose?: () => void;
 }
 
-export function connectStatusSocket(options: StatusSocketOptions) {
+export function connectStatusSocket(options: StatusSocketOptions, snapshotIntervalMs: number = 10000) {
   let ws: WebSocket | null = null;
   let reconnectTimer: number | null = null;
   let snapshotTimer: number | null = null;
   let attempts = 0;
   let closed = false;
+  let currentSnapshotIntervalMs = snapshotIntervalMs;
+
+  const startSnapshotTimer = () => {
+    if (snapshotTimer) {
+      window.clearInterval(snapshotTimer);
+    }
+    if (ws?.readyState === WebSocket.OPEN) {
+      snapshotTimer = window.setInterval(() => {
+        ws?.send(JSON.stringify({ type: 'snapshot' }));
+      }, currentSnapshotIntervalMs);
+    }
+  };
 
   const connect = () => {
     if (closed) {
@@ -25,12 +37,7 @@ export function connectStatusSocket(options: StatusSocketOptions) {
     ws.addEventListener('open', () => {
       attempts = 0;
       ws?.send(JSON.stringify({ type: 'snapshot' }));
-      if (snapshotTimer) {
-        window.clearInterval(snapshotTimer);
-      }
-      snapshotTimer = window.setInterval(() => {
-        ws?.send(JSON.stringify({ type: 'snapshot' }));
-      }, 10000);
+      startSnapshotTimer();
       options.onOpen?.();
     });
 
@@ -81,6 +88,13 @@ export function connectStatusSocket(options: StatusSocketOptions) {
         snapshotTimer = null;
       }
       ws?.close();
+    },
+    updateSnapshotInterval(newIntervalMs: number) {
+      if (!Number.isFinite(newIntervalMs) || newIntervalMs <= 0) {
+        return;
+      }
+      currentSnapshotIntervalMs = newIntervalMs;
+      startSnapshotTimer();
     }
   };
 }

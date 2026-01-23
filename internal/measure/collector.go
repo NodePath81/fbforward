@@ -127,6 +127,8 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 		state.inFallbackMode = false
 	}
 
+	// Utilization feeds scoring; metrics output is calculated on-demand for real-time accuracy.
+	// Utilization feeds scoring; metrics output is calculated on-demand for real-time accuracy.
 	utilization := 0.0
 	if c.metrics != nil {
 		utilWindow := c.scoring.UtilizationPenalty.WindowDuration.Duration()

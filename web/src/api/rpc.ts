@@ -1,18 +1,28 @@
 import { fetchJSON } from './client';
 import type { QueueStatus, RPCMethod, RPCResponse } from '../types';
 
-export async function callRPC<T>(token: string, method: RPCMethod, params: unknown): Promise<RPCResponse<T>> {
+export async function callRPC<T>(
+  token: string,
+  method: RPCMethod,
+  params: unknown,
+  timeoutMs?: number
+): Promise<RPCResponse<T>> {
   try {
-    const res = await fetchJSON<RPCResponse<T>>('/rpc', token, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
+    const res = await fetchJSON<RPCResponse<T>>(
+      '/rpc',
+      token,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ method, params })
       },
-      body: JSON.stringify({ method, params })
-    });
+      timeoutMs
+    );
     return res;
   } catch (err) {
-    return { ok: false, error: 'network error' };
+    return { ok: false, error: err instanceof Error ? err.message : 'network error' };
   }
 }
 
@@ -42,8 +52,11 @@ interface RawQueueStatus {
   }>;
 }
 
-export async function getQueueStatus(token: string): Promise<RPCResponse<QueueStatus>> {
-  const resp = await callRPC<RawQueueStatus>(token, 'GetQueueStatus', {});
+export async function getQueueStatus(
+  token: string,
+  timeoutMs?: number
+): Promise<RPCResponse<QueueStatus>> {
+  const resp = await callRPC<RawQueueStatus>(token, 'GetQueueStatus', {}, timeoutMs);
   if (!resp.ok || !resp.result) {
     return resp as RPCResponse<QueueStatus>;
   }

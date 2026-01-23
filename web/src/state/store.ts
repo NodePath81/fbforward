@@ -22,6 +22,10 @@ export interface AppState {
   version: string;
   mode: Mode;
   activeUpstream: string;
+  pollErrors: {
+    metrics: string | null;
+    queue: string | null;
+  };
 }
 
 type Listener = (state: AppState, prev: AppState) => void;
@@ -96,6 +100,10 @@ export function createInitialState(token: string): AppState {
     hostIPs: [],
     version: '',
     mode: 'auto',
-    activeUpstream: ''
+    activeUpstream: '',
+    pollErrors: {
+      metrics: null,
+      queue: null
+    }
   };
 }

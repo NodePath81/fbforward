@@ -77,6 +77,7 @@ type Metrics struct {
 	lastBytesUDPUp     map[string]uint64
 	lastBytesUDPDown   map[string]uint64
 	utilization        map[string]*utilizationWindow
+	utilizationWindow  time.Duration
 	schedule           ScheduleMetrics
 	memoryAllocBytes   uint64
 	startTime          time.Time
@@ -156,6 +157,7 @@ func NewMetrics(tags []string) *Metrics {
 		lastBytesUDPUp:     lastBytesUDPUp,
 		lastBytesUDPDown:   lastBytesUDPDown,
 		utilization:        utilization,
+		utilizationWindow:  5 * time.Second,
 		startTime:          time.Now(),
 	}
 }
@@ -249,14 +251,22 @@ func (w *utilizationWindow) addSample(ts time.Time, tcpUp, tcpDown, udpUp, udpDo
 }
 
 func (m *Metrics) GetUtilization(tag string, empiricalBwUp, empiricalBwDn float64, window time.Duration) float64 {
+	utilUp, utilDown := m.getUtilizationSplit(tag, empiricalBwUp, empiricalBwDn, window)
+	if utilDown > utilUp {
+		return utilDown
+	}
+	return utilUp
+}
+
+func (m *Metrics) getUtilizationSplit(tag string, empiricalBwUp, empiricalBwDn float64, window time.Duration) (float64, float64) {
 	if empiricalBwUp <= 0 || empiricalBwDn <= 0 || window <= 0 {
-		return 0
+		return 0, 0
 	}
 	m.mu.Lock()
 	util := m.utilization[tag]
 	m.mu.Unlock()
 	if util == nil {
-		return 0
+		return 0, 0
 	}
 	cutoff := time.Now().Add(-window)
 	util.mu.Lock()
@@ -283,16 +293,13 @@ func (m *Metrics) GetUtilization(tag string, empiricalBwUp, empiricalBwDn float6
 		totalWeight += weight
 	}
 	if totalWeight <= 0 {
-		return 0
+		return 0, 0
 	}
 	avgUpRate := weightedUp / totalWeight
 	avgDownRate := weightedDown / totalWeight
 	utilUp := avgUpRate / empiricalBwUp
 	utilDown := avgDownRate / empiricalBwDn
-	if utilDown > utilUp {
-		return utilDown
-	}
-	return utilUp
+	return utilUp, utilDown
 }
 
 func (m *Metrics) GetRates(tag string, window time.Duration) UpstreamRates {
@@ -435,6 +442,15 @@ func (m *Metrics) SetActive(tag string) {
 	m.activeTag = tag
 }
 
+func (m *Metrics) SetUtilizationWindow(window time.Duration) {
+	if window <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.utilizationWindow = window
+}
+
 func (m *Metrics) IncTCPActive() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -515,6 +531,7 @@ func (m *Metrics) Render() string {
 	for tag, stat := range m.upstreams {
 		upstreams[tag] = *stat
 	}
+	utilWindow := m.utilizationWindow
 	bytesUpPerSec := copyUint64Map(m.bytesUpPerSec)
 	bytesDownPerSec := copyUint64Map(m.bytesDownPerSec)
 	bytesTCPUpPerSec := copyUint64Map(m.bytesTCPUpPerSec)
@@ -533,6 +550,43 @@ func (m *Metrics) Render() string {
 		}
 		if counter, ok := m.bytesDownTotal[tag]; ok {
 			bytesDownTotal[tag] = counter.Load()
+		}
+	}
+
+	utilization := make(map[string]float64, len(tags))
+	utilizationUp := make(map[string]float64, len(tags))
+	utilizationDown := make(map[string]float64, len(tags))
+	for _, tag := range tags {
+		up := upstreams[tag]
+		if utilWindow <= 0 {
+			utilization[tag] = 0
+			utilizationUp[tag] = 0
+			utilizationDown[tag] = 0
+			continue
+		}
+		baselineUp := up.BandwidthUpBps
+		baselineDown := up.BandwidthDownBps
+		if up.BandwidthTCPUpBps > 0 || up.BandwidthUDPUpBps > 0 {
+			baselineUp = math.Max(up.BandwidthTCPUpBps, up.BandwidthUDPUpBps)
+			if baselineUp <= 0 {
+				baselineUp = up.BandwidthUpBps
+			}
+		}
+		if up.BandwidthTCPDownBps > 0 || up.BandwidthUDPDownBps > 0 {
+			baselineDown = math.Max(up.BandwidthTCPDownBps, up.BandwidthUDPDownBps)
+			if baselineDown <= 0 {
+				baselineDown = up.BandwidthDownBps
+			}
+		}
+		if baselineUp > 0 && baselineDown > 0 {
+			utilUp, utilDown := m.getUtilizationSplit(tag, baselineUp, baselineDown, utilWindow)
+			utilizationUp[tag] = utilUp
+			utilizationDown[tag] = utilDown
+			utilization[tag] = math.Max(utilUp, utilDown)
+		} else {
+			utilization[tag] = 0
+			utilizationUp[tag] = 0
+			utilizationDown[tag] = 0
 		}
 	}
 
@@ -662,7 +716,23 @@ func (m *Metrics) Render() string {
 		b.WriteString("fbforward_upstream_utilization{upstream=\"")
 		b.WriteString(tag)
 		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].Utilization))
+		b.WriteString(formatFloat(utilization[tag]))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_utilization_up gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_utilization_up{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(utilizationUp[tag]))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_utilization_down gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_utilization_down{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(utilizationDown[tag]))
 		b.WriteString("\n")
 	}
 	b.WriteString("# TYPE fbforward_upstream_reachable gauge\n")

@@ -129,6 +129,8 @@ $$u_{\mathrm{up}} = \frac{\tau_{\mathrm{up}} \cdot 8}{B_{\mathrm{up}}^{\mathrm{e
 
 **Parameters:** $m_{\min} = 0.3$, $u^0 = 0.7$, $p = 2$, $T_0 = 2$s.
 
+Utilization telemetry is computed on-demand from the latest traffic window using the last measured bandwidth baseline, so UI/metrics reflect near-real-time usage at the polling cadence.
+
 ### 2.4 User Bias
 
 $$M_\beta = \mathrm{clamp}\left(\exp(\kappa \cdot \beta), 0.67, 1.5\right)$$
