@@ -36,6 +36,7 @@ const (
 )
 
 type ControlServer struct {
+	fullCfg     config.Config
 	cfg         config.ControlConfig
 	measurement config.MeasurementConfig
 	hostname    string
@@ -52,11 +53,12 @@ type ControlServer struct {
 	collector   *measure.Collector
 }
 
-func NewControlServer(cfg config.ControlConfig, measurement config.MeasurementConfig, hostname string, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
+func NewControlServer(cfg config.Config, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
 	return &ControlServer{
-		cfg:         cfg,
-		measurement: measurement,
-		hostname:    hostname,
+		fullCfg:     cfg,
+		cfg:         cfg.Control,
+		measurement: cfg.Measurement,
+		hostname:    cfg.Hostname,
 		manager:     manager,
 		metrics:     metrics,
 		status:      status,
@@ -246,6 +248,8 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 	case "GetMeasurementConfig":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getMeasurementConfig()})
+	case "GetRuntimeConfig":
+		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getRuntimeConfig()})
 	case "GetScheduleStatus":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
 	case "GetQueueStatus":
@@ -347,6 +351,165 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 					"per_cycle":  cfg.Protocols.UDP.Timeout.PerCycle.Duration().String(),
 				},
 			},
+		},
+	}
+}
+
+func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
+	cfg := c.fullCfg
+
+	listeners := make([]map[string]interface{}, 0, len(cfg.Forwarding.Listeners))
+	for _, ln := range cfg.Forwarding.Listeners {
+		entry := map[string]interface{}{
+			"bind_addr": ln.BindAddr,
+			"bind_port": ln.BindPort,
+			"protocol":  ln.Protocol,
+		}
+		if ln.Shaping != nil {
+			entry["shaping"] = map[string]interface{}{
+				"upload_limit":   ln.Shaping.UploadLimit,
+				"download_limit": ln.Shaping.DownloadLimit,
+			}
+		}
+		listeners = append(listeners, entry)
+	}
+
+	upstreams := make([]map[string]interface{}, 0, len(cfg.Upstreams))
+	for _, up := range cfg.Upstreams {
+		entry := map[string]interface{}{
+			"tag": up.Tag,
+			"destination": map[string]interface{}{
+				"host": up.Destination.Host,
+			},
+			"measurement": map[string]interface{}{
+				"host": up.Measurement.Host,
+				"port": up.Measurement.Port,
+			},
+			"priority": up.Priority,
+			"bias":     up.Bias,
+		}
+		if up.Shaping != nil {
+			entry["shaping"] = map[string]interface{}{
+				"upload_limit":   up.Shaping.UploadLimit,
+				"download_limit": up.Shaping.DownloadLimit,
+			}
+		}
+		upstreams = append(upstreams, entry)
+	}
+
+	return map[string]interface{}{
+		"hostname": cfg.Hostname,
+		"forwarding": map[string]interface{}{
+			"listeners": listeners,
+			"limits": map[string]interface{}{
+				"max_tcp_connections": cfg.Forwarding.Limits.MaxTCPConnections,
+				"max_udp_mappings":    cfg.Forwarding.Limits.MaxUDPMappings,
+			},
+			"idle_timeout": map[string]interface{}{
+				"tcp": cfg.Forwarding.IdleTimeout.TCP.Duration().String(),
+				"udp": cfg.Forwarding.IdleTimeout.UDP.Duration().String(),
+			},
+		},
+		"upstreams": upstreams,
+		"dns": map[string]interface{}{
+			"servers":  cfg.DNS.Servers,
+			"strategy": cfg.DNS.Strategy,
+		},
+		"reachability": map[string]interface{}{
+			"probe_interval": cfg.Reachability.ProbeInterval.Duration().String(),
+			"window_size":    cfg.Reachability.WindowSize,
+			"startup_delay":  cfg.Reachability.StartupDelay.Duration().String(),
+		},
+		"measurement": c.getMeasurementConfig(),
+		"scoring": map[string]interface{}{
+			"smoothing": map[string]interface{}{
+				"alpha": cfg.Scoring.Smoothing.Alpha,
+			},
+			"reference": map[string]interface{}{
+				"tcp": map[string]interface{}{
+					"bandwidth": map[string]interface{}{
+						"upload":   cfg.Scoring.Reference.TCP.Bandwidth.Upload,
+						"download": cfg.Scoring.Reference.TCP.Bandwidth.Download,
+					},
+					"latency": map[string]interface{}{
+						"rtt":    cfg.Scoring.Reference.TCP.Latency.RTT,
+						"jitter": cfg.Scoring.Reference.TCP.Latency.Jitter,
+					},
+					"retransmit_rate": cfg.Scoring.Reference.TCP.RetransmitRate,
+					"loss_rate":       cfg.Scoring.Reference.TCP.LossRate,
+				},
+				"udp": map[string]interface{}{
+					"bandwidth": map[string]interface{}{
+						"upload":   cfg.Scoring.Reference.UDP.Bandwidth.Upload,
+						"download": cfg.Scoring.Reference.UDP.Bandwidth.Download,
+					},
+					"latency": map[string]interface{}{
+						"rtt":    cfg.Scoring.Reference.UDP.Latency.RTT,
+						"jitter": cfg.Scoring.Reference.UDP.Latency.Jitter,
+					},
+					"retransmit_rate": cfg.Scoring.Reference.UDP.RetransmitRate,
+					"loss_rate":       cfg.Scoring.Reference.UDP.LossRate,
+				},
+			},
+			"weights": map[string]interface{}{
+				"tcp": map[string]interface{}{
+					"bandwidth_upload":   cfg.Scoring.Weights.TCP.BandwidthUpload,
+					"bandwidth_download": cfg.Scoring.Weights.TCP.BandwidthDownload,
+					"rtt":                cfg.Scoring.Weights.TCP.RTT,
+					"jitter":             cfg.Scoring.Weights.TCP.Jitter,
+					"retransmit_rate":    cfg.Scoring.Weights.TCP.RetransmitRate,
+				},
+				"udp": map[string]interface{}{
+					"bandwidth_upload":   cfg.Scoring.Weights.UDP.BandwidthUpload,
+					"bandwidth_download": cfg.Scoring.Weights.UDP.BandwidthDownload,
+					"rtt":                cfg.Scoring.Weights.UDP.RTT,
+					"jitter":             cfg.Scoring.Weights.UDP.Jitter,
+					"loss_rate":          cfg.Scoring.Weights.UDP.LossRate,
+				},
+				"protocol_blend": map[string]interface{}{
+					"tcp_weight": cfg.Scoring.Weights.ProtocolBlend.TCPWeight,
+					"udp_weight": cfg.Scoring.Weights.ProtocolBlend.UDPWeight,
+				},
+			},
+			"utilization_penalty": map[string]interface{}{
+				"enabled":         util.BoolValue(cfg.Scoring.UtilizationPenalty.Enabled, true),
+				"window_duration": cfg.Scoring.UtilizationPenalty.WindowDuration.Duration().String(),
+				"update_interval": cfg.Scoring.UtilizationPenalty.UpdateInterval.Duration().String(),
+				"threshold":       cfg.Scoring.UtilizationPenalty.Threshold,
+				"min_multiplier":  cfg.Scoring.UtilizationPenalty.MinMultiplier,
+				"exponent":        cfg.Scoring.UtilizationPenalty.Exponent,
+			},
+			"bias_transform": map[string]interface{}{
+				"kappa": cfg.Scoring.BiasTransform.Kappa,
+			},
+		},
+		"switching": map[string]interface{}{
+			"auto": map[string]interface{}{
+				"confirm_duration":      cfg.Switching.Auto.ConfirmDuration.Duration().String(),
+				"score_delta_threshold": cfg.Switching.Auto.ScoreDeltaThreshold,
+				"min_hold_time":         cfg.Switching.Auto.MinHoldTime.Duration().String(),
+			},
+			"failover": map[string]interface{}{
+				"loss_rate_threshold":       cfg.Switching.Failover.LossRateThreshold,
+				"retransmit_rate_threshold": cfg.Switching.Failover.RetransmitRateThreshold,
+			},
+			"close_flows_on_failover": cfg.Switching.CloseFlowsOnFailover,
+		},
+		"control": map[string]interface{}{
+			"bind_addr": cfg.Control.BindAddr,
+			"bind_port": cfg.Control.BindPort,
+			"webui": map[string]interface{}{
+				"enabled": cfg.Control.WebUI.IsEnabled(),
+			},
+			"metrics": map[string]interface{}{
+				"enabled": cfg.Control.Metrics.IsEnabled(),
+			},
+		},
+		"shaping": map[string]interface{}{
+			"enabled":         cfg.Shaping.Enabled,
+			"interface":       cfg.Shaping.Interface,
+			"ifb_device":      cfg.Shaping.IFBDevice,
+			"aggregate_limit": cfg.Shaping.AggregateLimit,
 		},
 	}
 }

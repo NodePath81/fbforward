@@ -224,7 +224,7 @@ func (m *udpMapping) forwardToUpstream(payload []byte) error {
 	}
 	n := uint64(len(payload))
 	m.metrics.AddBytesUp(m.upstreamTag, n, "udp")
-	m.status.UpdateUDP(m.id, n, 0)
+	m.status.UpdateUDP(m.id, n, 0, 1, 0)
 	m.touch()
 	return nil
 }
@@ -245,7 +245,7 @@ func (m *udpMapping) readLoop(ctx context.Context) {
 			}
 			down := uint64(n)
 			m.metrics.AddBytesDown(m.upstreamTag, down, "udp")
-			m.status.UpdateUDP(m.id, 0, down)
+			m.status.UpdateUDP(m.id, 0, down, 0, 1)
 			m.touch()
 		}
 		select {

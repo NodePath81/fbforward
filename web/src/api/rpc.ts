@@ -34,6 +34,12 @@ export async function runMeasurement(
   return callRPC<void>(token, 'RunMeasurement', { tag, protocol });
 }
 
+export async function getRuntimeConfig(
+  token: string
+): Promise<RPCResponse<Record<string, unknown>>> {
+  return callRPC<Record<string, unknown>>(token, 'GetRuntimeConfig', {});
+}
+
 interface RawQueueStatus {
   queue_depth: number;
   skipped_total: number;

@@ -10,143 +10,218 @@
     <div class="bg-orb orb-a"></div>
     <div class="bg-orb orb-b"></div>
     <main class="shell">
-      <header class="hero">
-        <div class="hero-copy">
-          <div class="header-widget">
-            <div class="header-top">
-              <div class="host-identity">
-                <div class="host-name" id="hostName">-</div>
-                <div class="host-ips" id="hostIPs">-</div>
-                <div class="host-version" id="hostVersion">-</div>
-              </div>
-              <button id="restartButton" class="restart-button" type="button">Restart</button>
-            </div>
-            <div class="header-stats">
-              <div class="metric-item">
-                <span>Uptime</span>
-                <strong id="uptimeValue">-</strong>
-              </div>
-              <div class="metric-item">
-                <span>Total upload</span>
-                <strong id="totalUpValue">-</strong>
-              </div>
-              <div class="metric-item">
-                <span>Total download</span>
-                <strong id="totalDownValue">-</strong>
-              </div>
-            </div>
-            <div id="pollStatus" class="poll-status" aria-live="polite"></div>
-          </div>
-          <section class="panel mode-card">
-            <div class="panel-header">
-              <h2>Mode</h2>
-              <div class="segmented" role="group" aria-label="Mode">
-                <button class="segmented-button" type="button" data-mode="auto" aria-pressed="true">auto</button>
-                <button class="segmented-button" type="button" data-mode="manual" aria-pressed="false">manual</button>
-              </div>
-            </div>
-            <div class="panel-body">
-              <div class="segmented polling-segmented" role="group" aria-label="Polling interval">
-                <button class="segmented-button polling-button" type="button" data-interval="1" aria-pressed="true">1s</button>
-                <button class="segmented-button polling-button" type="button" data-interval="3" aria-pressed="false">3s</button>
-                <button class="segmented-button polling-button" type="button" data-interval="5" aria-pressed="false">5s</button>
-                <button class="segmented-button polling-button" type="button" data-interval="10" aria-pressed="false">10s</button>
-              </div>
-            </div>
-          </section>
-        </div>
-        <div id="statusCard" class="status-card"></div>
-        <div id="queueWidget" class="queue-widget-container"></div>
-      </header>
+      <nav class="page-nav" aria-label="Primary">
+        <a class="page-nav-link active" href="#/" data-page="dashboard">Dashboard</a>
+        <a class="page-nav-link" href="#/history" data-page="history">History</a>
+        <a class="page-nav-link" href="#/config" data-page="config">Config</a>
+      </nav>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Upstreams</h2>
-          <span class="panel-meta" id="upstreamSummary"></span>
-        </div>
-        <div id="upstreamGrid" class="upstream-grid"></div>
-      </section>
+      <div id="page-dashboard" class="page">
+        <header class="hero">
+          <div class="hero-copy">
+            <div class="header-widget">
+              <div class="header-top">
+                <div class="host-identity">
+                  <div class="host-name" id="hostName">-</div>
+                  <div class="host-ips" id="hostIPs">-</div>
+                  <div class="host-version" id="hostVersion">-</div>
+                </div>
+                <button id="restartButton" class="restart-button" type="button">Restart</button>
+              </div>
+              <div class="header-stats">
+                <div class="metric-item">
+                  <span>Uptime</span>
+                  <strong id="uptimeValue">-</strong>
+                </div>
+                <div class="metric-item">
+                  <span>Total upload</span>
+                  <strong id="totalUpValue">-</strong>
+                </div>
+                <div class="metric-item">
+                  <span>Total download</span>
+                  <strong id="totalDownValue">-</strong>
+                </div>
+              </div>
+              <div id="pollStatus" class="poll-status" aria-live="polite"></div>
+            </div>
+            <section class="panel mode-card">
+              <div class="panel-header">
+                <h2>Mode</h2>
+                <div class="segmented" role="group" aria-label="Mode">
+                  <button class="segmented-button" type="button" data-mode="auto" aria-pressed="true">auto</button>
+                  <button class="segmented-button" type="button" data-mode="manual" aria-pressed="false">manual</button>
+                </div>
+              </div>
+              <div class="panel-body">
+                <div class="segmented polling-segmented" role="group" aria-label="Polling interval">
+                  <button class="segmented-button polling-button" type="button" data-interval="1" aria-pressed="true">1s</button>
+                  <button class="segmented-button polling-button" type="button" data-interval="3" aria-pressed="false">3s</button>
+                  <button class="segmented-button polling-button" type="button" data-interval="5" aria-pressed="false">5s</button>
+                  <button class="segmented-button polling-button" type="button" data-interval="10" aria-pressed="false">10s</button>
+                </div>
+              </div>
+            </section>
+          </div>
+          <div id="statusCard" class="status-card"></div>
+          <div id="queueWidget" class="queue-widget-container"></div>
+        </header>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Active Connections</h2>
-          <span class="panel-meta" id="connectionsSummary"></span>
-        </div>
-        <div class="connection-table">
-          <div class="connection-search">
-            <label class="connection-search-field" for="connectionSearch">
-              <span class="connection-search-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
-                  <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
-                  <path d="M16.5 16.5L21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                </svg>
-              </span>
-              <input
-                id="connectionSearch"
-                class="connection-search-input"
-                type="search"
-                placeholder="Search..."
-                autocomplete="off"
-                aria-label="Search connections"
-              />
-            </label>
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Upstreams</h2>
+            <span class="panel-meta" id="upstreamSummary"></span>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>
-                    <button class="sort-button" type="button" data-sort="protocol">
-                      Protocol
-                      <span class="sort-indicator" aria-hidden="true"></span>
-                    </button>
-                  </th>
-                  <th>
-                    <button class="sort-button" type="button" data-sort="client">
-                      Client
-                      <span class="sort-indicator" aria-hidden="true"></span>
-                    </button>
-                  </th>
-                  <th>Port</th>
-                  <th>
-                    <button class="sort-button" type="button" data-sort="upstream">
-                      Upstream
-                      <span class="sort-indicator" aria-hidden="true"></span>
-                    </button>
-                  </th>
-                  <th>
-                    <button class="sort-button" type="button" data-sort="up">
-                      Up
-                      <span class="sort-indicator" aria-hidden="true"></span>
-                    </button>
-                  </th>
-                  <th>
-                    <button class="sort-button" type="button" data-sort="down">
-                      Down
-                      <span class="sort-indicator" aria-hidden="true"></span>
-                    </button>
-                  </th>
-                  <th>
-                    <button class="sort-button" type="button" data-sort="last">
-                      Last Activity
-                      <span class="sort-indicator" aria-hidden="true"></span>
-                    </button>
-                  </th>
-                  <th>
-                    <button class="sort-button" type="button" data-sort="age">
-                      Age
-                      <span class="sort-indicator" aria-hidden="true"></span>
-                    </button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody id="connectionTable"></tbody>
-            </table>
+          <div id="upstreamGrid" class="upstream-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Active Connections</h2>
+            <span class="panel-meta" id="connectionsSummary"></span>
           </div>
-        </div>
-      </section>
+          <div class="connection-table">
+            <div class="connection-search">
+              <label class="connection-search-field" for="connectionSearch">
+                <span class="connection-search-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+                    <path d="M16.5 16.5L21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </span>
+                <input
+                  id="connectionSearch"
+                  class="connection-search-input"
+                  type="search"
+                  placeholder="Search..."
+                  autocomplete="off"
+                  aria-label="Search connections"
+                />
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="protocol">
+                        Protocol
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="client">
+                        Client
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>Port</th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="upstream">
+                        Upstream
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="up">
+                        Up
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="down">
+                        Down
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>Segs Up</th>
+                    <th>Segs Down</th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="last">
+                        Last Activity
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="age">
+                        Age
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody id="connectionTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div id="page-history" class="page hidden">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Test History</h2>
+            <span class="panel-meta">Client-side since page load</span>
+          </div>
+          <div class="history-table-container">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Upstream</th>
+                    <th>Protocol</th>
+                    <th>Direction</th>
+                    <th>Duration</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="testHistoryTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Session History</h2>
+            <span class="panel-meta">Client-side since page load</span>
+          </div>
+          <div class="history-table-container">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Protocol</th>
+                    <th>Client</th>
+                    <th>Upstream</th>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th>Bytes Up</th>
+                    <th>Bytes Down</th>
+                    <th>Segs Up</th>
+                    <th>Segs Down</th>
+                  </tr>
+                </thead>
+                <tbody id="sessionHistoryTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div id="page-config" class="page hidden">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Runtime Config</h2>
+            <span class="panel-meta">Full effective configuration</span>
+          </div>
+          <pre id="configTree" class="config-json"></pre>
+        </section>
+      </div>
     </main>
 
+    <div id="testDetailsModal" class="modal-overlay hidden"></div>
     <div id="toastRegion" class="toast-region"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

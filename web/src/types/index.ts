@@ -71,6 +71,8 @@ export interface ConnectionEntry {
   upstream: string;
   bytesUp: number;
   bytesDown: number;
+  segmentsUp: number;
+  segmentsDown: number;
   lastActivity: number;
   age: number;
   kind: 'tcp' | 'udp';
@@ -83,6 +85,8 @@ export interface RawConnectionEntry {
   upstream: string;
   bytes_up: number;
   bytes_down: number;
+  segments_up: number;
+  segments_down: number;
   last_activity: number;
   age: number;
   kind: 'tcp' | 'udp';
@@ -94,6 +98,7 @@ export type RPCMethod =
   | 'Restart'
   | 'ListUpstreams'
   | 'GetMeasurementConfig'
+  | 'GetRuntimeConfig'
   | 'GetScheduleStatus'
   | 'GetQueueStatus'
   | 'RunMeasurement';
@@ -142,7 +147,23 @@ export interface IdentityResponse {
   version?: string;
 }
 
-export type WSMessageType = 'snapshot' | 'add' | 'update' | 'remove';
+export type WSMessageType = 'snapshot' | 'add' | 'update' | 'remove' | 'test_complete';
+
+export interface TestCompletePayload {
+  upstream: string;
+  protocol: 'tcp' | 'udp';
+  direction: 'upload' | 'download';
+  timestamp: number;
+  duration_ms: number;
+  success: boolean;
+  bandwidth_up_bps?: number;
+  bandwidth_down_bps?: number;
+  rtt_ms?: number;
+  jitter_ms?: number;
+  loss_rate?: number;
+  retrans_rate?: number;
+  error?: string;
+}
 
 export interface WSMessage {
   type: WSMessageType;
@@ -151,4 +172,5 @@ export interface WSMessage {
   entry?: RawConnectionEntry;
   kind?: 'tcp' | 'udp';
   id?: string;
+  test_complete?: TestCompletePayload;
 }

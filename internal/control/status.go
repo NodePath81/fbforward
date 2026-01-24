@@ -10,13 +10,15 @@ import (
 )
 
 type StatusEntry struct {
-	Kind       string `json:"kind"`
-	ID         string `json:"id"`
-	ClientAddr string `json:"client_addr"`
-	Port       int    `json:"port"`
-	Upstream   string `json:"upstream"`
-	BytesUp    uint64 `json:"bytes_up"`
-	BytesDown  uint64 `json:"bytes_down"`
+	Kind         string `json:"kind"`
+	ID           string `json:"id"`
+	ClientAddr   string `json:"client_addr"`
+	Port         int    `json:"port"`
+	Upstream     string `json:"upstream"`
+	BytesUp      uint64 `json:"bytes_up"`
+	BytesDown    uint64 `json:"bytes_down"`
+	SegmentsUp   uint64 `json:"segments_up"`
+	SegmentsDown uint64 `json:"segments_down"`
 	// LastActivity is Unix milliseconds; Age is seconds since creation.
 	LastActivity int64 `json:"last_activity"`
 	Age          int64 `json:"age"`
@@ -30,6 +32,8 @@ type statusEntry struct {
 	upstream      string
 	bytesUp       uint64
 	bytesDown     uint64
+	segmentsUp    uint64
+	segmentsDown  uint64
 	lastActivity  time.Time
 	created       time.Time
 	lastBroadcast time.Time
@@ -98,15 +102,15 @@ func (s *StatusStore) add(kind, clientAddr, upstream string, port int, closeFunc
 	return id
 }
 
-func (s *StatusStore) UpdateTCP(id string, upDelta, downDelta uint64) {
-	s.update("tcp", id, upDelta, downDelta)
+func (s *StatusStore) UpdateTCP(id string, upDelta, downDelta, segUp, segDown uint64) {
+	s.update("tcp", id, upDelta, downDelta, segUp, segDown)
 }
 
-func (s *StatusStore) UpdateUDP(id string, upDelta, downDelta uint64) {
-	s.update("udp", id, upDelta, downDelta)
+func (s *StatusStore) UpdateUDP(id string, upDelta, downDelta, segUp, segDown uint64) {
+	s.update("udp", id, upDelta, downDelta, segUp, segDown)
 }
 
-func (s *StatusStore) update(kind, id string, upDelta, downDelta uint64) {
+func (s *StatusStore) update(kind, id string, upDelta, downDelta, segUp, segDown uint64) {
 	now := time.Now()
 	var entry *statusEntry
 	s.mu.Lock()
@@ -118,6 +122,8 @@ func (s *StatusStore) update(kind, id string, upDelta, downDelta uint64) {
 	if entry != nil {
 		entry.bytesUp += upDelta
 		entry.bytesDown += downDelta
+		entry.segmentsUp += segUp
+		entry.segmentsDown += segDown
 		entry.lastActivity = now
 	}
 	shouldBroadcast := entry != nil && now.Sub(entry.lastBroadcast) >= time.Second
@@ -227,18 +233,37 @@ func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 		Upstream:     entry.upstream,
 		BytesUp:      entry.bytesUp,
 		BytesDown:    entry.bytesDown,
+		SegmentsUp:   entry.segmentsUp,
+		SegmentsDown: entry.segmentsDown,
 		LastActivity: entry.lastActivity.UnixMilli(),
 		Age:          int64(age),
 	}
 }
 
+type TestCompletePayload struct {
+	Upstream         string  `json:"upstream"`
+	Protocol         string  `json:"protocol"`
+	Direction        string  `json:"direction"`
+	Timestamp        int64   `json:"timestamp"`
+	DurationMs       int64   `json:"duration_ms"`
+	Success          bool    `json:"success"`
+	BandwidthUpBps   float64 `json:"bandwidth_up_bps,omitempty"`
+	BandwidthDownBps float64 `json:"bandwidth_down_bps,omitempty"`
+	RTTMs            float64 `json:"rtt_ms,omitempty"`
+	JitterMs         float64 `json:"jitter_ms,omitempty"`
+	LossRate         float64 `json:"loss_rate"`
+	RetransRate      float64 `json:"retrans_rate"`
+	Error            string  `json:"error,omitempty"`
+}
+
 type statusMessage struct {
-	Type  string        `json:"type"`
-	TCP   []StatusEntry `json:"tcp,omitempty"`
-	UDP   []StatusEntry `json:"udp,omitempty"`
-	Entry *StatusEntry  `json:"entry,omitempty"`
-	ID    string        `json:"id,omitempty"`
-	Kind  string        `json:"kind,omitempty"`
+	Type         string               `json:"type"`
+	TCP          []StatusEntry        `json:"tcp,omitempty"`
+	UDP          []StatusEntry        `json:"udp,omitempty"`
+	Entry        *StatusEntry         `json:"entry,omitempty"`
+	ID           string               `json:"id,omitempty"`
+	Kind         string               `json:"kind,omitempty"`
+	TestComplete *TestCompletePayload `json:"test_complete,omitempty"`
 }
 
 type StatusHub struct {
@@ -306,6 +331,10 @@ func (h *StatusHub) Broadcast(msg statusMessage) {
 	case h.broadcast <- msg:
 	default:
 	}
+}
+
+func (s *StatusStore) NotifyTestComplete(payload TestCompletePayload) {
+	s.hub.Broadcast(statusMessage{Type: "test_complete", TestComplete: &payload})
 }
 
 func (c *statusClient) close() {

@@ -17,12 +17,13 @@ import (
 const maxConsecutiveFailures = 3
 
 type Collector struct {
-	cfg       config.MeasurementConfig
-	scoring   config.ScoringConfig
-	manager   *upstream.UpstreamManager
-	metrics   *metrics.Metrics
-	logger    util.Logger
-	scheduler *Scheduler
+	cfg            config.MeasurementConfig
+	scoring        config.ScoringConfig
+	manager        *upstream.UpstreamManager
+	metrics        *metrics.Metrics
+	logger         util.Logger
+	scheduler      *Scheduler
+	OnTestComplete func(upstream, protocol, direction string, startTime time.Time, duration time.Duration, success bool, result *TestResultMetrics, errMsg string)
 
 	failuresMu sync.Mutex
 	failures   map[string]*failureState
@@ -40,6 +41,15 @@ type RunningTest struct {
 	Protocol  string
 	Direction string
 	StartTime time.Time
+}
+
+type TestResultMetrics struct {
+	BandwidthUpBps   float64
+	BandwidthDownBps float64
+	RTTMs            float64
+	JitterMs         float64
+	LossRate         float64
+	RetransRate      float64
 }
 
 func NewCollector(cfg config.MeasurementConfig, scoring config.ScoringConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, scheduler *Scheduler, logger util.Logger) *Collector {
@@ -254,6 +264,22 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 	cancel()
 	uploadDuration := time.Since(uploadStart)
 	c.clearRunning(up.Tag, network, "upload")
+	if c.OnTestComplete != nil {
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		c.OnTestComplete(
+			up.Tag,
+			network,
+			"upload",
+			uploadStart,
+			uploadDuration,
+			err == nil,
+			buildTestResultMetrics(network, "upload", upResult),
+			errMsg,
+		)
+	}
 	if err != nil {
 		c.logger.Warn("measurement upload failed",
 			"upstream", up.Tag,
@@ -317,6 +343,22 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 	cancel()
 	downloadDuration := time.Since(downloadStart)
 	c.clearRunning(up.Tag, network, "download")
+	if c.OnTestComplete != nil {
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		c.OnTestComplete(
+			up.Tag,
+			network,
+			"download",
+			downloadStart,
+			downloadDuration,
+			err == nil,
+			buildTestResultMetrics(network, "download", dnResult),
+			errMsg,
+		)
+	}
 	if err != nil {
 		c.logger.Warn("measurement download failed",
 			"upstream", up.Tag,
@@ -406,6 +448,22 @@ func (c *Collector) runSingleDirection(ctx context.Context, up *upstream.Upstrea
 	testResult, err := probe.Run(sampleCtx, cfg)
 	cancel()
 	testDuration := time.Since(testStart)
+	if c.OnTestComplete != nil {
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		c.OnTestComplete(
+			up.Tag,
+			network,
+			direction,
+			testStart,
+			testDuration,
+			err == nil,
+			buildTestResultMetrics(network, direction, testResult),
+			errMsg,
+		)
+	}
 	if err != nil {
 		c.logger.Warn("measurement failed",
 			"upstream", up.Tag,
@@ -481,6 +539,28 @@ func (c *Collector) protocolConfig(network string) (config.MeasurementProtocolCo
 	default:
 		return config.MeasurementProtocolConfig{}, fmt.Errorf("unsupported protocol %q", network)
 	}
+}
+
+func buildTestResultMetrics(network, direction string, result *probe.Results) *TestResultMetrics {
+	if result == nil {
+		return nil
+	}
+	metrics := &TestResultMetrics{
+		RTTMs:    float64(result.RTT.Mean) / float64(time.Millisecond),
+		JitterMs: float64(result.RTT.Jitter) / float64(time.Millisecond),
+	}
+	switch direction {
+	case "upload":
+		metrics.BandwidthUpBps = result.Throughput.AchievedBps
+	case "download":
+		metrics.BandwidthDownBps = result.Throughput.AchievedBps
+	}
+	if network == "tcp" {
+		metrics.RetransRate = result.Loss.LossRate
+	} else {
+		metrics.LossRate = result.Loss.LossRate
+	}
+	return metrics
 }
 
 func (c *Collector) setRunning(tag, protocol, direction string) {

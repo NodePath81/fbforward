@@ -1,4 +1,4 @@
-import { callRPC, getQueueStatus, runMeasurement } from './api/rpc';
+import { callRPC, getQueueStatus, getRuntimeConfig, runMeasurement } from './api/rpc';
 import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
 import { createConnectionTable } from './components/ConnectionTable';
@@ -8,17 +8,19 @@ import { renderStatusCard } from './components/StatusCard';
 import { createToastManager } from './components/Toast';
 import { connectStatusSocket } from './websocket/status';
 import { createInitialState, Store } from './state/store';
+import { historyStore } from './state/history';
 import type {
   ConnectionEntry,
   Mode,
   RawConnectionEntry,
   StatusResponse,
+  TestHistoryEntry,
   UpstreamMetrics,
   IdentityResponse,
   WSMessage
 } from './types';
-import { clearChildren, qs } from './utils/dom';
-import { formatBytes, formatDuration } from './utils/format';
+import { clearChildren, createEl, qs } from './utils/dom';
+import { formatBps, formatBytes, formatDuration, formatMs, formatPercent } from './utils/format';
 
 const storedToken = localStorage.getItem('fbforward_token') || '';
 if (!storedToken) {
@@ -49,9 +51,16 @@ function startApp(token: string) {
   const intervalButtons = Array.from(
     document.querySelectorAll<HTMLButtonElement>('.polling-button')
   );
+  const navLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('.page-nav-link'));
+  const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
+  const testHistoryTable = qs<HTMLTableSectionElement>(document, '#testHistoryTable');
+  const sessionHistoryTable = qs<HTMLTableSectionElement>(document, '#sessionHistoryTable');
+  const configTree = qs<HTMLElement>(document, '#configTree');
+  const testDetailsModal = qs<HTMLElement>(document, '#testDetailsModal');
   let pollTimer: number | null = null;
   let pollInProgress = false;
   let statusSocket: ReturnType<typeof connectStatusSocket> | null = null;
+  let currentPage: 'dashboard' | 'history' | 'config' = 'dashboard';
 
   function getDefaultPollInterval(): number {
     const stored = localStorage.getItem('fbforward_poll_interval_ms');
@@ -122,6 +131,39 @@ function startApp(token: string) {
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
   }
+
+  function resolvePageFromHash(): 'dashboard' | 'history' | 'config' {
+    const hash = window.location.hash.replace(/^#\/?/, '');
+    if (hash === 'history') {
+      return 'history';
+    }
+    if (hash === 'config') {
+      return 'config';
+    }
+    return 'dashboard';
+  }
+
+  function setActivePage(page: 'dashboard' | 'history' | 'config'): void {
+    currentPage = page;
+    for (const el of pages) {
+      const isActive = el.id === `page-${page}`;
+      el.classList.toggle('hidden', !isActive);
+    }
+    for (const link of navLinks) {
+      link.classList.toggle('active', link.dataset.page === page);
+    }
+    if (page === 'history') {
+      renderTestHistory();
+      renderSessionHistory();
+    }
+    if (page === 'config') {
+      void loadRuntimeConfig();
+    }
+  }
+
+  window.addEventListener('hashchange', () => {
+    setActivePage(resolvePageFromHash());
+  });
 
   sortButtons.forEach(button => {
     button.addEventListener('click', () => {
@@ -368,6 +410,149 @@ function startApp(token: string) {
     }
   }
 
+  async function loadRuntimeConfig(): Promise<void> {
+    configTree.textContent = 'Loading...';
+    const resp = await getRuntimeConfig(token);
+    if (!resp.ok || !resp.result) {
+      configTree.textContent = resp.error || 'Unable to load runtime config.';
+      return;
+    }
+    configTree.textContent = formatYaml(resp.result);
+  }
+
+  function renderTestHistory(): void {
+    const tests = historyStore.getTests();
+    clearChildren(testHistoryTable);
+    if (tests.length === 0) {
+      appendEmptyRow(testHistoryTable, 6, 'No test history yet');
+      return;
+    }
+    for (const entry of tests) {
+      const row = createEl('tr');
+      row.classList.add('test-row-clickable');
+      row.appendChild(createCell(formatTimestamp(entry.timestamp)));
+      row.appendChild(createCell(entry.upstream));
+      row.appendChild(createCell(entry.protocol.toUpperCase()));
+      row.appendChild(createCell(entry.direction));
+      row.appendChild(createCell(formatDuration(entry.durationMs / 1000)));
+      row.appendChild(createCell(entry.success ? 'success' : 'failed'));
+      row.addEventListener('click', () => {
+        showTestDetails(entry);
+      });
+      testHistoryTable.appendChild(row);
+    }
+  }
+
+  function renderSessionHistory(): void {
+    const sessions = historyStore.getSessions();
+    clearChildren(sessionHistoryTable);
+    if (sessions.length === 0) {
+      appendEmptyRow(sessionHistoryTable, 10, 'No session history yet');
+      return;
+    }
+    for (const entry of sessions) {
+      const row = createEl('tr');
+      row.appendChild(createCell(entry.id));
+      row.appendChild(createCell(entry.kind.toUpperCase()));
+      row.appendChild(createCell(entry.clientAddr));
+      row.appendChild(createCell(entry.upstream));
+      row.appendChild(createCell(formatTimestamp(entry.startTime)));
+      row.appendChild(createCell(formatTimestamp(entry.endTime)));
+      row.appendChild(createCell(formatBytes(entry.bytesUp)));
+      row.appendChild(createCell(formatBytes(entry.bytesDown)));
+      row.appendChild(createCell(formatCount(entry.segmentsUp)));
+      row.appendChild(createCell(formatCount(entry.segmentsDown)));
+      sessionHistoryTable.appendChild(row);
+    }
+  }
+
+  function appendEmptyRow(target: HTMLElement, colCount: number, label: string): void {
+    const row = createEl('tr');
+    const cell = createEl('td', 'empty-row', label);
+    cell.setAttribute('colspan', String(colCount));
+    row.appendChild(cell);
+    target.appendChild(row);
+  }
+
+  function createCell(value: string): HTMLElement {
+    const cell = createEl('td');
+    cell.textContent = value;
+    return cell;
+  }
+
+  function showTestDetails(entry: TestHistoryEntry): void {
+    clearChildren(testDetailsModal);
+    const card = createEl('div', 'modal-card');
+    const header = createEl('div', 'modal-header');
+    const title = createEl('h3', 'modal-title', 'Test details');
+    const closeButton = createEl('button', 'modal-close', 'Close') as HTMLButtonElement;
+    header.appendChild(title);
+    header.appendChild(closeButton);
+    card.appendChild(header);
+
+    const meta = createEl('div', 'modal-meta');
+    meta.appendChild(createDetailRow('Timestamp', formatTimestamp(entry.timestamp)));
+    meta.appendChild(createDetailRow('Upstream', entry.upstream));
+    meta.appendChild(createDetailRow('Protocol', entry.protocol.toUpperCase()));
+    meta.appendChild(createDetailRow('Direction', entry.direction));
+    meta.appendChild(createDetailRow('Duration', formatDuration(entry.durationMs / 1000)));
+    card.appendChild(meta);
+
+    const metrics = createEl('div', 'modal-metrics');
+    const bandwidth =
+      entry.direction === 'upload' ? entry.bandwidthUpBps : entry.bandwidthDownBps;
+    metrics.appendChild(createDetailRow('Bandwidth', formatBps(bandwidth ?? Number.NaN)));
+    metrics.appendChild(createDetailRow('RTT', formatMs(entry.rttMs ?? Number.NaN)));
+    metrics.appendChild(createDetailRow('Jitter', formatMs(entry.jitterMs ?? Number.NaN)));
+    if (entry.protocol === 'udp') {
+      metrics.appendChild(
+        createDetailRow('Loss rate', formatPercent(entry.lossRate ?? Number.NaN, 2))
+      );
+    } else {
+      metrics.appendChild(
+        createDetailRow('Retrans rate', formatPercent(entry.retransRate ?? Number.NaN, 2))
+      );
+    }
+    card.appendChild(metrics);
+
+    if (!entry.success) {
+      const errorBox = createEl('div', 'modal-error');
+      errorBox.textContent = entry.error || 'Test failed';
+      card.appendChild(errorBox);
+    }
+
+    closeButton.addEventListener('click', hideTestDetails);
+    testDetailsModal.onclick = event => {
+      if (event.target === testDetailsModal) {
+        hideTestDetails();
+      }
+    };
+
+    testDetailsModal.appendChild(card);
+    testDetailsModal.classList.remove('hidden');
+  }
+
+  function hideTestDetails(): void {
+    testDetailsModal.classList.add('hidden');
+    clearChildren(testDetailsModal);
+  }
+
+  function createDetailRow(label: string, value: string): HTMLElement {
+    const row = createEl('div', 'modal-row');
+    const labelEl = createEl('span', 'modal-label', label);
+    const valueEl = createEl('span', 'modal-value', value);
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    return row;
+  }
+
+  function formatCount(value: number): string {
+    if (!Number.isFinite(value)) {
+      return '-';
+    }
+    return value.toLocaleString();
+  }
+
   function updateHeaderIdentity(): void {
     const state = store.getState();
     const nameEl = qs<HTMLElement>(document, '#hostName');
@@ -472,7 +657,42 @@ function startApp(token: string) {
     }
   }
 
+  function trackSessionEntry(entry: RawConnectionEntry): void {
+    const startTime = Date.now() - entry.age * 1000;
+    historyStore.trackSessionStart(entry.id, entry.kind, entry.client_addr, entry.upstream, startTime);
+    historyStore.trackSessionUpdate(
+      entry.id,
+      entry.bytes_up,
+      entry.bytes_down,
+      entry.segments_up ?? 0,
+      entry.segments_down ?? 0
+    );
+  }
+
   function handleStatusMessage(message: WSMessage): void {
+    if (message.type === 'test_complete') {
+      if (message.test_complete) {
+        historyStore.addTest({
+          timestamp: message.test_complete.timestamp,
+          upstream: message.test_complete.upstream,
+          protocol: message.test_complete.protocol,
+          direction: message.test_complete.direction,
+          durationMs: message.test_complete.duration_ms,
+          success: message.test_complete.success,
+          bandwidthUpBps: message.test_complete.bandwidth_up_bps,
+          bandwidthDownBps: message.test_complete.bandwidth_down_bps,
+          rttMs: message.test_complete.rtt_ms,
+          jitterMs: message.test_complete.jitter_ms,
+          lossRate: message.test_complete.loss_rate,
+          retransRate: message.test_complete.retrans_rate,
+          error: message.test_complete.error
+        });
+        if (currentPage === 'history') {
+          renderTestHistory();
+        }
+      }
+      return;
+    }
     store.update(state => {
       if (message.type === 'snapshot') {
         state.connections.tcp = new Map(
@@ -504,6 +724,28 @@ function startApp(token: string) {
       }
     });
     if (message.type === 'snapshot') {
+      for (const entry of message.tcp || []) {
+        trackSessionEntry(entry);
+      }
+      for (const entry of message.udp || []) {
+        trackSessionEntry(entry);
+      }
+      if (currentPage === 'history') {
+        renderSessionHistory();
+      }
+    }
+    if (message.type === 'add' || message.type === 'update') {
+      if (message.entry) {
+        trackSessionEntry(message.entry);
+      }
+    }
+    if (message.type === 'remove' && message.id) {
+      historyStore.trackSessionEnd(message.id);
+      if (currentPage === 'history') {
+        renderSessionHistory();
+      }
+    }
+    if (message.type === 'snapshot') {
       const currentIds = new Set<string>();
       for (const entry of message.tcp || []) {
         currentIds.add(entry.id);
@@ -534,6 +776,7 @@ function startApp(token: string) {
   loadStatus();
   loadIdentity();
   updatePollIntervalUI();
+  setActivePage(resolvePageFromHash());
   function startPolling(): void {
     if (pollTimer !== null) {
       window.clearInterval(pollTimer);
@@ -586,6 +829,8 @@ function normalizeEntry(raw: RawConnectionEntry): ConnectionEntry {
     upstream: raw.upstream,
     bytesUp: raw.bytes_up,
     bytesDown: raw.bytes_down,
+    segmentsUp: raw.segments_up ?? 0,
+    segmentsDown: raw.segments_down ?? 0,
     lastActivity: raw.last_activity,
     age: raw.age,
     kind: raw.kind
@@ -849,4 +1094,80 @@ function parseHex(value: string): number | null {
     return null;
   }
   return parsed;
+}
+
+function formatTimestamp(ms: number): string {
+  if (!Number.isFinite(ms)) {
+    return '-';
+  }
+  return new Date(ms).toLocaleString();
+}
+
+function formatYaml(value: unknown, indentLevel = 0): string {
+  const indent = '  '.repeat(indentLevel);
+  if (value === null || value === undefined) {
+    return 'null';
+  }
+  if (typeof value === 'string') {
+    return formatYamlString(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return '[]';
+    }
+    return value
+      .map(item => {
+        if (isScalar(item)) {
+          return `${indent}- ${formatYaml(item, indentLevel + 1)}`;
+        }
+        return `${indent}-\n${formatYaml(item, indentLevel + 1)}`;
+      })
+      .join('\n');
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) {
+      return '{}';
+    }
+    return entries
+      .map(([key, val]) => {
+        const safeKey = formatYamlKey(key);
+        if (isScalar(val)) {
+          return `${indent}${safeKey}: ${formatYaml(val, indentLevel + 1)}`;
+        }
+        return `${indent}${safeKey}:\n${formatYaml(val, indentLevel + 1)}`;
+      })
+      .join('\n');
+  }
+  return formatYamlString(String(value));
+}
+
+function isScalar(value: unknown): boolean {
+  return (
+    value === null ||
+    value === undefined ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+function formatYamlKey(value: string): string {
+  if (/^[A-Za-z0-9_.-]+$/.test(value)) {
+    return value;
+  }
+  return formatYamlString(value);
+}
+
+function formatYamlString(value: string): string {
+  if (value === '') {
+    return '\"\"';
+  }
+  if (/^[A-Za-z0-9_.\/-]+$/.test(value)) {
+    return value;
+  }
+  return JSON.stringify(value);
 }

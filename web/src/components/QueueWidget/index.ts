@@ -27,10 +27,13 @@ export function createQueueWidget(container: HTMLElement) {
     const widget = document.createElement('div');
     widget.className = 'queue-widget';
 
+    const topRow = document.createElement('div');
+    topRow.className = 'queue-top';
+
     const header = document.createElement('div');
     header.className = 'queue-header';
     header.textContent = 'Queue';
-    widget.appendChild(header);
+    topRow.appendChild(header);
 
     const depthRow = document.createElement('div');
     depthRow.className = 'queue-metric';
@@ -42,7 +45,9 @@ export function createQueueWidget(container: HTMLElement) {
     depthValue.textContent = `${status.queueDepth}`;
     depthRow.appendChild(depthLabel);
     depthRow.appendChild(depthValue);
-    widget.appendChild(depthRow);
+    topRow.appendChild(depthRow);
+
+    widget.appendChild(topRow);
 
     if (status.skippedTotal > 0) {
       const skippedRow = document.createElement('div');

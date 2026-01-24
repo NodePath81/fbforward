@@ -8,7 +8,7 @@ export function createConnectionTable(tbody: HTMLElement) {
     if (entries.length === 0) {
       const row = createEl('tr');
       const cell = createEl('td', 'empty-row', 'No active entries');
-      cell.setAttribute('colspan', '8');
+      cell.setAttribute('colspan', '10');
       row.appendChild(cell);
       tbody.appendChild(row);
       return;
@@ -21,11 +21,20 @@ export function createConnectionTable(tbody: HTMLElement) {
       row.appendChild(createCell(entry.upstream));
       row.appendChild(createCell(formatBytes(entry.bytesUp)));
       row.appendChild(createCell(formatBytes(entry.bytesDown)));
+      row.appendChild(createCell(formatCount(entry.segmentsUp)));
+      row.appendChild(createCell(formatCount(entry.segmentsDown)));
       row.appendChild(createCell(formatTime(entry.lastActivity)));
       row.appendChild(createCell(formatAge(entry.age)));
       tbody.appendChild(row);
     }
   };
+}
+
+function formatCount(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '-';
+  }
+  return value.toLocaleString();
 }
 
 function createCell(value: string, className?: string) {

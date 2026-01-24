@@ -101,7 +101,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	manager.SetAuto()
 	metrics.Start(ctx.Done())
 
-	ctrl := control.NewControlServer(cfg.Control, cfg.Measurement, cfg.Hostname, manager, metrics, status, restartFn, logger)
+	ctrl := control.NewControlServer(cfg, manager, metrics, status, restartFn, logger)
 	rt.control = ctrl
 
 	return rt, nil
@@ -281,6 +281,31 @@ func (r *Runtime) startMeasurement() {
 	}
 
 	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, r.logger)
+	r.collector.OnTestComplete = func(upstream, protocol, direction string, startTime time.Time, duration time.Duration, success bool, result *measure.TestResultMetrics, errMsg string) {
+		if r.status == nil {
+			return
+		}
+		payload := control.TestCompletePayload{
+			Upstream:   upstream,
+			Protocol:   protocol,
+			Direction:  direction,
+			Timestamp:  startTime.UnixMilli(),
+			DurationMs: duration.Milliseconds(),
+			Success:    success,
+		}
+		if result != nil {
+			payload.BandwidthUpBps = result.BandwidthUpBps
+			payload.BandwidthDownBps = result.BandwidthDownBps
+			payload.RTTMs = result.RTTMs
+			payload.JitterMs = result.JitterMs
+			payload.LossRate = result.LossRate
+			payload.RetransRate = result.RetransRate
+		}
+		if !success && errMsg != "" {
+			payload.Error = errMsg
+		}
+		r.status.NotifyTestComplete(payload)
+	}
 	if r.control != nil {
 		r.control.SetCollector(r.collector)
 	}

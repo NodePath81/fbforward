@@ -245,10 +245,10 @@ func applyTCPOptions(conn *net.TCPConn) {
 func (c *tcpConn) touch(n uint64, up bool) {
 	if up {
 		c.metrics.AddBytesUp(c.upstreamTag, n, "tcp")
-		c.status.UpdateTCP(c.id, n, 0)
+		c.status.UpdateTCP(c.id, n, 0, 1, 0)
 	} else {
 		c.metrics.AddBytesDown(c.upstreamTag, n, "tcp")
-		c.status.UpdateTCP(c.id, 0, n)
+		c.status.UpdateTCP(c.id, 0, n, 0, 1)
 	}
 	select {
 	case c.activityCh <- struct{}{}:
