@@ -13,6 +13,7 @@ export interface UpstreamCardHandle {
   update: (metrics: UpstreamMetrics, flags: BestFlags) => void;
   onTestTCP?: () => void;
   onTestUDP?: () => void;
+  onDetails?: () => void;
 }
 
 export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHandle {
@@ -21,7 +22,10 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
   const header = createEl('div', 'upstream-header');
   const title = createEl('div');
   const tag = createEl('div', 'upstream-tag', upstream.tag);
-  const meta = createEl('div', 'upstream-meta', `${upstream.host} -> ${upstream.active_ip || '-'}`);
+  const metaText = upstream.host === upstream.active_ip
+    ? upstream.host
+    : `${upstream.host} -> ${upstream.active_ip || '-'}`;
+  const meta = createEl('div', 'upstream-meta', metaText);
   const badges = createEl('div', 'upstream-badges');
 
   title.appendChild(tag);
@@ -48,21 +52,14 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
     reachable: createMetricRow('Reachable')
   };
 
-  list.appendChild(rows.bwTcp.row);
-  list.appendChild(rows.bwUdp.row);
-  list.appendChild(rows.rtt.row);
-  list.appendChild(rows.jitter.row);
-  list.appendChild(rows.retrans.row);
-  list.appendChild(rows.loss.row);
   list.appendChild(rows.score.row);
-  list.appendChild(rows.scoreTcp.row);
-  list.appendChild(rows.scoreUdp.row);
-  list.appendChild(rows.utilization.row);
   list.appendChild(rows.reachable.row);
 
   const actions = createEl('div', 'upstream-actions');
+  const detailsBtn = createEl('button', 'btn-test', 'Details');
   const testTcpBtn = createEl('button', 'btn-test', 'Test TCP');
   const testUdpBtn = createEl('button', 'btn-test', 'Test UDP');
+  actions.appendChild(detailsBtn);
   actions.appendChild(testTcpBtn);
   actions.appendChild(testUdpBtn);
 
@@ -73,6 +70,7 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
 
   let onTestTCP: (() => void) | undefined;
   let onTestUDP: (() => void) | undefined;
+  let onDetails: (() => void) | undefined;
   let testing = false;
   let pendingReset = false;
 
@@ -99,6 +97,13 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
       testUdpBtn.textContent = 'Testing...';
     }
   };
+
+  detailsBtn.addEventListener('click', event => {
+    event.stopPropagation();
+    if (onDetails) {
+      onDetails();
+    }
+  });
 
   testTcpBtn.addEventListener('click', event => {
     event.stopPropagation();
@@ -174,7 +179,32 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
     },
     set onTestUDP(handler: (() => void) | undefined) {
       onTestUDP = handler;
+    },
+    get onDetails() {
+      return onDetails;
+    },
+    set onDetails(handler: (() => void) | undefined) {
+      onDetails = handler;
     }
+  };
+}
+
+export function getAllMetrics(metrics: UpstreamMetrics, upstream: UpstreamSnapshot) {
+  return {
+    tag: upstream.tag,
+    host: upstream.host,
+    activeIp: upstream.active_ip,
+    bwTcp: { up: metrics.bandwidthTcpUpBps, down: metrics.bandwidthTcpDownBps },
+    bwUdp: { up: metrics.bandwidthUdpUpBps, down: metrics.bandwidthUdpDownBps },
+    rtt: metrics.rtt,
+    jitter: metrics.jitter,
+    retrans: metrics.retransRate,
+    loss: metrics.loss,
+    score: metrics.score,
+    scoreTcp: metrics.scoreTcp,
+    scoreUdp: metrics.scoreUdp,
+    utilization: { up: metrics.utilizationUp, down: metrics.utilizationDown },
+    reachable: metrics.reachable
   };
 }
 

@@ -20,7 +20,7 @@ import type {
   WSMessage
 } from './types';
 import { clearChildren, createEl, qs } from './utils/dom';
-import { formatBps, formatBytes, formatDuration, formatMs, formatPercent } from './utils/format';
+import { formatBps, formatBytes, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
 
 const storedToken = localStorage.getItem('fbforward_token') || '';
 if (!storedToken) {
@@ -57,10 +57,12 @@ function startApp(token: string) {
   const sessionHistoryTable = qs<HTMLTableSectionElement>(document, '#sessionHistoryTable');
   const configTree = qs<HTMLElement>(document, '#configTree');
   const testDetailsModal = qs<HTMLElement>(document, '#testDetailsModal');
+  const upstreamDetailsModal = qs<HTMLElement>(document, '#upstreamDetailsModal');
   let pollTimer: number | null = null;
   let pollInProgress = false;
   let statusSocket: ReturnType<typeof connectStatusSocket> | null = null;
   let currentPage: 'dashboard' | 'history' | 'config' = 'dashboard';
+  let openUpstreamTag: string | null = null;
 
   function getDefaultPollInterval(): number {
     const stored = localStorage.getItem('fbforward_poll_interval_ms');
@@ -165,6 +167,16 @@ function startApp(token: string) {
     setActivePage(resolvePageFromHash());
   });
 
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      if (!testDetailsModal.classList.contains('hidden')) {
+        hideTestDetails();
+      } else if (!upstreamDetailsModal.classList.contains('hidden')) {
+        hideUpstreamDetails();
+      }
+    }
+  });
+
   sortButtons.forEach(button => {
     button.addEventListener('click', () => {
       const key = button.dataset.sort as SortKey | undefined;
@@ -225,6 +237,9 @@ function startApp(token: string) {
           toast.show(result.error || 'UDP test failed.', 'error');
         }
       };
+      card.onDetails = () => {
+        showUpstreamDetails(upstream.tag);
+      };
       card.element.addEventListener('click', () => {
         handleUpstreamSelect(upstream.tag);
       });
@@ -249,6 +264,7 @@ function startApp(token: string) {
       });
     }
     updateUpstreamInteractivity();
+    refreshUpstreamDetailsModal();
   }
 
   function updateModeSwitch(): void {
@@ -535,6 +551,94 @@ function startApp(token: string) {
   function hideTestDetails(): void {
     testDetailsModal.classList.add('hidden');
     clearChildren(testDetailsModal);
+  }
+
+  function renderUpstreamDetailsModal(tag: string): void {
+    const state = store.getState();
+    const upstream = state.upstreams.find(u => u.tag === tag);
+    const liveMetrics = state.metrics[tag];
+
+    if (!upstream || !liveMetrics) {
+      hideUpstreamDetails();
+      return;
+    }
+
+    clearChildren(upstreamDetailsModal);
+    const card = createEl('div', 'modal-card');
+    const header = createEl('div', 'modal-header');
+    const title = createEl('h3', 'modal-title', `Upstream: ${tag}`);
+    const closeButton = createEl('button', 'modal-close', 'Close') as HTMLButtonElement;
+    header.appendChild(title);
+    header.appendChild(closeButton);
+    card.appendChild(header);
+
+    const meta = createEl('div', 'modal-meta');
+    meta.appendChild(createDetailRow('Host', upstream.host));
+    meta.appendChild(createDetailRow('Active IP', upstream.active_ip || '-'));
+    meta.appendChild(createDetailRow('Reachable', liveMetrics.reachable ? 'yes' : 'no'));
+    card.appendChild(meta);
+
+    const metrics = createEl('div', 'modal-metrics');
+    metrics.appendChild(createDetailRow('Score', formatScore(liveMetrics.score)));
+    metrics.appendChild(createDetailRow('Score TCP', formatScore(liveMetrics.scoreTcp)));
+    metrics.appendChild(createDetailRow('Score UDP', formatScore(liveMetrics.scoreUdp)));
+    metrics.appendChild(
+      createDetailRow(
+        'TCP Bandwidth',
+        `${formatBps(liveMetrics.bandwidthTcpUpBps)} ↑ / ${formatBps(liveMetrics.bandwidthTcpDownBps)} ↓`
+      )
+    );
+    metrics.appendChild(
+      createDetailRow(
+        'UDP Bandwidth',
+        `${formatBps(liveMetrics.bandwidthUdpUpBps)} ↑ / ${formatBps(liveMetrics.bandwidthUdpDownBps)} ↓`
+      )
+    );
+    metrics.appendChild(createDetailRow('RTT', formatMs(liveMetrics.rtt)));
+    metrics.appendChild(createDetailRow('Jitter', formatMs(liveMetrics.jitter)));
+    metrics.appendChild(createDetailRow('Retrans rate', formatPercent(liveMetrics.retransRate, 2)));
+    metrics.appendChild(createDetailRow('Loss rate', formatPercent(liveMetrics.lossRate, 2)));
+    metrics.appendChild(
+      createDetailRow(
+        'Utilization',
+        `${formatPercent(liveMetrics.utilizationUp, 1)} ↑ / ${formatPercent(liveMetrics.utilizationDown, 1)} ↓`
+      )
+    );
+    card.appendChild(metrics);
+
+    closeButton.addEventListener('click', hideUpstreamDetails);
+    upstreamDetailsModal.onclick = event => {
+      if (event.target === upstreamDetailsModal) {
+        hideUpstreamDetails();
+      }
+    };
+
+    upstreamDetailsModal.appendChild(card);
+  }
+
+  function showUpstreamDetails(tag: string): void {
+    const state = store.getState();
+    const upstream = state.upstreams.find(u => u.tag === tag);
+    if (!upstream) {
+      return;
+    }
+
+    openUpstreamTag = tag;
+    renderUpstreamDetailsModal(tag);
+    upstreamDetailsModal.classList.remove('hidden');
+  }
+
+  function hideUpstreamDetails(): void {
+    openUpstreamTag = null;
+    upstreamDetailsModal.classList.add('hidden');
+    clearChildren(upstreamDetailsModal);
+  }
+
+  function refreshUpstreamDetailsModal(): void {
+    if (!openUpstreamTag) {
+      return;
+    }
+    renderUpstreamDetailsModal(openUpstreamTag);
   }
 
   function createDetailRow(label: string, value: string): HTMLElement {
