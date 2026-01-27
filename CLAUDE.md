@@ -292,9 +292,45 @@ When extending functionality:
 - **Auto recovery**: Unusable upstreams recover automatically when probes succeed
 - **Measurement-driven**: ICMP for reachability only; bwprobe measurements drive all scoring
 
+## Documentation Structure
+
+### docs/ Directory
+
+The [docs/](docs/) directory contains structured project documentation:
+
+- **[outline.md](docs/outline.md)**: Complete documentation outline with 8 major sections covering the entire project
+- **[glossary.md](docs/glossary.md)**: Domain terminology definitions organized by category
+- **[diagrams.md](docs/diagrams.md)**: Inventory of 15 diagrams with Mermaid templates
+- **[style-guide.md](docs/style-guide.md)**: Writing conventions for all documentation
+
+Legacy documentation has been archived to [docs/archive/2025-01-26-legacy/](docs/archive/2025-01-26-legacy/).
+
+### Using the Style Guide
+
+When writing or updating documentation, follow [docs/style-guide.md](docs/style-guide.md):
+
+- **Tone**: Technical and precise, neutral, active voice
+- **Structure**: Sentence case headings, max 4 levels, numbered sections for reference docs
+- **Terminology**: Use terms consistently from [glossary.md](docs/glossary.md), define on first use
+- **Code blocks**: Always specify language, include inline comments
+- **Cross-references**: Use relative links, include section numbers
+
+The style guide provides examples for each documentation type (user guides, configuration reference, algorithm specifications).
+
+### Documentation Sections
+
+The documentation follows this structure (see [outline.md](docs/outline.md)):
+
+1. **Project overview** (1.1-1.3): Purpose, architecture, component relationships
+2. **Getting started** (2.1-2.3): Prerequisites, installation, quick start
+3. **User guides** (3.1-3.3): fbforward, bwprobe, fbmeasure operation
+4. **Configuration reference** (4.1-4.10): Complete config schema documentation
+5. **API reference** (5.1-5.2): bwprobe public API, control plane API
+6. **Algorithm specifications** (6.1-6.3): Upstream selection, bandwidth measurement, RPC protocol
+7. **Developer guide** (7.1-7.3): Architecture deep dive, extension points, contributing
+8. **Appendices** (8.1-8.2): Glossary, diagram index
+
 ## Notes on Other Documentation Files
 
-- **AGENT.md**: Contains outdated information about ICMP-based scoring (pre-bwprobe migration). Refer to this CLAUDE.md and [docs/migration-measurement.md](docs/migration-measurement.md) for current architecture.
-- **docs/algorithm.md**: Authoritative specification for scoring algorithm and flow pinning
-- **docs/configuration.md**: Complete config schema reference
-- **docs/codebase.md**: Architecture overview and component descriptions
+- **AGENT.md**: Contains outdated information about ICMP-based scoring (pre-bwprobe migration). Refer to this CLAUDE.md for current architecture.
+- Legacy documentation (algorithm.md, configuration.md, codebase.md) has been archived to [docs/archive/2025-01-26-legacy/](docs/archive/2025-01-26-legacy/)
