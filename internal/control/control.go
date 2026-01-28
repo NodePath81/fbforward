@@ -144,20 +144,6 @@ type statusResponse struct {
 	Mode           string                      `json:"mode"`
 	ActiveUpstream string                      `json:"active_upstream"`
 	Upstreams      []upstream.UpstreamSnapshot `json:"upstreams"`
-	Counts         statusCounts                `json:"counts"`
-}
-
-type statusCounts struct {
-	TCPActive int `json:"tcp_active"`
-	UDPActive int `json:"udp_active"`
-}
-
-type queueStatusResponse struct {
-	QueueDepth   int                `json:"queue_depth"`
-	SkippedTotal uint64             `json:"skipped_total"`
-	NextDue      *time.Time         `json:"next_due,omitempty"`
-	Running      []runningTestEntry `json:"running"`
-	Pending      []pendingEntry     `json:"pending"`
 }
 
 type runningTestEntry struct {
@@ -167,11 +153,30 @@ type runningTestEntry struct {
 	ElapsedMs int64  `json:"elapsed_ms"`
 }
 
-type pendingEntry struct {
-	Upstream    string    `json:"upstream"`
-	Protocol    string    `json:"protocol"`
-	Direction   string    `json:"direction"`
-	ScheduledAt time.Time `json:"scheduled_at"`
+type connectionsSnapshotMessage struct {
+	SchemaVersion int           `json:"schema_version"`
+	Type          string        `json:"type"`
+	Timestamp     int64         `json:"timestamp"`
+	TCP           []StatusEntry `json:"tcp"`
+	UDP           []StatusEntry `json:"udp"`
+}
+
+type queueSnapshotMessage struct {
+	SchemaVersion int                 `json:"schema_version"`
+	Type          string              `json:"type"`
+	Timestamp     int64               `json:"timestamp"`
+	Depth         int                 `json:"depth"`
+	Skipped       uint64              `json:"skipped"`
+	NextDueMs     *int64              `json:"next_due_ms,omitempty"`
+	Running       []runningTestEntry  `json:"running"`
+	Pending       []queuePendingEntry `json:"pending"`
+}
+
+type queuePendingEntry struct {
+	Upstream    string `json:"upstream"`
+	Protocol    string `json:"protocol"`
+	Direction   string `json:"direction"`
+	ScheduledAt int64  `json:"scheduled_at"`
 }
 
 type identityResponse struct {
@@ -235,15 +240,10 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
 	case "GetStatus":
 		upstreams := c.manager.Snapshot()
-		tcp, udp := c.status.Snapshot()
 		resp := statusResponse{
 			Mode:           c.manager.Mode().String(),
 			ActiveUpstream: c.manager.ActiveTag(),
 			Upstreams:      upstreams,
-			Counts: statusCounts{
-				TCPActive: len(tcp),
-				UDPActive: len(udp),
-			},
 		}
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 	case "GetMeasurementConfig":
@@ -252,8 +252,6 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getRuntimeConfig()})
 	case "GetScheduleStatus":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
-	case "GetQueueStatus":
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getQueueStatus()})
 	case "ListUpstreams":
 		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
 	case "RunMeasurement":
@@ -539,7 +537,7 @@ func (c *ControlServer) getScheduleStatus() map[string]interface{} {
 	return result
 }
 
-func (c *ControlServer) getQueueStatus() queueStatusResponse {
+func (c *ControlServer) getQueueSnapshot(now time.Time) queueSnapshotMessage {
 	c.schedulerMu.RLock()
 	scheduler := c.scheduler
 	c.schedulerMu.RUnlock()
@@ -548,38 +546,43 @@ func (c *ControlServer) getQueueStatus() queueStatusResponse {
 	collector := c.collector
 	c.collectorMu.RUnlock()
 
-	response := queueStatusResponse{
-		QueueDepth:   0,
-		SkippedTotal: 0,
-		NextDue:      nil,
-		Running:      []runningTestEntry{},
-		Pending:      []pendingEntry{},
+	snapshot := queueSnapshotMessage{
+		SchemaVersion: 1,
+		Type:          "queue_snapshot",
+		Timestamp:     now.UnixMilli(),
+		Depth:         0,
+		Skipped:       0,
+		NextDueMs:     nil,
+		Running:       []runningTestEntry{},
+		Pending:       []queuePendingEntry{},
 	}
 
 	if scheduler != nil {
 		status := scheduler.Status()
-		response.QueueDepth = status.QueueLength
-		response.SkippedTotal = status.SkippedTotal
+		snapshot.Depth = status.QueueLength
+		snapshot.Skipped = status.SkippedTotal
 		if !status.NextScheduled.IsZero() {
-			next := status.NextScheduled
-			response.NextDue = &next
+			delta := status.NextScheduled.Sub(now).Milliseconds()
+			if delta < 0 {
+				delta = 0
+			}
+			snapshot.NextDueMs = &delta
 		}
-		entries := make([]pendingEntry, 0, len(status.Pending))
+		entries := make([]queuePendingEntry, 0, len(status.Pending))
 		for _, item := range status.Pending {
-			entries = append(entries, pendingEntry{
+			entries = append(entries, queuePendingEntry{
 				Upstream:    item.Upstream,
 				Protocol:    item.Protocol,
 				Direction:   item.Direction,
-				ScheduledAt: item.ScheduledAt,
+				ScheduledAt: item.ScheduledAt.UnixMilli(),
 			})
 		}
-		response.Pending = entries
+		snapshot.Pending = entries
 	}
 
 	if collector != nil {
 		running := collector.RunningTests()
 		entries := make([]runningTestEntry, 0, len(running))
-		now := time.Now()
 		for _, test := range running {
 			entries = append(entries, runningTestEntry{
 				Upstream:  test.Upstream,
@@ -588,10 +591,10 @@ func (c *ControlServer) getQueueStatus() queueStatusResponse {
 				ElapsedMs: now.Sub(test.StartTime).Milliseconds(),
 			})
 		}
-		response.Running = entries
+		snapshot.Running = entries
 	}
 
-	return response
+	return snapshot
 }
 
 func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -622,11 +625,90 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close()
 		})
 	}
+	var subMu sync.Mutex
+	stopTicker := func() {
+		subMu.Lock()
+		if client.tickerCancel != nil {
+			client.tickerCancel()
+			client.tickerCancel = nil
+		}
+		client.subscribed = false
+		client.intervalMs = 0
+		subMu.Unlock()
+	}
+
+	sendJSON := func(payload any) {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		data, _ := json.Marshal(payload)
+		select {
+		case client.send <- data:
+		default:
+		}
+	}
+
+	sendError := func(code, message string) {
+		sendJSON(statusMessage{
+			SchemaVersion:      1,
+			Type:               "error",
+			statusErrorPayload: &statusErrorPayload{Code: code, Message: message},
+		})
+	}
+
+	sendSnapshots := func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		now := time.Now()
+		tcp, udp := c.status.Snapshot()
+		sendJSON(connectionsSnapshotMessage{
+			SchemaVersion: 1,
+			Type:          "connections_snapshot",
+			Timestamp:     now.UnixMilli(),
+			TCP:           tcp,
+			UDP:           udp,
+		})
+		sendJSON(c.getQueueSnapshot(now))
+	}
+
+	startTicker := func(intervalMs int, sendInitial bool) {
+		stopTicker()
+		subMu.Lock()
+		client.subscribed = true
+		client.intervalMs = intervalMs
+		ctx, cancel := context.WithCancel(context.Background())
+		client.tickerCancel = cancel
+		subMu.Unlock()
+		if sendInitial {
+			sendSnapshots()
+		}
+		go func() {
+			ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-done:
+					return
+				case <-ticker.C:
+					sendSnapshots()
+				}
+			}
+		}()
+	}
+
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
-			c.status.hub.Unregister(client)
+			stopTicker()
 			closeConn()
+			c.status.hub.Unregister(client)
 		})
 	}
 
@@ -638,19 +720,24 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var req struct {
-				Type string `json:"type"`
+				Type       string `json:"type"`
+				IntervalMs int    `json:"interval_ms"`
 			}
 			if err := json.Unmarshal(msg, &req); err != nil {
 				continue
 			}
-			if req.Type == "snapshot" {
-				tcp, udp := c.status.Snapshot()
-				snapshot := statusMessage{Type: "snapshot", TCP: tcp, UDP: udp}
-				data, _ := json.Marshal(snapshot)
-				select {
-				case client.send <- data:
-				default:
+			switch req.Type {
+			case "subscribe":
+				if req.IntervalMs != 1000 && req.IntervalMs != 2000 && req.IntervalMs != 5000 {
+					sendError("invalid_interval", "interval_ms must be 1000, 2000, or 5000")
+					continue
 				}
+				subMu.Lock()
+				alreadySubscribed := client.subscribed
+				subMu.Unlock()
+				startTicker(req.IntervalMs, !alreadySubscribed)
+			case "unsubscribe":
+				stopTicker()
 			}
 		}
 	}()

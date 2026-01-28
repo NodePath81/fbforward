@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"sync"
@@ -98,7 +99,7 @@ func (s *StatusStore) add(kind, clientAddr, upstream string, port int, closeFunc
 	}
 	s.mu.Unlock()
 	snapshot := s.toStatusEntry(entry)
-	s.hub.Broadcast(statusMessage{Type: "add", Entry: &snapshot})
+	s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "add", Entry: &snapshot})
 	return id
 }
 
@@ -135,7 +136,7 @@ func (s *StatusStore) update(kind, id string, upDelta, downDelta, segUp, segDown
 	}
 	s.mu.Unlock()
 	if snapshot != nil {
-		s.hub.Broadcast(statusMessage{Type: "update", Entry: snapshot})
+		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "update", Entry: snapshot})
 	}
 }
 
@@ -167,7 +168,7 @@ func (s *StatusStore) remove(kind, id string) {
 	}
 	s.mu.Unlock()
 	if entry != nil {
-		s.hub.Broadcast(statusMessage{Type: "remove", ID: id, Kind: kind})
+		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "remove", ID: id, Kind: kind})
 	}
 }
 
@@ -240,30 +241,37 @@ func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 	}
 }
 
-type TestCompletePayload struct {
+type TestHistoryPayload struct {
 	Upstream         string  `json:"upstream"`
 	Protocol         string  `json:"protocol"`
 	Direction        string  `json:"direction"`
 	Timestamp        int64   `json:"timestamp"`
 	DurationMs       int64   `json:"duration_ms"`
 	Success          bool    `json:"success"`
-	BandwidthUpBps   float64 `json:"bandwidth_up_bps,omitempty"`
-	BandwidthDownBps float64 `json:"bandwidth_down_bps,omitempty"`
-	RTTMs            float64 `json:"rtt_ms,omitempty"`
-	JitterMs         float64 `json:"jitter_ms,omitempty"`
+	BandwidthUpBps   float64 `json:"bandwidth_up_bps"`
+	BandwidthDownBps float64 `json:"bandwidth_down_bps"`
+	RTTMs            float64 `json:"rtt_ms"`
+	JitterMs         float64 `json:"jitter_ms"`
 	LossRate         float64 `json:"loss_rate"`
 	RetransRate      float64 `json:"retrans_rate"`
 	Error            string  `json:"error,omitempty"`
 }
 
+type statusErrorPayload struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 type statusMessage struct {
-	Type         string               `json:"type"`
-	TCP          []StatusEntry        `json:"tcp,omitempty"`
-	UDP          []StatusEntry        `json:"udp,omitempty"`
-	Entry        *StatusEntry         `json:"entry,omitempty"`
-	ID           string               `json:"id,omitempty"`
-	Kind         string               `json:"kind,omitempty"`
-	TestComplete *TestCompletePayload `json:"test_complete,omitempty"`
+	SchemaVersion       int           `json:"schema_version"`
+	Type                string        `json:"type"`
+	TCP                 []StatusEntry `json:"tcp,omitempty"`
+	UDP                 []StatusEntry `json:"udp,omitempty"`
+	Entry               *StatusEntry  `json:"entry,omitempty"`
+	ID                  string        `json:"id,omitempty"`
+	Kind                string        `json:"kind,omitempty"`
+	*TestHistoryPayload `json:",omitempty"`
+	*statusErrorPayload `json:",omitempty"`
 }
 
 type StatusHub struct {
@@ -274,8 +282,11 @@ type StatusHub struct {
 }
 
 type statusClient struct {
-	send      chan []byte
-	closeOnce sync.Once
+	send         chan []byte
+	closeOnce    sync.Once
+	subscribed   bool
+	intervalMs   int
+	tickerCancel context.CancelFunc
 }
 
 func NewStatusHub(ctxDone <-chan struct{}) *StatusHub {
@@ -333,8 +344,12 @@ func (h *StatusHub) Broadcast(msg statusMessage) {
 	}
 }
 
-func (s *StatusStore) NotifyTestComplete(payload TestCompletePayload) {
-	s.hub.Broadcast(statusMessage{Type: "test_complete", TestComplete: &payload})
+func (s *StatusStore) BroadcastTestHistoryEvent(payload TestHistoryPayload) {
+	s.hub.Broadcast(statusMessage{
+		SchemaVersion:      1,
+		Type:               "test_history_event",
+		TestHistoryPayload: &payload,
+	})
 }
 
 func (c *statusClient) close() {

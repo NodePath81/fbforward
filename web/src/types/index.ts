@@ -14,23 +14,6 @@ export interface UpstreamSnapshot {
   active: boolean;
   usable: boolean;
   reachable: boolean;
-  bandwidth_up_bps: number;
-  bandwidth_down_bps: number;
-  bandwidth_up_bps_tcp?: number;
-  bandwidth_down_bps_tcp?: number;
-  bandwidth_up_bps_udp?: number;
-  bandwidth_down_bps_udp?: number;
-  rtt_ms: number;
-  jitter_ms: number;
-  retrans_rate: number;
-  loss_rate: number;
-  loss: number;
-  score_tcp: number;
-  score_udp: number;
-  score: number;
-  utilization: number;
-  last_tcp_update?: string;
-  last_udp_update?: string;
 }
 
 export interface UpstreamConfig {
@@ -100,7 +83,6 @@ export type RPCMethod =
   | 'GetMeasurementConfig'
   | 'GetRuntimeConfig'
   | 'GetScheduleStatus'
-  | 'GetQueueStatus'
   | 'RunMeasurement';
 
 export interface RPCResponse<T = unknown> {
@@ -112,10 +94,6 @@ export interface RPCResponse<T = unknown> {
 export interface StatusResponse {
   mode: Mode;
   active_upstream: string;
-  counts: {
-    tcp_active: number;
-    udp_active: number;
-  };
   upstreams: UpstreamSnapshot[];
 }
 
@@ -147,15 +125,29 @@ export interface IdentityResponse {
   version?: string;
 }
 
-export type WSMessageType = 'snapshot' | 'add' | 'update' | 'remove' | 'test_complete';
+export type WSMessageType =
+  | 'connections_snapshot'
+  | 'queue_snapshot'
+  | 'add'
+  | 'update'
+  | 'remove'
+  | 'test_history_event'
+  | 'error';
 
-export interface TestCompletePayload {
-  upstream: string;
-  protocol: 'tcp' | 'udp';
-  direction: 'upload' | 'download';
-  timestamp: number;
-  duration_ms: number;
-  success: boolean;
+export interface WSMessage {
+  schema_version: number;
+  type: WSMessageType;
+  timestamp?: number;
+  tcp?: RawConnectionEntry[];
+  udp?: RawConnectionEntry[];
+  entry?: RawConnectionEntry;
+  kind?: 'tcp' | 'udp';
+  id?: string;
+  upstream?: string;
+  protocol?: 'tcp' | 'udp';
+  direction?: 'upload' | 'download';
+  duration_ms?: number;
+  success?: boolean;
   bandwidth_up_bps?: number;
   bandwidth_down_bps?: number;
   rtt_ms?: number;
@@ -163,14 +155,21 @@ export interface TestCompletePayload {
   loss_rate?: number;
   retrans_rate?: number;
   error?: string;
-}
-
-export interface WSMessage {
-  type: WSMessageType;
-  tcp?: RawConnectionEntry[];
-  udp?: RawConnectionEntry[];
-  entry?: RawConnectionEntry;
-  kind?: 'tcp' | 'udp';
-  id?: string;
-  test_complete?: TestCompletePayload;
+  code?: string;
+  message?: string;
+  depth?: number;
+  skipped?: number;
+  next_due_ms?: number;
+  running?: Array<{
+    upstream: string;
+    protocol: 'tcp' | 'udp';
+    direction: 'upload' | 'download';
+    elapsed_ms: number;
+  }>;
+  pending?: Array<{
+    upstream: string;
+    protocol: 'tcp' | 'udp';
+    direction: 'upload' | 'download';
+    scheduled_at: number;
+  }>;
 }

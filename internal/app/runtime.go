@@ -285,7 +285,7 @@ func (r *Runtime) startMeasurement() {
 		if r.status == nil {
 			return
 		}
-		payload := control.TestCompletePayload{
+		payload := control.TestHistoryPayload{
 			Upstream:   upstream,
 			Protocol:   protocol,
 			Direction:  direction,
@@ -304,7 +304,7 @@ func (r *Runtime) startMeasurement() {
 		if !success && errMsg != "" {
 			payload.Error = errMsg
 		}
-		r.status.NotifyTestComplete(payload)
+		r.status.BroadcastTestHistoryEvent(payload)
 	}
 	if r.control != nil {
 		r.control.SetCollector(r.collector)

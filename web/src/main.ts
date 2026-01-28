@@ -1,4 +1,4 @@
-import { callRPC, getQueueStatus, getRuntimeConfig, runMeasurement } from './api/rpc';
+import { callRPC, getRuntimeConfig, runMeasurement } from './api/rpc';
 import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
 import { createConnectionTable } from './components/ConnectionTable';
@@ -80,7 +80,7 @@ function startApp(token: string) {
         }
       }
     }
-    return 1000;
+    return 2000;
   }
 
   let pollIntervalMs = getDefaultPollInterval();
@@ -389,10 +389,6 @@ function startApp(token: string) {
       upstreams: data.upstreams,
       mode: data.mode,
       activeUpstream: data.active_upstream,
-      counts: {
-        tcp: data.counts.tcp_active,
-        udp: data.counts.udp_active
-      },
       control: {
         ...store.getState().control,
         mode: data.mode,
@@ -683,7 +679,7 @@ function startApp(token: string) {
 
   function updatePollStatus(): void {
     const state = store.getState();
-    if (state.pollErrors.metrics || state.pollErrors.queue) {
+    if (state.pollErrors.metrics) {
       pollStatus.textContent = 'Connection issues';
       pollStatus.classList.add('error');
     } else {
@@ -715,46 +711,13 @@ function startApp(token: string) {
       });
       updateStatusCard();
       updateUpstreamCards();
+      updatePollStatus();
     } catch (err) {
       const pollErrors = store.getState().pollErrors;
       store.setState({
         pollErrors: {
           ...pollErrors,
           metrics: err instanceof Error ? err.message : 'Failed to fetch metrics'
-        }
-      });
-      updatePollStatus();
-    }
-  }
-
-  async function pollQueue(): Promise<void> {
-    try {
-      const timeoutMs = Math.max(1000, pollIntervalMs - 1000);
-      const resp = await getQueueStatus(token, timeoutMs);
-      if (resp.ok && resp.result) {
-        queueWidget(resp.result);
-        const pollErrors = store.getState().pollErrors;
-        store.setState({
-          pollErrors: { ...pollErrors, queue: null }
-        });
-      } else {
-        queueWidget(null);
-        const pollErrors = store.getState().pollErrors;
-        store.setState({
-          pollErrors: {
-            ...pollErrors,
-            queue: resp.error || 'Failed to fetch queue status'
-          }
-        });
-      }
-      updatePollStatus();
-    } catch (err) {
-      queueWidget(null);
-      const pollErrors = store.getState().pollErrors;
-      store.setState({
-        pollErrors: {
-          ...pollErrors,
-          queue: err instanceof Error ? err.message : 'Failed to fetch queue status'
         }
       });
       updatePollStatus();
@@ -774,31 +737,61 @@ function startApp(token: string) {
   }
 
   function handleStatusMessage(message: WSMessage): void {
-    if (message.type === 'test_complete') {
-      if (message.test_complete) {
-        historyStore.addTest({
-          timestamp: message.test_complete.timestamp,
-          upstream: message.test_complete.upstream,
-          protocol: message.test_complete.protocol,
-          direction: message.test_complete.direction,
-          durationMs: message.test_complete.duration_ms,
-          success: message.test_complete.success,
-          bandwidthUpBps: message.test_complete.bandwidth_up_bps,
-          bandwidthDownBps: message.test_complete.bandwidth_down_bps,
-          rttMs: message.test_complete.rtt_ms,
-          jitterMs: message.test_complete.jitter_ms,
-          lossRate: message.test_complete.loss_rate,
-          retransRate: message.test_complete.retrans_rate,
-          error: message.test_complete.error
-        });
-        if (currentPage === 'history') {
-          renderTestHistory();
-        }
+    if (message.type === 'test_history_event') {
+      historyStore.addTest({
+        timestamp: message.timestamp ?? Date.now(),
+        upstream: message.upstream || '',
+        protocol: message.protocol || 'tcp',
+        direction: message.direction || 'upload',
+        durationMs: message.duration_ms ?? 0,
+        success: message.success ?? false,
+        bandwidthUpBps: message.bandwidth_up_bps ?? 0,
+        bandwidthDownBps: message.bandwidth_down_bps ?? 0,
+        rttMs: message.rtt_ms ?? 0,
+        jitterMs: message.jitter_ms ?? 0,
+        lossRate: message.loss_rate ?? 0,
+        retransRate: message.retrans_rate ?? 0,
+        error: message.error
+      });
+      if (currentPage === 'history') {
+        renderTestHistory();
       }
       return;
     }
+    if (message.type === 'queue_snapshot') {
+      if (message.depth !== undefined && message.skipped !== undefined) {
+        const nextDue =
+          message.next_due_ms === undefined || message.next_due_ms === null
+            ? null
+            : new Date(Date.now() + message.next_due_ms).toISOString();
+        queueWidget({
+          queueDepth: message.depth,
+          skippedTotal: message.skipped,
+          nextDue,
+          running: (message.running || []).map(item => ({
+            upstream: item.upstream,
+            protocol: item.protocol,
+            direction: item.direction,
+            elapsedMs: item.elapsed_ms
+          })),
+          pending: (message.pending || []).map(item => ({
+            upstream: item.upstream,
+            protocol: item.protocol,
+            direction: item.direction,
+            scheduledAt: new Date(item.scheduled_at).toISOString()
+          }))
+        });
+      } else {
+        queueWidget(null);
+      }
+      return;
+    }
+    if (message.type === 'error') {
+      console.error('WebSocket error:', message.message || message.code || 'unknown error');
+      return;
+    }
     store.update(state => {
-      if (message.type === 'snapshot') {
+      if (message.type === 'connections_snapshot') {
         state.connections.tcp = new Map(
           (message.tcp || []).map(entry => [entry.id, normalizeEntry(entry)])
         );
@@ -827,7 +820,7 @@ function startApp(token: string) {
         }
       }
     });
-    if (message.type === 'snapshot') {
+    if (message.type === 'connections_snapshot') {
       for (const entry of message.tcp || []) {
         trackSessionEntry(entry);
       }
@@ -849,7 +842,7 @@ function startApp(token: string) {
         renderSessionHistory();
       }
     }
-    if (message.type === 'snapshot') {
+    if (message.type === 'connections_snapshot') {
       const currentIds = new Set<string>();
       for (const entry of message.tcp || []) {
         currentIds.add(entry.id);
@@ -896,7 +889,7 @@ function startApp(token: string) {
     }
     pollInProgress = true;
     try {
-      await Promise.allSettled([pollMetrics(), pollQueue()]);
+      await Promise.allSettled([pollMetrics()]);
     } finally {
       pollInProgress = false;
     }

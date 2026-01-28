@@ -24,7 +24,6 @@ export interface AppState {
   activeUpstream: string;
   pollErrors: {
     metrics: string | null;
-    queue: string | null;
   };
 }
 
@@ -102,8 +101,7 @@ export function createInitialState(token: string): AppState {
     mode: 'auto',
     activeUpstream: '',
     pollErrors: {
-      metrics: null,
-      queue: null
+      metrics: null
     }
   };
 }

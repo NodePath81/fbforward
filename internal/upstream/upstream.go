@@ -515,30 +515,13 @@ func (m *UpstreamManager) Snapshot() []UpstreamSnapshot {
 		}
 		active := tag == m.activeTag
 		out = append(out, UpstreamSnapshot{
-			Tag:                 up.Tag,
-			Host:                up.Host,
-			IPs:                 ips,
-			ActiveIP:            activeIP,
-			Active:              active,
-			Usable:              up.stats.Usable,
-			Reachable:           up.stats.Reachable,
-			BandwidthUpBps:      up.stats.BandwidthUpBps,
-			BandwidthDownBps:    up.stats.BandwidthDownBps,
-			BandwidthUpBpsTCP:   up.stats.BandwidthUpBpsTCP,
-			BandwidthDownBpsTCP: up.stats.BandwidthDownBpsTCP,
-			BandwidthUpBpsUDP:   up.stats.BandwidthUpBpsUDP,
-			BandwidthDownBpsUDP: up.stats.BandwidthDownBpsUDP,
-			RTTMs:               up.stats.RTTMs,
-			JitterMs:            up.stats.JitterMs,
-			RetransRate:         up.stats.RetransRate,
-			LossRate:            up.stats.LossRate,
-			Loss:                up.stats.Loss,
-			ScoreTCP:            up.stats.ScoreTCP,
-			ScoreUDP:            up.stats.ScoreUDP,
-			Score:               up.stats.ScoreOverall,
-			Utilization:         up.stats.Utilization,
-			LastTCPUpdate:       up.stats.LastTCPUpdate,
-			LastUDPUpdate:       up.stats.LastUDPUpdate,
+			Tag:       up.Tag,
+			Host:      up.Host,
+			IPs:       ips,
+			ActiveIP:  activeIP,
+			Active:    active,
+			Usable:    up.stats.Usable,
+			Reachable: up.stats.Reachable,
 		})
 	}
 	return out
@@ -754,28 +737,6 @@ type UpstreamSnapshot struct {
 	Active    bool     `json:"active"`
 	Usable    bool     `json:"usable"`
 	Reachable bool     `json:"reachable"`
-
-	BandwidthUpBps      float64 `json:"bandwidth_up_bps"`
-	BandwidthDownBps    float64 `json:"bandwidth_down_bps"`
-	BandwidthUpBpsTCP   float64 `json:"bandwidth_up_bps_tcp"`
-	BandwidthDownBpsTCP float64 `json:"bandwidth_down_bps_tcp"`
-	BandwidthUpBpsUDP   float64 `json:"bandwidth_up_bps_udp"`
-	BandwidthDownBpsUDP float64 `json:"bandwidth_down_bps_udp"`
-
-	RTTMs    float64 `json:"rtt_ms"`
-	JitterMs float64 `json:"jitter_ms"`
-
-	RetransRate float64 `json:"retrans_rate"`
-	LossRate    float64 `json:"loss_rate"`
-	Loss        float64 `json:"loss"`
-
-	ScoreTCP float64 `json:"score_tcp"`
-	ScoreUDP float64 `json:"score_udp"`
-	Score    float64 `json:"score"`
-
-	Utilization   float64   `json:"utilization"`
-	LastTCPUpdate time.Time `json:"last_tcp_update,omitempty"`
-	LastUDPUpdate time.Time `json:"last_udp_update,omitempty"`
 }
 
 func (u *Upstream) SetActiveIP(ip net.IP) {

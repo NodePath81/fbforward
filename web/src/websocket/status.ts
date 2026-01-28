@@ -10,21 +10,9 @@ interface StatusSocketOptions {
 export function connectStatusSocket(options: StatusSocketOptions, snapshotIntervalMs: number = 10000) {
   let ws: WebSocket | null = null;
   let reconnectTimer: number | null = null;
-  let snapshotTimer: number | null = null;
   let attempts = 0;
   let closed = false;
   let currentSnapshotIntervalMs = snapshotIntervalMs;
-
-  const startSnapshotTimer = () => {
-    if (snapshotTimer) {
-      window.clearInterval(snapshotTimer);
-    }
-    if (ws?.readyState === WebSocket.OPEN) {
-      snapshotTimer = window.setInterval(() => {
-        ws?.send(JSON.stringify({ type: 'snapshot' }));
-      }, currentSnapshotIntervalMs);
-    }
-  };
 
   const connect = () => {
     if (closed) {
@@ -36,8 +24,7 @@ export function connectStatusSocket(options: StatusSocketOptions, snapshotInterv
 
     ws.addEventListener('open', () => {
       attempts = 0;
-      ws?.send(JSON.stringify({ type: 'snapshot' }));
-      startSnapshotTimer();
+      ws?.send(JSON.stringify({ type: 'subscribe', interval_ms: currentSnapshotIntervalMs }));
       options.onOpen?.();
     });
 
@@ -51,10 +38,6 @@ export function connectStatusSocket(options: StatusSocketOptions, snapshotInterv
     });
 
     ws.addEventListener('close', () => {
-      if (snapshotTimer) {
-        window.clearInterval(snapshotTimer);
-        snapshotTimer = null;
-      }
       options.onClose?.();
       if (!closed) {
         scheduleReconnect();
@@ -83,10 +66,6 @@ export function connectStatusSocket(options: StatusSocketOptions, snapshotInterv
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);
       }
-      if (snapshotTimer) {
-        window.clearInterval(snapshotTimer);
-        snapshotTimer = null;
-      }
       ws?.close();
     },
     updateSnapshotInterval(newIntervalMs: number) {
@@ -94,7 +73,9 @@ export function connectStatusSocket(options: StatusSocketOptions, snapshotInterv
         return;
       }
       currentSnapshotIntervalMs = newIntervalMs;
-      startSnapshotTimer();
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'subscribe', interval_ms: currentSnapshotIntervalMs }));
+      }
     }
   };
 }
