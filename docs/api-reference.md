@@ -420,6 +420,26 @@ The fbforward control plane exposes HTTP endpoints for runtime management, monit
 
 **Authentication:** Bearer token (configured via `control.auth_token`).
 
+**Data source responsibilities:**
+
+The control plane follows a single-source-of-truth architecture:
+
+| Data Type | Source | Notes |
+|-----------|--------|-------|
+| Active connections (list) | WebSocket `connections_snapshot` | Periodic, subscription-controlled |
+| Queue status (list) | WebSocket `queue_snapshot` | Periodic, subscription-controlled |
+| Numeric metrics (bandwidth, RTT, scores) | Prometheus `/metrics` | Poll-based, summary metrics only |
+| Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
+| Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
+| Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
+| Config queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig` |
+
+**Key principles:**
+- WebSocket delivers connection/queue telemetry via subscription (no polling)
+- RPC methods provide only control actions and non-metric status queries
+- Prometheus provides all numeric metrics (bandwidth, RTT, jitter, scores, utilization)
+- No data duplication across endpoints
+
 **Endpoints:**
 
 | Path | Method | Auth Required | Description |
@@ -563,30 +583,9 @@ Retrieve current runtime status.
       "active_ip": "203.0.113.10",
       "active": true,
       "usable": true,
-      "reachable": true,
-      "bandwidth_up_bps": 48500000,
-      "bandwidth_down_bps": 198000000,
-      "bandwidth_up_bps_tcp": 48500000,
-      "bandwidth_down_bps_tcp": 198000000,
-      "bandwidth_up_bps_udp": 47800000,
-      "bandwidth_down_bps_udp": 195000000,
-      "rtt_ms": 25.4,
-      "jitter_ms": 2.1,
-      "retrans_rate": 0.0012,
-      "loss_rate": 0.0008,
-      "loss": 0.0,
-      "score_tcp": 87.5,
-      "score_udp": 86.2,
-      "score": 86.8,
-      "utilization": 0.32,
-      "last_tcp_update": "2026-01-27T10:15:30Z",
-      "last_udp_update": "2026-01-27T10:14:45Z"
+      "reachable": true
     }
-  ],
-  "counts": {
-    "tcp_active": 12,
-    "udp_active": 45
-  }
+  ]
 }
 ```
 
@@ -599,14 +598,8 @@ Retrieve current runtime status.
 - `active`: Whether this is the primary upstream (receives new flows)
 - `usable`: Whether upstream is eligible for selection (not failed/unreachable)
 - `reachable`: ICMP probe reachability status
-- `bandwidth_*_bps`: Measured bandwidth (bits/sec) - aggregated and per-protocol
-- `rtt_ms`, `jitter_ms`: RTT statistics (milliseconds)
-- `retrans_rate`: TCP retransmit rate (fraction, e.g., 0.0012 = 0.12%)
-- `loss_rate`: UDP packet loss rate (fraction)
-- `loss`: Recent probe loss rate from reachability window
-- `score_tcp`, `score_udp`, `score`: Quality scores (0-100 range typical)
-- `utilization`: Current link utilization (0.0-1.0)
-- `last_tcp_update`, `last_udp_update`: Timestamps of last successful measurements (omitted if never measured)
+
+**Note:** Numeric metrics (bandwidth, RTT, jitter, scores, utilization) are available exclusively via Prometheus `/metrics` endpoint. Active connection counts are available via WebSocket `connections_snapshot` or Prometheus metrics.
 
 **Example:**
 
@@ -718,40 +711,6 @@ curl -X POST http://localhost:8080/rpc \
   -d '{"method": "GetScheduleStatus", "params": {}}'
 ```
 
-#### GetQueueStatus
-
-Retrieve measurement queue status.
-
-**Method:** `GetQueueStatus`
-
-**Parameters:** Empty object `{}`
-
-**Result:**
-
-```json
-{
-  "queue_depth": 3,
-  "skipped_total": 12,
-  "next_due": "2026-01-26T12:34:56Z",
-  "running": [
-    {
-      "upstream": "primary",
-      "protocol": "tcp",
-      "direction": "upload",
-      "elapsed_ms": 1234
-    }
-  ],
-  "pending": [
-    {
-      "upstream": "backup",
-      "protocol": "tcp",
-      "direction": "download",
-      "scheduled_at": "2026-01-26T12:35:00Z"
-    }
-  ]
-}
-```
-
 #### RunMeasurement
 
 Trigger manual measurement for specific upstream and protocol.
@@ -800,17 +759,66 @@ const ws = new WebSocket('ws://localhost:8080/status', [`fbforward-token.${encod
 websocat -H "Authorization: Bearer token" ws://localhost:8080/status
 ```
 
-#### Message format
+#### Subscription protocol
 
-The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping) and measurement events. **Upstream metrics are not streamed**; poll `/metrics` or use `GetStatus` RPC for current scores and bandwidth.
+The WebSocket uses a subscription model where clients control telemetry intervals.
 
-**Message types:**
-
-**1. Snapshot (server → client on request):**
+**Client sends subscribe:**
 
 ```json
 {
-  "type": "snapshot",
+  "type": "subscribe",
+  "interval_ms": 2000
+}
+```
+
+**Allowed intervals:** 1000, 2000, or 5000 milliseconds
+
+**Server response:**
+- On success: Starts per-client ticker and sends initial `connections_snapshot` and `queue_snapshot`
+- On error: Sends error message with `invalid_interval` code
+
+**Update subscription interval:**
+
+Send a new `subscribe` message with different `interval_ms`. The server will cancel the old ticker and start a new one with the updated interval.
+
+**Unsubscribe:**
+
+```json
+{
+  "type": "unsubscribe"
+}
+```
+
+Server stops sending periodic snapshots and cleans up ticker resources.
+
+**Delivery model:**
+- `connections_snapshot` and `queue_snapshot`: Periodic, controlled by subscription interval
+- `add`, `update`, `remove`, `test_history_event`: Event-driven, broadcast immediately regardless of subscription state
+
+#### Message format
+
+The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), queue status, and measurement history events. **Upstream metrics are not streamed**; use Prometheus `/metrics` endpoint for numeric metrics (bandwidth, RTT, jitter, scores, utilization).
+
+**All messages include schema version:**
+
+```json
+{
+  "schema_version": 1,
+  "type": "...",
+  ...
+}
+```
+
+**Message types:**
+
+**1. Connections snapshot (server → client, periodic):**
+
+```json
+{
+  "schema_version": 1,
+  "type": "connections_snapshot",
+  "timestamp": 1706354410000,
   "tcp": [
     {
       "kind": "tcp",
@@ -844,10 +852,40 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping) a
 }
 ```
 
-**2. Add (server → client when new flow starts):**
+**2. Queue snapshot (server → client, periodic):**
 
 ```json
 {
+  "schema_version": 1,
+  "type": "queue_snapshot",
+  "timestamp": 1706354410000,
+  "depth": 3,
+  "skipped": 12,
+  "next_due_ms": 5000,
+  "running": [
+    {
+      "upstream": "primary",
+      "protocol": "tcp",
+      "direction": "upload",
+      "elapsed_ms": 1234
+    }
+  ],
+  "pending": [
+    {
+      "upstream": "backup",
+      "protocol": "tcp",
+      "direction": "download",
+      "scheduled_at": 1706354415000
+    }
+  ]
+}
+```
+
+**3. Add (server → client, event-driven when new flow starts):**
+
+```json
+{
+  "schema_version": 1,
   "type": "add",
   "entry": {
     "kind": "tcp",
@@ -865,10 +903,11 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping) a
 }
 ```
 
-**3. Update (server → client, periodic updates for active flows):**
+**4. Update (server → client, event-driven updates for active flows):**
 
 ```json
 {
+  "schema_version": 1,
   "type": "update",
   "entry": {
     "kind": "tcp",
@@ -886,40 +925,61 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping) a
 }
 ```
 
-**4. Remove (server → client when flow terminates):**
+**5. Remove (server → client, event-driven when flow terminates):**
 
 ```json
 {
+  "schema_version": 1,
   "type": "remove",
   "id": "tcp-1706354400123456789-1",
   "kind": "tcp"
 }
 ```
 
-**5. Test complete (server → client after measurement finishes):**
+**6. Test history event (server → client, event-driven after measurement finishes):**
 
 ```json
 {
-  "type": "test_complete",
-  "test_complete": {
-    "upstream": "primary",
-    "protocol": "tcp",
-    "direction": "upload",
-    "timestamp": 1706354430000,
-    "duration_ms": 2534,
-    "success": true,
-    "bandwidth_up_bps": 48500000,
-    "bandwidth_down_bps": 0,
-    "rtt_ms": 25.4,
-    "jitter_ms": 2.1,
-    "loss_rate": 0.0,
-    "retrans_rate": 0.0012,
-    "error": ""
-  }
+  "schema_version": 1,
+  "type": "test_history_event",
+  "upstream": "primary",
+  "protocol": "tcp",
+  "direction": "upload",
+  "timestamp": 1706354430000,
+  "duration_ms": 2534,
+  "success": true,
+  "bandwidth_up_bps": 48500000,
+  "bandwidth_down_bps": 0,
+  "rtt_ms": 25.4,
+  "jitter_ms": 2.1,
+  "loss_rate": 0.0,
+  "retrans_rate": 0.0012,
+  "error": ""
 }
 ```
 
-**Field descriptions (StatusEntry):**
+**7. Error (server → client when subscription validation fails):**
+
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "code": "invalid_interval",
+  "message": "interval_ms must be 1000, 2000, or 5000"
+}
+```
+
+**Field descriptions (connections_snapshot and queue_snapshot):**
+
+- `schema_version`: Message schema version (currently 1)
+- `timestamp`: Unix milliseconds when snapshot was generated
+- `depth`: Number of pending measurements in queue
+- `skipped`: Cumulative count of skipped measurements
+- `next_due_ms`: Milliseconds until next scheduled measurement (null if queue empty)
+- `running`: Array of currently executing measurements
+- `pending`: Array of queued measurements awaiting execution
+
+**Field descriptions (StatusEntry - used in add/update/remove):**
 
 - `kind`: Protocol type (`tcp` or `udp`)
 - `id`: Unique flow identifier
@@ -931,8 +991,9 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping) a
 - `last_activity`: Unix milliseconds of last I/O
 - `age`: Seconds since flow creation
 
-**Field descriptions (TestCompletePayload):**
+**Field descriptions (test_history_event):**
 
+- `schema_version`: Message schema version (currently 1)
 - `upstream`: Upstream tag
 - `protocol`: `tcp` or `udp`
 - `direction`: `upload` or `download`
@@ -942,51 +1003,82 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping) a
 - `bandwidth_up_bps`, `bandwidth_down_bps`: Measured bandwidth (0 if not applicable to direction)
 - `rtt_ms`, `jitter_ms`: RTT statistics
 - `loss_rate`, `retrans_rate`: Loss/retransmit rates (protocol-dependent)
-- `error`: Error message if `success: false`
-
-#### Client requests
-
-Client can request snapshot by sending:
-
-```json
-{"type": "snapshot"}
-```
-
-Server responds with a `snapshot` message containing all active TCP and UDP flows.
+- `error`: Error message if `success: false` (empty string on success)
 
 #### Connection lifecycle
 
 1. Client connects with Bearer token authentication (header or subprotocol)
 2. Server accepts upgrade and selects subprotocol `fbforward`
-3. Server sends ping every 30 seconds
-4. Client must respond with pong within 60 seconds
-5. Server pushes `add`/`update`/`remove` messages for flow events
-6. Server pushes `test_complete` messages for measurement completions
-7. Client can request `snapshot` messages on demand
+3. Client sends `subscribe` message with desired `interval_ms` (1000, 2000, or 5000)
+4. Server validates interval and starts per-client ticker
+5. Server sends initial `connections_snapshot` and `queue_snapshot` immediately
+6. Server sends periodic snapshots at configured interval (while subscribed)
+7. Server pushes `add`/`update`/`remove` messages for flow events (event-driven, independent of subscription)
+8. Server pushes `test_history_event` messages for measurement completions (event-driven, independent of subscription)
+9. Server sends ping every 30 seconds
+10. Client must respond with pong within 60 seconds
+11. Client can send new `subscribe` message to change interval
+12. Client can send `unsubscribe` message to stop periodic snapshots
+13. On disconnect, server cancels ticker and cleans up resources
 
 **Example (JavaScript):**
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8080/status', ['fbforward-token.${encoded}']);
+const token = 'your-auth-token';
+const encoded = btoa(token).replace(/=/g, '');
+const ws = new WebSocket('ws://localhost:8080/status', [`fbforward-token.${encoded}`]);
 
 ws.onopen = () => {
   console.log('Connected');
-  // Request initial snapshot
-  ws.send(JSON.stringify({type: 'snapshot'}));
+  // Subscribe with 2-second interval
+  ws.send(JSON.stringify({type: 'subscribe', interval_ms: 2000}));
 };
 
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
-  console.log('Status update:', msg);
+
+  switch (msg.type) {
+    case 'connections_snapshot':
+      console.log('Connection snapshot:', msg.tcp.length, 'TCP,', msg.udp.length, 'UDP');
+      break;
+    case 'queue_snapshot':
+      console.log('Queue depth:', msg.depth, 'Running:', msg.running.length);
+      break;
+    case 'add':
+      console.log('New flow:', msg.entry.id);
+      break;
+    case 'update':
+      console.log('Flow update:', msg.entry.id);
+      break;
+    case 'remove':
+      console.log('Flow closed:', msg.id);
+      break;
+    case 'test_history_event':
+      console.log('Test completed:', msg.upstream, msg.protocol, msg.direction, msg.success);
+      break;
+    case 'error':
+      console.error('WebSocket error:', msg.code, msg.message);
+      break;
+  }
 };
 
 ws.onerror = (error) => {
-  console.error('WebSocket error:', error);
+  console.error('WebSocket connection error:', error);
 };
 
 ws.onclose = () => {
   console.log('Disconnected');
 };
+
+// Change interval after connection
+function changeInterval(newIntervalMs) {
+  ws.send(JSON.stringify({type: 'subscribe', interval_ms: newIntervalMs}));
+}
+
+// Unsubscribe from periodic snapshots
+function unsubscribe() {
+  ws.send(JSON.stringify({type: 'unsubscribe'}));
+}
 ```
 
 ### 5.2.4 Prometheus metrics
