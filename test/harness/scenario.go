@@ -19,6 +19,7 @@ type TimelineAssertion struct {
 	Type     string `yaml:"type"`
 	Upstream string `yaml:"upstream"`
 	Reason   string `yaml:"reason,omitempty"`
+	Max      int    `yaml:"max,omitempty"`
 }
 
 // TimelineEvent is one step in the scenario.

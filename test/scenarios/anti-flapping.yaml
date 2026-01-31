@@ -22,5 +22,5 @@ timeline:
   - t: "120s"
     assertions:
       - type: switch_count_lte
-        upstream: ""
+        max: 2
         reason: "anti-flapping"
