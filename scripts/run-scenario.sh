@@ -12,19 +12,6 @@ fi
 
 export PATH="${ROOT}/build/bin:${PATH}"
 
-echo "run-scenario: root=${ROOT}"
-echo "run-scenario: bin=${BIN}"
-echo "run-scenario: pwd=$(pwd)"
-echo "run-scenario: PATH=${PATH}"
-
-echo "run-scenario: which.fbforward-testharness=$(command -v fbforward-testharness || true)"
-echo "run-scenario: which.fbforward=$(command -v fbforward || true)"
-echo "run-scenario: which.fbmeasure=$(command -v fbmeasure || true)"
-echo "run-scenario: which.iperf3=$(command -v iperf3 || true)"
-
-echo "run-scenario: ls.bin=$(ls -l "${BIN}")"
-echo "run-scenario: go.version=$(go version 2>/dev/null || true)"
-
 ALL_SCENARIOS=(
   "${ROOT}/test/scenarios/score-ordering.yaml"
   "${ROOT}/test/scenarios/confirmation.yaml"
@@ -36,11 +23,13 @@ ALL_SCENARIOS=(
 
 usage() {
   cat <<USAGE
-Usage: $(basename "$0") [-s <name>]... [-f|--file <path>]...
+Usage: $(basename "$0") [-s <name>]... [-f|--file <path>]... [-l <file>] [-q]
 
 Options:
   -s <name>            Run scenario by name (repeatable).
   -f, --file <path>    Run scenario by file path (repeatable).
+  -l <file>            Tee all logs to the given file.
+  -q                   Quiet mode (no stdout). Still writes to -l if provided.
   -h, --help           Show this help.
 
 Behavior:
@@ -50,6 +39,8 @@ USAGE
 }
 
 selected=()
+log_file=""
+quiet=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -s)
@@ -69,6 +60,19 @@ while [[ $# -gt 0 ]]; do
       fi
       selected+=("file:$2")
       shift 2
+      ;;
+    -l)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing file path for -l" >&2
+        usage
+        exit 2
+      fi
+      log_file="$2"
+      shift 2
+      ;;
+    -q)
+      quiet=true
+      shift
       ;;
     -h|--help)
       usage
@@ -117,47 +121,115 @@ else
 fi
 
 mkdir -p "${LOG_DIR}"
-RUN_LOG="${LOG_DIR}/quick-e2e.log"
+RUN_LOG="${LOG_DIR}/run-scenario.log"
 : > "${RUN_LOG}"
 
-printf "Selected scenarios (%d):\n" "${#resolved[@]}"
-for s in "${resolved[@]}"; do
-  echo "- ${s}"
- done
+sink() {
+  if [[ -n "${log_file}" ]]; then
+    if [[ "${quiet}" == true ]]; then
+      tee -a "${log_file}" >/dev/null
+    else
+      tee -a "${log_file}"
+    fi
+  else
+    if [[ "${quiet}" == true ]]; then
+      cat >/dev/null
+    else
+      cat
+    fi
+  fi
+}
 
-echo "Cleaning namespaces before run..."
+prefix_stream() {
+  local prefix="$1"
+  sed -u "s|^|[${prefix}] |" | sink
+}
+
+prefix_stream_file() {
+  local prefix="$1"
+  local file="$2"
+  if [[ ! -f "${file}" ]]; then
+    return
+  fi
+  tail -n 0 -F "${file}" | sed -u "s|^|[${prefix}] |" | sink
+}
+
+if [[ "${quiet}" != true ]]; then
+  {
+    echo "run-scenario: root=${ROOT}"
+    echo "run-scenario: bin=${BIN}"
+    echo "run-scenario: pwd=$(pwd)"
+    echo "run-scenario: PATH=${PATH}"
+    echo "run-scenario: which.fbforward-testharness=$(command -v fbforward-testharness || true)"
+    echo "run-scenario: which.fbforward=$(command -v fbforward || true)"
+    echo "run-scenario: which.fbmeasure=$(command -v fbmeasure || true)"
+    echo "run-scenario: which.iperf3=$(command -v iperf3 || true)"
+    echo "run-scenario: ls.bin=$(ls -l "${BIN}")"
+    echo "run-scenario: go.version=$(go version 2>/dev/null || true)"
+    printf "Selected scenarios (%d):\n" "${#resolved[@]}"
+    for s in "${resolved[@]}"; do
+      echo "- ${s}"
+    done
+  } | prefix_stream "meta"
+else
+  printf "Selected scenarios (%d):\n" "${#resolved[@]}" | prefix_stream "meta"
+  for s in "${resolved[@]}"; do
+    echo "- ${s}" | prefix_stream "meta"
+  done
+fi
+
+echo "Cleaning namespaces before run..." | prefix_stream "meta"
 "${ROOT}/scripts/cleanup-netns.sh" >/dev/null 2>&1 || true
 
 fail=0
 for s in "${resolved[@]}"; do
-  echo "Running ${s}..."
-  if "${BIN}" run "${s}" 2>&1 | tee -a "${RUN_LOG}"; then
-    echo "PASS: ${s}"
+  scenario_name="$(basename "${s}" .yaml)"
+  echo "Running ${s}..." | prefix_stream "runner/${scenario_name}"
+
+  fbforward_log="${LOG_DIR}/logs/fbforward.log"
+  fbmeasure_logs=("${LOG_DIR}"/logs/fbmeasure-*.log)
+  iperf_logs=("${LOG_DIR}"/logs/iperf3-*.log)
+
+  prefix_stream_file "fbforward/${scenario_name}" "${fbforward_log}" &
+  tail_fbforward_pid=$!
+
+  tail_fbmeasure_pids=()
+  for f in "${fbmeasure_logs[@]}"; do
+    [[ -e "${f}" ]] || continue
+    prefix_stream_file "fbmeasure/${scenario_name}" "${f}" &
+    tail_fbmeasure_pids+=("$!")
+  done
+
+  tail_iperf_pids=()
+  for f in "${iperf_logs[@]}"; do
+    [[ -e "${f}" ]] || continue
+    prefix_stream_file "iperf3/${scenario_name}" "${f}" &
+    tail_iperf_pids+=("$!")
+  done
+
+  if "${BIN}" run "${s}" 2>&1 | prefix_stream "harness/${scenario_name}"; then
+    echo "PASS: ${s}" | prefix_stream "runner/${scenario_name}"
   else
-    echo "FAIL: ${s}"
+    echo "FAIL: ${s}" | prefix_stream "runner/${scenario_name}"
     fail=1
   fi
+
+  kill "${tail_fbforward_pid}" >/dev/null 2>&1 || true
+  for pid in "${tail_fbmeasure_pids[@]}"; do
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
+  for pid in "${tail_iperf_pids[@]}"; do
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
  done
 
 if [[ "${fail}" -eq 0 ]]; then
-  echo "All scenarios completed"
+  echo "All scenarios completed" | prefix_stream "meta"
 else
-  echo "Some scenarios failed"
-  echo "--- harness log (tail) ---"
-  tail -n 120 "${RUN_LOG}" || true
-  if [[ -d "${LOG_DIR}/logs" ]]; then
-    echo "--- fbforward log (tail) ---"
-    tail -n 120 "${LOG_DIR}/logs/fbforward.log" 2>/dev/null || true
-    echo "--- fbmeasure logs (tail) ---"
-    for f in "${LOG_DIR}"/logs/fbmeasure-*.log; do
-      [[ -e "$f" ]] || continue
-      echo "==> $f <=="
-      tail -n 120 "$f" || true
-    done
-  fi
+  echo "Some scenarios failed" | prefix_stream "meta"
 fi
 
-echo "Cleaning namespaces after run..."
+echo "Cleaning namespaces after run..." | prefix_stream "meta"
 "${ROOT}/scripts/cleanup-netns.sh" >/dev/null 2>&1 || true
 
 exit "${fail}"
