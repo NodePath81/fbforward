@@ -188,7 +188,8 @@ for s in "${resolved[@]}"; do
 
   fbforward_log="${LOG_DIR}/logs/fbforward.log"
   fbmeasure_logs=("${LOG_DIR}"/logs/fbmeasure-*.log)
-  iperf_logs=("${LOG_DIR}"/logs/iperf3-*.log)
+  iperf_client_log="${LOG_DIR}/logs/iperf3-client.log"
+  iperf_server_logs=("${LOG_DIR}"/logs/iperf3-server-*.log)
 
   prefix_stream_file "fbforward/${scenario_name}" "${fbforward_log}" &
   tail_fbforward_pid=$!
@@ -201,9 +202,14 @@ for s in "${resolved[@]}"; do
   done
 
   tail_iperf_pids=()
-  for f in "${iperf_logs[@]}"; do
+  if [[ -f "${iperf_client_log}" ]]; then
+    prefix_stream_file "iperf3-client/${scenario_name}" "${iperf_client_log}" &
+    tail_iperf_pids+=("$!")
+  fi
+  for f in "${iperf_server_logs[@]}"; do
     [[ -e "${f}" ]] || continue
-    prefix_stream_file "iperf3/${scenario_name}" "${f}" &
+    tag=$(basename "${f}" .log | sed 's/^iperf3-server-//')
+    prefix_stream_file "iperf3-server-${tag}/${scenario_name}" "${f}" &
     tail_iperf_pids+=("$!")
   done
 

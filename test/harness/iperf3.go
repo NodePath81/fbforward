@@ -10,7 +10,7 @@ type Iperf3Result struct {
 
 // StartIperf3Server starts an iperf3 server inside a namespace.
 func StartIperf3Server(pm *ProcessManager, name string, nsPID int, port int, logDir string) error {
-	args := []string{"-s", "-p", strconv.Itoa(port)}
+	args := []string{"-s", "-p", strconv.Itoa(port), "--cntl-ka"}
 	return pm.Start(name, nsPID, "iperf3", args, logDir)
 }
 
@@ -20,5 +20,6 @@ func StartIperf3Clients(pm *ProcessManager, name string, nsPID int, target strin
 	if parallel > 1 {
 		args = append(args, "-P", strconv.Itoa(parallel))
 	}
+	args = append(args, "--cntl-ka")
 	return pm.Start(name, nsPID, "iperf3", args, logDir)
 }
