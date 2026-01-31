@@ -1,10 +1,12 @@
 package harness
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os/exec"
 	"sort"
+	"strings"
 )
 
 // Subnet describes a /30 link subnet between hub and a leaf namespace.
@@ -52,6 +54,8 @@ func LaunchNamespaceShell(name string, index int) (*Namespace, error) {
 	if err != nil {
 		return nil, err
 	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -59,7 +63,8 @@ func LaunchNamespaceShell(name string, index int) (*Namespace, error) {
 	_, err = fmt.Fscan(stdout, &pid)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("read namespace pid: %w", err)
+		_, _ = cmd.Process.Wait()
+		return nil, fmt.Errorf("read namespace pid: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 	ns := &Namespace{
 		Name:     name,
@@ -203,12 +208,14 @@ func CreateTopology(name string, baseCIDR string, upstreamTags []string) (*Topol
 }
 
 func createChildNamespace(hub *Namespace, name string, index int) (*Namespace, error) {
-	cmd := exec.Command("nsenter", "-t", fmt.Sprint(hub.ShellPID), "-U", "-n", "--",
+	cmd := exec.Command("nsenter", "--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(hub.ShellPID), "-U", "-n", "--",
 		"unshare", "-n", "--kill-child=SIGTERM", "bash", "-c", "echo $$ && sleep infinity")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -216,7 +223,8 @@ func createChildNamespace(hub *Namespace, name string, index int) (*Namespace, e
 	_, err = fmt.Fscan(stdout, &pid)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("read child pid: %w", err)
+		_, _ = cmd.Process.Wait()
+		return nil, fmt.Errorf("read child pid: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 	ns := &Namespace{
 		Name:     name,
@@ -274,7 +282,7 @@ func setupRouting(hub *Namespace, topo *Topology) error {
 		if ns.VethPair == nil {
 			continue
 		}
-		if err := runInNamespace(hub.ShellPID, "ip", "route", "add", ns.Subnet.Network, "dev", ns.VethPair.Hub); err != nil {
+		if err := runInNamespace(hub.ShellPID, "ip", "route", "replace", ns.Subnet.Network, "dev", ns.VethPair.Hub); err != nil {
 			return err
 		}
 	}
@@ -282,7 +290,7 @@ func setupRouting(hub *Namespace, topo *Topology) error {
 }
 
 func runInNamespace(pid int, args ...string) error {
-	cmdArgs := append([]string{"-t", fmt.Sprint(pid), "-U", "-n", "--"}, args...)
+	cmdArgs := append([]string{"--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(pid), "-U", "-n", "--"}, args...)
 	cmd := exec.Command("nsenter", cmdArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

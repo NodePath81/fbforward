@@ -19,7 +19,8 @@ go test ./bwprobe/internal/... ./internal/upstream -v
 
 # Integration tests (Linux only)
 ./scripts/setup-test-env.sh                    # preflight + build
-./scripts/run-all-scenarios.sh                 # run all 6 scenarios
+./scripts/run-scenario.sh                      # quick sanity (score-ordering)
+./scripts/run-scenario.sh -s score-ordering -s confirmation -s hold-time -s fast-failover -s anti-flapping -s stability
 ```
 
 **Current status:** Unit tests are complete and pass. The integration harness is scaffolded -- namespace creation, shaping, metrics scraping, and convergence detection work, but full end-to-end orchestration (process health checks, timeline execution, iperf3 integration, detailed assertion evaluation) remains stub-level.
@@ -139,7 +140,7 @@ build/bin/fbforward-testharness validate test/scenarios/score-ordering.yaml
 build/bin/fbforward-testharness run test/scenarios/score-ordering.yaml
 
 # Run all 6 scenarios sequentially
-./scripts/run-all-scenarios.sh
+./scripts/run-scenario.sh
 
 # Emergency cleanup after crashes
 ./scripts/cleanup-netns.sh
@@ -266,9 +267,9 @@ Assertions use timing tolerance to account for measurement intervals:
 
 Preflight validation and build script. Checks tools (`ip`, `tc`, `iperf3`, `unshare`, `go`), runs a full nested-userns preflight with cleanup trap, then builds fbforward and the test harness binary.
 
-### 6.2 `scripts/run-all-scenarios.sh`
+### 6.2 `scripts/run-scenario.sh`
 
-Runs all 6 scenarios sequentially via `fbforward-testharness run`. Checks for the harness binary first. Reports per-scenario pass/fail and exits non-zero if any scenario failed.
+Runs selected scenarios sequentially via `fbforward-testharness run`. If no flags are provided, runs all default scenarios. Supports `-s <name>` for scenario names and `-f/--file <path>` for explicit scenario files. Reports per-scenario pass/fail and exits non-zero if any scenario failed.
 
 ### 6.3 `scripts/cleanup-netns.sh`
 

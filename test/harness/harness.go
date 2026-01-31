@@ -46,6 +46,7 @@ func (h *Harness) Setup() error {
 	if h.Scenario == nil {
 		return fmt.Errorf("nil scenario")
 	}
+	logf("setup: scenario=%s", h.Scenario.Name)
 	if err := checkUserNamespaceSupport(); err != nil {
 		return err
 	}
@@ -60,6 +61,11 @@ func (h *Harness) Setup() error {
 	}
 	h.Topology = topo
 	h.BaseCIDR = baseCIDR
+	logf("setup: hub=%s pid=%d base_cidr=%s", topo.Hub.Name, topo.Hub.ShellPID, baseCIDR)
+	logf("setup: traffic=%s ip=%s forwarder=%s ip=%s", topo.TrafficSourceNS.Name, topo.TrafficSourceNS.Subnet.Endpoint, topo.ForwarderNS.Name, topo.ForwarderNS.Subnet.Endpoint)
+	for _, ns := range topo.UpstreamNS {
+		logf("setup: upstream=%s tag=%s ip=%s", ns.Name, ns.Tag, ns.Subnet.Endpoint)
+	}
 	if err := h.applyInitialShaping(); err != nil {
 		h.Topology.CleanupAll()
 		return err
@@ -170,22 +176,29 @@ func (h *Harness) Start() error {
 		h.ConfigFile = path
 	}
 	logDir := h.ConfigPath("logs")
-
 	for _, ns := range h.Topology.UpstreamNS {
 		name := fmt.Sprintf("fbmeasure-%s", ns.Tag)
+		logf("start: launching fbmeasure tag=%s pid=%d ip=%s", ns.Tag, ns.ShellPID, ns.Subnet.Endpoint)
 		if err := h.Processes.Start(name, ns.ShellPID, "fbmeasure", []string{"--port", "9876"}, logDir); err != nil {
 			return err
 		}
+		if proc := h.Processes.Processes[name]; proc != nil {
+			logf("start: fbmeasure log=%s", proc.LogPath)
+		}
 	}
 	for _, ns := range h.Topology.UpstreamNS {
-		if err := waitForTCP(h.Topology.Hub.ShellPID, ns.Subnet.Endpoint, 9876, 5*time.Second); err != nil {
+		if err := waitForTCP(h.Topology.Hub.ShellPID, ns.ShellPID, ns.Subnet.Endpoint, 9876, 5*time.Second); err != nil {
 			return err
 		}
 	}
 
 	h.ForwarderStarted = time.Now()
+	logf("start: launching fbforward pid=%d ip=%s config=%s", h.Topology.ForwarderNS.ShellPID, h.Topology.ForwarderNS.Subnet.Endpoint, h.ConfigFile)
 	if err := h.Processes.Start("fbforward", h.Topology.ForwarderNS.ShellPID, "fbforward", []string{"--config", h.ConfigFile}, logDir); err != nil {
 		return err
+	}
+	if proc := h.Processes.Processes["fbforward"]; proc != nil {
+		logf("start: fbforward log=%s", proc.LogPath)
 	}
 	if err := h.waitForMetrics(10 * time.Second); err != nil {
 		return err
@@ -194,12 +207,13 @@ func (h *Harness) Start() error {
 	if strings.EqualFold(h.Scenario.Name, "stability") {
 		for _, ns := range h.Topology.UpstreamNS {
 			name := fmt.Sprintf("iperf3-server-%s", ns.Tag)
+			logf("start: launching iperf3 server tag=%s pid=%d ip=%s port=%d", ns.Tag, ns.ShellPID, ns.Subnet.Endpoint, h.ForwardPort)
 			if err := StartIperf3Server(h.Processes, name, ns.ShellPID, h.ForwardPort, logDir); err != nil {
 				return err
 			}
 		}
 		for _, ns := range h.Topology.UpstreamNS {
-			if err := waitForTCP(h.Topology.Hub.ShellPID, ns.Subnet.Endpoint, h.ForwardPort, 5*time.Second); err != nil {
+			if err := waitForTCP(h.Topology.Hub.ShellPID, ns.ShellPID, ns.Subnet.Endpoint, h.ForwardPort, 5*time.Second); err != nil {
 				return err
 			}
 		}
@@ -208,6 +222,7 @@ func (h *Harness) Start() error {
 			duration = 60
 		}
 		duration += 30
+		logf("start: launching iperf3 client pid=%d target=%s port=%d duration=%ds", h.Topology.TrafficSourceNS.ShellPID, h.Topology.ForwarderNS.Subnet.Endpoint, h.ForwardPort, duration)
 		if err := StartIperf3Clients(h.Processes, "iperf3-client", h.Topology.TrafficSourceNS.ShellPID, h.Topology.ForwarderNS.Subnet.Endpoint, h.ForwardPort, duration, 10, logDir); err != nil {
 			return err
 		}
@@ -563,16 +578,29 @@ func waitUntil(target time.Time, errCh <-chan error) error {
 	}
 }
 
-func waitForTCP(nsPID int, ip string, port int, timeout time.Duration) error {
+func waitForTCP(nsPID int, targetPID int, ip string, port int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	cmd := fmt.Sprintf("echo > /dev/tcp/%s/%d", ip, port)
+	var lastErr error
+	var lastOutput string
 	for {
-		args := []string{"nsenter", "-t", fmt.Sprint(nsPID), "-U", "-n", "--", "bash", "-c", cmd}
-		if err := execCommand(args...); err == nil {
+		args := []string{"nsenter", "--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(nsPID), "-U", "-n", "--", "bash", "-c", cmd}
+		if output, err := execCommandOutput(args...); err == nil {
 			return nil
+		} else {
+			lastErr = err
+			lastOutput = output
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for tcp %s:%d", ip, port)
+			hubAddr, _ := execCommandOutput("nsenter", "--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(nsPID), "-U", "-n", "--", "ip", "addr")
+			hubRoute, _ := execCommandOutput("nsenter", "--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(nsPID), "-U", "-n", "--", "ip", "route")
+			targetAddr := ""
+			targetListen := ""
+			if targetPID != 0 {
+				targetAddr, _ = execCommandOutput("nsenter", "--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(targetPID), "-U", "-n", "--", "ip", "addr")
+				targetListen, _ = execCommandOutput("nsenter", "--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(targetPID), "-U", "-n", "--", "ss", "-lnt")
+			}
+			return fmt.Errorf("timeout waiting for tcp %s:%d (last err=%v output=%s) hub_ip=%s hub_route=%s target_ip=%s target_listen=%s", ip, port, lastErr, strings.TrimSpace(lastOutput), strings.TrimSpace(hubAddr), strings.TrimSpace(hubRoute), strings.TrimSpace(targetAddr), strings.TrimSpace(targetListen))
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -605,6 +633,20 @@ func execCommand(args ...string) error {
 		return fmt.Errorf("command %v failed: %w (%s)", args, err, string(output))
 	}
 	return nil
+}
+
+func execCommandOutput(args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("no command")
+	}
+	cmd := args[0]
+	rest := args[1:]
+	c := exec.Command(cmd, rest...)
+	output, err := c.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("command %v failed: %w (%s)", args, err, string(output))
+	}
+	return string(output), nil
 }
 
 func deepMerge(dst, src map[string]any) {

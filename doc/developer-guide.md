@@ -729,7 +729,7 @@ fbforward includes integration tests using rootless network namespaces to valida
 ./scripts/setup-test-env.sh
 
 # Run all integration scenarios
-./scripts/run-all-scenarios.sh
+./scripts/run-scenario.sh
 
 # Run a single scenario
 build/bin/fbforward-testharness run test/scenarios/score-ordering.yaml

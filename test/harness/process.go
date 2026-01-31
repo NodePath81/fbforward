@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -41,23 +42,38 @@ func (pm *ProcessManager) Start(name string, nsPID int, binary string, args []st
 		return err
 	}
 
-	fullArgs := append([]string{"-t", fmt.Sprint(nsPID), "-U", "-n", "--", binary}, args...)
+	fullArgs := append([]string{"--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(nsPID), "-U", "-n", "--", binary}, args...)
 	cmd := exec.Command("nsenter", fullArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
+	logf("proc.start name=%s nsPID=%d bin=%s args=%s log=%s", name, nsPID, binary, strings.Join(args, " "), logPath)
+	logf("proc.start nsenter=%s", strings.Join(cmd.Args, " "))
+	logf("proc.start PATH=%s", os.Getenv("PATH"))
+
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
+		logf("proc.start error=%v", err)
 		return err
 	}
 	done := make(chan error, 1)
 	pm.Processes[name] = &Process{Name: name, Cmd: cmd, LogPath: logPath, Done: done}
 	go func() {
 		err := cmd.Wait()
+		if err != nil {
+			exitCode := 0
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			}
+			logf("proc.exit name=%s pid=%d err=%v exit=%d", name, cmd.Process.Pid, err, exitCode)
+		} else {
+			logf("proc.exit name=%s pid=%d status=0", name, cmd.Process.Pid)
+		}
 		done <- err
 		close(done)
 	}()
 	_ = logFile.Close()
+	logf("proc.start pid=%d", cmd.Process.Pid)
 	return nil
 }
 

@@ -249,7 +249,7 @@ func (m *MetricsCollector) recordError(err error) {
 
 // nsenterOutput runs a command in a namespace and returns stdout.
 func nsenterOutput(pid int, args ...string) (string, error) {
-	cmdArgs := append([]string{"-t", fmt.Sprint(pid), "-U", "-n", "--"}, args...)
+	cmdArgs := append([]string{"--preserve-credentials", "--keep-caps", "-t", fmt.Sprint(pid), "-U", "-n", "--"}, args...)
 	cmd := exec.Command("nsenter", cmdArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -177,7 +177,7 @@ build/bin/fbforward-testharness validate test/scenarios/score-ordering.yaml
 build/bin/fbforward-testharness run test/scenarios/score-ordering.yaml
 
 # Run all scenarios
-./scripts/run-all-scenarios.sh
+./scripts/run-scenario.sh
 ```
 
 ---
@@ -189,6 +189,6 @@ build/bin/fbforward-testharness run test/scenarios/score-ordering.yaml
 3. Define `overrides` for any config changes needed (deep-merged into base config).
 4. Define `shaping` for initial link conditions per upstream.
 5. Define `timeline` with actions (`wait_convergence`, `degrade_upstream`, etc.) and assertions (`primary_is`, `stability_ok`, `switch_count_lte`).
-6. Add the file path to the `SCENARIOS` array in `scripts/run-all-scenarios.sh`.
+6. Add the file path to the `ALL_SCENARIOS` array in `scripts/run-scenario.sh`.
 
 See [testing-guide.md](testing-guide.md) for YAML format details and timing tolerance rules.
