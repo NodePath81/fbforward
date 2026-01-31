@@ -882,6 +882,10 @@ func (m *Metrics) Render() string {
 	b.WriteString("fbforward_memory_alloc_bytes ")
 	b.WriteString(strconv.FormatUint(memoryAlloc, 10))
 	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_goroutines gauge\n")
+	b.WriteString("fbforward_goroutines ")
+	b.WriteString(strconv.Itoa(runtime.NumGoroutine()))
+	b.WriteString("\n")
 	b.WriteString("# TYPE fbforward_uptime_seconds gauge\n")
 	b.WriteString("fbforward_uptime_seconds ")
 	if startTime.IsZero() {

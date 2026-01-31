@@ -1,0 +1,17 @@
+name: fast-failover
+interval_seconds: 5
+convergence_cycles: 3
+shaping:
+  us-a: {bandwidth: "100mbit", latency: "20ms", loss: "0%"}
+  us-b: {bandwidth: "50mbit", latency: "40ms", loss: "0%"}
+timeline:
+  - t: "0s"
+    action: wait_convergence
+  - t: "0s"
+    action: inject_loss
+    upstream: us-a
+    new_shaping: {bandwidth: "100mbit", latency: "20ms", loss: "25%"}
+  - t: "10s"
+    assertions:
+      - type: primary_is
+        upstream: us-b

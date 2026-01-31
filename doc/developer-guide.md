@@ -720,6 +720,28 @@ func TestFunctionName(t *testing.T) {
 }
 ```
 
+**Integration tests (Linux only):**
+
+fbforward includes integration tests using rootless network namespaces to validate switching behaviors end-to-end. These require Linux with unprivileged user namespace support.
+
+```bash
+# Setup and build (first time)
+./scripts/setup-test-env.sh
+
+# Run all integration scenarios
+./scripts/run-all-scenarios.sh
+
+# Run a single scenario
+build/bin/fbforward-testharness run test/scenarios/score-ordering.yaml
+
+# Validate scenario YAML without running
+build/bin/fbforward-testharness validate test/scenarios/score-ordering.yaml
+```
+
+Prerequisites: Linux kernel 3.8+ with unprivileged user namespaces enabled (`kernel.unprivileged_userns_clone=1`), iproute2 v4.9+, iperf3.
+
+See [Testing guide](test/testing-guide.md) for scenario format, harness architecture, and troubleshooting.
+
 ### Code style guidelines
 
 **Go code:**

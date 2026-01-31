@@ -46,8 +46,13 @@ func ReadTCPStats(conn *net.TCPConn) (TCPStats, error) {
 		return TCPStats{}, fmt.Errorf("getsockopt TCP_INFO: nil info")
 	}
 
-	// Extract metrics from TCP_INFO.
-	// Note: info.Rtt is in microseconds (scaled by 8 internally, but the field gives microseconds).
+	stats := parseTCPInfo(info)
+	return stats, nil
+}
+
+// parseTCPInfo extracts TCP statistics from the kernel TCP_INFO structure.
+// Note: info.Rtt is in microseconds (scaled by 8 internally, but the field gives microseconds).
+func parseTCPInfo(info *unix.TCPInfo) TCPStats {
 	segmentsSent := uint64(info.Data_segs_out)
 	if segmentsSent == 0 {
 		segmentsSent = uint64(info.Segs_out)
@@ -68,5 +73,5 @@ func ReadTCPStats(conn *net.TCPConn) (TCPStats, error) {
 		RTTVar:       time.Duration(info.Rttvar) * time.Microsecond,
 		RTO:          time.Duration(info.Rto) * time.Microsecond,
 		ATO:          time.Duration(info.Ato) * time.Microsecond,
-	}, nil
+	}
 }
