@@ -1,6 +1,7 @@
 package measure
 
 import (
+	"log/slog"
 	"math/rand"
 	"sort"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 const retryDelay = 30 * time.Second
@@ -32,6 +34,7 @@ type Scheduler struct {
 	cfg           SchedulerConfig
 	metrics       *metrics.Metrics
 	upstreams     []*upstream.Upstream
+	logger        util.Logger
 	mu            sync.Mutex
 	queue         []scheduledMeasurement
 	lastRun       map[string]time.Time
@@ -67,7 +70,7 @@ type PendingItem struct {
 	ScheduledAt time.Time
 }
 
-func NewScheduler(cfg SchedulerConfig, metrics *metrics.Metrics, upstreams []*upstream.Upstream, rng *rand.Rand) *Scheduler {
+func NewScheduler(cfg SchedulerConfig, metrics *metrics.Metrics, upstreams []*upstream.Upstream, rng *rand.Rand, logger util.Logger) *Scheduler {
 	if rng == nil {
 		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
@@ -75,6 +78,7 @@ func NewScheduler(cfg SchedulerConfig, metrics *metrics.Metrics, upstreams []*up
 		cfg:       cfg,
 		metrics:   metrics,
 		upstreams: upstreams,
+		logger:    logger,
 		lastRun:   make(map[string]time.Time),
 		rng:       rng,
 	}
@@ -135,6 +139,11 @@ func (s *Scheduler) NextReady() (*scheduledMeasurement, bool) {
 	}
 	if !s.hasCapacityLocked(next.upstream, next.protocol, next.direction) {
 		s.skippedTotal++
+		util.Event(s.logger, slog.LevelDebug, "measure.skipped_no_capacity",
+			"upstream", next.upstream.Tag,
+			"network.protocol", next.protocol,
+			"network.direction", next.direction,
+		)
 		next.dueAt = now.Add(retryDelay)
 		s.queue[0] = next
 		sort.Slice(s.queue, func(i, j int) bool {

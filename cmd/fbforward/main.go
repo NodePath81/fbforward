@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime"
@@ -53,22 +54,35 @@ func main() {
 }
 
 func runForwarder(configPath string) {
-	logger := util.NewLogger()
+	bootstrapLogger := util.NewLogger("", "")
 	if runtime.GOOS != "linux" {
-		logger.Error("unsupported OS", "goos", runtime.GOOS)
+		bootstrapLogger.Error("unsupported OS", "goos", runtime.GOOS)
 		os.Exit(1)
 	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		bootstrapLogger.Error("startup failed", "error", err)
+		os.Exit(1)
+	}
+
+	logger := util.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
+	lifecycleLogger := util.ComponentLogger(logger, util.CompLifecycle)
+	util.Event(lifecycleLogger, slog.LevelInfo, "lifecycle.process_starting", "config_path", configPath)
+
 	supervisor := app.NewSupervisor(configPath, logger)
 	if err := supervisor.Start(); err != nil {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
+	util.Event(lifecycleLogger, slog.LevelInfo, "lifecycle.runtime_started")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	logger.Info("shutdown requested")
+	sig := <-sigCh
+	util.Event(lifecycleLogger, slog.LevelInfo, "lifecycle.shutdown_requested", "signal", sig.String())
 	supervisor.Stop()
+	util.Event(lifecycleLogger, slog.LevelInfo, "lifecycle.shutdown_complete")
 }
 
 func checkConfig(path string) {

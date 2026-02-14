@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"errors"
+	"log/slog"
 	"math"
 	"math/rand"
 	"net"
@@ -114,6 +115,7 @@ type UpstreamManager struct {
 	onStateChange  func(tag string, usable bool)
 	switching      config.SwitchingConfig
 	staleThreshold time.Duration
+	logger         util.Logger
 
 	pendingSwitch  string
 	pendingSince   time.Time
@@ -121,15 +123,17 @@ type UpstreamManager struct {
 	inWarmup       bool
 	warmupStart    time.Time
 	warmupDuration time.Duration
+	warmupLogged   bool
 }
 
-func NewUpstreamManager(upstreams []*Upstream, rng *rand.Rand) *UpstreamManager {
+func NewUpstreamManager(upstreams []*Upstream, rng *rand.Rand, logger util.Logger) *UpstreamManager {
 	m := &UpstreamManager{
 		upstreams: make(map[string]*Upstream, len(upstreams)),
 		order:     make([]string, 0, len(upstreams)),
 		mode:      ModeAuto,
 		rng:       rng,
 		switching: config.DefaultSwitchingConfig(),
+		logger:    logger,
 	}
 	for _, up := range upstreams {
 		m.upstreams[up.Tag] = up
@@ -181,6 +185,7 @@ func (m *UpstreamManager) StartWarmup(duration time.Duration) {
 	m.inWarmup = true
 	m.warmupStart = time.Now()
 	m.warmupDuration = duration
+	m.warmupLogged = false
 }
 
 func (m *UpstreamManager) IsInWarmup() bool {
@@ -212,7 +217,7 @@ func (m *UpstreamManager) PickInitial() {
 		return
 	}
 	chosen := usable[m.rng.Intn(len(usable))]
-	m.setActiveLocked(chosen)
+	m.setActiveLocked(chosen, "score_delta")
 }
 
 func (m *UpstreamManager) Mode() Mode {
@@ -240,7 +245,7 @@ func (m *UpstreamManager) SetAuto() {
 	m.manualTag = ""
 	m.resetPendingLocked()
 	best, _ := m.selectBestLocked("")
-	m.setActiveLocked(best)
+	m.setActiveLocked(best, "manual")
 }
 
 func (m *UpstreamManager) SetManual(tag string) error {
@@ -256,7 +261,7 @@ func (m *UpstreamManager) SetManual(tag string) error {
 	m.mode = ModeManual
 	m.manualTag = tag
 	m.resetPendingLocked()
-	m.setActiveLocked(tag)
+	m.setActiveLocked(tag, "manual")
 	return nil
 }
 
@@ -274,7 +279,7 @@ func (m *UpstreamManager) SelectByFastStart(scores map[string]float64) {
 	if bestTag == "" {
 		return
 	}
-	m.setActiveLocked(bestTag)
+	m.setActiveLocked(bestTag, "fast_start")
 }
 
 func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
@@ -319,6 +324,13 @@ func (m *UpstreamManager) UpdateReachability(tag string, reachable bool) Upstrea
 		up.stats.LastReachable = time.Now()
 	}
 	up.stats.Usable = up.stats.ComputeUsable(m.staleThreshold)
+	if prevUsable != up.stats.Usable {
+		if up.stats.Usable {
+			util.Event(m.logger, slog.LevelInfo, "upstream.recovered", "upstream", tag)
+		} else {
+			util.Event(m.logger, slog.LevelWarn, "upstream.became_unusable", "upstream", tag, "switch.reason", m.usabilityReason(up.stats))
+		}
+	}
 	if prevUsable != up.stats.Usable && m.onStateChange != nil {
 		m.onStateChange(tag, up.stats.Usable)
 	}
@@ -355,12 +367,27 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 	up.stats.Utilization = utilization
 
 	prevUsable := up.stats.Usable
+	prevOverall := up.stats.ScoreOverall
 	up.stats.Usable = up.stats.ComputeUsable(m.staleThreshold)
 	up.stats.ScoreTCP, up.stats.ScoreUDP, up.stats.ScoreOverall = computeFullScore(up.stats, scoring, up.Bias, utilization, m.staleThreshold)
 	up.stats.Score = up.stats.ScoreOverall
+	util.Event(m.logger, slog.LevelDebug, "upstream.score_updated",
+		"upstream", tag,
+		"score.tcp", up.stats.ScoreTCP,
+		"score.udp", up.stats.ScoreUDP,
+		"score.overall", up.stats.ScoreOverall,
+		"score.previous", prevOverall,
+	)
 
-	if prevUsable != up.stats.Usable && m.onStateChange != nil {
-		m.onStateChange(tag, up.stats.Usable)
+	if prevUsable != up.stats.Usable {
+		if up.stats.Usable {
+			util.Event(m.logger, slog.LevelInfo, "upstream.recovered", "upstream", tag)
+		} else {
+			util.Event(m.logger, slog.LevelWarn, "upstream.became_unusable", "upstream", tag, "switch.reason", m.usabilityReason(up.stats))
+		}
+		if m.onStateChange != nil {
+			m.onStateChange(tag, up.stats.Usable)
+		}
 	}
 
 	m.evaluateSwitching(tag, up.stats)
@@ -372,10 +399,19 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 		return
 	}
 
+	if m.warmupDuration > 0 && !m.isInWarmupLocked() && !m.warmupStart.IsZero() && !m.warmupLogged {
+		util.Event(m.logger, slog.LevelInfo, "upstream.warmup_ended")
+		m.warmupLogged = true
+	}
+
 	active := m.upstreams[m.activeTag]
 	if active != nil && updatedTag == m.activeTag {
-		if stats.RetransRate >= m.switching.Failover.RetransmitRateThreshold || stats.LossRate >= m.switching.Failover.LossRateThreshold {
-			m.immediateFailoverLocked()
+		if stats.LossRate >= m.switching.Failover.LossRateThreshold {
+			m.immediateFailoverLocked("failover_loss")
+			return
+		}
+		if stats.RetransRate >= m.switching.Failover.RetransmitRateThreshold {
+			m.immediateFailoverLocked("failover_retrans")
 			return
 		}
 	}
@@ -392,7 +428,8 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 	}
 
 	threshold := m.switching.Auto.ScoreDeltaThreshold
-	if m.isInWarmupLocked() {
+	inWarmup := m.isInWarmupLocked()
+	if inWarmup {
 		threshold /= 2
 	}
 	if bestScore-activeScore < threshold {
@@ -401,13 +438,17 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 	}
 
 	if m.pendingSwitch != bestTag {
+		util.Event(m.logger, slog.LevelDebug, "upstream.pending_switch_started",
+			"switch.from", m.activeTag,
+			"switch.to", bestTag,
+		)
 		m.pendingSwitch = bestTag
 		m.pendingSince = time.Now()
 		return
 	}
 
 	confirmDur := m.switching.Auto.ConfirmDuration.Duration()
-	if m.isInWarmupLocked() {
+	if inWarmup {
 		confirmDur = 0
 	}
 	if time.Since(m.pendingSince) < confirmDur {
@@ -415,26 +456,30 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 	}
 
 	holdDur := m.switching.Auto.MinHoldTime.Duration()
-	if m.isInWarmupLocked() {
+	if inWarmup {
 		holdDur = 0
 	}
 	if !m.lastSwitchTime.IsZero() && time.Since(m.lastSwitchTime) < holdDur {
 		return
 	}
 
-	m.setActiveLocked(bestTag)
+	reason := "score_delta"
+	if inWarmup {
+		reason = "warmup"
+	}
+	m.setActiveLocked(bestTag, reason)
 }
 
-func (m *UpstreamManager) immediateFailoverLocked() {
+func (m *UpstreamManager) immediateFailoverLocked(reason string) {
 	m.resetPendingLocked()
 	best, _ := m.selectBestLocked(m.activeTag)
 	if best != "" {
-		m.setActiveLocked(best)
+		m.setActiveLocked(best, reason)
 		return
 	}
 	active := m.upstreams[m.activeTag]
 	if active != nil && !active.stats.Usable {
-		m.setActiveLocked("")
+		m.setActiveLocked("", reason)
 	}
 }
 
@@ -483,8 +528,12 @@ func (m *UpstreamManager) MarkDialFailure(tag string, cooldown time.Duration) {
 	}
 	up.dialFailUntil = time.Now().Add(cooldown)
 	up.dialFailCount++
+	util.Event(m.logger, slog.LevelWarn, "upstream.dial_failure_marked",
+		"upstream", tag,
+		"dial_fail_count", up.dialFailCount,
+	)
 	if m.mode == ModeAuto && tag == m.activeTag && up.dialFailCount >= dialFailSwitchCount {
-		m.immediateFailoverLocked()
+		m.immediateFailoverLocked("failover_dial")
 	}
 }
 
@@ -494,6 +543,9 @@ func (m *UpstreamManager) ClearDialFailure(tag string) {
 	up, ok := m.upstreams[tag]
 	if !ok {
 		return
+	}
+	if up.dialFailCount > 0 || !up.dialFailUntil.IsZero() {
+		util.Event(m.logger, slog.LevelDebug, "upstream.dial_failure_cleared", "upstream", tag)
 	}
 	up.dialFailUntil = time.Time{}
 	up.dialFailCount = 0
@@ -550,11 +602,19 @@ func (m *UpstreamManager) selectBestLocked(exclude string) (string, float64) {
 	return bestTag, bestScore
 }
 
-func (m *UpstreamManager) setActiveLocked(tag string) {
+func (m *UpstreamManager) setActiveLocked(tag, reason string) {
 	if tag == m.activeTag {
 		return
 	}
 	old := m.activeTag
+	prevScore := 0.0
+	nextScore := 0.0
+	if oldUp := m.upstreams[old]; oldUp != nil {
+		prevScore = oldUp.stats.ScoreOverall
+	}
+	if nextUp := m.upstreams[tag]; nextUp != nil {
+		nextScore = nextUp.stats.ScoreOverall
+	}
 	m.activeTag = tag
 	m.lastSwitchTime = time.Now()
 	m.resetPendingLocked()
@@ -563,14 +623,44 @@ func (m *UpstreamManager) setActiveLocked(tag string) {
 			up.dialFailCount = 0
 		}
 	}
+	if tag == "" {
+		util.Event(m.logger, slog.LevelWarn, "upstream.active_cleared",
+			"switch.from", old,
+			"switch.reason", reason,
+		)
+	} else {
+		util.Event(m.logger, slog.LevelInfo, "upstream.active_changed",
+			"switch.from", old,
+			"switch.to", tag,
+			"switch.reason", reason,
+			"score.previous", prevScore,
+			"score.overall", nextScore,
+		)
+	}
 	if m.onSelect != nil {
 		m.onSelect(old, tag)
 	}
 }
 
 func (m *UpstreamManager) resetPendingLocked() {
+	if m.pendingSwitch != "" {
+		util.Event(m.logger, slog.LevelDebug, "upstream.pending_switch_cancelled",
+			"switch.from", m.activeTag,
+			"switch.to", m.pendingSwitch,
+		)
+	}
 	m.pendingSwitch = ""
 	m.pendingSince = time.Time{}
+}
+
+func (m *UpstreamManager) usabilityReason(stats UpstreamStats) string {
+	if stats.LossRate >= m.switching.Failover.LossRateThreshold {
+		return "failover_loss"
+	}
+	if stats.RetransRate >= m.switching.Failover.RetransmitRateThreshold {
+		return "failover_retrans"
+	}
+	return "score_delta"
 }
 
 func (s *UpstreamStats) ComputeUsable(staleThresh time.Duration) bool {

@@ -3,11 +3,13 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type StatusEntry struct {
@@ -279,21 +281,24 @@ type StatusHub struct {
 	clients   map[*statusClient]struct{}
 	broadcast chan statusMessage
 	ctxDone   <-chan struct{}
+	logger    util.Logger
 }
 
 type statusClient struct {
 	send         chan []byte
+	connID       string
 	closeOnce    sync.Once
 	subscribed   bool
 	intervalMs   int
 	tickerCancel context.CancelFunc
 }
 
-func NewStatusHub(ctxDone <-chan struct{}) *StatusHub {
+func NewStatusHub(ctxDone <-chan struct{}, logger util.Logger) *StatusHub {
 	h := &StatusHub{
 		clients:   make(map[*statusClient]struct{}),
 		broadcast: make(chan statusMessage, 128),
 		ctxDone:   ctxDone,
+		logger:    logger,
 	}
 	go h.run()
 	return h
@@ -317,6 +322,11 @@ func (h *StatusHub) run() {
 				select {
 				case client.send <- data:
 				default:
+					util.Event(h.logger, slog.LevelDebug, "control.ws.client_queue_drop",
+						"ws.conn_id", client.connID,
+						"queue.capacity", cap(client.send),
+						"result", "dropped",
+					)
 				}
 			}
 			h.mu.Unlock()
@@ -341,6 +351,10 @@ func (h *StatusHub) Broadcast(msg statusMessage) {
 	select {
 	case h.broadcast <- msg:
 	default:
+		util.Event(h.logger, slog.LevelDebug, "control.ws.hub_broadcast_drop",
+			"queue.capacity", cap(h.broadcast),
+			"result", "dropped",
+		)
 	}
 }
 
