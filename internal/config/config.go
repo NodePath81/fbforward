@@ -1013,3 +1013,70 @@ func DefaultSwitchingConfig() SwitchingConfig {
 		CloseFlowsOnFailover: false,
 	}
 }
+
+// DefaultScoringConfig returns a ScoringConfig populated with the built-in defaults.
+// This is primarily used by tests to construct a valid scoring configuration without parsing YAML.
+func DefaultScoringConfig() ScoringConfig {
+	enabledVal := defaultUtilizationEnabled
+
+	return ScoringConfig{
+		Smoothing: ScoringSmoothingConfig{
+			Alpha: defaultEMAAlpha,
+		},
+		Reference: ScoringReferenceConfig{
+			TCP: ProtocolReferenceConfig{
+				Bandwidth: ReferenceBandwidthConfig{
+					Upload:   defaultRefBandwidthUp,
+					Download: defaultRefBandwidthDn,
+				},
+				Latency: ReferenceLatencyConfig{
+					RTT:    defaultRefRTTMs,
+					Jitter: defaultRefJitterMs,
+				},
+				RetransmitRate: defaultRefRetransRate,
+			},
+			UDP: ProtocolReferenceConfig{
+				Bandwidth: ReferenceBandwidthConfig{
+					Upload:   defaultRefBandwidthUp,
+					Download: defaultRefBandwidthDn,
+				},
+				Latency: ReferenceLatencyConfig{
+					RTT:    defaultRefRTTMs,
+					Jitter: defaultRefJitterMs,
+				},
+				LossRate: defaultRefLossRate,
+			},
+		},
+		Weights: ScoringWeightsConfig{
+			TCP: WeightsTCPConfig{
+				BandwidthUpload:   defaultWeightTCPBwUp,
+				BandwidthDownload: defaultWeightTCPBwDn,
+				RTT:               defaultWeightTCPRTT,
+				Jitter:            defaultWeightTCPJitter,
+				RetransmitRate:    defaultWeightTCPRetrans,
+			},
+			UDP: WeightsUDPConfig{
+				BandwidthUpload:   defaultWeightUDPBwUp,
+				BandwidthDownload: defaultWeightUDPBwDn,
+				RTT:               defaultWeightUDPRTT,
+				Jitter:            defaultWeightUDPJitter,
+				LossRate:          defaultWeightUDPLoss,
+			},
+			ProtocolBlend: ProtocolBlendConfig{
+				TCPWeight: defaultProtocolWeightTCP,
+				UDPWeight: defaultProtocolWeightUDP,
+			},
+		},
+		UtilizationPenalty: UtilizationPenaltyConfig{
+			Enabled:        &enabledVal,
+			WindowDuration: Duration(defaultUtilizationWindow),
+			UpdateInterval: Duration(defaultUtilizationUpdate),
+			Threshold:      defaultUtilizationThreshold,
+			MinMultiplier:  defaultUtilizationMinMult,
+			Exponent:       defaultUtilizationExponent,
+		},
+		BiasTransform: BiasTransformConfig{
+			Kappa: defaultBiasKappa,
+		},
+	}
+}

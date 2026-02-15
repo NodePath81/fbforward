@@ -877,13 +877,36 @@ This outline defines the complete documentation structure for the fbforward mono
 
 ---
 
-## 8. Appendices
+## 8. Testing
 
-### 8.1 Glossary
+### 8.1 Testing guide
 
 | Field | Value |
 |-------|-------|
 | **ID** | 8.1 |
+| **Purpose** | Document unit and integration testing infrastructure |
+| **Source artifacts** | test/harness/, test/scenarios/, *_test.go |
+| **Dependencies** | 7.1 (architecture), 2.1 (prerequisites) |
+| **Audience** | Developers, contributors |
+| **Depth** | Reference |
+
+**Content:**
+- Unit test coverage (bwprobe algorithms, scoring logic)
+- Integration test architecture (rootless namespaces, harness)
+- Scenario YAML format
+- Running tests and troubleshooting
+
+See [test/testing-guide.md](test/testing-guide.md)
+
+---
+
+## 9. Appendices
+
+### 9.1 Glossary
+
+| Field | Value |
+|-------|-------|
+| **ID** | 9.1 |
 | **Purpose** | Define domain terminology |
 | **Source artifacts** | All sections |
 | **Dependencies** | None |
@@ -892,11 +915,11 @@ This outline defines the complete documentation structure for the fbforward mono
 
 **Content:** See [glossary.md](glossary.md)
 
-### 8.2 Diagram index
+### 9.2 Diagram index
 
 | Field | Value |
 |-------|-------|
-| **ID** | 8.2 |
+| **ID** | 9.2 |
 | **Purpose** | Catalog all architectural diagrams |
 | **Source artifacts** | All sections |
 | **Dependencies** | None |

@@ -1,0 +1,26 @@
+name: anti-flapping
+interval_seconds: 5
+convergence_cycles: 3
+overrides:
+  switching:
+    auto:
+      score_delta_threshold: 5.0
+shaping:
+  us-a: {bandwidth: "80mbit", latency: "25ms", loss: "0%"}
+  us-b: {bandwidth: "75mbit", latency: "27ms", loss: "0%"}
+timeline:
+  - t: "0s"
+    action: wait_convergence
+  - t: "15s"
+    action: perturb_bandwidth
+    upstream: us-a
+    new_shaping: {bandwidth: "85mbit", latency: "25ms", loss: "0%"}
+  - t: "30s"
+    action: perturb_bandwidth
+    upstream: us-b
+    new_shaping: {bandwidth: "72mbit", latency: "27ms", loss: "0%"}
+  - t: "120s"
+    assertions:
+      - type: switch_count_lte
+        max: 2
+        reason: "anti-flapping"

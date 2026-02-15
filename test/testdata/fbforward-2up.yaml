@@ -1,0 +1,53 @@
+hostname: fbforward-test
+forwarding:
+  listeners:
+    - bind_addr: "0.0.0.0"
+      bind_port: 1080
+      protocol: tcp
+  limits:
+    max_tcp_connections: 1000
+    max_udp_mappings: 1000
+  idle_timeout:
+    tcp: "5m"
+    udp: "1m"
+control:
+  bind_addr: "0.0.0.0"
+  bind_port: 8080
+  auth_token: "test-harness-token-12345"
+  webui:
+    enabled: false
+  metrics:
+    enabled: true
+upstreams:
+  - tag: us-a
+    destination: {host: 10.200.2.1}
+    measurement: {host: 10.200.2.1, port: 9876}
+  - tag: us-b
+    destination: {host: 10.200.3.1}
+    measurement: {host: 10.200.3.1, port: 9876}
+measurement:
+  startup_delay: "5s"
+  stale_threshold: "30s"
+  fallback_to_icmp_on_stale: false
+  schedule:
+    interval: {min: "5s", max: "5s"}
+    upstream_gap: "1s"
+  fast_start:
+    enabled: true
+    timeout: "500ms"
+    warmup_duration: "5s"
+  protocols:
+    tcp:
+      enabled: true
+      chunk_size: "1200"
+      sample_size: "500kb"
+      sample_count: 1
+      target_bandwidth: {upload: "10m", download: "50m"}
+      timeout: {per_sample: "10s", per_cycle: "30s"}
+    udp:
+      enabled: true
+      chunk_size: "1200"
+      sample_size: "500kb"
+      sample_count: 1
+      target_bandwidth: {upload: "10m", download: "50m"}
+      timeout: {per_sample: "10s", per_cycle: "30s"}
