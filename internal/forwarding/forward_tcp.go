@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
@@ -48,7 +50,7 @@ func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsCon
 		status:  status,
 		timeout: timeout,
 		sem:     make(chan struct{}, limits.MaxTCPConnections),
-		logger:  logger,
+		logger:  util.ComponentLogger(logger, util.CompForwardTCP),
 	}
 }
 
@@ -59,7 +61,7 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 		return err
 	}
 	l.listener = ln
-	l.logger.Info("tcp listener started", "addr", addr)
+	util.Event(l.logger, slog.LevelInfo, "forward.tcp.listener_started", "listen.addr", addr)
 
 	wg.Add(1)
 	go func() {
@@ -74,7 +76,7 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 				case <-ctx.Done():
 					return
 				default:
-					l.logger.Error("tcp accept error", "error", err)
+					util.Event(l.logger, slog.LevelError, "forward.tcp.accept_error", "error", err)
 					continue
 				}
 			}
@@ -82,7 +84,9 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 			case l.sem <- struct{}{}:
 				go l.handleConn(ctx, conn)
 			default:
-				l.logger.Debug("tcp limit reached, closing connection", "client", conn.RemoteAddr().String())
+				util.Event(l.logger, slog.LevelWarn, "forward.tcp.connection_limit_reached",
+					"client.addr", conn.RemoteAddr().String(),
+				)
 				_ = conn.Close()
 			}
 		}
@@ -93,7 +97,9 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 func (l *TCPListener) Close() error {
 	if l.listener != nil {
 		err := l.listener.Close()
-		l.logger.Info("tcp listener stopped", "addr", net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)))
+		util.Event(l.logger, slog.LevelInfo, "forward.tcp.listener_stopped",
+			"listen.addr", net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
+		)
 		return err
 	}
 	return nil
@@ -106,20 +112,33 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 	}
 	up, err := l.manager.SelectUpstream()
 	if err != nil {
-		l.logger.Debug("tcp upstream selection failed", "error", err)
+		util.Event(l.logger, slog.LevelWarn, "forward.tcp.upstream_selection_failed", "error", err)
 		_ = client.Close()
 		return
 	}
 	ip := up.ActiveIP()
 	if ip == nil {
-		l.logger.Debug("tcp upstream missing IP", "upstream", up.Tag)
+		util.Event(l.logger, slog.LevelWarn, "forward.tcp.dial_failed",
+			"upstream", up.Tag,
+			"result", "failed",
+		)
 		_ = client.Close()
 		return
 	}
+	upstreamIP := ip.String()
+	util.Event(l.logger, slog.LevelDebug, "forward.tcp.upstream_selected",
+		"upstream", up.Tag,
+		"upstream.ip", upstreamIP,
+	)
 	remoteAddr := net.JoinHostPort(ip.String(), util.FormatPort(l.cfg.BindPort))
-	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond)
+	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond, l.logger, up.Tag)
 	if err != nil {
-		l.logger.Debug("tcp dial failed", "upstream", up.Tag, "error", err)
+		util.Event(l.logger, slog.LevelWarn, "forward.tcp.dial_failed",
+			"upstream", up.Tag,
+			"upstream.ip", upstreamIP,
+			"error", err,
+			"result", "failed",
+		)
 		l.manager.MarkDialFailure(up.Tag, tcpDialFailureCooldown)
 		_ = client.Close()
 		return
@@ -127,40 +146,65 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 	l.manager.ClearDialFailure(up.Tag)
 
 	conn := &tcpConn{
-		client:      client,
-		upstream:    upConn,
-		upstreamTag: up.Tag,
-		listenPort:  l.cfg.BindPort,
-		timeout:     l.timeout,
-		metrics:     l.metrics,
-		status:      l.status,
-		logger:      l.logger,
+		client:       client,
+		upstream:     upConn,
+		upstreamTag:  up.Tag,
+		listenPort:   l.cfg.BindPort,
+		timeout:      l.timeout,
+		metrics:      l.metrics,
+		status:       l.status,
+		logger:       l.logger,
+		upstreamIP:   upstreamIP,
+		upstreamAddr: remoteAddr,
+		listenAddr:   net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
 	}
 	conn.start(ctx)
 }
 
 type tcpConn struct {
-	client      net.Conn
-	upstream    net.Conn
-	upstreamTag string
-	listenPort  int
-	timeout     time.Duration
-	metrics     *metrics.Metrics
-	status      *control.StatusStore
-	logger      util.Logger
+	client       net.Conn
+	upstream     net.Conn
+	upstreamTag  string
+	listenPort   int
+	timeout      time.Duration
+	metrics      *metrics.Metrics
+	status       *control.StatusStore
+	logger       util.Logger
+	upstreamIP   string
+	upstreamAddr string
+	listenAddr   string
+	clientAddr   string
+	clientIP     string
 
 	id         string
 	closeOnce  sync.Once
 	activityCh chan struct{}
 	done       chan struct{}
+	created    time.Time
+	totalUp    uint64
+	totalDown  uint64
 }
 
 func (c *tcpConn) start(ctx context.Context) {
 	clientAddr := c.client.RemoteAddr().String()
+	c.clientAddr = clientAddr
+	c.clientIP = clientIPFromAddr(clientAddr)
+	c.created = time.Now()
 	c.activityCh = make(chan struct{}, 1)
 	c.done = make(chan struct{})
 	c.id = c.status.AddTCP(clientAddr, c.upstreamTag, c.listenPort, c.close)
-	c.logger.Debug("tcp connection added", "id", c.id, "client", clientAddr, "upstream", c.upstreamTag)
+	util.Event(c.logger, slog.LevelInfo, "forward.tcp.connection_opened",
+		"flow.id", c.id,
+		"request.protocol", "tcp",
+		"client.addr", clientAddr,
+		"client.ip", c.clientIP,
+		"listen.addr", c.listenAddr,
+		"flow.listen_port", c.listenPort,
+		"upstream", c.upstreamTag,
+		"upstream.ip", c.upstreamIP,
+		"upstream.addr", c.upstreamAddr,
+		"result", "connected",
+	)
 
 	go c.proxy(ctx, c.upstream, c.client, true)
 	go c.proxy(ctx, c.client, c.upstream, false)
@@ -210,7 +254,7 @@ func writeAll(dst net.Conn, buf []byte) error {
 	return nil
 }
 
-func dialTCPWithRetry(ctx context.Context, addr string, attempts int, backoff time.Duration) (net.Conn, error) {
+func dialTCPWithRetry(ctx context.Context, addr string, attempts int, backoff time.Duration, logger util.Logger, upstream string) (net.Conn, error) {
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -226,6 +270,11 @@ func dialTCPWithRetry(ctx context.Context, addr string, attempts int, backoff ti
 		}
 		lastErr = err
 		if i < attempts-1 {
+			util.Event(logger, slog.LevelDebug, "forward.tcp.dial_retry",
+				"upstream", upstream,
+				"attempt", i+1,
+				"error", err,
+			)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -244,9 +293,11 @@ func applyTCPOptions(conn *net.TCPConn) {
 
 func (c *tcpConn) touch(n uint64, up bool) {
 	if up {
+		atomic.AddUint64(&c.totalUp, n)
 		c.metrics.AddBytesUp(c.upstreamTag, n, "tcp")
 		c.status.UpdateTCP(c.id, n, 0, 1, 0)
 	} else {
+		atomic.AddUint64(&c.totalDown, n)
 		c.metrics.AddBytesDown(c.upstreamTag, n, "tcp")
 		c.status.UpdateTCP(c.id, 0, n, 0, 1)
 	}
@@ -287,10 +338,34 @@ func (c *tcpConn) closeWithReason(reason string) {
 		_ = c.client.Close()
 		_ = c.upstream.Close()
 		c.status.RemoveTCP(c.id)
-		c.logger.Debug("tcp connection closed", "id", c.id, "reason", reason)
+		durationMs := int64(0)
+		if !c.created.IsZero() {
+			durationMs = time.Since(c.created).Milliseconds()
+		}
+		util.Event(c.logger, slog.LevelInfo, "forward.tcp.connection_closed",
+			"flow.id", c.id,
+			"request.protocol", "tcp",
+			"client.addr", c.clientAddr,
+			"client.ip", c.clientIP,
+			"upstream", c.upstreamTag,
+			"upstream.ip", c.upstreamIP,
+			"upstream.addr", c.upstreamAddr,
+			"flow.close_reason", reason,
+			"flow.bytes_up", atomic.LoadUint64(&c.totalUp),
+			"flow.bytes_down", atomic.LoadUint64(&c.totalDown),
+			"flow.duration_ms", durationMs,
+			"result", "closed",
+		)
 	})
 }
 
 func (c *tcpConn) close() {
 	c.closeWithReason("upstream_unusable")
+}
+
+func clientIPFromAddr(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }

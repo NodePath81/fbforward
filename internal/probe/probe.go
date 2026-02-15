@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"log/slog"
 	"math/rand"
 	"net"
 	"time"
@@ -98,6 +99,8 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 	}
 	id := rand.Intn(0xffff)
 	var seq uint16
+	lastReachable := false
+	lastReachableInit := false
 
 	for {
 		select {
@@ -108,7 +111,7 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 
 		ip := up.ActiveIP()
 		if ip == nil {
-			logger.Error("probe waiting, no resolved IP", "upstream", up.Tag)
+			util.Event(logger, slog.LevelWarn, "probe.no_resolved_ip", "upstream", up.Tag)
 			select {
 			case <-ctx.Done():
 				return
@@ -131,7 +134,7 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 
 		conn, err := icmp.ListenPacket(network, "")
 		if err != nil {
-			logger.Error("probe socket error", "upstream", up.Tag, "error", err)
+			util.Event(logger, slog.LevelError, "probe.socket_error", "upstream", up.Tag, "error", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -161,7 +164,16 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 				window.addSample(ok, rtt)
 				if window.complete() {
 					wm := window.metrics()
-					stats := manager.UpdateReachability(up.Tag, wm.Loss < 1)
+					reachable := wm.Loss < 1
+					stats := manager.UpdateReachability(up.Tag, reachable)
+					if !lastReachableInit || lastReachable != reachable {
+						util.Event(logger, slog.LevelInfo, "probe.reachability_changed",
+							"upstream", up.Tag,
+							"reachable", reachable,
+						)
+						lastReachable = reachable
+						lastReachableInit = true
+					}
 					if metrics != nil {
 						metrics.SetUpstreamMetrics(up.Tag, stats)
 					}

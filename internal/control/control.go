@@ -5,13 +5,15 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
@@ -51,6 +53,8 @@ type ControlServer struct {
 	scheduler   *measure.Scheduler
 	collectorMu sync.RWMutex
 	collector   *measure.Collector
+	nextReqID   uint64
+	nextWSID    uint64
 }
 
 func NewControlServer(cfg config.Config, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
@@ -63,7 +67,7 @@ func NewControlServer(cfg config.Config, manager *upstream.UpstreamManager, metr
 		metrics:     metrics,
 		status:      status,
 		restartFn:   restartFn,
-		logger:      logger,
+		logger:      util.ComponentLogger(logger, util.CompControl),
 		limiter:     newRateLimiter(rpcRatePerSecond, rpcRateBurst, 5*time.Minute),
 	}
 }
@@ -92,11 +96,9 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	}()
 
 	go func() {
-		if err := c.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			c.logger.Error("control server error", "error", err)
-		}
+		_ = c.server.ListenAndServe()
 	}()
-	c.logger.Info("control server started", "addr", addr)
+	util.Event(c.logger, slog.LevelInfo, "control.server_started", "listen.addr", addr)
 	return nil
 }
 
@@ -185,59 +187,290 @@ type identityResponse struct {
 	Version  string   `json:"version"`
 }
 
+type requestCtx struct {
+	id         string
+	start      time.Time
+	protocol   string
+	method     string
+	path       string
+	clientAddr string
+	clientIP   string
+	userAgent  string
+	authMethod string
+	authOK     bool
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	code    int
+	written bool
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	if !sw.written {
+		sw.code = code
+		sw.written = true
+	}
+	sw.ResponseWriter.WriteHeader(code)
+}
+
+func (sw *statusWriter) Write(b []byte) (int, error) {
+	if !sw.written {
+		sw.code = http.StatusOK
+		sw.written = true
+	}
+	return sw.ResponseWriter.Write(b)
+}
+
+func (c *ControlServer) newRequestCtx(r *http.Request, protocol string, authOK bool) requestCtx {
+	return requestCtx{
+		id:         fmt.Sprintf("r-%d", atomic.AddUint64(&c.nextReqID, 1)),
+		start:      time.Now(),
+		protocol:   protocol,
+		method:     r.Method,
+		path:       r.URL.Path,
+		clientAddr: r.RemoteAddr,
+		clientIP:   clientIP(r),
+		userAgent:  r.UserAgent(),
+		authMethod: authMethodForRequest(r),
+		authOK:     authOK,
+	}
+}
+
+func authMethodForRequest(r *http.Request) string {
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if auth != "" {
+		if _, ok := bearerToken(r); ok {
+			return "bearer"
+		}
+		return "unknown"
+	}
+	if _, ok := tokenFromWebSocketProtocols(r); ok {
+		return "ws_subprotocol"
+	}
+	if len(websocket.Subprotocols(r)) > 0 {
+		return "unknown"
+	}
+	return "none"
+}
+
+func (c *ControlServer) policyAttrs() []any {
+	return []any{
+		"access.policy.name", "none",
+		"access.policy.decision", "not_applicable",
+		"access.policy.reason", "no_policy_configured",
+	}
+}
+
+func requestAttrs(req requestCtx) []any {
+	return []any{
+		"request.id", req.id,
+		"request.protocol", req.protocol,
+		"request.method", req.method,
+		"request.path", req.path,
+		"client.addr", req.clientAddr,
+		"client.ip", req.clientIP,
+		"http.user_agent", req.userAgent,
+		"auth.identity", "unknown",
+		"auth.method", req.authMethod,
+		"auth.authenticated", req.authOK,
+	}
+}
+
+func completionResult(statusCode int) string {
+	switch {
+	case statusCode >= 200 && statusCode < 300:
+		return "success"
+	case statusCode == 401 || statusCode == 403 || statusCode == 429:
+		return "denied"
+	case statusCode == 400 || statusCode == 404 || statusCode == 405:
+		return "rejected"
+	default:
+		return "failed"
+	}
+}
+
 func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
-	if !c.limiter.Allow(clientIP(r)) {
-		writeJSON(w, http.StatusTooManyRequests, rpcResponse{Ok: false, Error: "rate limit exceeded"})
+	authOK := c.checkAuth(r)
+	reqCtx := c.newRequestCtx(r, "http", authOK)
+	sw := &statusWriter{ResponseWriter: w}
+	completionErr := ""
+
+	defer func() {
+		code := sw.code
+		if !sw.written {
+			code = 0
+		}
+		result := completionResult(code)
+		if code == 0 {
+			result = "failed"
+		}
+		attrs := append(requestAttrs(reqCtx),
+			"http.status_code", code,
+			"result", result,
+			"latency_ms", time.Since(reqCtx.start).Milliseconds(),
+		)
+		if result != "success" && completionErr != "" {
+			attrs = append(attrs, "error", completionErr)
+		}
+		util.Event(c.logger, slog.LevelInfo, "control.rpc.request_completed", attrs...)
+	}()
+
+	policyAttrs := append([]any{
+		"request.id", reqCtx.id,
+		"client.ip", reqCtx.clientIP,
+		"request.method", reqCtx.method,
+		"request.path", reqCtx.path,
+		"http.user_agent", reqCtx.userAgent,
+		"auth.identity", "unknown",
+		"auth.method", reqCtx.authMethod,
+		"auth.authenticated", reqCtx.authOK,
+	}, c.policyAttrs()...)
+	policyAttrs = append(policyAttrs, "result", "success")
+	util.Event(c.logger, slog.LevelInfo, "control.rpc.access_policy_decision", policyAttrs...)
+
+	if !c.limiter.Allow(reqCtx.clientIP) {
+		completionErr = "rate limit exceeded"
+		util.Event(c.logger, slog.LevelWarn, "control.rpc.rate_limited",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"request.method", reqCtx.method,
+			"request.path", reqCtx.path,
+			"http.user_agent", reqCtx.userAgent,
+			"auth.identity", "unknown",
+			"auth.method", reqCtx.authMethod,
+			"auth.authenticated", reqCtx.authOK,
+			"http.status_code", http.StatusTooManyRequests,
+			"result", "denied",
+		)
+		writeJSON(sw, http.StatusTooManyRequests, rpcResponse{Ok: false, Error: completionErr})
 		return
 	}
-	if !c.checkAuth(r) {
-		writeJSON(w, http.StatusUnauthorized, rpcResponse{Ok: false, Error: "unauthorized"})
+	if !authOK {
+		completionErr = "unauthorized"
+		util.Event(c.logger, slog.LevelWarn, "control.rpc.auth_failed",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"request.method", reqCtx.method,
+			"request.path", reqCtx.path,
+			"http.user_agent", reqCtx.userAgent,
+			"auth.identity", "unknown",
+			"auth.method", reqCtx.authMethod,
+			"auth.authenticated", false,
+			"http.status_code", http.StatusUnauthorized,
+			"result", "denied",
+		)
+		writeJSON(sw, http.StatusUnauthorized, rpcResponse{Ok: false, Error: completionErr})
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, rpcResponse{Ok: false, Error: "method not allowed"})
+		completionErr = "method not allowed"
+		util.Event(c.logger, slog.LevelWarn, "control.rpc.request_invalid",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"error", completionErr,
+			"http.status_code", http.StatusMethodNotAllowed,
+			"result", "rejected",
+		)
+		writeJSON(sw, http.StatusMethodNotAllowed, rpcResponse{Ok: false, Error: completionErr})
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxRPCBodyBytes)
+
+	r.Body = http.MaxBytesReader(sw, r.Body, maxRPCBodyBytes)
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "invalid json"})
+		completionErr = "invalid json"
+		util.Event(c.logger, slog.LevelWarn, "control.rpc.request_invalid",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"error", completionErr,
+			"http.status_code", http.StatusBadRequest,
+			"result", "rejected",
+		)
+		writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 		return
 	}
+
+	util.Event(c.logger, slog.LevelInfo, "control.rpc.request_received",
+		append(requestAttrs(reqCtx), "rpc.method", req.Method)...,
+	)
+
 	switch req.Method {
 	case "SetUpstream":
 		var params setUpstreamParams
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "invalid params"})
+			completionErr = "invalid params"
+			util.Event(c.logger, slog.LevelWarn, "control.rpc.request_invalid",
+				"request.id", reqCtx.id,
+				"client.addr", reqCtx.clientAddr,
+				"client.ip", reqCtx.clientIP,
+				"error", completionErr,
+				"http.status_code", http.StatusBadRequest,
+				"result", "rejected",
+			)
+			writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 			return
 		}
 		mode := strings.ToLower(params.Mode)
 		if mode == "auto" {
 			c.manager.SetAuto()
 			c.metrics.SetMode(upstream.ModeAuto)
-			c.logger.Info("manual override cleared")
-			writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
+			util.Event(c.logger, slog.LevelInfo, "control.rpc.set_upstream_applied",
+				"rpc.method", req.Method,
+				"upstream", "",
+				"upstream.mode", mode,
+			)
+			writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
 			return
 		}
 		if mode == "manual" {
 			if err := c.manager.SetManual(params.Tag); err != nil {
-				writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: err.Error()})
+				completionErr = err.Error()
+				writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 				return
 			}
 			c.metrics.SetMode(upstream.ModeManual)
-			c.logger.Info("manual override set", "upstream", params.Tag)
-			writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
+			util.Event(c.logger, slog.LevelInfo, "control.rpc.set_upstream_applied",
+				"rpc.method", req.Method,
+				"upstream", params.Tag,
+				"upstream.mode", mode,
+			)
+			writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "invalid mode"})
+		completionErr = "invalid mode"
+		util.Event(c.logger, slog.LevelWarn, "control.rpc.request_invalid",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"error", completionErr,
+			"http.status_code", http.StatusBadRequest,
+			"result", "rejected",
+		)
+		writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 	case "Restart":
-		go func() {
-			c.logger.Info("restart invoked")
+		util.Event(c.logger, slog.LevelInfo, "control.rpc.restart_requested", "rpc.method", req.Method)
+		go func(requestID string) {
 			if err := c.restartFn(); err != nil {
-				c.logger.Error("restart failed", "error", err)
+				util.Event(c.logger, slog.LevelError, "control.rpc.restart_completed",
+					"request.id", requestID,
+					"rpc.method", req.Method,
+					"result", "failed",
+					"error", err,
+				)
+				return
 			}
-		}()
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
+			util.Event(c.logger, slog.LevelInfo, "control.rpc.restart_completed",
+				"request.id", requestID,
+				"rpc.method", req.Method,
+				"result", "success",
+			)
+		}(reqCtx.id)
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
 	case "GetStatus":
 		upstreams := c.manager.Snapshot()
 		resp := statusResponse{
@@ -245,55 +478,101 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			ActiveUpstream: c.manager.ActiveTag(),
 			Upstreams:      upstreams,
 		}
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 	case "GetMeasurementConfig":
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getMeasurementConfig()})
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.getMeasurementConfig()})
 	case "GetRuntimeConfig":
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getRuntimeConfig()})
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.getRuntimeConfig()})
 	case "GetScheduleStatus":
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
 	case "ListUpstreams":
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
 	case "RunMeasurement":
 		c.collectorMu.RLock()
 		collector := c.collector
 		c.collectorMu.RUnlock()
 		if collector == nil {
-			writeJSON(w, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: "collector not ready"})
+			completionErr = "collector not ready"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
 			return
 		}
 
 		var params runMeasurementParams
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "invalid params"})
+			completionErr = "invalid params"
+			util.Event(c.logger, slog.LevelWarn, "control.rpc.request_invalid",
+				"request.id", reqCtx.id,
+				"client.addr", reqCtx.clientAddr,
+				"client.ip", reqCtx.clientIP,
+				"error", completionErr,
+				"http.status_code", http.StatusBadRequest,
+				"result", "rejected",
+			)
+			writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 			return
 		}
 		tag := strings.TrimSpace(params.Tag)
 		protocol := strings.ToLower(strings.TrimSpace(params.Protocol))
 		if protocol != "tcp" && protocol != "udp" {
-			writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "protocol must be tcp or udp"})
+			completionErr = "protocol must be tcp or udp"
+			util.Event(c.logger, slog.LevelWarn, "control.rpc.request_invalid",
+				"request.id", reqCtx.id,
+				"client.addr", reqCtx.clientAddr,
+				"client.ip", reqCtx.clientIP,
+				"error", completionErr,
+				"http.status_code", http.StatusBadRequest,
+				"result", "rejected",
+			)
+			writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 			return
 		}
 		up := c.manager.Get(tag)
 		if up == nil {
-			writeJSON(w, http.StatusNotFound, rpcResponse{Ok: false, Error: "upstream not found"})
+			completionErr = "upstream not found"
+			writeJSON(sw, http.StatusNotFound, rpcResponse{Ok: false, Error: completionErr})
 			return
 		}
 
-		go func() {
+		util.Event(c.logger, slog.LevelInfo, "control.rpc.run_measurement_requested",
+			"rpc.method", req.Method,
+			"upstream", tag,
+			"network.protocol", protocol,
+		)
+		go func(requestID string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c.logger.Info("manual measurement triggered", "upstream", tag, "protocol", protocol, "source", "ui")
 			if err := collector.RunProtocol(ctx, up, protocol); err != nil {
-				c.logger.Warn("manual measurement failed", "upstream", tag, "protocol", protocol, "error", err)
+				util.Event(c.logger, slog.LevelWarn, "control.rpc.run_measurement_completed",
+					"request.id", requestID,
+					"rpc.method", req.Method,
+					"upstream", tag,
+					"network.protocol", protocol,
+					"result", "failed",
+					"error", err,
+				)
 				return
 			}
-			c.logger.Info("manual measurement completed", "upstream", tag, "protocol", protocol)
-		}()
+			util.Event(c.logger, slog.LevelInfo, "control.rpc.run_measurement_completed",
+				"request.id", requestID,
+				"rpc.method", req.Method,
+				"upstream", tag,
+				"network.protocol", protocol,
+				"result", "success",
+			)
+		}(reqCtx.id)
 
-		writeJSON(w, http.StatusOK, rpcResponse{Ok: true})
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
 	default:
-		writeJSON(w, http.StatusBadRequest, rpcResponse{Ok: false, Error: "unknown method"})
+		completionErr = "unknown method"
+		util.Event(c.logger, slog.LevelWarn, "control.rpc.request_invalid",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"error", completionErr,
+			"http.status_code", http.StatusBadRequest,
+			"result", "rejected",
+		)
+		writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 	}
 }
 
@@ -598,24 +877,80 @@ func (c *ControlServer) getQueueSnapshot(now time.Time) queueSnapshotMessage {
 }
 
 func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if !c.checkStatusAuth(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	authOK := c.checkStatusAuth(r)
+	reqCtx := c.newRequestCtx(r, "ws", authOK)
+	sw := &statusWriter{ResponseWriter: w}
+	connID := fmt.Sprintf("ws-%d", atomic.AddUint64(&c.nextWSID, 1))
+
+	policyAttrs := append([]any{
+		"request.id", reqCtx.id,
+		"client.ip", reqCtx.clientIP,
+		"request.method", reqCtx.method,
+		"request.path", reqCtx.path,
+		"http.user_agent", reqCtx.userAgent,
+		"auth.identity", "unknown",
+		"auth.method", reqCtx.authMethod,
+		"auth.authenticated", reqCtx.authOK,
+	}, c.policyAttrs()...)
+	policyAttrs = append(policyAttrs, "result", "success")
+	util.Event(c.logger, slog.LevelInfo, "control.ws.access_policy_decision", policyAttrs...)
+
+	if !c.originAllowed(r) {
+		util.Event(c.logger, slog.LevelWarn, "control.ws.origin_rejected",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"request.method", reqCtx.method,
+			"request.path", reqCtx.path,
+			"http.user_agent", reqCtx.userAgent,
+			"http.status_code", http.StatusForbidden,
+			"result", "denied",
+		)
+		http.Error(sw, "forbidden", http.StatusForbidden)
 		return
 	}
+	if !authOK {
+		util.Event(c.logger, slog.LevelWarn, "control.ws.auth_failed",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"request.method", reqCtx.method,
+			"request.path", reqCtx.path,
+			"http.user_agent", reqCtx.userAgent,
+			"auth.identity", "unknown",
+			"auth.method", reqCtx.authMethod,
+			"auth.authenticated", false,
+			"http.status_code", http.StatusUnauthorized,
+			"result", "denied",
+		)
+		http.Error(sw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	upgrader := websocket.Upgrader{
-		CheckOrigin:  func(r *http.Request) bool { return c.originAllowed(r) },
+		CheckOrigin:  func(*http.Request) bool { return true },
 		Subprotocols: []string{wsPrimaryProtocol},
 	}
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(sw, r, nil)
 	if err != nil {
+		util.Event(c.logger, slog.LevelWarn, "control.ws.upgrade_failed",
+			"ws.conn_id", connID,
+			"client.addr", reqCtx.clientAddr,
+			"error", err,
+		)
 		return
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	})
-	client := &statusClient{send: make(chan []byte, 32)}
+	client := &statusClient{send: make(chan []byte, 32), connID: connID}
 	c.status.hub.Register(client)
+	util.Event(c.logger, slog.LevelInfo, "control.ws.connected",
+		"ws.conn_id", connID,
+		"client.addr", reqCtx.clientAddr,
+		"client.ip", reqCtx.clientIP,
+	)
 
 	var closeOnce sync.Once
 	done := make(chan struct{})
@@ -684,6 +1019,10 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(context.Background())
 		client.tickerCancel = cancel
 		subMu.Unlock()
+		util.Event(c.logger, slog.LevelDebug, "control.ws.subscribe_updated",
+			"ws.conn_id", connID,
+			"interval_ms", intervalMs,
+		)
 		if sendInitial {
 			sendSnapshots()
 		}
@@ -709,6 +1048,10 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			stopTicker()
 			closeConn()
 			c.status.hub.Unregister(client)
+			util.Event(c.logger, slog.LevelInfo, "control.ws.disconnected",
+				"ws.conn_id", connID,
+				"client.addr", reqCtx.clientAddr,
+			)
 		})
 	}
 
@@ -717,6 +1060,10 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
+				util.Event(c.logger, slog.LevelDebug, "control.ws.io_or_heartbeat_failed",
+					"ws.conn_id", connID,
+					"error", err,
+				)
 				return
 			}
 			var req struct {
@@ -724,11 +1071,19 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 				IntervalMs int    `json:"interval_ms"`
 			}
 			if err := json.Unmarshal(msg, &req); err != nil {
+				util.Event(c.logger, slog.LevelDebug, "control.ws.request_invalid",
+					"ws.conn_id", connID,
+					"error", err,
+				)
 				continue
 			}
 			switch req.Type {
 			case "subscribe":
 				if req.IntervalMs != 1000 && req.IntervalMs != 2000 && req.IntervalMs != 5000 {
+					util.Event(c.logger, slog.LevelDebug, "control.ws.request_invalid",
+						"ws.conn_id", connID,
+						"error", "invalid interval_ms",
+					)
 					sendError("invalid_interval", "interval_ms must be 1000, 2000, or 5000")
 					continue
 				}
@@ -738,6 +1093,12 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 				startTicker(req.IntervalMs, !alreadySubscribed)
 			case "unsubscribe":
 				stopTicker()
+				util.Event(c.logger, slog.LevelDebug, "control.ws.unsubscribed", "ws.conn_id", connID)
+			default:
+				util.Event(c.logger, slog.LevelDebug, "control.ws.request_invalid",
+					"ws.conn_id", connID,
+					"error", "unknown request type",
+				)
 			}
 		}
 	}()
@@ -752,6 +1113,10 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 				return
 			case <-ticker.C:
 				if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(wsWriteWait)); err != nil {
+					util.Event(c.logger, slog.LevelDebug, "control.ws.io_or_heartbeat_failed",
+						"ws.conn_id", connID,
+						"error", err,
+					)
 					return
 				}
 			case data, ok := <-client.send:
@@ -760,6 +1125,10 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 				}
 				_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+					util.Event(c.logger, slog.LevelDebug, "control.ws.io_or_heartbeat_failed",
+						"ws.conn_id", connID,
+						"error", err,
+					)
 					return
 				}
 			}
@@ -768,12 +1137,64 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *ControlServer) handleIdentity(w http.ResponseWriter, r *http.Request) {
-	if !c.checkAuth(r) {
-		writeJSON(w, http.StatusUnauthorized, rpcResponse{Ok: false, Error: "unauthorized"})
+	authOK := c.checkAuth(r)
+	reqCtx := c.newRequestCtx(r, "http", authOK)
+	sw := &statusWriter{ResponseWriter: w}
+	completionErr := ""
+	defer func() {
+		code := sw.code
+		if !sw.written {
+			code = 0
+		}
+		result := completionResult(code)
+		if code == 0 {
+			result = "failed"
+		}
+		attrs := append(requestAttrs(reqCtx),
+			"http.status_code", code,
+			"result", result,
+			"latency_ms", time.Since(reqCtx.start).Milliseconds(),
+		)
+		if result != "success" && completionErr != "" {
+			attrs = append(attrs, "error", completionErr)
+		}
+		util.Event(c.logger, slog.LevelInfo, "control.identity.request_completed", attrs...)
+	}()
+
+	policyAttrs := append([]any{
+		"request.id", reqCtx.id,
+		"client.ip", reqCtx.clientIP,
+		"request.method", reqCtx.method,
+		"request.path", reqCtx.path,
+		"http.user_agent", reqCtx.userAgent,
+		"auth.identity", "unknown",
+		"auth.method", reqCtx.authMethod,
+		"auth.authenticated", reqCtx.authOK,
+	}, c.policyAttrs()...)
+	policyAttrs = append(policyAttrs, "result", "success")
+	util.Event(c.logger, slog.LevelInfo, "control.identity.access_policy_decision", policyAttrs...)
+
+	if !authOK {
+		completionErr = "unauthorized"
+		util.Event(c.logger, slog.LevelWarn, "control.identity.auth_failed",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"request.method", reqCtx.method,
+			"request.path", reqCtx.path,
+			"http.user_agent", reqCtx.userAgent,
+			"auth.identity", "unknown",
+			"auth.method", reqCtx.authMethod,
+			"auth.authenticated", false,
+			"http.status_code", http.StatusUnauthorized,
+			"result", "denied",
+		)
+		writeJSON(sw, http.StatusUnauthorized, rpcResponse{Ok: false, Error: completionErr})
 		return
 	}
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, rpcResponse{Ok: false, Error: "method not allowed"})
+		completionErr = "method not allowed"
+		writeJSON(sw, http.StatusMethodNotAllowed, rpcResponse{Ok: false, Error: completionErr})
 		return
 	}
 	name := strings.TrimSpace(c.hostname)
@@ -785,7 +1206,7 @@ func (c *ControlServer) handleIdentity(w http.ResponseWriter, r *http.Request) {
 		IPs:      listActiveIPs(),
 		Version:  version.Version,
 	}
-	writeJSON(w, http.StatusOK, rpcResponse{Ok: true, Result: resp})
+	writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 }
 
 func listActiveIPs() []string {
@@ -843,11 +1264,62 @@ func addrToIP(addr net.Addr) string {
 }
 
 func (c *ControlServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	if !c.checkAuth(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	authOK := c.checkAuth(r)
+	reqCtx := c.newRequestCtx(r, "http", authOK)
+	sw := &statusWriter{ResponseWriter: w}
+	completionErr := ""
+	defer func() {
+		code := sw.code
+		if !sw.written {
+			code = 0
+		}
+		result := completionResult(code)
+		if code == 0 {
+			result = "failed"
+		}
+		attrs := append(requestAttrs(reqCtx),
+			"http.status_code", code,
+			"result", result,
+			"latency_ms", time.Since(reqCtx.start).Milliseconds(),
+		)
+		if result != "success" && completionErr != "" {
+			attrs = append(attrs, "error", completionErr)
+		}
+		util.Event(c.logger, slog.LevelInfo, "control.metrics.request_completed", attrs...)
+	}()
+
+	policyAttrs := append([]any{
+		"request.id", reqCtx.id,
+		"client.ip", reqCtx.clientIP,
+		"request.method", reqCtx.method,
+		"request.path", reqCtx.path,
+		"http.user_agent", reqCtx.userAgent,
+		"auth.identity", "unknown",
+		"auth.method", reqCtx.authMethod,
+		"auth.authenticated", reqCtx.authOK,
+	}, c.policyAttrs()...)
+	policyAttrs = append(policyAttrs, "result", "success")
+	util.Event(c.logger, slog.LevelInfo, "control.metrics.access_policy_decision", policyAttrs...)
+
+	if !authOK {
+		completionErr = "unauthorized"
+		util.Event(c.logger, slog.LevelWarn, "control.metrics.auth_failed",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"request.method", reqCtx.method,
+			"request.path", reqCtx.path,
+			"http.user_agent", reqCtx.userAgent,
+			"auth.identity", "unknown",
+			"auth.method", reqCtx.authMethod,
+			"auth.authenticated", false,
+			"http.status_code", http.StatusUnauthorized,
+			"result", "denied",
+		)
+		http.Error(sw, completionErr, http.StatusUnauthorized)
 		return
 	}
-	c.metrics.Handler(w, r)
+	c.metrics.Handler(sw, r)
 }
 
 func (c *ControlServer) checkAuth(r *http.Request) bool {

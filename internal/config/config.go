@@ -80,6 +80,8 @@ const (
 	defaultControlPort           = 8080
 	defaultControlWebUIEnabled   = true
 	defaultControlMetricsEnabled = true
+	defaultLoggingLevel          = "info"
+	defaultLoggingFormat         = "text"
 
 	defaultMeasurePort    = 9876
 	DefaultShapingIFB     = "ifb0"
@@ -136,7 +138,13 @@ type Config struct {
 	Scoring      ScoringConfig      `yaml:"scoring"`
 	Switching    SwitchingConfig    `yaml:"switching"`
 	Control      ControlConfig      `yaml:"control"`
+	Logging      LoggingConfig      `yaml:"logging"`
 	Shaping      ShapingConfig      `yaml:"shaping"`
+}
+
+type LoggingConfig struct {
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
 }
 
 type ForwardingConfig struct {
@@ -567,6 +575,12 @@ func (c *Config) setDefaults() {
 		enabled := defaultControlMetricsEnabled
 		c.Control.Metrics.Enabled = &enabled
 	}
+	if c.Logging.Level == "" {
+		c.Logging.Level = defaultLoggingLevel
+	}
+	if c.Logging.Format == "" {
+		c.Logging.Format = defaultLoggingFormat
+	}
 
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
@@ -720,6 +734,20 @@ func (c *Config) validate() error {
 	}
 	if c.Control.BindPort <= 0 || c.Control.BindPort > 65535 {
 		return errors.New("control.bind_port must be in 1..65535")
+	}
+
+	c.Logging.Level = strings.ToLower(strings.TrimSpace(c.Logging.Level))
+	switch c.Logging.Level {
+	case "debug", "info", "warn", "error":
+	default:
+		return errors.New("logging.level must be debug, info, warn, or error")
+	}
+
+	c.Logging.Format = strings.ToLower(strings.TrimSpace(c.Logging.Format))
+	switch c.Logging.Format {
+	case "text", "json":
+	default:
+		return errors.New("logging.format must be text or json")
 	}
 
 	if c.Reachability.ProbeInterval.Duration() <= 0 {
