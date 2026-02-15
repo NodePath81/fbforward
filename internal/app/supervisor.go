@@ -1,6 +1,7 @@
 package app
 
 import (
+	"log/slog"
 	"sync"
 
 	"github.com/NodePath81/fbforward/internal/config"
@@ -22,6 +23,7 @@ func NewSupervisor(configPath string, logger util.Logger) *Supervisor {
 }
 
 func (s *Supervisor) Start() error {
+	lifecycleLogger := util.ComponentLogger(s.logger, util.CompLifecycle)
 	cfg, err := config.LoadConfig(s.configPath)
 	if err != nil {
 		return err
@@ -30,6 +32,11 @@ func (s *Supervisor) Start() error {
 	if err != nil {
 		return err
 	}
+	util.Event(lifecycleLogger, slog.LevelInfo, "lifecycle.config_summary",
+		"upstream_count", len(cfg.Upstreams),
+		"listener_count", len(cfg.Forwarding.Listeners),
+		"upstream.mode", runtime.manager.Mode().String(),
+	)
 	if err := runtime.Start(); err != nil {
 		runtime.Stop()
 		return err
@@ -41,6 +48,9 @@ func (s *Supervisor) Start() error {
 }
 
 func (s *Supervisor) Restart() error {
+	lifecycleLogger := util.ComponentLogger(s.logger, util.CompLifecycle)
+	util.Event(lifecycleLogger, slog.LevelInfo, "lifecycle.restart_triggered", "restart.source", "rpc")
+
 	s.mu.Lock()
 	current := s.runtime
 	s.runtime = nil
@@ -49,7 +59,11 @@ func (s *Supervisor) Restart() error {
 	if current != nil {
 		current.Stop()
 	}
-	return s.Start()
+	if err := s.Start(); err != nil {
+		util.Event(lifecycleLogger, slog.LevelError, "lifecycle.restart_failed", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (s *Supervisor) Stop() {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"math/rand"
 	"net"
 	"sync"
@@ -57,10 +58,10 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	metrics := metrics.NewMetrics(tags)
 	utilWindow := cfg.Scoring.UtilizationPenalty.WindowDuration.Duration()
 	metrics.SetUtilizationWindow(utilWindow)
-	statusHub := control.NewStatusHub(ctx.Done())
+	statusHub := control.NewStatusHub(ctx.Done(), util.ComponentLogger(logger, util.CompControl))
 	status := control.NewStatusStore(statusHub, metrics)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	manager := upstream.NewUpstreamManager(upstreams, rng)
+	manager := upstream.NewUpstreamManager(upstreams, rng, util.ComponentLogger(logger, util.CompUpstream))
 	manager.SetSwitching(cfg.Switching)
 	manager.SetMeasurementConfig(cfg.Measurement)
 
@@ -83,15 +84,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 
 	manager.SetCallbacks(func(oldTag, newTag string) {
 		if oldTag != newTag {
-			if newTag == "" {
-				logger.Info("active upstream cleared")
-			} else {
-				logger.Info("active upstream changed", "from", oldTag, "to", newTag)
-			}
 			metrics.SetActive(newTag)
 		}
 	}, func(tag string, usable bool) {
-		logger.Info("upstream state changed", "upstream", tag, "usable", usable)
 		if !usable && cfg.Switching.CloseFlowsOnFailover {
 			status.CloseByUpstream(tag)
 		}
@@ -157,7 +152,7 @@ func (r *Runtime) startProbes() {
 		r.wg.Add(1)
 		go func(u *upstream.Upstream) {
 			defer r.wg.Done()
-			probe.ProbeLoop(r.ctx, u, r.cfg.Reachability, r.manager, r.metrics, r.logger)
+			probe.ProbeLoop(r.ctx, u, r.cfg.Reachability, r.manager, r.metrics, util.ComponentLogger(r.logger, util.CompProbe))
 		}(up)
 	}
 }
@@ -261,6 +256,7 @@ func (r *Runtime) startMeasurement() {
 		}
 	}
 
+	measureLogger := util.ComponentLogger(r.logger, util.CompMeasure)
 	scheduler := measure.NewScheduler(measure.SchedulerConfig{
 		MinInterval:         r.cfg.Measurement.Schedule.Interval.Min.Duration(),
 		MaxInterval:         r.cfg.Measurement.Schedule.Interval.Max.Duration(),
@@ -275,12 +271,12 @@ func (r *Runtime) startMeasurement() {
 		RateWindow:          rateWindow,
 		AggregateLimitBps:   aggregateLimitBps,
 		UpstreamLimits:      upstreamLimits,
-	}, r.metrics, r.upstreams, nil)
+	}, r.metrics, r.upstreams, nil, measureLogger)
 	if r.control != nil {
 		r.control.SetScheduler(scheduler)
 	}
 
-	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, r.logger)
+	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, measureLogger)
 	r.collector.OnTestComplete = func(upstream, protocol, direction string, startTime time.Time, duration time.Duration, success bool, result *measure.TestResultMetrics, errMsg string) {
 		if r.status == nil {
 			return
@@ -327,6 +323,7 @@ func (r *Runtime) runFastStart() {
 
 	var wg sync.WaitGroup
 	scores := make(map[string]float64)
+	rtts := make(map[string]float64)
 	var mu sync.Mutex
 
 	for _, up := range r.upstreams {
@@ -345,12 +342,20 @@ func (r *Runtime) runFastStart() {
 			score := measure.FastStartScore(rtt, reachable, u.Priority)
 			mu.Lock()
 			scores[u.Tag] = score
+			rtts[u.Tag] = rtt
 			mu.Unlock()
 		}(up)
 	}
 	wg.Wait()
 
 	r.manager.SelectByFastStart(scores)
+	active := r.manager.ActiveTag()
+	if active != "" {
+		util.Event(util.ComponentLogger(r.logger, util.CompUpstream), slog.LevelInfo, "upstream.fast_start_selected",
+			"upstream", active,
+			"measure.rtt_ms", rtts[active],
+		)
+	}
 	r.manager.StartWarmup(r.cfg.Measurement.FastStart.WarmupDuration.Duration())
 }
 
@@ -380,6 +385,8 @@ func (r *Runtime) wait() {
 }
 
 func (r *Runtime) startDNSRefresh() {
+	dnsLogger := util.ComponentLogger(r.logger, util.CompDNS)
+	shapingLogger := util.ComponentLogger(r.logger, util.CompShaping)
 	for _, upstream := range r.upstreams {
 		if net.ParseIP(upstream.Host) != nil {
 			continue
@@ -397,7 +404,11 @@ func (r *Runtime) startDNSRefresh() {
 				case <-ticker.C:
 					ips, err := r.resolver.ResolveHost(r.ctx, up.Host)
 					if err != nil {
-						r.logger.Debug("upstream resolve failed", "upstream", up.Tag, "error", err)
+						util.Event(dnsLogger, slog.LevelWarn, "dns.resolve_failed",
+							"upstream", up.Tag,
+							"dns.host", up.Host,
+							"error", err,
+						)
 						continue
 					}
 					changed := r.manager.UpdateResolved(up.Tag, ips)
@@ -407,11 +418,23 @@ func (r *Runtime) startDNSRefresh() {
 						if active != nil {
 							activeStr = active.String()
 						}
-						r.logger.Info("upstream resolved", "upstream", up.Tag, "active_ip", activeStr)
+						resolved := make([]string, 0, len(ips))
+						for _, ip := range ips {
+							resolved = append(resolved, ip.String())
+						}
+						util.Event(dnsLogger, slog.LevelInfo, "dns.resolve_changed",
+							"upstream", up.Tag,
+							"dns.host", up.Host,
+							"upstream.ip", activeStr,
+							"dns.resolved_ips", resolved,
+						)
 						if r.shaper != nil && upstreamHasShaping(r.cfg.Upstreams, up.Tag) {
 							upstreamShaping := buildUpstreamShapingEntries(r.cfg.Upstreams, r.upstreams)
 							if err := r.shaper.UpdateUpstreams(upstreamShaping); err != nil {
-								r.logger.Error("shaping reapply failed", "upstream", up.Tag, "error", err)
+								util.Event(shapingLogger, slog.LevelError, "shaping.reapply_failed",
+									"upstream", up.Tag,
+									"error", err,
+								)
 							}
 						}
 					}

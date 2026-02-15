@@ -5,6 +5,7 @@ package shaping
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -49,7 +50,7 @@ func NewTrafficShaper(cfg config.ShapingConfig, listeners []config.ListenerConfi
 		cfg:       cfg,
 		listeners: listeners,
 		upstreams: upstreams,
-		logger:    logger,
+		logger:    util.ComponentLogger(logger, util.CompShaping),
 	}
 }
 
@@ -110,16 +111,6 @@ func (s *TrafficShaper) applyLocked() error {
 		return err
 	}
 
-	if s.logger != nil {
-		s.logger.Info("applying traffic shaping",
-			"device", dev.Attrs().Name,
-			"ifb", ifb.Attrs().Name,
-			"egress_port_rules", len(egressPortClasses),
-			"ingress_port_rules", len(ingressPortClasses),
-			"egress_ip_rules", len(egressIPClasses),
-			"ingress_ip_rules", len(ingressIPClasses))
-	}
-
 	// Deterministic apply: clear root+ingress qdiscs on dev and root qdisc on ifb, then rebuild.
 	if err := clearQdiscs(dev); err != nil {
 		return fmt.Errorf("clear qdiscs on %s: %w", dev.Attrs().Name, err)
@@ -149,9 +140,12 @@ func (s *TrafficShaper) applyLocked() error {
 		return fmt.Errorf("add ingress IP classes on %s: %w", ifb.Attrs().Name, err)
 	}
 
-	if s.logger != nil {
-		s.logger.Info("traffic shaping applied", "device", dev.Attrs().Name, "ifb", ifb.Attrs().Name)
-	}
+	util.Event(s.logger, slog.LevelInfo, "shaping.applied",
+		"shaping.device", dev.Attrs().Name,
+		"shaping.ifb", ifb.Attrs().Name,
+		"shaping.egress_rules", len(egressPortClasses)+len(egressIPClasses),
+		"shaping.ingress_rules", len(ingressPortClasses)+len(ingressIPClasses),
+	)
 	return nil
 }
 
@@ -175,6 +169,7 @@ func (s *TrafficShaper) cleanupLocked() error {
 	if err := clearQdiscs(dev); err != nil {
 		return fmt.Errorf("cleanup qdiscs on %s: %w", dev.Attrs().Name, err)
 	}
+	util.Event(s.logger, slog.LevelInfo, "shaping.cleanup", "shaping.device", dev.Attrs().Name)
 	if s.cfg.IFBDevice == "" {
 		return nil
 	}
@@ -659,11 +654,10 @@ func addIPClassesToHTB(link netlink.Link, ipcs []ipClass, logger util.Logger) er
 
 		if err := netlink.FilterReplace(flower); err != nil {
 			if ic.isIPv6 && errors.Is(err, unix.EINVAL) {
-				if logger != nil {
-					logger.Warn("ipv6 flower filter unsupported; skipping ip-based shaping rule",
-						"device", link.Attrs().Name,
-						"ip", ic.ip.String())
-				}
+				util.Event(logger, slog.LevelWarn, "shaping.ipv6_filter_unsupported",
+					"shaping.device", link.Attrs().Name,
+					"shaping.ip", ic.ip.String(),
+				)
 				continue
 			}
 			return fmt.Errorf("FilterReplace(flower IP class 1:%d): %w", ic.classMinor, err)

@@ -3,8 +3,10 @@ package measure
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	probe "github.com/NodePath81/fbforward/bwprobe/pkg"
@@ -25,10 +27,11 @@ type Collector struct {
 	scheduler      *Scheduler
 	OnTestComplete func(upstream, protocol, direction string, startTime time.Time, duration time.Duration, success bool, result *TestResultMetrics, errMsg string)
 
-	failuresMu sync.Mutex
-	failures   map[string]*failureState
-	runningMu  sync.RWMutex
-	running    map[string]*RunningTest
+	failuresMu  sync.Mutex
+	failures    map[string]*failureState
+	runningMu   sync.RWMutex
+	running     map[string]*RunningTest
+	nextCycleID uint64
 }
 
 type failureState struct {
@@ -59,7 +62,7 @@ func NewCollector(cfg config.MeasurementConfig, scoring config.ScoringConfig, ma
 		manager:   manager,
 		metrics:   metrics,
 		scheduler: scheduler,
-		logger:    logger,
+		logger:    util.ComponentLogger(logger, util.CompMeasure),
 		failures:  make(map[string]*failureState),
 		running:   make(map[string]*RunningTest),
 	}
@@ -120,10 +123,12 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 	if err != nil {
 		state := c.failure(up.Tag)
 		state.consecutiveFailures++
-		c.logger.Warn("measurement failed", "upstream", up.Tag, "network", network, "error", err, "failures", state.consecutiveFailures)
 		if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
 			if !state.inFallbackMode {
-				c.logger.Warn("falling back to ICMP-only mode", "upstream", up.Tag)
+				util.Event(c.logger, slog.LevelWarn, "measure.fallback_entered",
+					"upstream", up.Tag,
+					"consecutive_failures", state.consecutiveFailures,
+				)
 			}
 			state.inFallbackMode = true
 		}
@@ -133,7 +138,7 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 	state := c.failure(up.Tag)
 	state.consecutiveFailures = 0
 	if state.inFallbackMode {
-		c.logger.Info("recovered from ICMP fallback", "upstream", up.Tag)
+		util.Event(c.logger, slog.LevelInfo, "measure.fallback_recovered", "upstream", up.Tag)
 		state.inFallbackMode = false
 	}
 
@@ -168,15 +173,12 @@ func (c *Collector) RunDirection(ctx context.Context, up *upstream.Upstream, net
 	if err != nil {
 		state := c.failure(up.Tag)
 		state.consecutiveFailures++
-		c.logger.Warn("measurement failed",
-			"upstream", up.Tag,
-			"network", network,
-			"direction", direction,
-			"error", err,
-			"failures", state.consecutiveFailures)
 		if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
 			if !state.inFallbackMode {
-				c.logger.Warn("falling back to ICMP-only mode", "upstream", up.Tag)
+				util.Event(c.logger, slog.LevelWarn, "measure.fallback_entered",
+					"upstream", up.Tag,
+					"consecutive_failures", state.consecutiveFailures,
+				)
 			}
 			state.inFallbackMode = true
 		}
@@ -186,7 +188,7 @@ func (c *Collector) RunDirection(ctx context.Context, up *upstream.Upstream, net
 	state := c.failure(up.Tag)
 	state.consecutiveFailures = 0
 	if state.inFallbackMode {
-		c.logger.Info("recovered from ICMP fallback", "upstream", up.Tag)
+		util.Event(c.logger, slog.LevelInfo, "measure.fallback_recovered", "upstream", up.Tag)
 		state.inFallbackMode = false
 	}
 
@@ -237,12 +239,13 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		Network:   network,
 	}
 
-	c.logger.Info("measurement started",
+	uploadCycleID := c.newCycleID()
+	util.Event(c.logger, slog.LevelInfo, "measure.started",
+		"measure.cycle_id", uploadCycleID,
 		"upstream", up.Tag,
-		"network", network,
-		"direction", "upload",
-		"target_bps", bwUp,
-		"sample_bytes", sampleBytes,
+		"network.protocol", network,
+		"network.direction", "upload",
+		"measure.target_bps", bwUp,
 	)
 
 	c.setRunning(up.Tag, network, "upload")
@@ -281,11 +284,14 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		)
 	}
 	if err != nil {
-		c.logger.Warn("measurement upload failed",
+		state := c.failure(up.Tag)
+		util.Event(c.logger, slog.LevelWarn, "measure.failed",
+			"measure.cycle_id", uploadCycleID,
 			"upstream", up.Tag,
-			"network", network,
-			"direction", "upload",
-			"duration_ms", uploadDuration.Milliseconds(),
+			"network.protocol", network,
+			"network.direction", "upload",
+			"measure.duration_ms", uploadDuration.Milliseconds(),
+			"consecutive_failures", state.consecutiveFailures+1,
 			"error", err,
 		)
 		return nil, err
@@ -305,15 +311,16 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 	if network == "tcp" {
 		lossOrRetrans = result.RetransRate
 	}
-	c.logger.Info("measurement upload completed",
+	util.Event(c.logger, slog.LevelInfo, "measure.completed",
+		"measure.cycle_id", uploadCycleID,
 		"upstream", up.Tag,
-		"network", network,
-		"direction", "upload",
-		"duration_ms", uploadDuration.Milliseconds(),
-		"bandwidth_bps", result.BandwidthUpBps,
-		"rtt_ms", result.RTTMs,
-		"jitter_ms", result.JitterMs,
-		"loss_or_retrans", lossOrRetrans,
+		"network.protocol", network,
+		"network.direction", "upload",
+		"measure.duration_ms", uploadDuration.Milliseconds(),
+		"measure.achieved_bps", result.BandwidthUpBps,
+		"measure.rtt_ms", result.RTTMs,
+		"measure.jitter_ms", result.JitterMs,
+		"measure.loss_rate", lossOrRetrans,
 	)
 
 	c.setRunning(up.Tag, network, "download")
@@ -329,12 +336,13 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		ChunkSize:    int64(chunkSize),
 	}
 
-	c.logger.Info("measurement started",
+	downloadCycleID := c.newCycleID()
+	util.Event(c.logger, slog.LevelInfo, "measure.started",
+		"measure.cycle_id", downloadCycleID,
 		"upstream", up.Tag,
-		"network", network,
-		"direction", "download",
-		"target_bps", bwDown,
-		"sample_bytes", sampleBytes,
+		"network.protocol", network,
+		"network.direction", "download",
+		"measure.target_bps", bwDown,
 	)
 
 	sampleCtx, cancel = context.WithTimeout(ctx, protoCfg.Timeout.PerSample.Duration())
@@ -360,23 +368,33 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		)
 	}
 	if err != nil {
-		c.logger.Warn("measurement download failed",
+		state := c.failure(up.Tag)
+		util.Event(c.logger, slog.LevelWarn, "measure.failed",
+			"measure.cycle_id", downloadCycleID,
 			"upstream", up.Tag,
-			"network", network,
-			"direction", "download",
-			"duration_ms", downloadDuration.Milliseconds(),
+			"network.protocol", network,
+			"network.direction", "download",
+			"measure.duration_ms", downloadDuration.Milliseconds(),
+			"consecutive_failures", state.consecutiveFailures+1,
 			"error", err,
 		)
 		return nil, err
 	}
 
 	result.BandwidthDownBps = dnResult.Throughput.AchievedBps
-	c.logger.Info("measurement download completed",
+	downRTTMs := float64(dnResult.RTT.Mean) / float64(time.Millisecond)
+	downJitterMs := float64(dnResult.RTT.Jitter) / float64(time.Millisecond)
+	downLossOrRetrans := dnResult.Loss.LossRate
+	util.Event(c.logger, slog.LevelInfo, "measure.completed",
+		"measure.cycle_id", downloadCycleID,
 		"upstream", up.Tag,
-		"network", network,
-		"direction", "download",
-		"duration_ms", downloadDuration.Milliseconds(),
-		"bandwidth_bps", result.BandwidthDownBps,
+		"network.protocol", network,
+		"network.direction", "download",
+		"measure.duration_ms", downloadDuration.Milliseconds(),
+		"measure.achieved_bps", result.BandwidthDownBps,
+		"measure.rtt_ms", downRTTMs,
+		"measure.jitter_ms", downJitterMs,
+		"measure.loss_rate", downLossOrRetrans,
 	)
 
 	return result, nil
@@ -421,12 +439,13 @@ func (c *Collector) runSingleDirection(ctx context.Context, up *upstream.Upstrea
 		return nil, fmt.Errorf("parse %s chunk_size: %w", network, err)
 	}
 
-	c.logger.Info("measurement started",
+	cycleID := c.newCycleID()
+	util.Event(c.logger, slog.LevelInfo, "measure.started",
+		"measure.cycle_id", cycleID,
 		"upstream", up.Tag,
-		"network", network,
-		"direction", direction,
-		"target_bps", targetBps,
-		"sample_bytes", sampleBytes,
+		"network.protocol", network,
+		"network.direction", direction,
+		"measure.target_bps", targetBps,
 	)
 
 	c.setRunning(up.Tag, network, direction)
@@ -465,11 +484,14 @@ func (c *Collector) runSingleDirection(ctx context.Context, up *upstream.Upstrea
 		)
 	}
 	if err != nil {
-		c.logger.Warn("measurement failed",
+		state := c.failure(up.Tag)
+		util.Event(c.logger, slog.LevelWarn, "measure.failed",
+			"measure.cycle_id", cycleID,
 			"upstream", up.Tag,
-			"network", network,
-			"direction", direction,
-			"duration_ms", testDuration.Milliseconds(),
+			"network.protocol", network,
+			"network.direction", direction,
+			"measure.duration_ms", testDuration.Milliseconds(),
+			"consecutive_failures", state.consecutiveFailures+1,
 			"error", err,
 		)
 		return nil, err
@@ -516,15 +538,16 @@ func (c *Collector) runSingleDirection(ctx context.Context, up *upstream.Upstrea
 		lossOrRetrans = result.RetransRate
 	}
 
-	c.logger.Info("measurement "+direction+" completed",
+	util.Event(c.logger, slog.LevelInfo, "measure.completed",
+		"measure.cycle_id", cycleID,
 		"upstream", up.Tag,
-		"network", network,
-		"direction", direction,
-		"duration_ms", testDuration.Milliseconds(),
-		"bandwidth_bps", testResult.Throughput.AchievedBps,
-		"rtt_ms", result.RTTMs,
-		"jitter_ms", result.JitterMs,
-		"loss_or_retrans", lossOrRetrans,
+		"network.protocol", network,
+		"network.direction", direction,
+		"measure.duration_ms", testDuration.Milliseconds(),
+		"measure.achieved_bps", testResult.Throughput.AchievedBps,
+		"measure.rtt_ms", result.RTTMs,
+		"measure.jitter_ms", result.JitterMs,
+		"measure.loss_rate", lossOrRetrans,
 	)
 
 	return result, nil
@@ -599,4 +622,8 @@ func (c *Collector) failure(tag string) *failureState {
 		c.failures[tag] = &failureState{}
 	}
 	return c.failures[tag]
+}
+
+func (c *Collector) newCycleID() string {
+	return fmt.Sprintf("m-%d", atomic.AddUint64(&c.nextCycleID, 1))
 }
