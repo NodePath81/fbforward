@@ -42,7 +42,7 @@ type ControlServer struct {
 	cfg         config.ControlConfig
 	measurement config.MeasurementConfig
 	hostname    string
-	manager     *upstream.UpstreamManager
+	manager     upstream.UpstreamStateReader
 	metrics     *metrics.Metrics
 	status      *StatusStore
 	restartFn   func() error
@@ -57,7 +57,7 @@ type ControlServer struct {
 	nextWSID    uint64
 }
 
-func NewControlServer(cfg config.Config, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
+func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
 	return &ControlServer{
 		fullCfg:     cfg,
 		cfg:         cfg.Control,
@@ -168,7 +168,6 @@ type queueSnapshotMessage struct {
 	Type          string              `json:"type"`
 	Timestamp     int64               `json:"timestamp"`
 	Depth         int                 `json:"depth"`
-	Skipped       uint64              `json:"skipped"`
 	NextDueMs     *int64              `json:"next_due_ms,omitempty"`
 	Running       []runningTestEntry  `json:"running"`
 	Pending       []queuePendingEntry `json:"pending"`
@@ -588,10 +587,6 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 				"max": cfg.Schedule.Interval.Max.Duration().String(),
 			},
 			"upstream_gap": cfg.Schedule.UpstreamGap.Duration().String(),
-			"headroom": map[string]interface{}{
-				"max_link_utilization":    cfg.Schedule.Headroom.MaxLinkUtilization,
-				"required_free_bandwidth": cfg.Schedule.Headroom.RequiredFreeBandwidth,
-			},
 		},
 		"fast_start": map[string]interface{}{
 			"enabled":         util.BoolValue(cfg.FastStart.Enabled, true),
@@ -600,12 +595,8 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 		},
 		"protocols": map[string]interface{}{
 			"tcp": map[string]interface{}{
-				"enabled":   util.BoolValue(cfg.Protocols.TCP.Enabled, true),
-				"alternate": util.BoolValue(cfg.Protocols.TCP.Alternate, true),
-				"target_bandwidth": map[string]interface{}{
-					"upload":   cfg.Protocols.TCP.TargetBandwidth.Upload,
-					"download": cfg.Protocols.TCP.TargetBandwidth.Download,
-				},
+				"enabled":      util.BoolValue(cfg.Protocols.TCP.Enabled, true),
+				"alternate":    util.BoolValue(cfg.Protocols.TCP.Alternate, true),
 				"chunk_size":   cfg.Protocols.TCP.ChunkSize,
 				"sample_size":  cfg.Protocols.TCP.SampleSize,
 				"sample_count": cfg.Protocols.TCP.SampleCount,
@@ -615,11 +606,7 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 				},
 			},
 			"udp": map[string]interface{}{
-				"enabled": util.BoolValue(cfg.Protocols.UDP.Enabled, true),
-				"target_bandwidth": map[string]interface{}{
-					"upload":   cfg.Protocols.UDP.TargetBandwidth.Upload,
-					"download": cfg.Protocols.UDP.TargetBandwidth.Download,
-				},
+				"enabled":      util.BoolValue(cfg.Protocols.UDP.Enabled, true),
 				"chunk_size":   cfg.Protocols.UDP.ChunkSize,
 				"sample_size":  cfg.Protocols.UDP.SampleSize,
 				"sample_count": cfg.Protocols.UDP.SampleCount,
@@ -704,10 +691,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			},
 			"reference": map[string]interface{}{
 				"tcp": map[string]interface{}{
-					"bandwidth": map[string]interface{}{
-						"upload":   cfg.Scoring.Reference.TCP.Bandwidth.Upload,
-						"download": cfg.Scoring.Reference.TCP.Bandwidth.Download,
-					},
 					"latency": map[string]interface{}{
 						"rtt":    cfg.Scoring.Reference.TCP.Latency.RTT,
 						"jitter": cfg.Scoring.Reference.TCP.Latency.Jitter,
@@ -716,10 +699,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 					"loss_rate":       cfg.Scoring.Reference.TCP.LossRate,
 				},
 				"udp": map[string]interface{}{
-					"bandwidth": map[string]interface{}{
-						"upload":   cfg.Scoring.Reference.UDP.Bandwidth.Upload,
-						"download": cfg.Scoring.Reference.UDP.Bandwidth.Download,
-					},
 					"latency": map[string]interface{}{
 						"rtt":    cfg.Scoring.Reference.UDP.Latency.RTT,
 						"jitter": cfg.Scoring.Reference.UDP.Latency.Jitter,
@@ -730,31 +709,19 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			},
 			"weights": map[string]interface{}{
 				"tcp": map[string]interface{}{
-					"bandwidth_upload":   cfg.Scoring.Weights.TCP.BandwidthUpload,
-					"bandwidth_download": cfg.Scoring.Weights.TCP.BandwidthDownload,
-					"rtt":                cfg.Scoring.Weights.TCP.RTT,
-					"jitter":             cfg.Scoring.Weights.TCP.Jitter,
-					"retransmit_rate":    cfg.Scoring.Weights.TCP.RetransmitRate,
+					"rtt":             cfg.Scoring.Weights.TCP.RTT,
+					"jitter":          cfg.Scoring.Weights.TCP.Jitter,
+					"retransmit_rate": cfg.Scoring.Weights.TCP.RetransmitRate,
 				},
 				"udp": map[string]interface{}{
-					"bandwidth_upload":   cfg.Scoring.Weights.UDP.BandwidthUpload,
-					"bandwidth_download": cfg.Scoring.Weights.UDP.BandwidthDownload,
-					"rtt":                cfg.Scoring.Weights.UDP.RTT,
-					"jitter":             cfg.Scoring.Weights.UDP.Jitter,
-					"loss_rate":          cfg.Scoring.Weights.UDP.LossRate,
+					"rtt":       cfg.Scoring.Weights.UDP.RTT,
+					"jitter":    cfg.Scoring.Weights.UDP.Jitter,
+					"loss_rate": cfg.Scoring.Weights.UDP.LossRate,
 				},
 				"protocol_blend": map[string]interface{}{
 					"tcp_weight": cfg.Scoring.Weights.ProtocolBlend.TCPWeight,
 					"udp_weight": cfg.Scoring.Weights.ProtocolBlend.UDPWeight,
 				},
-			},
-			"utilization_penalty": map[string]interface{}{
-				"enabled":         util.BoolValue(cfg.Scoring.UtilizationPenalty.Enabled, true),
-				"window_duration": cfg.Scoring.UtilizationPenalty.WindowDuration.Duration().String(),
-				"update_interval": cfg.Scoring.UtilizationPenalty.UpdateInterval.Duration().String(),
-				"threshold":       cfg.Scoring.UtilizationPenalty.Threshold,
-				"min_multiplier":  cfg.Scoring.UtilizationPenalty.MinMultiplier,
-				"exponent":        cfg.Scoring.UtilizationPenalty.Exponent,
 			},
 			"bias_transform": map[string]interface{}{
 				"kappa": cfg.Scoring.BiasTransform.Kappa,
@@ -800,7 +767,6 @@ func (c *ControlServer) getScheduleStatus() map[string]interface{} {
 			"queue_length":      0,
 			"next_scheduled":    nil,
 			"last_measurements": map[string]time.Time{},
-			"skipped_total":     0,
 		}
 	}
 	status := scheduler.Status()
@@ -808,7 +774,6 @@ func (c *ControlServer) getScheduleStatus() map[string]interface{} {
 		"queue_length":      status.QueueLength,
 		"next_scheduled":    nil,
 		"last_measurements": status.LastRun,
-		"skipped_total":     status.SkippedTotal,
 	}
 	if !status.NextScheduled.IsZero() {
 		result["next_scheduled"] = status.NextScheduled
@@ -830,7 +795,6 @@ func (c *ControlServer) getQueueSnapshot(now time.Time) queueSnapshotMessage {
 		Type:          "queue_snapshot",
 		Timestamp:     now.UnixMilli(),
 		Depth:         0,
-		Skipped:       0,
 		NextDueMs:     nil,
 		Running:       []runningTestEntry{},
 		Pending:       []queuePendingEntry{},
@@ -839,7 +803,6 @@ func (c *ControlServer) getQueueSnapshot(now time.Time) queueSnapshotMessage {
 	if scheduler != nil {
 		status := scheduler.Status()
 		snapshot.Depth = status.QueueLength
-		snapshot.Skipped = status.SkippedTotal
 		if !status.NextScheduled.IsZero() {
 			delta := status.NextScheduled.Sub(now).Milliseconds()
 			if delta < 0 {

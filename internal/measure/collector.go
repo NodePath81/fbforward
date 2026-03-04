@@ -16,7 +16,15 @@ import (
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
-const maxConsecutiveFailures = 3
+const (
+	maxConsecutiveFailures = 3
+	retryDelay             = 30 * time.Second
+)
+
+const (
+	defaultProbeRateUp   = "10m"
+	defaultProbeRateDown = "50m"
+)
 
 type Collector struct {
 	cfg            config.MeasurementConfig
@@ -47,12 +55,10 @@ type RunningTest struct {
 }
 
 type TestResultMetrics struct {
-	BandwidthUpBps   float64
-	BandwidthDownBps float64
-	RTTMs            float64
-	JitterMs         float64
-	LossRate         float64
-	RetransRate      float64
+	RTTMs       float64
+	JitterMs    float64
+	LossRate    float64
+	RetransRate float64
 }
 
 func NewCollector(cfg config.MeasurementConfig, scoring config.ScoringConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, scheduler *Scheduler, logger util.Logger) *Collector {
@@ -62,7 +68,7 @@ func NewCollector(cfg config.MeasurementConfig, scoring config.ScoringConfig, ma
 		manager:   manager,
 		metrics:   metrics,
 		scheduler: scheduler,
-		logger:    util.ComponentLogger(logger, util.CompMeasure),
+		logger:    logger,
 		failures:  make(map[string]*failureState),
 		running:   make(map[string]*RunningTest),
 	}
@@ -90,7 +96,6 @@ func (c *Collector) RunLoop(ctx context.Context) {
 				status := c.scheduler.Status()
 				c.metrics.SetScheduleMetrics(metrics.ScheduleMetrics{
 					QueueSize:     status.QueueLength,
-					SkippedTotal:  status.SkippedTotal,
 					NextScheduled: status.NextScheduled,
 					LastRun:       status.LastRun,
 				})
@@ -121,41 +126,9 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 
 	result, err := c.runMeasurement(cycleCtx, up, network, protoCfg)
 	if err != nil {
-		state := c.failure(up.Tag)
-		state.consecutiveFailures++
-		if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
-			if !state.inFallbackMode {
-				util.Event(c.logger, slog.LevelWarn, "measure.fallback_entered",
-					"upstream", up.Tag,
-					"consecutive_failures", state.consecutiveFailures,
-				)
-			}
-			state.inFallbackMode = true
-		}
-		return err
+		return c.handleMeasurementFailure(up.Tag, err)
 	}
-
-	state := c.failure(up.Tag)
-	state.consecutiveFailures = 0
-	if state.inFallbackMode {
-		util.Event(c.logger, slog.LevelInfo, "measure.fallback_recovered", "upstream", up.Tag)
-		state.inFallbackMode = false
-	}
-
-	// Utilization feeds scoring; metrics output is calculated on-demand for real-time accuracy.
-	// Utilization feeds scoring; metrics output is calculated on-demand for real-time accuracy.
-	utilization := 0.0
-	if c.metrics != nil {
-		utilWindow := c.scoring.UtilizationPenalty.WindowDuration.Duration()
-		if utilWindow <= 0 {
-			utilWindow = 5 * time.Second
-		}
-		utilization = c.metrics.GetUtilization(up.Tag, result.BandwidthUpBps, result.BandwidthDownBps, utilWindow)
-	}
-	stats := c.manager.UpdateMeasurement(up.Tag, result, c.scoring, utilization)
-	if c.metrics != nil {
-		c.metrics.SetUpstreamMetrics(up.Tag, stats)
-	}
+	c.handleMeasurementSuccess(up.Tag, result)
 	return nil
 }
 
@@ -171,40 +144,38 @@ func (c *Collector) RunDirection(ctx context.Context, up *upstream.Upstream, net
 
 	result, err := c.runSingleDirection(cycleCtx, up, network, direction, protoCfg)
 	if err != nil {
-		state := c.failure(up.Tag)
-		state.consecutiveFailures++
-		if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
-			if !state.inFallbackMode {
-				util.Event(c.logger, slog.LevelWarn, "measure.fallback_entered",
-					"upstream", up.Tag,
-					"consecutive_failures", state.consecutiveFailures,
-				)
-			}
-			state.inFallbackMode = true
-		}
-		return err
+		return c.handleMeasurementFailure(up.Tag, err)
 	}
+	c.handleMeasurementSuccess(up.Tag, result)
+	return nil
+}
 
-	state := c.failure(up.Tag)
+func (c *Collector) handleMeasurementFailure(tag string, err error) error {
+	state := c.failure(tag)
+	state.consecutiveFailures++
+	if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
+		if !state.inFallbackMode {
+			util.Event(c.logger, slog.LevelWarn, "measure.fallback_entered",
+				"upstream", tag,
+				"consecutive_failures", state.consecutiveFailures,
+			)
+		}
+		state.inFallbackMode = true
+	}
+	return err
+}
+
+func (c *Collector) handleMeasurementSuccess(tag string, result *upstream.MeasurementResult) {
+	state := c.failure(tag)
 	state.consecutiveFailures = 0
 	if state.inFallbackMode {
-		util.Event(c.logger, slog.LevelInfo, "measure.fallback_recovered", "upstream", up.Tag)
+		util.Event(c.logger, slog.LevelInfo, "measure.fallback_recovered", "upstream", tag)
 		state.inFallbackMode = false
 	}
-
-	utilization := 0.0
+	stats := c.manager.UpdateMeasurement(tag, result, c.scoring)
 	if c.metrics != nil {
-		utilWindow := c.scoring.UtilizationPenalty.WindowDuration.Duration()
-		if utilWindow <= 0 {
-			utilWindow = 5 * time.Second
-		}
-		utilization = c.metrics.GetUtilization(up.Tag, result.BandwidthUpBps, result.BandwidthDownBps, utilWindow)
+		c.metrics.SetUpstreamMetrics(tag, stats)
 	}
-	stats := c.manager.UpdateMeasurement(up.Tag, result, c.scoring, utilization)
-	if c.metrics != nil {
-		c.metrics.SetUpstreamMetrics(up.Tag, stats)
-	}
-	return nil
 }
 
 func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string, protoCfg config.MeasurementProtocolConfig) (*upstream.MeasurementResult, error) {
@@ -217,13 +188,13 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		port = 9876
 	}
 
-	bwUp, err := config.ParseBandwidth(protoCfg.TargetBandwidth.Upload)
+	bwUp, err := config.ParseBandwidth(defaultProbeRateUp)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s target_bandwidth.upload: %w", network, err)
+		return nil, fmt.Errorf("parse internal probe upload rate: %w", err)
 	}
-	bwDown, err := config.ParseBandwidth(protoCfg.TargetBandwidth.Download)
+	bwDown, err := config.ParseBandwidth(defaultProbeRateDown)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s target_bandwidth.download: %w", network, err)
+		return nil, fmt.Errorf("parse internal probe download rate: %w", err)
 	}
 	sampleBytes, err := config.ParseSize(protoCfg.SampleSize)
 	if err != nil {
@@ -414,15 +385,15 @@ func (c *Collector) runSingleDirection(ctx context.Context, up *upstream.Upstrea
 	reverse := false
 	switch direction {
 	case "upload":
-		bw, err := config.ParseBandwidth(protoCfg.TargetBandwidth.Upload)
+		bw, err := config.ParseBandwidth(defaultProbeRateUp)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s target_bandwidth.upload: %w", network, err)
+			return nil, fmt.Errorf("parse internal probe upload rate: %w", err)
 		}
 		targetBps = bw
 	case "download":
-		bw, err := config.ParseBandwidth(protoCfg.TargetBandwidth.Download)
+		bw, err := config.ParseBandwidth(defaultProbeRateDown)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s target_bandwidth.download: %w", network, err)
+			return nil, fmt.Errorf("parse internal probe download rate: %w", err)
 		}
 		targetBps = bw
 		reverse = true
@@ -497,20 +468,6 @@ func (c *Collector) runSingleDirection(ctx context.Context, up *upstream.Upstrea
 		return nil, err
 	}
 
-	var prevUp float64
-	var prevDown float64
-	if c.metrics != nil {
-		if snapshot, ok := c.metrics.GetUpstreamMetrics(up.Tag); ok {
-			if network == "tcp" {
-				prevUp = snapshot.BandwidthTCPUpBps
-				prevDown = snapshot.BandwidthTCPDownBps
-			} else {
-				prevUp = snapshot.BandwidthUDPUpBps
-				prevDown = snapshot.BandwidthUDPDownBps
-			}
-		}
-	}
-
 	result := &upstream.MeasurementResult{
 		Timestamp: time.Now(),
 		Network:   network,
@@ -518,10 +475,8 @@ func (c *Collector) runSingleDirection(ctx context.Context, up *upstream.Upstrea
 
 	if direction == "upload" {
 		result.BandwidthUpBps = testResult.Throughput.AchievedBps
-		result.BandwidthDownBps = prevDown
 	} else {
 		result.BandwidthDownBps = testResult.Throughput.AchievedBps
-		result.BandwidthUpBps = prevUp
 	}
 
 	result.RTTMs = float64(testResult.RTT.Mean) / float64(time.Millisecond)
@@ -564,19 +519,13 @@ func (c *Collector) protocolConfig(network string) (config.MeasurementProtocolCo
 	}
 }
 
-func buildTestResultMetrics(network, direction string, result *probe.Results) *TestResultMetrics {
+func buildTestResultMetrics(network, _ string, result *probe.Results) *TestResultMetrics {
 	if result == nil {
 		return nil
 	}
 	metrics := &TestResultMetrics{
 		RTTMs:    float64(result.RTT.Mean) / float64(time.Millisecond),
 		JitterMs: float64(result.RTT.Jitter) / float64(time.Millisecond),
-	}
-	switch direction {
-	case "upload":
-		metrics.BandwidthUpBps = result.Throughput.AchievedBps
-	case "download":
-		metrics.BandwidthDownBps = result.Throughput.AchievedBps
 	}
 	if network == "tcp" {
 		metrics.RetransRate = result.Loss.LossRate

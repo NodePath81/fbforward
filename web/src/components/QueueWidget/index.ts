@@ -52,18 +52,6 @@ export function createQueueWidget(container: HTMLElement) {
     pendingStat.appendChild(pendingValue);
     summary.appendChild(pendingStat);
 
-    const skippedStat = document.createElement('div');
-    skippedStat.className = 'queue-stat';
-    const skippedLabel = document.createElement('span');
-    skippedLabel.className = 'queue-label';
-    skippedLabel.textContent = 'Skipped';
-    const skippedValue = document.createElement('span');
-    skippedValue.className = 'queue-value';
-    skippedValue.textContent = `${status.skippedTotal}`;
-    skippedStat.appendChild(skippedLabel);
-    skippedStat.appendChild(skippedValue);
-    summary.appendChild(skippedStat);
-
     topRow.appendChild(summary);
 
     widget.appendChild(topRow);

@@ -15,7 +15,7 @@ The upstream selection algorithm determines which upstream receives new flow ass
 - **[Primary upstream](glossary.md#primary-upstream)**: The only upstream that receives new flow assignments
 - **Pinned flow**: Existing flow mapped to an upstream via flow table
 - **Flow table**: Maps (protocol, srcIP, srcPort, dstIP, dstPort) → upstream tag
-- **Scoring**: Quality metric combining bandwidth, RTT, jitter, and loss/retransmit measurements
+- **Scoring**: Quality metric combining RTT, jitter, and protocol-specific loss/retransmit measurements
 
 **Forwarding rule:**
 
@@ -55,99 +55,35 @@ $$S_{\mathrm{init},i} = \mathbf{1}_{\mathrm{reachable},i} \cdot \left( \frac{100
 
 **Relaxed switching during warmup:** Use $\delta_{\mathrm{switch}}' = \delta_{\mathrm{switch}} / 2$, $T_{\mathrm{hold}}' = 0$.
 
-#### Sub-scores
+#### Steady-state sub-scores
 
 Each metric is normalized to $[\varepsilon, 1]$ where $\varepsilon = 0.001$.
 
-**Bandwidth (higher is better):**
-
-$$s_{B_{\mathrm{up}}} = \max\left(1 - \exp\left(-B_{\mathrm{up}} / B_{\mathrm{up}}^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-$$s_{B_{\mathrm{dn}}} = \max\left(1 - \exp\left(-B_{\mathrm{dn}} / B_{\mathrm{dn}}^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-Exponential normalization ensures diminishing returns: doubling bandwidth does not double the score. Prevents high-bandwidth links from dominating when all upstreams exceed reference value.
-
-**RTT and jitter (lower is better):**
-
-$$s_R = \max\left(\exp\left(-R / R^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-$$s_J = \max\left(\exp\left(-J / J^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-Lower RTT/jitter yields higher scores. Exponential decay penalizes high latency/jitter.
-
-**Retransmission rate (TCP) and loss rate (UDP):**
-
-$$s_\rho = \max\left(\exp\left(-\rho / \rho^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-$$s_L = \max\left(\exp\left(-L / L^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-Lower loss/retransmit rates yield higher scores.
-
-**Reference parameters:**
-
-| Parameter | Description | Default | Config path |
-|-----------|-------------|---------|-------------|
-| $B_{\mathrm{up}}^{\mathrm{ref}}$ | Target upload bandwidth | 10 Mbps | `scoring.reference.tcp.bandwidth.upload` |
-| $B_{\mathrm{dn}}^{\mathrm{ref}}$ | Target download bandwidth | 50 Mbps | `scoring.reference.tcp.bandwidth.download` |
-| $R^{\mathrm{ref}}$ | Target RTT | 50 ms | `scoring.reference.tcp.latency.rtt` |
-| $J^{\mathrm{ref}}$ | Target jitter | 10 ms | `scoring.reference.tcp.latency.jitter` |
-| $\rho^{\mathrm{ref}}$ | Target TCP retransmit rate | 0.01 (1%) | `scoring.reference.tcp.retransmit_rate` |
-| $L^{\mathrm{ref}}$ | Target UDP loss rate | 0.01 (1%) | `scoring.reference.udp.loss_rate` |
-
-#### Base quality score
-
 **TCP:**
 
-$$Q_{\mathrm{tcp}} = 100 \cdot s_{B_{\mathrm{up}}}^{w_{B_{\mathrm{up}}}} \cdot s_{B_{\mathrm{dn}}}^{w_{B_{\mathrm{dn}}}} \cdot s_R^{w_R} \cdot s_J^{w_J} \cdot s_\rho^{w_\rho}$$
+$$s_{R,\mathrm{tcp}} = \max\left(\exp\left(-R_{\mathrm{tcp}} / R_{\mathrm{tcp}}^{\mathrm{ref}}\right), \varepsilon\right)$$
+
+$$s_{J,\mathrm{tcp}} = \max\left(\exp\left(-J_{\mathrm{tcp}} / J_{\mathrm{tcp}}^{\mathrm{ref}}\right), \varepsilon\right)$$
+
+$$s_{\rho} = \max\left(\exp\left(-\rho / \rho^{\mathrm{ref}}\right), \varepsilon\right)$$
 
 **UDP:**
 
-$$Q_{\mathrm{udp}} = 100 \cdot s_{B_{\mathrm{up}}}^{w_{B_{\mathrm{up}}}} \cdot s_{B_{\mathrm{dn}}}^{w_{B_{\mathrm{dn}}}} \cdot s_R^{w_R} \cdot s_J^{w_J} \cdot s_L^{w_L}$$
+$$s_{R,\mathrm{udp}} = \max\left(\exp\left(-R_{\mathrm{udp}} / R_{\mathrm{udp}}^{\mathrm{ref}}\right), \varepsilon\right)$$
 
-**Weights (automatically normalized to sum to 1):**
+$$s_{J,\mathrm{udp}} = \max\left(\exp\left(-J_{\mathrm{udp}} / J_{\mathrm{udp}}^{\mathrm{ref}}\right), \varepsilon\right)$$
 
-| Weight | TCP default | UDP default | Config path |
-|--------|-------------|-------------|-------------|
-| $w_{B_{\mathrm{up}}}$ | 0.15 | 0.10 | `scoring.weights.tcp.bandwidth_upload` |
-| $w_{B_{\mathrm{dn}}}$ | 0.25 | 0.30 | `scoring.weights.tcp.bandwidth_download` |
-| $w_R$ | 0.25 | 0.15 | `scoring.weights.tcp.rtt` |
-| $w_J$ | 0.10 | 0.30 | `scoring.weights.tcp.jitter` |
-| $w_\rho$ / $w_L$ | 0.25 | 0.15 | `scoring.weights.tcp.retransmit_rate` |
+$$s_{L} = \max\left(\exp\left(-L / L^{\mathrm{ref}}\right), \varepsilon\right)$$
 
-Weights reflect typical application requirements: TCP favors low retransmit rate and moderate bandwidth, UDP favors low jitter and high download bandwidth.
+Lower RTT/jitter/retransmit/loss yields higher scores.
 
-#### Utilization penalty
+#### Base protocol scores
 
-Utilization penalty prevents overloading a single upstream by reducing score when traffic approaches measured capacity.
+$$Q_{\mathrm{tcp}} = 100 \cdot s_{R,\mathrm{tcp}}^{w_{R,\mathrm{tcp}}} \cdot s_{J,\mathrm{tcp}}^{w_{J,\mathrm{tcp}}} \cdot s_{\rho}^{w_{\rho}}$$
 
-$$M = m_{\min} + (1 - m_{\min}) \cdot \exp\left(-\left(u / u^0\right)^p\right)$$
+$$Q_{\mathrm{udp}} = 100 \cdot s_{R,\mathrm{udp}}^{w_{R,\mathrm{udp}}} \cdot s_{J,\mathrm{udp}}^{w_{J,\mathrm{udp}}} \cdot s_{L}^{w_{L}}$$
 
-where $u = \max(u_{\mathrm{up}}, u_{\mathrm{dn}})$ and utilization is computed per upstream:
-
-$$u_{\mathrm{up}} = \frac{\tau_{\mathrm{up}} \cdot 8}{B_{\mathrm{up}}^{\mathrm{emp}} \cdot T_0}, \quad u_{\mathrm{dn}} = \frac{\tau_{\mathrm{dn}} \cdot 8}{B_{\mathrm{dn}}^{\mathrm{emp}} \cdot T_0}$$
-
-**Variables:**
-
-- $\tau_{\mathrm{up}}$, $\tau_{\mathrm{dn}}$: Actual traffic bytes (upload/download) over window $T_0$
-- $B_{\mathrm{up}}^{\mathrm{emp}}$, $B_{\mathrm{dn}}^{\mathrm{emp}}$: Last measured bandwidth (bits/sec)
-- $T_0$: Traffic sampling window (seconds)
-
-**Parameters:**
-
-| Symbol | Description | Default | Config path |
-|--------|-------------|---------|-------------|
-| $m_{\min}$ | Minimum score multiplier at 100% utilization | 0.3 | `scoring.utilization_penalty.min_multiplier` |
-| $u^0$ | Utilization threshold | 0.7 (70%) | `scoring.utilization_penalty.threshold` |
-| $p$ | Penalty exponent | 2.0 | `scoring.utilization_penalty.exponent` |
-| $T_0$ | Window duration | 5s | `scoring.utilization_penalty.window_duration` |
-
-**Behavior:**
-
-- $u < u^0$: No penalty ($M \approx 1$)
-- $u = u^0$: $M \approx 0.87$ (moderate penalty)
-- $u = 1.0$: $M = m_{\min} = 0.3$ (severe penalty)
-
-Utilization is computed on-demand from recent traffic samples, so metrics and UI reflect near-real-time link usage.
+TCP and UDP weight groups are normalized independently to sum to 1.
 
 #### Bias transformation
 
@@ -176,9 +112,18 @@ where $\beta \in [-1, 1]$ is user preference and $\kappa = \ln 2 \approx 0.69314
 
 **Per-protocol:**
 
-$$S_{\mathrm{tcp}} = Q_{\mathrm{tcp}} \cdot M \cdot M_\beta$$
+$$S_{\mathrm{tcp}} = \mathrm{clamp}(Q_{\mathrm{tcp}} \cdot M_\beta, 0, 100)$$
 
-$$S_{\mathrm{udp}} = Q_{\mathrm{udp}} \cdot M \cdot M_\beta$$
+$$S_{\mathrm{udp}} = \mathrm{clamp}(Q_{\mathrm{udp}} \cdot M_\beta, 0, 100)$$
+
+**Staleness fallback:**
+
+When protocol measurements are stale (`measurement.stale_threshold` exceeded), scoring substitutes degraded reference values for the stale protocol:
+
+- RTT/jitter: $2 \times$ reference value
+- TCP retransmit rate / UDP loss rate: $2 \times$ reference value
+
+If only one protocol is stale, overall score uses only the fresh protocol score. If both are fresh or both stale, overall score uses protocol blend.
 
 **Overall upstream score:**
 
@@ -193,11 +138,7 @@ $$S_{\mathrm{overall}} = \omega_{\mathrm{tcp}} \cdot S_{\mathrm{tcp}} + \omega_{
 
 Weights are automatically normalized to sum to 1.
 
-**Final adjustment:**
-
-$$S_{\mathrm{final}} = P \cdot S_{\mathrm{overall}}$$
-
-where $P$ is static priority (`upstreams[].priority`, default 0).
+Steady-state scoring does not apply `upstreams[].priority` and does not apply utilization penalty.
 
 **Score interpretation:**
 
@@ -209,7 +150,7 @@ where $P$ is static priority (`upstreams[].priority`, default 0).
 
 #### Metric smoothing
 
-Apply exponential moving average (EMA) to all measurements before scoring:
+Apply exponential moving average (EMA) to measurements before scoring:
 
 $$\tilde{X} = \alpha \cdot X_{\mathrm{new}} + (1 - \alpha) \cdot \tilde{X}_{\mathrm{prev}}$$
 
@@ -217,10 +158,7 @@ where $\alpha = 0.2$ (configurable via `scoring.smoothing.alpha`).
 
 **Initialization:** First measurement initializes smoothed value ($\tilde{X} = X_{\mathrm{new}}$).
 
-**Staleness handling:** If measurement age exceeds $T_{\mathrm{stale}}$ (default: 60 minutes, configurable via `measurement.stale_threshold`):
-
-- Bandwidth: Use $0.5 \times \text{reference value}$
-- RTT/jitter/loss: Use $2 \times \text{reference value}$
+**Staleness handling:** If measurement age exceeds $T_{\mathrm{stale}}$ (default: 60 minutes, configurable via `measurement.stale_threshold`), stale protocol metrics use degraded reference substitutions (as defined above).
 
 **Note:** ICMP probes monitor reachability continuously but do not contribute to quality scoring. The `measurement.fallback_to_icmp_on_stale` configuration flag only controls logging behavior (logs a warning when stale threshold is exceeded).
 
@@ -232,17 +170,18 @@ All parameters are configurable via [Section 4](configuration-reference.md). Thi
 |-----------|--------|---------|-------------|-------------|
 | **Scoring** |
 | EMA alpha | $\alpha$ | 0.2 | (0, 1] | `scoring.smoothing.alpha` |
-| TCP ref upload BW | $B_{\mathrm{up}}^{\mathrm{ref}}$ | 10 Mbps | > 0 | `scoring.reference.tcp.bandwidth.upload` |
-| TCP ref download BW | $B_{\mathrm{dn}}^{\mathrm{ref}}$ | 50 Mbps | > 0 | `scoring.reference.tcp.bandwidth.download` |
-| TCP ref RTT | $R^{\mathrm{ref}}$ | 50 ms | > 0 | `scoring.reference.tcp.latency.rtt` |
-| TCP ref jitter | $J^{\mathrm{ref}}$ | 10 ms | > 0 | `scoring.reference.tcp.latency.jitter` |
+| TCP ref RTT | $R_{\mathrm{tcp}}^{\mathrm{ref}}$ | 50 ms | > 0 | `scoring.reference.tcp.latency.rtt` |
+| TCP ref jitter | $J_{\mathrm{tcp}}^{\mathrm{ref}}$ | 10 ms | > 0 | `scoring.reference.tcp.latency.jitter` |
 | TCP ref retrans rate | $\rho^{\mathrm{ref}}$ | 0.01 | (0, 1] | `scoring.reference.tcp.retransmit_rate` |
+| UDP ref RTT | $R_{\mathrm{udp}}^{\mathrm{ref}}$ | 50 ms | > 0 | `scoring.reference.udp.latency.rtt` |
+| UDP ref jitter | $J_{\mathrm{udp}}^{\mathrm{ref}}$ | 10 ms | > 0 | `scoring.reference.udp.latency.jitter` |
 | UDP ref loss rate | $L^{\mathrm{ref}}$ | 0.01 | (0, 1] | `scoring.reference.udp.loss_rate` |
-| **Utilization penalty** |
-| Min multiplier | $m_{\min}$ | 0.3 | (0, 1] | `scoring.utilization_penalty.min_multiplier` |
-| Threshold | $u^0$ | 0.7 | > 0 | `scoring.utilization_penalty.threshold` |
-| Exponent | $p$ | 2.0 | > 0 | `scoring.utilization_penalty.exponent` |
-| Window duration | $T_0$ | 5s | > 0 | `scoring.utilization_penalty.window_duration` |
+| TCP RTT weight | $w_{R,\mathrm{tcp}}$ | 0.25 | ≥ 0 (sum > 0) | `scoring.weights.tcp.rtt` |
+| TCP jitter weight | $w_{J,\mathrm{tcp}}$ | 0.10 | ≥ 0 (sum > 0) | `scoring.weights.tcp.jitter` |
+| TCP retrans weight | $w_{\rho}$ | 0.25 | ≥ 0 (sum > 0) | `scoring.weights.tcp.retransmit_rate` |
+| UDP RTT weight | $w_{R,\mathrm{udp}}$ | 0.15 | ≥ 0 (sum > 0) | `scoring.weights.udp.rtt` |
+| UDP jitter weight | $w_{J,\mathrm{udp}}$ | 0.30 | ≥ 0 (sum > 0) | `scoring.weights.udp.jitter` |
+| UDP loss weight | $w_{L}$ | 0.15 | ≥ 0 (sum > 0) | `scoring.weights.udp.loss_rate` |
 | **Bias** |
 | Bias kappa | $\kappa$ | $\ln 2$ | > 0 | `scoring.bias_transform.kappa` |
 | **Switching** |
@@ -294,8 +233,8 @@ Measurements become stale when age exceeds `measurement.stale_threshold` (defaul
 
 When measurements are stale, the scoring engine applies reference-value penalties:
 
-- Bandwidth sub-scores computed using $0.5 \times \text{reference value}$
-- RTT/jitter/loss sub-scores computed using $2 \times \text{reference value}$
+- RTT/jitter use $2 \times \text{reference value}$
+- TCP retransmit rate / UDP loss rate use $2 \times \text{reference value}$
 
 This effectively degrades the upstream's quality score. The stale upstream remains selectable but will likely be outscored by upstreams with fresh measurements.
 

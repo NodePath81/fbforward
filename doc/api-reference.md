@@ -428,16 +428,16 @@ The control plane follows a single-source-of-truth architecture:
 |-----------|--------|-------|
 | Active connections (list) | WebSocket `connections_snapshot` | Periodic, subscription-controlled |
 | Queue status (list) | WebSocket `queue_snapshot` | Periodic, subscription-controlled |
-| Numeric metrics (bandwidth, RTT, scores) | Prometheus `/metrics` | Poll-based, summary metrics only |
+| Numeric metrics (RTT, loss/retransmit, scores, traffic rates) | Prometheus `/metrics` | Poll-based, summary metrics only |
 | Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
 | Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
-| Config queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig` |
+| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus` |
 
 **Key principles:**
 - WebSocket delivers connection/queue telemetry via subscription (no polling)
 - RPC methods provide only control actions and non-metric status queries
-- Prometheus provides all numeric metrics (bandwidth, RTT, jitter, scores, utilization)
+- Prometheus provides all numeric metrics (RTT, jitter, loss/retransmit, scores, traffic rates)
 - No data duplication across endpoints
 
 **Endpoints:**
@@ -599,7 +599,7 @@ Retrieve current runtime status.
 - `usable`: Whether upstream is eligible for selection (not failed/unreachable)
 - `reachable`: ICMP probe reachability status
 
-**Note:** Numeric metrics (bandwidth, RTT, jitter, scores, utilization) are available exclusively via Prometheus `/metrics` endpoint. Active connection counts are available via WebSocket `connections_snapshot` or Prometheus metrics.
+**Note:** Numeric metrics (RTT, jitter, loss/retransmit, scores, traffic rates) are available via Prometheus `/metrics`. Active connection counts are available via WebSocket `connections_snapshot` or Prometheus metrics.
 
 **Example:**
 
@@ -637,11 +637,7 @@ Retrieve current measurement configuration.
   "fallback_to_icmp_on_stale": true,
   "schedule": {
     "interval": {"min": "15m0s", "max": "45m0s"},
-    "upstream_gap": "5s",
-    "headroom": {
-      "max_link_utilization": 0.7,
-      "required_free_bandwidth": "0"
-    }
+    "upstream_gap": "5s"
   },
   "fast_start": {
     "enabled": true,
@@ -652,7 +648,6 @@ Retrieve current measurement configuration.
     "tcp": {
       "enabled": true,
       "alternate": true,
-      "target_bandwidth": {"upload": "10m", "download": "50m"},
       "chunk_size": "1200",
       "sample_size": "500kb",
       "sample_count": 1,
@@ -688,10 +683,9 @@ Retrieve measurement scheduler status.
   "queue_length": 2,
   "next_scheduled": "2026-01-27T10:20:00Z",
   "last_measurements": {
-    "primary": "2026-01-27T10:15:30Z",
-    "backup": "2026-01-27T10:16:15Z"
-  },
-  "skipped_total": 5
+    "primary:tcp:upload": "2026-01-27T10:15:30Z",
+    "primary:udp:download": "2026-01-27T10:16:15Z"
+  }
 }
 ```
 
@@ -699,8 +693,7 @@ Retrieve measurement scheduler status.
 
 - `queue_length`: Number of pending measurements in queue
 - `next_scheduled`: Timestamp of next scheduled measurement (null if queue empty)
-- `last_measurements`: Map of upstream tag → last successful measurement timestamp
-- `skipped_total`: Cumulative count of measurements skipped due to insufficient headroom
+- `last_measurements`: Map key `<upstream>:<protocol>:<direction>` → last successful measurement timestamp
 
 **Example:**
 
@@ -798,7 +791,7 @@ Server stops sending periodic snapshots and cleans up ticker resources.
 
 #### Message format
 
-The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), queue status, and measurement history events. **Upstream metrics are not streamed**; use Prometheus `/metrics` endpoint for numeric metrics (bandwidth, RTT, jitter, scores, utilization).
+The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), queue status, and measurement history events. **Upstream metrics are not streamed**; use Prometheus `/metrics` endpoint for numeric metrics.
 
 **All messages include schema version:**
 
@@ -860,7 +853,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
   "type": "queue_snapshot",
   "timestamp": 1706354410000,
   "depth": 3,
-  "skipped": 12,
   "next_due_ms": 5000,
   "running": [
     {
@@ -948,8 +940,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
   "timestamp": 1706354430000,
   "duration_ms": 2534,
   "success": true,
-  "bandwidth_up_bps": 48500000,
-  "bandwidth_down_bps": 0,
   "rtt_ms": 25.4,
   "jitter_ms": 2.1,
   "loss_rate": 0.0,
@@ -974,7 +964,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
 - `schema_version`: Message schema version (currently 1)
 - `timestamp`: Unix milliseconds when snapshot was generated
 - `depth`: Number of pending measurements in queue
-- `skipped`: Cumulative count of skipped measurements
 - `next_due_ms`: Milliseconds until next scheduled measurement (null if queue empty)
 - `running`: Array of currently executing measurements
 - `pending`: Array of queued measurements awaiting execution
@@ -1000,7 +989,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
 - `timestamp`: Unix milliseconds when test started
 - `duration_ms`: Test duration
 - `success`: Whether test completed successfully
-- `bandwidth_up_bps`, `bandwidth_down_bps`: Measured bandwidth (0 if not applicable to direction)
 - `rtt_ms`, `jitter_ms`: RTT statistics
 - `loss_rate`, `retrans_rate`: Loss/retransmit rates (protocol-dependent)
 - `error`: Error message if `success: false` (empty string on success)
@@ -1101,22 +1089,12 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 |--------|------|--------|-------------|
 | `fbforward_upstream_rtt_ms` | gauge | `upstream` | Mean RTT (milliseconds) |
 | `fbforward_upstream_jitter_ms` | gauge | `upstream` | RTT jitter (standard deviation) |
-| `fbforward_upstream_bandwidth_up_bps` | gauge | `upstream` | Upload bandwidth (bits/sec) |
-| `fbforward_upstream_bandwidth_down_bps` | gauge | `upstream` | Download bandwidth (bits/sec) |
-| `fbforward_upstream_bandwidth_tcp_up_bps` | gauge | `upstream` | TCP upload bandwidth |
-| `fbforward_upstream_bandwidth_tcp_down_bps` | gauge | `upstream` | TCP download bandwidth |
-| `fbforward_upstream_bandwidth_udp_up_bps` | gauge | `upstream` | UDP upload bandwidth |
-| `fbforward_upstream_bandwidth_udp_down_bps` | gauge | `upstream` | UDP download bandwidth |
 | `fbforward_upstream_retrans_rate` | gauge | `upstream` | TCP retransmit rate [0, 1] |
 | `fbforward_upstream_loss_rate` | gauge | `upstream` | UDP loss rate [0, 1] |
 | `fbforward_upstream_loss` | gauge | `upstream` | Generic loss metric |
 | `fbforward_upstream_score_tcp` | gauge | `upstream` | TCP quality score |
 | `fbforward_upstream_score_udp` | gauge | `upstream` | UDP quality score |
-| `fbforward_upstream_score_overall` | gauge | `upstream` | Blended quality score |
-| `fbforward_upstream_score` | gauge | `upstream` | Final score (after adjustments) |
-| `fbforward_upstream_utilization` | gauge | `upstream` | Link utilization [0, 1] |
-| `fbforward_upstream_utilization_up` | gauge | `upstream` | Upload utilization |
-| `fbforward_upstream_utilization_down` | gauge | `upstream` | Download utilization |
+| `fbforward_upstream_score` | gauge | `upstream` | Final blended score |
 | `fbforward_upstream_reachable` | gauge | `upstream` | Reachable (1) or not (0) |
 | `fbforward_upstream_unusable` | gauge | `upstream` | Unusable (1) or usable (0) |
 
@@ -1142,9 +1120,9 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 | `fbforward_tcp_active` | gauge | - | Active TCP connections |
 | `fbforward_udp_mappings_active` | gauge | - | Active UDP mappings |
 | `fbforward_measurement_queue_size` | gauge | - | Pending measurements in queue |
-| `fbforward_measurement_skipped_total` | counter | - | Total skipped measurements |
 | `fbforward_measurement_last_run_seconds` | gauge | `upstream`, `protocol`, `direction` | Seconds since last measurement |
 | `fbforward_memory_alloc_bytes` | gauge | - | Allocated memory (bytes) |
+| `fbforward_goroutines` | gauge | - | Runtime goroutine count |
 | `fbforward_uptime_seconds` | gauge | - | Process uptime (seconds) |
 
 #### Scrape configuration
@@ -1170,14 +1148,8 @@ fbforward_upstream_score{upstream="primary"}
 # Total traffic (all upstreams)
 sum(rate(fbforward_bytes_up_total[5m]))
 
-# Upload bandwidth per upstream
-fbforward_upstream_bandwidth_up_bps
-
 # Active flows
 fbforward_tcp_active + fbforward_udp_mappings_active
-
-# Upstream utilization
-fbforward_upstream_utilization > 0.7
 
 # Measurement queue depth
 fbforward_measurement_queue_size
@@ -1204,9 +1176,7 @@ fbforward_upstream_retrans_rate{} or fbforward_upstream_loss_rate{}
 
 #### Metric interpretation
 
-**Score metrics:** Higher is better. Range [0, 100+]. Scores above 100 indicate priority boost from `upstreams[].priority` or positive `bias`.
-
-**Utilization metrics:** Range [0, 1]. Values above threshold (default 0.7) trigger utilization penalty in scoring.
+**Score metrics:** Higher is better. Steady-state scores are in range [0, 100].
 
 **Reachable vs unusable:**
 - `reachable=1`: ICMP probes succeed

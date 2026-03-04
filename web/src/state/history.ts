@@ -6,8 +6,6 @@ export interface TestHistoryEntry {
   direction: 'upload' | 'download';
   durationMs: number;
   success: boolean;
-  bandwidthUpBps?: number;
-  bandwidthDownBps?: number;
   rttMs?: number;
   jitterMs?: number;
   lossRate?: number;

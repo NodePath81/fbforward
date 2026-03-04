@@ -20,7 +20,7 @@ import type {
   WSMessage
 } from './types';
 import { clearChildren, createEl, qs } from './utils/dom';
-import { formatBps, formatBytes, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
+import { formatBytes, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
 
 const storedToken = localStorage.getItem('fbforward_token') || '';
 if (!storedToken) {
@@ -511,9 +511,6 @@ function startApp(token: string) {
     card.appendChild(meta);
 
     const metrics = createEl('div', 'modal-metrics');
-    const bandwidth =
-      entry.direction === 'upload' ? entry.bandwidthUpBps : entry.bandwidthDownBps;
-    metrics.appendChild(createDetailRow('Bandwidth', formatBps(bandwidth ?? Number.NaN)));
     metrics.appendChild(createDetailRow('RTT', formatMs(entry.rttMs ?? Number.NaN)));
     metrics.appendChild(createDetailRow('Jitter', formatMs(entry.jitterMs ?? Number.NaN)));
     if (entry.protocol === 'udp') {
@@ -578,28 +575,10 @@ function startApp(token: string) {
     metrics.appendChild(createDetailRow('Score', formatScore(liveMetrics.score)));
     metrics.appendChild(createDetailRow('Score TCP', formatScore(liveMetrics.scoreTcp)));
     metrics.appendChild(createDetailRow('Score UDP', formatScore(liveMetrics.scoreUdp)));
-    metrics.appendChild(
-      createDetailRow(
-        'TCP Bandwidth',
-        `${formatBps(liveMetrics.bandwidthTcpUpBps)} ↑ / ${formatBps(liveMetrics.bandwidthTcpDownBps)} ↓`
-      )
-    );
-    metrics.appendChild(
-      createDetailRow(
-        'UDP Bandwidth',
-        `${formatBps(liveMetrics.bandwidthUdpUpBps)} ↑ / ${formatBps(liveMetrics.bandwidthUdpDownBps)} ↓`
-      )
-    );
     metrics.appendChild(createDetailRow('RTT', formatMs(liveMetrics.rtt)));
     metrics.appendChild(createDetailRow('Jitter', formatMs(liveMetrics.jitter)));
     metrics.appendChild(createDetailRow('Retrans rate', formatPercent(liveMetrics.retransRate, 2)));
     metrics.appendChild(createDetailRow('Loss rate', formatPercent(liveMetrics.lossRate, 2)));
-    metrics.appendChild(
-      createDetailRow(
-        'Utilization',
-        `${formatPercent(liveMetrics.utilizationUp, 1)} ↑ / ${formatPercent(liveMetrics.utilizationDown, 1)} ↓`
-      )
-    );
     card.appendChild(metrics);
 
     closeButton.addEventListener('click', hideUpstreamDetails);
@@ -745,8 +724,6 @@ function startApp(token: string) {
         direction: message.direction || 'upload',
         durationMs: message.duration_ms ?? 0,
         success: message.success ?? false,
-        bandwidthUpBps: message.bandwidth_up_bps ?? 0,
-        bandwidthDownBps: message.bandwidth_down_bps ?? 0,
         rttMs: message.rtt_ms ?? 0,
         jitterMs: message.jitter_ms ?? 0,
         lossRate: message.loss_rate ?? 0,
@@ -759,14 +736,13 @@ function startApp(token: string) {
       return;
     }
     if (message.type === 'queue_snapshot') {
-      if (message.depth !== undefined && message.skipped !== undefined) {
+      if (message.depth !== undefined) {
         const nextDue =
           message.next_due_ms === undefined || message.next_due_ms === null
             ? null
             : new Date(Date.now() + message.next_due_ms).toISOString();
         queueWidget({
           queueDepth: message.depth,
-          skippedTotal: message.skipped,
           nextDue,
           running: (message.running || []).map(item => ({
             upstream: item.upstream,
@@ -959,14 +935,6 @@ function defaultMetrics(tag: string, activeTag: string): UpstreamMetrics {
     score: 0,
     scoreTcp: 0,
     scoreUdp: 0,
-    scoreOverall: 0,
-    bandwidthUpBps: 0,
-    bandwidthDownBps: 0,
-    bandwidthTcpUpBps: 0,
-    bandwidthTcpDownBps: 0,
-    bandwidthUdpUpBps: 0,
-    bandwidthUdpDownBps: 0,
-    utilization: 0,
     reachable: false,
     unusable: true,
     active: tag === activeTag

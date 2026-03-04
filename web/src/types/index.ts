@@ -32,16 +32,6 @@ export interface UpstreamMetrics {
   score: number;
   scoreTcp: number;
   scoreUdp: number;
-  scoreOverall: number;
-  bandwidthUpBps: number;
-  bandwidthDownBps: number;
-  bandwidthTcpUpBps: number;
-  bandwidthTcpDownBps: number;
-  bandwidthUdpUpBps: number;
-  bandwidthUdpDownBps: number;
-  utilization: number;
-  utilizationUp: number;
-  utilizationDown: number;
   reachable: boolean;
   unusable: boolean;
   active: boolean;
@@ -99,7 +89,6 @@ export interface StatusResponse {
 
 export interface QueueStatus {
   queueDepth: number;
-  skippedTotal: number;
   nextDue: string | null;
   running: RunningTest[];
   pending: PendingTest[];
@@ -148,8 +137,6 @@ export interface WSMessage {
   direction?: 'upload' | 'download';
   duration_ms?: number;
   success?: boolean;
-  bandwidth_up_bps?: number;
-  bandwidth_down_bps?: number;
   rtt_ms?: number;
   jitter_ms?: number;
   loss_rate?: number;
@@ -158,7 +145,6 @@ export interface WSMessage {
   code?: string;
   message?: string;
   depth?: number;
-  skipped?: number;
   next_due_ms?: number;
   running?: Array<{
     upstream: string;

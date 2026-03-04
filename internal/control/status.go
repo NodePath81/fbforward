@@ -244,19 +244,17 @@ func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 }
 
 type TestHistoryPayload struct {
-	Upstream         string  `json:"upstream"`
-	Protocol         string  `json:"protocol"`
-	Direction        string  `json:"direction"`
-	Timestamp        int64   `json:"timestamp"`
-	DurationMs       int64   `json:"duration_ms"`
-	Success          bool    `json:"success"`
-	BandwidthUpBps   float64 `json:"bandwidth_up_bps"`
-	BandwidthDownBps float64 `json:"bandwidth_down_bps"`
-	RTTMs            float64 `json:"rtt_ms"`
-	JitterMs         float64 `json:"jitter_ms"`
-	LossRate         float64 `json:"loss_rate"`
-	RetransRate      float64 `json:"retrans_rate"`
-	Error            string  `json:"error,omitempty"`
+	Upstream    string  `json:"upstream"`
+	Protocol    string  `json:"protocol"`
+	Direction   string  `json:"direction"`
+	Timestamp   int64   `json:"timestamp"`
+	DurationMs  int64   `json:"duration_ms"`
+	Success     bool    `json:"success"`
+	RTTMs       float64 `json:"rtt_ms"`
+	JitterMs    float64 `json:"jitter_ms"`
+	LossRate    float64 `json:"loss_rate"`
+	RetransRate float64 `json:"retrans_rate"`
+	Error       string  `json:"error,omitempty"`
 }
 
 type statusErrorPayload struct {

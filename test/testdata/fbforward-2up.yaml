@@ -42,12 +42,10 @@ measurement:
       chunk_size: "1200"
       sample_size: "500kb"
       sample_count: 1
-      target_bandwidth: {upload: "10m", download: "50m"}
       timeout: {per_sample: "10s", per_cycle: "30s"}
     udp:
       enabled: true
       chunk_size: "1200"
       sample_size: "500kb"
       sample_count: 1
-      target_bandwidth: {upload: "10m", download: "50m"}
       timeout: {per_sample: "10s", per_cycle: "30s"}

@@ -12,25 +12,22 @@ func TestComputeFullScoreOrdering(t *testing.T) {
 	now := time.Now()
 
 	better := UpstreamStats{
-		Reachable:         true,
-		BandwidthUpBps:    100e6,
-		BandwidthDownBps:  100e6,
-		RTTMs:             10,
-		JitterMs:          5,
-		LossRate:          0.0,
-		RetransRate:       0.0,
-		LastTCPUpdate:     now,
-		LastUDPUpdate:     now,
-		BandwidthUpBpsTCP: 100e6,
+		Reachable:     true,
+		RTTMs:         10,
+		JitterMs:      5,
+		LossRate:      0.0,
+		RetransRate:   0.0,
+		LastTCPUpdate: now,
+		LastUDPUpdate: now,
 	}
 	worse := better
-	worse.BandwidthUpBps = 50e6
-	worse.BandwidthDownBps = 50e6
 	worse.RTTMs = 30
 	worse.JitterMs = 15
+	worse.LossRate = 0.1
+	worse.RetransRate = 0.1
 
-	_, _, scoreBetter := computeFullScore(better, cfg, 0, 0, 0)
-	_, _, scoreWorse := computeFullScore(worse, cfg, 0, 0, 0)
+	_, _, scoreBetter := computeFullScore(better, cfg, 0, 0)
+	_, _, scoreWorse := computeFullScore(worse, cfg, 0, 0)
 	if scoreBetter <= scoreWorse {
 		t.Fatalf("expected better upstream to score higher (better=%v worse=%v)", scoreBetter, scoreWorse)
 	}
@@ -41,21 +38,19 @@ func TestComputeFullScoreStalenessPenalty(t *testing.T) {
 	now := time.Now()
 
 	fresh := UpstreamStats{
-		Reachable:        true,
-		BandwidthUpBps:   100e6,
-		BandwidthDownBps: 100e6,
-		RTTMs:            10,
-		JitterMs:         5,
-		LossRate:         0.0,
-		RetransRate:      0.0,
-		LastTCPUpdate:    now,
-		LastUDPUpdate:    now,
+		Reachable:     true,
+		RTTMs:         10,
+		JitterMs:      5,
+		LossRate:      0.0,
+		RetransRate:   0.0,
+		LastTCPUpdate: now,
+		LastUDPUpdate: now,
 	}
 	stale := fresh
 	stale.LastTCPUpdate = now.Add(-time.Hour)
 
-	_, _, freshScore := computeFullScore(fresh, cfg, 0, 0, 30*time.Second)
-	_, _, staleScore := computeFullScore(stale, cfg, 0, 0, 30*time.Second)
+	_, _, freshScore := computeFullScore(fresh, cfg, 0, 30*time.Second)
+	_, _, staleScore := computeFullScore(stale, cfg, 0, 30*time.Second)
 	if staleScore >= freshScore {
 		t.Fatalf("expected stale score < fresh score, got stale=%v fresh=%v", staleScore, freshScore)
 	}
@@ -65,19 +60,17 @@ func TestComputeFullScoreBiasTransform(t *testing.T) {
 	cfg := config.DefaultScoringConfig()
 	now := time.Now()
 	stats := UpstreamStats{
-		Reachable:        true,
-		BandwidthUpBps:   80e6,
-		BandwidthDownBps: 80e6,
-		RTTMs:            15,
-		JitterMs:         5,
-		LossRate:         0.0,
-		RetransRate:      0.0,
-		LastTCPUpdate:    now,
-		LastUDPUpdate:    now,
+		Reachable:     true,
+		RTTMs:         15,
+		JitterMs:      5,
+		LossRate:      0.0,
+		RetransRate:   0.0,
+		LastTCPUpdate: now,
+		LastUDPUpdate: now,
 	}
-	_, _, neutral := computeFullScore(stats, cfg, 0, 0, 0)
-	_, _, biasedUp := computeFullScore(stats, cfg, 0.5, 0, 0)
-	_, _, biasedDown := computeFullScore(stats, cfg, -0.5, 0, 0)
+	_, _, neutral := computeFullScore(stats, cfg, 0, 0)
+	_, _, biasedUp := computeFullScore(stats, cfg, 0.5, 0)
+	_, _, biasedDown := computeFullScore(stats, cfg, -0.5, 0)
 
 	if biasedUp <= neutral {
 		t.Fatalf("expected positive bias to increase score (neutral=%v up=%v)", neutral, biasedUp)

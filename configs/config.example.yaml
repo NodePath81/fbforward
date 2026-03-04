@@ -69,15 +69,12 @@ measurement:
   stale_threshold: 60m
   fallback_to_icmp_on_stale: true
 
-  # Scheduling and capacity gating.
+  # Scheduling.
   schedule:
     interval:
       min: 15m
       max: 45m
     upstream_gap: 5s
-    headroom:
-      max_link_utilization: 0.7
-      required_free_bandwidth: "0"
 
   # Fast start + warmup.
   fast_start:
@@ -90,9 +87,6 @@ measurement:
     tcp:
       enabled: true
       alternate: true
-      target_bandwidth:
-        upload: 10m
-        download: 50m
       chunk_size: 1200
       sample_size: 500kb
       sample_count: 1
@@ -101,9 +95,6 @@ measurement:
         per_cycle: 30s
     udp:
       enabled: true
-      target_bandwidth:
-        upload: 10m
-        download: 50m
       chunk_size: 1200
       sample_size: 500kb
       sample_count: 1
@@ -118,17 +109,11 @@ scoring:
 
   reference:
     tcp:
-      bandwidth:
-        upload: 10m
-        download: 50m
       latency:
         rtt: 50
         jitter: 10
       retransmit_rate: 0.01
     udp:
-      bandwidth:
-        upload: 10m
-        download: 50m
       latency:
         rtt: 50
         jitter: 10
@@ -136,28 +121,16 @@ scoring:
 
   weights:
     tcp:
-      bandwidth_upload: 0.15
-      bandwidth_download: 0.25
       rtt: 0.25
       jitter: 0.10
       retransmit_rate: 0.25
     udp:
-      bandwidth_upload: 0.10
-      bandwidth_download: 0.30
       rtt: 0.15
       jitter: 0.30
       loss_rate: 0.15
     protocol_blend:
       tcp_weight: 0.5
       udp_weight: 0.5
-
-  utilization_penalty:
-    enabled: true
-    window_duration: 5s
-    update_interval: 1s
-    threshold: 0.7
-    min_multiplier: 0.3
-    exponent: 2
 
   bias_transform:
     kappa: 0.693

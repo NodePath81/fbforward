@@ -8,7 +8,7 @@ This guide covers fbforward operation, configuration, and troubleshooting.
 
 ### What fbforward does
 
-fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on measured network quality. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures upstream quality using bwprobe bandwidth tests and ICMP reachability probes.
+fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on measured network quality. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures upstream quality using bwprobe probes (RTT, jitter, TCP retransmit rate, UDP loss rate) and ICMP reachability probes.
 
 ### NAT-style forwarding model
 
@@ -48,9 +48,9 @@ fbforward supports two upstream selection modes:
 
 **Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
 
-Mode is determined by configuration:
-- Auto mode active when `switching.auto` section is present
-- Manual mode active when operator calls `SetUpstream` RPC
+Mode behavior:
+- Startup mode is always auto
+- Manual mode is entered only when operator calls `SetUpstream` RPC with `mode: "manual"`
 
 ### Fast failover
 
@@ -118,7 +118,7 @@ Configuration uses YAML with custom unmarshaling for duration and bandwidth valu
 
 **Bandwidth format**: Number followed by unit suffix. Valid suffixes: `k` (Kbps), `m` (Mbps), `g` (Gbps). Examples: `10m` (10 Mbps), `1g` (1 Gbps).
 
-Numbers without suffixes are interpreted as seconds (for durations) or bps (for bandwidth).
+Numbers without suffixes are interpreted as seconds for durations. Bandwidth values must include a suffix (`k`, `m`, `g`) except `0`/`0.0`.
 
 ### Configuration structure
 
@@ -160,7 +160,6 @@ scoring:
   smoothing: {...}                  # EMA smoothing parameters
   reference: {...}                  # Target/ideal metric values
   weights: {...}                    # Metric importance weights
-  utilization_penalty: {...}        # Utilization-based score reduction
   bias_transform: {...}             # Bias multiplier configuration
 
 switching:
@@ -316,7 +315,6 @@ The UI displays:
 **Upstream status**:
 - Current primary upstream (highlighted)
 - Per-upstream scores and metrics
-- Bandwidth (upload/download)
 - RTT and jitter
 - Loss/retransmit rates
 - Reachability status
@@ -336,7 +334,7 @@ The UI displays:
 - Measurement errors
 
 **Update mechanisms**:
-- Upstream metrics (bandwidth, RTT, scores) are polled from `/metrics` endpoint at a user-selectable interval (1s, 3s, 5s, or 10s via UI buttons)
+- Upstream metrics (RTT, loss/retransmit, scores, traffic rates) are polled from `/metrics` endpoint at a user-selectable interval (1s, 2s, or 5s via UI buttons)
 - Connection/flow events and measurement completions are pushed via WebSocket for real-time updates to the active connections list and test history
 
 ### Monitoring via Prometheus metrics
@@ -358,15 +356,13 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/metrics
 | `fbforward_udp_mappings_active` | Gauge | - | Active UDP mappings |
 | `fbforward_bytes_up_total` | Counter | `upstream` | Total uploaded bytes |
 | `fbforward_bytes_down_total` | Counter | `upstream` | Total downloaded bytes |
-| `fbforward_upstream_bandwidth_up_bps` | Gauge | `upstream` | Upload bandwidth (bits/sec) |
-| `fbforward_upstream_bandwidth_down_bps` | Gauge | `upstream` | Download bandwidth (bits/sec) |
 | `fbforward_upstream_rtt_ms` | Gauge | `upstream` | Mean RTT (milliseconds) |
 | `fbforward_upstream_jitter_ms` | Gauge | `upstream` | RTT jitter (milliseconds) |
 | `fbforward_upstream_loss_rate` | Gauge | `upstream` | UDP loss rate [0, 1] |
 | `fbforward_upstream_retrans_rate` | Gauge | `upstream` | TCP retransmit rate [0, 1] |
 | `fbforward_measurement_queue_size` | Gauge | - | Pending measurements in queue |
 
-For the complete metrics catalog including per-protocol bandwidth, utilization, and rate metrics, see [Section 5.2.4 Prometheus metrics](api-reference.md#524-prometheus-metrics).
+For the complete metrics catalog, see [Section 5.2.4 Prometheus metrics](api-reference.md#524-prometheus-metrics).
 
 Configure Prometheus scrape target:
 
@@ -563,10 +559,9 @@ Verify:
 
 **Low throughput**:
 
-Check bandwidth metrics in web UI. Low bandwidth indicates link saturation or throttling.
+Check traffic-rate metrics in web UI or Prometheus. Low throughput indicates path saturation, throttling, or shaping limits.
 
 Verify:
-- Measurement target bandwidth matches link capacity
 - No QoS policies throttling traffic
 - Upstream has sufficient capacity
 
