@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -219,6 +220,14 @@ func (sw *statusWriter) Write(b []byte) (int, error) {
 		sw.written = true
 	}
 	return sw.ResponseWriter.Write(b)
+}
+
+func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := sw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
 }
 
 func (c *ControlServer) newRequestCtx(r *http.Request, protocol string, authOK bool) requestCtx {

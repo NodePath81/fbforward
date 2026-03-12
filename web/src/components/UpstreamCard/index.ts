@@ -11,8 +11,6 @@ export interface BestFlags {
 export interface UpstreamCardHandle {
   element: HTMLElement;
   update: (metrics: UpstreamMetrics, flags: BestFlags) => void;
-  onTestTCP?: () => void;
-  onTestUDP?: () => void;
   onDetails?: () => void;
 }
 
@@ -54,70 +52,20 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
 
   const actions = createEl('div', 'upstream-actions');
   const detailsBtn = createEl('button', 'btn-test', 'Details');
-  const testTcpBtn = createEl('button', 'btn-test', 'Test TCP');
-  const testUdpBtn = createEl('button', 'btn-test', 'Test UDP');
   actions.appendChild(detailsBtn);
-  actions.appendChild(testTcpBtn);
-  actions.appendChild(testUdpBtn);
 
   card.appendChild(header);
   card.appendChild(scoreTrack);
   card.appendChild(list);
   card.appendChild(actions);
 
-  let onTestTCP: (() => void) | undefined;
-  let onTestUDP: (() => void) | undefined;
   let onDetails: (() => void) | undefined;
-  let testing = false;
-  let pendingReset = false;
-
-  const resetButtons = () => {
-    testTcpBtn.disabled = false;
-    testUdpBtn.disabled = false;
-    testTcpBtn.textContent = 'Test TCP';
-    testUdpBtn.textContent = 'Test UDP';
-    testing = false;
-    pendingReset = false;
-  };
-
-  const startTest = (protocol: 'tcp' | 'udp') => {
-    if (testing) {
-      return;
-    }
-    testing = true;
-    pendingReset = true;
-    testTcpBtn.disabled = true;
-    testUdpBtn.disabled = true;
-    if (protocol === 'tcp') {
-      testTcpBtn.textContent = 'Testing...';
-    } else {
-      testUdpBtn.textContent = 'Testing...';
-    }
-  };
 
   detailsBtn.addEventListener('click', event => {
     event.stopPropagation();
     if (onDetails) {
       onDetails();
     }
-  });
-
-  testTcpBtn.addEventListener('click', event => {
-    event.stopPropagation();
-    if (!onTestTCP) {
-      return;
-    }
-    startTest('tcp');
-    onTestTCP();
-  });
-
-  testUdpBtn.addEventListener('click', event => {
-    event.stopPropagation();
-    if (!onTestUDP) {
-      return;
-    }
-    startTest('udp');
-    onTestUDP();
   });
 
   const update = (metrics: UpstreamMetrics, flags: BestFlags) => {
@@ -150,27 +98,11 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
     if (flags.bestLoss) {
       badges.appendChild(createBadge('best loss', 'best'));
     }
-
-    if (pendingReset) {
-      resetButtons();
-    }
   };
 
   return {
     element: card,
     update,
-    get onTestTCP() {
-      return onTestTCP;
-    },
-    set onTestTCP(handler: (() => void) | undefined) {
-      onTestTCP = handler;
-    },
-    get onTestUDP() {
-      return onTestUDP;
-    },
-    set onTestUDP(handler: (() => void) | undefined) {
-      onTestUDP = handler;
-    },
     get onDetails() {
       return onDetails;
     },

@@ -16,6 +16,7 @@ export interface MetricsSnapshot {
   };
   upstreams: Record<string, UpstreamMetrics>;
   memoryBytes: number;
+  goroutines: number;
   uptimeSeconds: number;
   totalBytesUp: number;
   totalBytesDown: number;
@@ -62,6 +63,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
   const udp = data['fbforward_udp_mappings_active']?.[0]?.value ?? 0;
   const memorySample = data['fbforward_memory_alloc_bytes']?.[0]?.value;
   const memoryBytes = Number.isFinite(memorySample) ? memorySample : Number.NaN;
+  const goroutinesSample = data['fbforward_goroutines']?.[0]?.value;
+  const goroutines = Number.isFinite(goroutinesSample) ? goroutinesSample : Number.NaN;
   const uptimeSample = data['fbforward_uptime_seconds']?.[0]?.value;
   const uptimeSeconds = Number.isFinite(uptimeSample) ? uptimeSample : Number.NaN;
 
@@ -82,6 +85,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     if (!upstreams[tag]) {
       upstreams[tag] = {
         rtt: 0,
+        rttTcp: Number.NaN,
+        rttUdp: Number.NaN,
         jitter: 0,
         loss: 0,
         lossRate: 0,
@@ -103,6 +108,22 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
       continue;
     }
     ensure(tag).rtt = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_rtt_tcp_ms'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).rttTcp = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_rtt_udp_ms'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).rttUdp = item.value;
   }
 
   for (const item of data['fbforward_upstream_jitter_ms'] || []) {
@@ -199,6 +220,7 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     counts: { tcp, udp },
     upstreams,
     memoryBytes,
+    goroutines,
     uptimeSeconds,
     totalBytesUp,
     totalBytesDown

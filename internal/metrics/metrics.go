@@ -16,6 +16,8 @@ import (
 type UpstreamMetrics struct {
 	Reachable   bool
 	RTTMs       float64
+	RTTTcpMs    float64
+	RTTUdpMs    float64
 	JitterMs    float64
 	RetransRate float64
 	LossRate    float64
@@ -205,6 +207,8 @@ func (m *Metrics) SetUpstreamMetrics(tag string, stats upstream.UpstreamStats) {
 	}
 	up.Reachable = stats.Reachable
 	up.RTTMs = stats.RTTMs
+	up.RTTTcpMs = stats.RTTTcpMs
+	up.RTTUdpMs = stats.RTTUdpMs
 	up.JitterMs = stats.JitterMs
 	up.RetransRate = stats.RetransRate
 	up.LossRate = stats.LossRate
@@ -361,6 +365,22 @@ func (m *Metrics) Render() string {
 		b.WriteString(tag)
 		b.WriteString("\"} ")
 		b.WriteString(formatFloat(upstreams[tag].RTTMs))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_rtt_tcp_ms gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_rtt_tcp_ms{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].RTTTcpMs))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_rtt_udp_ms gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_rtt_udp_ms{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(formatFloat(upstreams[tag].RTTUdpMs))
 		b.WriteString("\n")
 	}
 	b.WriteString("# TYPE fbforward_upstream_jitter_ms gauge\n")

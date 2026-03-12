@@ -25,6 +25,8 @@ export interface UpstreamConfig {
 
 export interface UpstreamMetrics {
   rtt: number;
+  rttTcp: number;
+  rttUdp: number;
   jitter: number;
   loss: number;
   lossRate: number;
@@ -48,6 +50,9 @@ export interface ConnectionEntry {
   segmentsDown: number;
   lastActivity: number;
   age: number;
+  createdAt: number;
+  rateUp: number;
+  rateDown: number;
   kind: 'tcp' | 'udp';
 }
 
@@ -72,8 +77,7 @@ export type RPCMethod =
   | 'ListUpstreams'
   | 'GetMeasurementConfig'
   | 'GetRuntimeConfig'
-  | 'GetScheduleStatus'
-  | 'RunMeasurement';
+  | 'GetScheduleStatus';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;
@@ -85,27 +89,6 @@ export interface StatusResponse {
   mode: Mode;
   active_upstream: string;
   upstreams: UpstreamSnapshot[];
-}
-
-export interface QueueStatus {
-  queueDepth: number;
-  nextDue: string | null;
-  running: RunningTest[];
-  pending: PendingTest[];
-}
-
-export interface RunningTest {
-  upstream: string;
-  protocol: 'tcp' | 'udp';
-  direction: 'upload' | 'download';
-  elapsedMs: number;
-}
-
-export interface PendingTest {
-  upstream: string;
-  protocol: 'tcp' | 'udp';
-  direction: 'upload' | 'download';
-  scheduledAt: string;
 }
 
 export interface IdentityResponse {

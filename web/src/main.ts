@@ -1,26 +1,26 @@
-import { callRPC, getRuntimeConfig, runMeasurement } from './api/rpc';
+import { callRPC, getRuntimeConfig } from './api/rpc';
 import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
+import { createChart, type ChartHandle, type ChartSeries } from './components/Chart';
 import { createConnectionTable } from './components/ConnectionTable';
-import { createQueueWidget } from './components/QueueWidget';
 import { createUpstreamCard } from './components/UpstreamCard';
 import { renderStatusCard } from './components/StatusCard';
 import { createToastManager } from './components/Toast';
-import { connectStatusSocket } from './websocket/status';
+import { historyStore, type SessionHistoryEntry } from './state/history';
 import { createInitialState, Store } from './state/store';
-import { historyStore } from './state/history';
+import { timeSeriesStore } from './state/timeseries';
 import type {
   ConnectionEntry,
+  IdentityResponse,
   Mode,
   RawConnectionEntry,
   StatusResponse,
-  TestHistoryEntry,
   UpstreamMetrics,
-  IdentityResponse,
   WSMessage
 } from './types';
 import { clearChildren, createEl, qs } from './utils/dom';
-import { formatBytes, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
+import { formatBytes, formatBytesRate, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
+import { connectStatusSocket } from './websocket/status';
 
 const storedToken = localStorage.getItem('fbforward_token') || '';
 if (!storedToken) {
@@ -29,21 +29,50 @@ if (!storedToken) {
   startApp(storedToken);
 }
 
+type Page = 'dashboard' | 'graph' | 'history' | 'config';
+type ConnectionSortKey = 'protocol' | 'client' | 'upstream' | 'up' | 'down' | 'last' | 'age';
+type SessionSortKey = 'id' | 'protocol' | 'client' | 'upstream' | 'start' | 'end' | 'up' | 'down';
+type SortDirection = 'asc' | 'desc';
+
+interface ConnectionSortState {
+  key: ConnectionSortKey;
+  direction: SortDirection;
+}
+
+interface SessionSortState {
+  key: SessionSortKey;
+  direction: SortDirection;
+}
+
+interface ParsedHost {
+  kind: 'ipv4' | 'ipv6' | 'name';
+  parts: number[];
+  text: string;
+}
+
+interface ParsedClient {
+  host: ParsedHost;
+  port: number;
+}
+
 function startApp(token: string) {
   const store = new Store(createInitialState(token));
 
   const statusCard = renderStatusCard(qs<HTMLElement>(document, '#statusCard'));
-  const queueWidget = createQueueWidget(qs<HTMLElement>(document, '#queueWidget'));
   const upstreamGrid = qs<HTMLElement>(document, '#upstreamGrid');
   const upstreamSummary = qs<HTMLElement>(document, '#upstreamSummary');
   const connectionsSummary = qs<HTMLElement>(document, '#connectionsSummary');
   const connectionTable = createConnectionTable(qs<HTMLElement>(document, '#connectionTable'));
   const connectionSearch = qs<HTMLInputElement>(document, '#connectionSearch');
+  const sessionSearch = qs<HTMLInputElement>(document, '#sessionSearch');
   const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
   const restartButton = qs<HTMLButtonElement>(document, '#restartButton');
   const pollStatus = qs<HTMLElement>(document, '#pollStatus');
-  const sortButtons = Array.from(
-    document.querySelectorAll<HTMLButtonElement>('.sort-button')
+  const connectionSortButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('#page-dashboard .sort-button[data-sort]')
+  );
+  const sessionSortButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('.session-sort-button[data-sort]')
   );
   const modeButtons = Array.from(
     document.querySelectorAll<HTMLButtonElement>('.segmented-button[data-mode]')
@@ -53,42 +82,42 @@ function startApp(token: string) {
   );
   const navLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('.page-nav-link'));
   const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
-  const testHistoryTable = qs<HTMLTableSectionElement>(document, '#testHistoryTable');
   const sessionHistoryTable = qs<HTMLTableSectionElement>(document, '#sessionHistoryTable');
   const configTree = qs<HTMLElement>(document, '#configTree');
-  const testDetailsModal = qs<HTMLElement>(document, '#testDetailsModal');
   const upstreamDetailsModal = qs<HTMLElement>(document, '#upstreamDetailsModal');
+  const rttChartContainer = qs<HTMLElement>(document, '#rttChartContainer');
+  const scoreChartContainer = qs<HTMLElement>(document, '#scoreChartContainer');
+  const trafficChartContainer = qs<HTMLElement>(document, '#trafficChartContainer');
+
   let pollTimer: number | null = null;
   let pollInProgress = false;
   let statusSocket: ReturnType<typeof connectStatusSocket> | null = null;
-  let currentPage: 'dashboard' | 'history' | 'config' = 'dashboard';
+  let currentPage: Page = 'dashboard';
   let openUpstreamTag: string | null = null;
-
-  function getDefaultPollInterval(): number {
-    const stored = localStorage.getItem('fbforward_poll_interval_ms');
-    if (stored) {
-      const parsed = Number.parseInt(stored, 10);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed;
-      }
-    }
-    for (const button of intervalButtons) {
-      if (button.getAttribute('aria-pressed') === 'true') {
-        const value = Number.parseInt(button.dataset.interval || '', 10);
-        if (Number.isFinite(value) && value > 0) {
-          return value * 1000;
-        }
-      }
-    }
-    return 2000;
-  }
-
-  let pollIntervalMs = getDefaultPollInterval();
-
+  let pollIntervalMs = getDefaultPollInterval(intervalButtons);
   let upstreamCards = new Map<string, ReturnType<typeof createUpstreamCard>>();
+  let rttChart: ChartHandle | null = null;
+  let scoreChart: ChartHandle | null = null;
+  let trafficChart: ChartHandle | null = null;
+  let prevBytesUp: number | null = null;
+  let prevBytesDown: number | null = null;
+  let prevTrafficTs: number | null = null;
+
   const entryOrder = new Map<string, number>();
   let entrySeq = 0;
-  const sortState: SortState = { key: 'client', direction: 'asc' };
+  const connectionSortState: ConnectionSortState = { key: 'client', direction: 'asc' };
+  const sessionSortState: SessionSortState = { key: 'end', direction: 'desc' };
+  const palette = [
+    'var(--color-accent)',
+    '#0e8ead',
+    '#1e8449',
+    '#d68910',
+    '#7d5fff',
+    '#c0392b',
+    '#7f8c8d'
+  ];
+  const tagColors = new Map<string, string>();
+
   restartButton.addEventListener('click', async () => {
     restartButton.disabled = true;
     const result = await callRPC<unknown>(token, 'Restart', {});
@@ -117,25 +146,77 @@ function startApp(token: string) {
     });
   });
 
+  connectionSortButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const key = button.dataset.sort as ConnectionSortKey | undefined;
+      if (!key) {
+        return;
+      }
+      if (connectionSortState.key === key) {
+        connectionSortState.direction = connectionSortState.direction === 'asc' ? 'desc' : 'asc';
+      } else {
+        connectionSortState.key = key;
+        connectionSortState.direction = 'asc';
+      }
+      updateSortIndicators(connectionSortButtons, connectionSortState.key, connectionSortState.direction);
+      updateTables();
+    });
+  });
+
+  sessionSortButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const key = button.dataset.sort as SessionSortKey | undefined;
+      if (!key) {
+        return;
+      }
+      if (sessionSortState.key === key) {
+        sessionSortState.direction = sessionSortState.direction === 'asc' ? 'desc' : 'asc';
+      } else {
+        sessionSortState.key = key;
+        sessionSortState.direction = 'asc';
+      }
+      updateSortIndicators(sessionSortButtons, sessionSortState.key, sessionSortState.direction);
+      renderSessionHistory();
+    });
+  });
+
+  connectionSearch.addEventListener('input', () => {
+    updateTables();
+  });
+
+  sessionSearch.addEventListener('input', () => {
+    renderSessionHistory();
+  });
+
+  window.addEventListener('hashchange', () => {
+    setActivePage(resolvePageFromHash());
+  });
+
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !upstreamDetailsModal.classList.contains('hidden')) {
+      hideUpstreamDetails();
+    }
+  });
+
+  window.setInterval(() => {
+    if (currentPage === 'dashboard') {
+      updateTables();
+    }
+  }, 1000);
+
   function setPollInterval(seconds: number): void {
     pollIntervalMs = seconds * 1000;
     localStorage.setItem('fbforward_poll_interval_ms', pollIntervalMs.toString());
-    updatePollIntervalUI();
+    updatePollIntervalUI(intervalButtons, pollIntervalMs);
     startPolling();
     statusSocket?.updateSnapshotInterval(pollIntervalMs);
   }
 
-  function updatePollIntervalUI(): void {
-    for (const button of intervalButtons) {
-      const value = Number.parseInt(button.dataset.interval || '', 10);
-      const active = value * 1000 === pollIntervalMs;
-      button.classList.toggle('active', active);
-      button.setAttribute('aria-pressed', active ? 'true' : 'false');
-    }
-  }
-
-  function resolvePageFromHash(): 'dashboard' | 'history' | 'config' {
+  function resolvePageFromHash(): Page {
     const hash = window.location.hash.replace(/^#\/?/, '');
+    if (hash === 'graph') {
+      return 'graph';
+    }
     if (hash === 'history') {
       return 'history';
     }
@@ -145,7 +226,7 @@ function startApp(token: string) {
     return 'dashboard';
   }
 
-  function setActivePage(page: 'dashboard' | 'history' | 'config'): void {
+  function setActivePage(page: Page): void {
     currentPage = page;
     for (const el of pages) {
       const isActive = el.id === `page-${page}`;
@@ -154,8 +235,10 @@ function startApp(token: string) {
     for (const link of navLinks) {
       link.classList.toggle('active', link.dataset.page === page);
     }
+    if (page === 'graph') {
+      renderGraphPage();
+    }
     if (page === 'history') {
-      renderTestHistory();
       renderSessionHistory();
     }
     if (page === 'config') {
@@ -163,57 +246,19 @@ function startApp(token: string) {
     }
   }
 
-  window.addEventListener('hashchange', () => {
-    setActivePage(resolvePageFromHash());
-  });
-
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {
-      if (!testDetailsModal.classList.contains('hidden')) {
-        hideTestDetails();
-      } else if (!upstreamDetailsModal.classList.contains('hidden')) {
-        hideUpstreamDetails();
-      }
-    }
-  });
-
-  sortButtons.forEach(button => {
-    button.addEventListener('click', () => {
-      const key = button.dataset.sort as SortKey | undefined;
-      if (!key) {
-        return;
-      }
-      if (sortState.key === key) {
-        sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
-      } else {
-        sortState.key = key;
-        sortState.direction = 'asc';
-      }
-      updateSortIndicators();
-      updateTables();
-    });
-  });
-
-  updateSortIndicators();
-
-  connectionSearch.addEventListener('input', () => {
-    updateTables();
-  });
-
   function updateStatusCard(): void {
     const state = store.getState();
     statusCard({
       mode: state.control.mode,
       activeUpstream: state.activeUpstream,
-      tcp: state.counts.tcp,
-      udp: state.counts.udp,
-      memoryBytes: state.memoryBytes
+      tcp: state.connections.tcp.size,
+      udp: state.connections.udp.size,
+      memoryBytes: state.memoryBytes,
+      goroutines: state.goroutines
     });
     updateHeaderStats();
     updatePollStatus();
-
     upstreamSummary.textContent = `${state.upstreams.length} upstreams`;
-
     if (state.hostname) {
       document.title = `fbforward - ${state.hostname}`;
     }
@@ -225,18 +270,6 @@ function startApp(token: string) {
     clearChildren(upstreamGrid);
     for (const upstream of state.upstreams) {
       const card = createUpstreamCard(upstream);
-      card.onTestTCP = async () => {
-        const result = await runMeasurement(token, upstream.tag, 'tcp');
-        if (!result.ok) {
-          toast.show(result.error || 'TCP test failed.', 'error');
-        }
-      };
-      card.onTestUDP = async () => {
-        const result = await runMeasurement(token, upstream.tag, 'udp');
-        if (!result.ok) {
-          toast.show(result.error || 'UDP test failed.', 'error');
-        }
-      };
       card.onDetails = () => {
         showUpstreamDetails(upstream.tag);
       };
@@ -254,7 +287,6 @@ function startApp(token: string) {
     const state = store.getState();
     const metrics = state.metrics;
     const best = computeBestMetrics(metrics);
-
     for (const [tag, card] of upstreamCards.entries()) {
       const snapshot = metrics[tag] || defaultMetrics(tag, state.activeUpstream);
       card.update(snapshot, {
@@ -273,32 +305,6 @@ function startApp(token: string) {
       const active = button.dataset.mode === current;
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
-    }
-  }
-
-  function updateSortIndicators(): void {
-    for (const button of sortButtons) {
-      const key = button.dataset.sort as SortKey | undefined;
-      if (!key) {
-        continue;
-      }
-      const active = key === sortState.key;
-      button.classList.toggle('is-active', active);
-      const indicator = button.querySelector<HTMLElement>('.sort-indicator');
-      if (indicator) {
-        indicator.textContent = active
-          ? sortState.direction === 'asc'
-            ? '\u25B2'
-            : '\u25BC'
-          : '';
-      }
-      const th = button.closest('th');
-      if (th) {
-        th.setAttribute(
-          'aria-sort',
-          active ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none'
-        );
-      }
     }
   }
 
@@ -373,9 +379,82 @@ function startApp(token: string) {
       }
     }
     const filtered = filterEntries(entries, connectionSearch.value);
-    filtered.sort((a, b) => compareEntries(a, b, sortState, entryOrder));
+    filtered.sort((a, b) => compareEntries(a, b, connectionSortState, entryOrder));
     connectionTable(filtered);
     connectionsSummary.textContent = `${total} active`;
+  }
+
+  function ensureCharts(): void {
+    if (!rttChart) {
+      rttChart = createChart(rttChartContainer, {
+        emptyLabel: 'Waiting for RTT samples',
+        yFormatter: value => formatMs(value, 1)
+      });
+    }
+    if (!scoreChart) {
+      scoreChart = createChart(scoreChartContainer, {
+        emptyLabel: 'Waiting for score samples',
+        yFormatter: value => formatScore(value),
+        baselineZero: true
+      });
+    }
+    if (!trafficChart) {
+      trafficChart = createChart(trafficChartContainer, {
+        emptyLabel: 'Waiting for traffic samples',
+        yFormatter: value => formatBytesRate(value),
+        baselineZero: true
+      });
+    }
+  }
+
+  function renderGraphPage(): void {
+    ensureCharts();
+    rttChart?.update(buildRTTChartSeries());
+    scoreChart?.update(buildScoreChartSeries());
+    trafficChart?.update(buildTrafficChartSeries());
+  }
+
+  function buildRTTChartSeries(): ChartSeries[] {
+    return timeSeriesStore.getRTTSeries().map(series => ({
+      label: `${series.tag} ${series.protocol.toUpperCase()}`,
+      color: getSeriesColor(series.tag),
+      dashed: series.protocol === 'udp',
+      points: series.points
+    }));
+  }
+
+  function buildTrafficChartSeries(): ChartSeries[] {
+    const traffic = timeSeriesStore.getTrafficSeries();
+    return [
+      {
+        label: 'Upload',
+        color: 'var(--color-accent)',
+        points: traffic.upload
+      },
+      {
+        label: 'Download',
+        color: '#0e8ead',
+        points: traffic.download
+      }
+    ];
+  }
+
+  function buildScoreChartSeries(): ChartSeries[] {
+    return timeSeriesStore.getScoreSeries().map(series => ({
+      label: series.tag,
+      color: getSeriesColor(series.tag),
+      points: series.points
+    }));
+  }
+
+  function getSeriesColor(tag: string): string {
+    let color = tagColors.get(tag);
+    if (color) {
+      return color;
+    }
+    color = palette[tagColors.size % palette.length];
+    tagColors.set(tag, color);
+    return color;
   }
 
   async function loadStatus(): Promise<void> {
@@ -417,7 +496,7 @@ function startApp(token: string) {
       });
       updateHeaderIdentity();
       updateStatusCard();
-    } catch (err) {
+    } catch {
       // ignore identity load failures
     }
   }
@@ -432,31 +511,10 @@ function startApp(token: string) {
     configTree.textContent = formatYaml(resp.result);
   }
 
-  function renderTestHistory(): void {
-    const tests = historyStore.getTests();
-    clearChildren(testHistoryTable);
-    if (tests.length === 0) {
-      appendEmptyRow(testHistoryTable, 6, 'No test history yet');
-      return;
-    }
-    for (const entry of tests) {
-      const row = createEl('tr');
-      row.classList.add('test-row-clickable');
-      row.appendChild(createCell(formatTimestamp(entry.timestamp)));
-      row.appendChild(createCell(entry.upstream));
-      row.appendChild(createCell(entry.protocol.toUpperCase()));
-      row.appendChild(createCell(entry.direction));
-      row.appendChild(createCell(formatDuration(entry.durationMs / 1000)));
-      row.appendChild(createCell(entry.success ? 'success' : 'failed'));
-      row.addEventListener('click', () => {
-        showTestDetails(entry);
-      });
-      testHistoryTable.appendChild(row);
-    }
-  }
-
   function renderSessionHistory(): void {
-    const sessions = historyStore.getSessions();
+    const sessions = filterSessions(historyStore.getSessions(), sessionSearch.value).sort((a, b) =>
+      compareSessionEntries(a, b, sessionSortState)
+    );
     clearChildren(sessionHistoryTable);
     if (sessions.length === 0) {
       appendEmptyRow(sessionHistoryTable, 10, 'No session history yet');
@@ -468,8 +526,8 @@ function startApp(token: string) {
       row.appendChild(createCell(entry.kind.toUpperCase()));
       row.appendChild(createCell(entry.clientAddr));
       row.appendChild(createCell(entry.upstream));
-      row.appendChild(createCell(formatTimestamp(entry.startTime)));
-      row.appendChild(createCell(formatTimestamp(entry.endTime)));
+      row.appendChild(createCell(formatApproxTimestamp(entry.startTime, entry.startApproximate)));
+      row.appendChild(createCell(formatApproxTimestamp(entry.endTime, entry.endApproximate)));
       row.appendChild(createCell(formatBytes(entry.bytesUp)));
       row.appendChild(createCell(formatBytes(entry.bytesDown)));
       row.appendChild(createCell(formatCount(entry.segmentsUp)));
@@ -492,70 +550,14 @@ function startApp(token: string) {
     return cell;
   }
 
-  function showTestDetails(entry: TestHistoryEntry): void {
-    clearChildren(testDetailsModal);
-    const card = createEl('div', 'modal-card');
-    const header = createEl('div', 'modal-header');
-    const title = createEl('h3', 'modal-title', 'Test details');
-    const closeButton = createEl('button', 'modal-close', 'Close') as HTMLButtonElement;
-    header.appendChild(title);
-    header.appendChild(closeButton);
-    card.appendChild(header);
-
-    const meta = createEl('div', 'modal-meta');
-    meta.appendChild(createDetailRow('Timestamp', formatTimestamp(entry.timestamp)));
-    meta.appendChild(createDetailRow('Upstream', entry.upstream));
-    meta.appendChild(createDetailRow('Protocol', entry.protocol.toUpperCase()));
-    meta.appendChild(createDetailRow('Direction', entry.direction));
-    meta.appendChild(createDetailRow('Duration', formatDuration(entry.durationMs / 1000)));
-    card.appendChild(meta);
-
-    const metrics = createEl('div', 'modal-metrics');
-    metrics.appendChild(createDetailRow('RTT', formatMs(entry.rttMs ?? Number.NaN)));
-    metrics.appendChild(createDetailRow('Jitter', formatMs(entry.jitterMs ?? Number.NaN)));
-    if (entry.protocol === 'udp') {
-      metrics.appendChild(
-        createDetailRow('Loss rate', formatPercent(entry.lossRate ?? Number.NaN, 2))
-      );
-    } else {
-      metrics.appendChild(
-        createDetailRow('Retrans rate', formatPercent(entry.retransRate ?? Number.NaN, 2))
-      );
-    }
-    card.appendChild(metrics);
-
-    if (!entry.success) {
-      const errorBox = createEl('div', 'modal-error');
-      errorBox.textContent = entry.error || 'Test failed';
-      card.appendChild(errorBox);
-    }
-
-    closeButton.addEventListener('click', hideTestDetails);
-    testDetailsModal.onclick = event => {
-      if (event.target === testDetailsModal) {
-        hideTestDetails();
-      }
-    };
-
-    testDetailsModal.appendChild(card);
-    testDetailsModal.classList.remove('hidden');
-  }
-
-  function hideTestDetails(): void {
-    testDetailsModal.classList.add('hidden');
-    clearChildren(testDetailsModal);
-  }
-
   function renderUpstreamDetailsModal(tag: string): void {
     const state = store.getState();
-    const upstream = state.upstreams.find(u => u.tag === tag);
+    const upstream = state.upstreams.find(item => item.tag === tag);
     const liveMetrics = state.metrics[tag];
-
     if (!upstream || !liveMetrics) {
       hideUpstreamDetails();
       return;
     }
-
     clearChildren(upstreamDetailsModal);
     const card = createEl('div', 'modal-card');
     const header = createEl('div', 'modal-header');
@@ -576,6 +578,8 @@ function startApp(token: string) {
     metrics.appendChild(createDetailRow('Score TCP', formatScore(liveMetrics.scoreTcp)));
     metrics.appendChild(createDetailRow('Score UDP', formatScore(liveMetrics.scoreUdp)));
     metrics.appendChild(createDetailRow('RTT', formatMs(liveMetrics.rtt)));
+    metrics.appendChild(createDetailRow('RTT TCP', formatMs(liveMetrics.rttTcp)));
+    metrics.appendChild(createDetailRow('RTT UDP', formatMs(liveMetrics.rttUdp)));
     metrics.appendChild(createDetailRow('Jitter', formatMs(liveMetrics.jitter)));
     metrics.appendChild(createDetailRow('Retrans rate', formatPercent(liveMetrics.retransRate, 2)));
     metrics.appendChild(createDetailRow('Loss rate', formatPercent(liveMetrics.lossRate, 2)));
@@ -593,11 +597,10 @@ function startApp(token: string) {
 
   function showUpstreamDetails(tag: string): void {
     const state = store.getState();
-    const upstream = state.upstreams.find(u => u.tag === tag);
+    const upstream = state.upstreams.find(item => item.tag === tag);
     if (!upstream) {
       return;
     }
-
     openUpstreamTag = tag;
     renderUpstreamDetailsModal(tag);
     upstreamDetailsModal.classList.remove('hidden');
@@ -638,11 +641,7 @@ function startApp(token: string) {
     const ipEl = qs<HTMLElement>(document, '#hostIPs');
     const versionEl = qs<HTMLElement>(document, '#hostVersion');
     nameEl.textContent = state.hostname || '-';
-    if (state.hostIPs.length === 0) {
-      ipEl.textContent = '-';
-    } else {
-      ipEl.textContent = state.hostIPs.join(', ');
-    }
+    ipEl.textContent = state.hostIPs.length === 0 ? '-' : state.hostIPs.join(', ');
     versionEl.textContent = state.version ? `v${state.version}` : '-';
   }
 
@@ -673,6 +672,31 @@ function startApp(token: string) {
       const text = await fetchText('/metrics', token, {}, timeoutMs);
       const parsed = parseMetrics(text);
       const snapshot = extractMetrics(parsed);
+      const now = Date.now();
+
+      for (const [tag, metrics] of Object.entries(snapshot.upstreams)) {
+        timeSeriesStore.pushRTT(tag, 'tcp', now, metrics.rttTcp);
+        timeSeriesStore.pushRTT(tag, 'udp', now, metrics.rttUdp);
+        timeSeriesStore.pushScore(tag, now, metrics.score);
+      }
+
+      if (
+        prevTrafficTs !== null &&
+        prevBytesUp !== null &&
+        prevBytesDown !== null &&
+        now > prevTrafficTs
+      ) {
+        const deltaUp = snapshot.totalBytesUp - prevBytesUp;
+        const deltaDown = snapshot.totalBytesDown - prevBytesDown;
+        const deltaSec = (now - prevTrafficTs) / 1000;
+        if (deltaUp >= 0 && deltaDown >= 0 && deltaSec > 0) {
+          timeSeriesStore.pushTraffic(now, deltaUp / deltaSec, deltaDown / deltaSec);
+        }
+      }
+
+      prevTrafficTs = now;
+      prevBytesUp = snapshot.totalBytesUp;
+      prevBytesDown = snapshot.totalBytesDown;
 
       store.setState({
         mode: snapshot.mode,
@@ -680,22 +704,27 @@ function startApp(token: string) {
         counts: snapshot.counts,
         metrics: snapshot.upstreams,
         memoryBytes: snapshot.memoryBytes,
+        goroutines: snapshot.goroutines,
         uptimeSeconds: snapshot.uptimeSeconds,
         totalBytesUp: snapshot.totalBytesUp,
         totalBytesDown: snapshot.totalBytesDown
       });
-      const pollErrors = store.getState().pollErrors;
       store.setState({
-        pollErrors: { ...pollErrors, metrics: null }
+        pollErrors: {
+          ...store.getState().pollErrors,
+          metrics: null
+        }
       });
       updateStatusCard();
       updateUpstreamCards();
       updatePollStatus();
+      if (currentPage === 'graph') {
+        renderGraphPage();
+      }
     } catch (err) {
-      const pollErrors = store.getState().pollErrors;
       store.setState({
         pollErrors: {
-          ...pollErrors,
+          ...store.getState().pollErrors,
           metrics: err instanceof Error ? err.message : 'Failed to fetch metrics'
         }
       });
@@ -703,9 +732,16 @@ function startApp(token: string) {
     }
   }
 
-  function trackSessionEntry(entry: RawConnectionEntry): void {
+  function trackSessionEntry(entry: RawConnectionEntry, approximateStart: boolean): void {
     const startTime = Date.now() - entry.age * 1000;
-    historyStore.trackSessionStart(entry.id, entry.kind, entry.client_addr, entry.upstream, startTime);
+    historyStore.trackSessionStart(
+      entry.id,
+      entry.kind,
+      entry.client_addr,
+      entry.upstream,
+      startTime,
+      approximateStart
+    );
     historyStore.trackSessionUpdate(
       entry.id,
       entry.bytes_up,
@@ -716,78 +752,42 @@ function startApp(token: string) {
   }
 
   function handleStatusMessage(message: WSMessage): void {
-    if (message.type === 'test_history_event') {
-      historyStore.addTest({
-        timestamp: message.timestamp ?? Date.now(),
-        upstream: message.upstream || '',
-        protocol: message.protocol || 'tcp',
-        direction: message.direction || 'upload',
-        durationMs: message.duration_ms ?? 0,
-        success: message.success ?? false,
-        rttMs: message.rtt_ms ?? 0,
-        jitterMs: message.jitter_ms ?? 0,
-        lossRate: message.loss_rate ?? 0,
-        retransRate: message.retrans_rate ?? 0,
-        error: message.error
-      });
-      if (currentPage === 'history') {
-        renderTestHistory();
-      }
-      return;
-    }
     if (message.type === 'queue_snapshot') {
-      if (message.depth !== undefined) {
-        const nextDue =
-          message.next_due_ms === undefined || message.next_due_ms === null
-            ? null
-            : new Date(Date.now() + message.next_due_ms).toISOString();
-        queueWidget({
-          queueDepth: message.depth,
-          nextDue,
-          running: (message.running || []).map(item => ({
-            upstream: item.upstream,
-            protocol: item.protocol,
-            direction: item.direction,
-            elapsedMs: item.elapsed_ms
-          })),
-          pending: (message.pending || []).map(item => ({
-            upstream: item.upstream,
-            protocol: item.protocol,
-            direction: item.direction,
-            scheduledAt: new Date(item.scheduled_at).toISOString()
-          }))
-        });
-      } else {
-        queueWidget(null);
-      }
       return;
     }
+
+    if (message.type === 'test_history_event') {
+      return;
+    }
+
     if (message.type === 'error') {
       console.error('WebSocket error:', message.message || message.code || 'unknown error');
       return;
     }
+
     store.update(state => {
       if (message.type === 'connections_snapshot') {
-        state.connections.tcp = new Map(
-          (message.tcp || []).map(entry => [entry.id, normalizeEntry(entry)])
-        );
-        state.connections.udp = new Map(
-          (message.udp || []).map(entry => [entry.id, normalizeEntry(entry)])
-        );
+        const nextTCP = new Map<string, ConnectionEntry>();
+        const nextUDP = new Map<string, ConnectionEntry>();
+        for (const raw of message.tcp || []) {
+          nextTCP.set(raw.id, normalizeEntry(raw, state.connections.tcp.get(raw.id)));
+        }
+        for (const raw of message.udp || []) {
+          nextUDP.set(raw.id, normalizeEntry(raw, state.connections.udp.get(raw.id)));
+        }
+        state.connections.tcp = nextTCP;
+        state.connections.udp = nextUDP;
         return;
       }
-      if (message.type === 'add' || message.type === 'update') {
-        if (!message.entry) {
-          return;
-        }
-        const entry = normalizeEntry(message.entry);
-        if (entry.kind === 'tcp') {
-          state.connections.tcp.set(entry.id, entry);
-        } else {
-          state.connections.udp.set(entry.id, entry);
-        }
+
+      if ((message.type === 'add' || message.type === 'update') && message.entry) {
+        const target =
+          message.entry.kind === 'tcp' ? state.connections.tcp : state.connections.udp;
+        const existing = target.get(message.entry.id);
+        target.set(message.entry.id, normalizeEntry(message.entry, existing));
         return;
       }
+
       if (message.type === 'remove' && message.id && message.kind) {
         if (message.kind === 'tcp') {
           state.connections.tcp.delete(message.id);
@@ -796,46 +796,40 @@ function startApp(token: string) {
         }
       }
     });
-    if (message.type === 'connections_snapshot') {
-      for (const entry of message.tcp || []) {
-        trackSessionEntry(entry);
-      }
-      for (const entry of message.udp || []) {
-        trackSessionEntry(entry);
-      }
-      if (currentPage === 'history') {
-        renderSessionHistory();
-      }
-    }
-    if (message.type === 'add' || message.type === 'update') {
-      if (message.entry) {
-        trackSessionEntry(message.entry);
-      }
-    }
-    if (message.type === 'remove' && message.id) {
-      historyStore.trackSessionEnd(message.id);
-      if (currentPage === 'history') {
-        renderSessionHistory();
-      }
-    }
+
     if (message.type === 'connections_snapshot') {
       const currentIds = new Set<string>();
       for (const entry of message.tcp || []) {
         currentIds.add(entry.id);
+        trackSessionEntry(entry, true);
       }
       for (const entry of message.udp || []) {
         currentIds.add(entry.id);
+        trackSessionEntry(entry, true);
       }
       for (const id of entryOrder.keys()) {
         if (!currentIds.has(id)) {
           entryOrder.delete(id);
         }
       }
+      updateTables();
+      return;
     }
+
+    if ((message.type === 'add' || message.type === 'update') && message.entry) {
+      trackSessionEntry(message.entry, message.type === 'update');
+      updateTables();
+      return;
+    }
+
     if (message.type === 'remove' && message.id) {
+      historyStore.trackSessionEnd(message.id, message.timestamp);
       entryOrder.delete(message.id);
+      if (currentPage === 'history') {
+        renderSessionHistory();
+      }
+      updateTables();
     }
-    updateTables();
   }
 
   statusSocket = connectStatusSocket(
@@ -846,10 +840,14 @@ function startApp(token: string) {
     pollIntervalMs
   );
 
-  loadStatus();
-  loadIdentity();
-  updatePollIntervalUI();
+  updatePollIntervalUI(intervalButtons, pollIntervalMs);
+  updateSortIndicators(connectionSortButtons, connectionSortState.key, connectionSortState.direction);
+  updateSortIndicators(sessionSortButtons, sessionSortState.key, sessionSortState.direction);
+
+  void loadStatus();
+  void loadIdentity();
   setActivePage(resolvePageFromHash());
+
   function startPolling(): void {
     if (pollTimer !== null) {
       window.clearInterval(pollTimer);
@@ -865,7 +863,7 @@ function startApp(token: string) {
     }
     pollInProgress = true;
     try {
-      await Promise.allSettled([pollMetrics()]);
+      await pollMetrics();
     } finally {
       pollInProgress = false;
     }
@@ -875,26 +873,70 @@ function startApp(token: string) {
   startPolling();
 }
 
-type SortKey = 'protocol' | 'client' | 'upstream' | 'up' | 'down' | 'last' | 'age';
-type SortDirection = 'asc' | 'desc';
-
-interface SortState {
-  key: SortKey;
-  direction: SortDirection;
+function getDefaultPollInterval(buttons: HTMLButtonElement[]): number {
+  const stored = localStorage.getItem('fbforward_poll_interval_ms');
+  if (stored) {
+    const parsed = Number.parseInt(stored, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  for (const button of buttons) {
+    if (button.getAttribute('aria-pressed') === 'true') {
+      const value = Number.parseInt(button.dataset.interval || '', 10);
+      if (Number.isFinite(value) && value > 0) {
+        return value * 1000;
+      }
+    }
+  }
+  return 2000;
 }
 
-interface ParsedHost {
-  kind: 'ipv4' | 'ipv6' | 'name';
-  parts: number[];
-  text: string;
+function updatePollIntervalUI(buttons: HTMLButtonElement[], pollIntervalMs: number): void {
+  for (const button of buttons) {
+    const value = Number.parseInt(button.dataset.interval || '', 10);
+    const active = value * 1000 === pollIntervalMs;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
 }
 
-interface ParsedClient {
-  host: ParsedHost;
-  port: number;
+function updateSortIndicators(
+  buttons: HTMLButtonElement[],
+  activeKey: string,
+  direction: SortDirection
+): void {
+  for (const button of buttons) {
+    const key = button.dataset.sort;
+    if (!key) {
+      continue;
+    }
+    const active = key === activeKey;
+    button.classList.toggle('is-active', active);
+    const indicator = button.querySelector<HTMLElement>('.sort-indicator');
+    if (indicator) {
+      indicator.textContent = active ? (direction === 'asc' ? '\u25B2' : '\u25BC') : '';
+    }
+    const th = button.closest('th');
+    if (th) {
+      th.setAttribute('aria-sort', active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none');
+    }
+  }
 }
 
-function normalizeEntry(raw: RawConnectionEntry): ConnectionEntry {
+function normalizeEntry(raw: RawConnectionEntry, existing?: ConnectionEntry): ConnectionEntry {
+  const createdAt = existing?.createdAt ?? Date.now() - raw.age * 1000;
+  let rateUp = existing?.rateUp ?? Number.NaN;
+  let rateDown = existing?.rateDown ?? Number.NaN;
+
+  if (existing) {
+    const elapsedMs = raw.last_activity - existing.lastActivity;
+    if (elapsedMs > 0) {
+      rateUp = computeRate(raw.bytes_up - existing.bytesUp, elapsedMs);
+      rateDown = computeRate(raw.bytes_down - existing.bytesDown, elapsedMs);
+    }
+  }
+
   return {
     id: raw.id,
     clientAddr: raw.client_addr,
@@ -906,8 +948,21 @@ function normalizeEntry(raw: RawConnectionEntry): ConnectionEntry {
     segmentsDown: raw.segments_down ?? 0,
     lastActivity: raw.last_activity,
     age: raw.age,
+    createdAt,
+    rateUp,
+    rateDown,
     kind: raw.kind
   };
+}
+
+function computeRate(deltaBytes: number, elapsedMs: number): number {
+  if (!Number.isFinite(deltaBytes) || !Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+    return Number.NaN;
+  }
+  if (deltaBytes < 0) {
+    return Number.NaN;
+  }
+  return deltaBytes / (elapsedMs / 1000);
 }
 
 function filterEntries(entries: ConnectionEntry[], query: string): ConnectionEntry[] {
@@ -919,15 +974,25 @@ function filterEntries(entries: ConnectionEntry[], query: string): ConnectionEnt
 }
 
 function matchesSearch(entry: ConnectionEntry, query: string): boolean {
-  const haystack = [entry.kind, entry.clientAddr, entry.port, entry.upstream]
-    .join(' ')
-    .toLowerCase();
+  const haystack = [entry.kind, entry.clientAddr, entry.port, entry.upstream].join(' ').toLowerCase();
   return haystack.includes(query);
+}
+
+function filterSessions(entries: SessionHistoryEntry[], query: string): SessionHistoryEntry[] {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {
+    return [...entries];
+  }
+  return entries.filter(entry =>
+    [entry.id, entry.kind, entry.clientAddr, entry.upstream].join(' ').toLowerCase().includes(trimmed)
+  );
 }
 
 function defaultMetrics(tag: string, activeTag: string): UpstreamMetrics {
   return {
     rtt: 0,
+    rttTcp: Number.NaN,
+    rttUdp: Number.NaN,
     jitter: 0,
     loss: 0,
     lossRate: 0,
@@ -973,7 +1038,7 @@ function computeBestMetrics(metrics: Record<string, UpstreamMetrics>) {
 function compareEntries(
   a: ConnectionEntry,
   b: ConnectionEntry,
-  sortState: SortState,
+  sortState: ConnectionSortState,
   entryOrder: Map<string, number>
 ): number {
   const primary = compareByKey(a, b, sortState.key);
@@ -985,7 +1050,7 @@ function compareEntries(
   return orderA - orderB;
 }
 
-function compareByKey(a: ConnectionEntry, b: ConnectionEntry, key: SortKey): number {
+function compareByKey(a: ConnectionEntry, b: ConnectionEntry, key: ConnectionSortKey): number {
   switch (key) {
     case 'protocol':
       return a.kind.localeCompare(b.kind);
@@ -1007,10 +1072,56 @@ function compareByKey(a: ConnectionEntry, b: ConnectionEntry, key: SortKey): num
     case 'last':
       return compareNumber(a.lastActivity, b.lastActivity);
     case 'age':
-      return compareNumber(a.age, b.age);
+      return compareNumber(a.createdAt, b.createdAt);
     default:
       return 0;
   }
+}
+
+function compareSessionEntries(
+  a: SessionHistoryEntry,
+  b: SessionHistoryEntry,
+  sortState: SessionSortState
+): number {
+  let primary = 0;
+  switch (sortState.key) {
+    case 'id':
+      primary = a.id.localeCompare(b.id);
+      break;
+    case 'protocol':
+      primary = a.kind.localeCompare(b.kind);
+      break;
+    case 'client': {
+      const parsedA = parseClientAddress(a.clientAddr);
+      const parsedB = parseClientAddress(b.clientAddr);
+      primary = compareHosts(parsedA.host, parsedB.host);
+      if (primary === 0) {
+        primary = compareNumber(parsedA.port, parsedB.port);
+      }
+      break;
+    }
+    case 'upstream':
+      primary = a.upstream.localeCompare(b.upstream);
+      break;
+    case 'start':
+      primary = compareNumber(a.startTime, b.startTime);
+      break;
+    case 'end':
+      primary = compareNumber(a.endTime, b.endTime);
+      break;
+    case 'up':
+      primary = compareNumber(a.bytesUp, b.bytesUp);
+      break;
+    case 'down':
+      primary = compareNumber(a.bytesDown, b.bytesDown);
+      break;
+    default:
+      primary = 0;
+  }
+  if (primary !== 0) {
+    return sortState.direction === 'asc' ? primary : -primary;
+  }
+  return compareNumber(b.endTime, a.endTime);
 }
 
 function compareNumber(a: number, b: number): number {
@@ -1168,6 +1279,11 @@ function formatTimestamp(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
+function formatApproxTimestamp(ms: number, approximate: boolean): string {
+  const prefix = approximate ? '\u2248 ' : '';
+  return `${prefix}${formatTimestamp(ms)}`;
+}
+
 function formatYaml(value: unknown, indentLevel = 0): string {
   const indent = '  '.repeat(indentLevel);
   if (value === null || value === undefined) {
@@ -1229,7 +1345,7 @@ function formatYamlKey(value: string): string {
 
 function formatYamlString(value: string): string {
   if (value === '') {
-    return '\"\"';
+    return '""';
   }
   if (/^[A-Za-z0-9_.\/-]+$/.test(value)) {
     return value;

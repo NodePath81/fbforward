@@ -8,6 +8,7 @@ interface StatusData {
   tcp: number;
   udp: number;
   memoryBytes: number;
+  goroutines: number;
 }
 
 export function renderStatusCard(container: HTMLElement): (data: StatusData) => void {
@@ -18,7 +19,8 @@ export function renderStatusCard(container: HTMLElement): (data: StatusData) => 
     active: createRow('Active upstream'),
     tcp: createRow('TCP conns'),
     udp: createRow('UDP mappings'),
-    memory: createRow('Memory (alloc)')
+    memory: createRow('Memory (alloc)'),
+    goroutines: createRow('Goroutines')
   };
 
   container.appendChild(title);
@@ -27,6 +29,7 @@ export function renderStatusCard(container: HTMLElement): (data: StatusData) => 
   container.appendChild(rows.tcp.row);
   container.appendChild(rows.udp.row);
   container.appendChild(rows.memory.row);
+  container.appendChild(rows.goroutines.row);
 
   return (data: StatusData) => {
     rows.mode.value.textContent = data.mode;
@@ -34,6 +37,9 @@ export function renderStatusCard(container: HTMLElement): (data: StatusData) => 
     rows.tcp.value.textContent = data.tcp.toString();
     rows.udp.value.textContent = data.udp.toString();
     rows.memory.value.textContent = formatBytes(data.memoryBytes);
+    rows.goroutines.value.textContent = Number.isFinite(data.goroutines)
+      ? Math.round(data.goroutines).toString()
+      : '-';
   };
 }
 

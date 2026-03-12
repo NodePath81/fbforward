@@ -26,14 +26,6 @@ export async function callRPC<T>(
   }
 }
 
-export async function runMeasurement(
-  token: string,
-  tag: string,
-  protocol: 'tcp' | 'udp'
-): Promise<RPCResponse<void>> {
-  return callRPC<void>(token, 'RunMeasurement', { tag, protocol });
-}
-
 export async function getRuntimeConfig(
   token: string
 ): Promise<RPCResponse<Record<string, unknown>>> {

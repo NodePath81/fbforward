@@ -170,7 +170,13 @@ func (s *StatusStore) remove(kind, id string) {
 	}
 	s.mu.Unlock()
 	if entry != nil {
-		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "remove", ID: id, Kind: kind})
+		s.hub.Broadcast(statusMessage{
+			SchemaVersion: 1,
+			Type:          "remove",
+			Timestamp:     time.Now().UnixMilli(),
+			ID:            id,
+			Kind:          kind,
+		})
 	}
 }
 
@@ -265,6 +271,7 @@ type statusErrorPayload struct {
 type statusMessage struct {
 	SchemaVersion       int           `json:"schema_version"`
 	Type                string        `json:"type"`
+	Timestamp           int64         `json:"timestamp,omitempty"`
 	TCP                 []StatusEntry `json:"tcp,omitempty"`
 	UDP                 []StatusEntry `json:"udp,omitempty"`
 	Entry               *StatusEntry  `json:"entry,omitempty"`

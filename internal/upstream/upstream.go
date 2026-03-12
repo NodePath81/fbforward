@@ -38,6 +38,8 @@ type UpstreamStats struct {
 	LastReachable time.Time `json:"last_reachable"`
 
 	RTTMs    float64 `json:"rtt_ms"`
+	RTTTcpMs float64 `json:"rtt_tcp_ms"`
+	RTTUdpMs float64 `json:"rtt_udp_ms"`
 	JitterMs float64 `json:"jitter_ms"`
 
 	RetransRate   float64   `json:"retrans_rate"`
@@ -67,6 +69,8 @@ type Upstream struct {
 
 	stats         UpstreamStats
 	rttInit       bool
+	rttTCPInit    bool
+	rttUDPInit    bool
 	jitInit       bool
 	retransInit   bool
 	lossInit      bool
@@ -351,9 +355,11 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 	up.stats.JitterMs = applyEMA(result.JitterMs, up.stats.JitterMs, scoring.Smoothing.Alpha, &up.jitInit)
 
 	if result.Network == "tcp" {
+		up.stats.RTTTcpMs = applyEMA(result.RTTMs, up.stats.RTTTcpMs, scoring.Smoothing.Alpha, &up.rttTCPInit)
 		up.stats.RetransRate = applyEMA(result.RetransRate, up.stats.RetransRate, scoring.Smoothing.Alpha, &up.retransInit)
 		up.stats.LastTCPUpdate = now
 	} else {
+		up.stats.RTTUdpMs = applyEMA(result.RTTMs, up.stats.RTTUdpMs, scoring.Smoothing.Alpha, &up.rttUDPInit)
 		up.stats.LossRate = applyEMA(result.LossRate, up.stats.LossRate, scoring.Smoothing.Alpha, &up.lossInit)
 		up.stats.LastUDPUpdate = now
 	}
