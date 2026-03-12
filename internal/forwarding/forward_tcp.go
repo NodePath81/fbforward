@@ -19,7 +19,7 @@ import (
 
 type TCPListener struct {
 	cfg     config.ListenerConfig
-	manager *upstream.UpstreamManager
+	manager upstream.UpstreamSelector
 	metrics *metrics.Metrics
 	status  *control.StatusStore
 	timeout time.Duration
@@ -42,7 +42,7 @@ var tcpBufPool = sync.Pool{
 	},
 }
 
-func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *TCPListener {
+func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *TCPListener {
 	return &TCPListener{
 		cfg:     cfg,
 		manager: manager,

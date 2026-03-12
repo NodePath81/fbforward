@@ -56,8 +56,6 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		tags = append(tags, up.Tag)
 	}
 	metrics := metrics.NewMetrics(tags)
-	utilWindow := cfg.Scoring.UtilizationPenalty.WindowDuration.Duration()
-	metrics.SetUtilizationWindow(utilWindow)
 	statusHub := control.NewStatusHub(ctx.Done(), util.ComponentLogger(logger, util.CompControl))
 	status := control.NewStatusStore(statusHub, metrics)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -136,7 +134,7 @@ func (r *Runtime) Stop() {
 	}
 	if r.shaper != nil {
 		if err := r.shaper.Cleanup(); err != nil {
-			r.logger.Error("shaping cleanup failed", "error", err)
+			util.Event(r.logger, slog.LevelError, "shaping.cleanup_failed", "error", err)
 		}
 	}
 	if r.control != nil {
@@ -172,106 +170,13 @@ func (r *Runtime) startMeasurement() {
 		return
 	}
 
-	tcpTargetUpBps, err := config.ParseBandwidth(tcpCfg.TargetBandwidth.Upload)
-	if err != nil {
-		r.logger.Error("invalid measurement protocols.tcp.target_bandwidth.upload", "error", err)
-		return
-	}
-	tcpTargetDownBps, err := config.ParseBandwidth(tcpCfg.TargetBandwidth.Download)
-	if err != nil {
-		r.logger.Error("invalid measurement protocols.tcp.target_bandwidth.download", "error", err)
-		return
-	}
-	udpTargetUpBps, err := config.ParseBandwidth(udpCfg.TargetBandwidth.Upload)
-	if err != nil {
-		r.logger.Error("invalid measurement protocols.udp.target_bandwidth.upload", "error", err)
-		return
-	}
-	udpTargetDownBps, err := config.ParseBandwidth(udpCfg.TargetBandwidth.Download)
-	if err != nil {
-		r.logger.Error("invalid measurement protocols.udp.target_bandwidth.download", "error", err)
-		return
-	}
-	requiredHeadroomBps, err := config.ParseBandwidth(r.cfg.Measurement.Schedule.Headroom.RequiredFreeBandwidth)
-	if err != nil {
-		r.logger.Error("invalid measurement schedule headroom.required_free_bandwidth", "error", err)
-		return
-	}
-
-	rateWindow := r.cfg.Scoring.UtilizationPenalty.WindowDuration.Duration()
-	if rateWindow <= 0 {
-		rateWindow = 5 * time.Second
-	}
-
-	var aggregateLimitBps int64
-	var upstreamLimits map[string]measure.UpstreamLimit
-	if r.cfg.Shaping.Enabled {
-		aggregateLimit := r.cfg.Shaping.AggregateLimit
-		if aggregateLimit == "" {
-			aggregateLimit = config.DefaultAggregateLimit
-		}
-		aggBits, err := config.ParseBandwidth(aggregateLimit)
-		if err != nil {
-			r.logger.Warn("invalid shaping.aggregate_limit", "value", aggregateLimit, "error", err)
-		} else if aggBits == 0 {
-			aggBits, err = config.ParseBandwidth(config.DefaultAggregateLimit)
-			if err != nil {
-				r.logger.Warn("invalid default shaping.aggregate_limit", "value", config.DefaultAggregateLimit, "error", err)
-			}
-		}
-		aggregateLimitBps = int64(aggBits)
-
-		upstreamLimits = make(map[string]measure.UpstreamLimit)
-		for _, upCfg := range r.cfg.Upstreams {
-			if upCfg.Shaping == nil {
-				continue
-			}
-			var uploadBps int64
-			var downloadBps int64
-			if upCfg.Shaping.UploadLimit != "" {
-				limit, err := config.ParseBandwidth(upCfg.Shaping.UploadLimit)
-				if err != nil {
-					r.logger.Warn("invalid upstream shaping upload_limit", "tag", upCfg.Tag, "value", upCfg.Shaping.UploadLimit, "error", err)
-				} else if limit > 0 {
-					uploadBps = int64(limit)
-				}
-			}
-			if upCfg.Shaping.DownloadLimit != "" {
-				limit, err := config.ParseBandwidth(upCfg.Shaping.DownloadLimit)
-				if err != nil {
-					r.logger.Warn("invalid upstream shaping download_limit", "tag", upCfg.Tag, "value", upCfg.Shaping.DownloadLimit, "error", err)
-				} else if limit > 0 {
-					downloadBps = int64(limit)
-				}
-			}
-			if uploadBps > 0 || downloadBps > 0 {
-				upstreamLimits[upCfg.Tag] = measure.UpstreamLimit{
-					UploadLimitBps:   uploadBps,
-					DownloadLimitBps: downloadBps,
-				}
-			}
-		}
-		if len(upstreamLimits) == 0 {
-			upstreamLimits = nil
-		}
-	}
-
 	measureLogger := util.ComponentLogger(r.logger, util.CompMeasure)
 	scheduler := measure.NewScheduler(measure.SchedulerConfig{
-		MinInterval:         r.cfg.Measurement.Schedule.Interval.Min.Duration(),
-		MaxInterval:         r.cfg.Measurement.Schedule.Interval.Max.Duration(),
-		InterUpstreamGap:    r.cfg.Measurement.Schedule.UpstreamGap.Duration(),
-		MaxUtilization:      r.cfg.Measurement.Schedule.Headroom.MaxLinkUtilization,
-		RequiredHeadroomBps: int64(requiredHeadroomBps),
-		TCPTargetUpBps:      int64(tcpTargetUpBps),
-		TCPTargetDownBps:    int64(tcpTargetDownBps),
-		UDPTargetUpBps:      int64(udpTargetUpBps),
-		UDPTargetDownBps:    int64(udpTargetDownBps),
-		Protocols:           protocols,
-		RateWindow:          rateWindow,
-		AggregateLimitBps:   aggregateLimitBps,
-		UpstreamLimits:      upstreamLimits,
-	}, r.metrics, r.upstreams, nil, measureLogger)
+		MinInterval:      r.cfg.Measurement.Schedule.Interval.Min.Duration(),
+		MaxInterval:      r.cfg.Measurement.Schedule.Interval.Max.Duration(),
+		InterUpstreamGap: r.cfg.Measurement.Schedule.UpstreamGap.Duration(),
+		Protocols:        protocols,
+	}, r.upstreams, nil)
 	if r.control != nil {
 		r.control.SetScheduler(scheduler)
 	}
@@ -290,8 +195,6 @@ func (r *Runtime) startMeasurement() {
 			Success:    success,
 		}
 		if result != nil {
-			payload.BandwidthUpBps = result.BandwidthUpBps
-			payload.BandwidthDownBps = result.BandwidthDownBps
 			payload.RTTMs = result.RTTMs
 			payload.JitterMs = result.JitterMs
 			payload.LossRate = result.LossRate

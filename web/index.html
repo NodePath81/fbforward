@@ -12,6 +12,7 @@
     <main class="shell">
       <nav class="page-nav" aria-label="Primary">
         <a class="page-nav-link active" href="#/" data-page="dashboard">Dashboard</a>
+        <a class="page-nav-link" href="#/graph" data-page="graph">Graph</a>
         <a class="page-nav-link" href="#/history" data-page="history">History</a>
         <a class="page-nav-link" href="#/config" data-page="config">Config</a>
       </nav>
@@ -62,7 +63,6 @@
             </section>
           </div>
           <div id="statusCard" class="status-card"></div>
-          <div id="queueWidget" class="queue-widget-container"></div>
         </header>
 
         <section class="panel">
@@ -132,6 +132,8 @@
                         <span class="sort-indicator" aria-hidden="true"></span>
                       </button>
                     </th>
+                    <th>Rate Up</th>
+                    <th>Rate Down</th>
                     <th>Segs Up</th>
                     <th>Segs Down</th>
                     <th>
@@ -155,49 +157,110 @@
         </section>
       </div>
 
-      <div id="page-history" class="page hidden">
+      <div id="page-graph" class="page hidden">
         <section class="panel">
           <div class="panel-header">
-            <h2>Test History</h2>
-            <span class="panel-meta">Client-side since page load</span>
+            <h2>RTT</h2>
+            <span class="panel-meta">Per-upstream TCP and UDP latency</span>
           </div>
-          <div class="history-table-container">
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Timestamp</th>
-                    <th>Upstream</th>
-                    <th>Protocol</th>
-                    <th>Direction</th>
-                    <th>Duration</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody id="testHistoryTable"></tbody>
-              </table>
-            </div>
-          </div>
+          <div id="rttChartContainer" class="chart-container"></div>
         </section>
 
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Score</h2>
+            <span class="panel-meta">Per-upstream composite score over time</span>
+          </div>
+          <div id="scoreChartContainer" class="chart-container"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Traffic</h2>
+            <span class="panel-meta">Aggregate upload and download rate</span>
+          </div>
+          <div id="trafficChartContainer" class="chart-container"></div>
+        </section>
+      </div>
+
+      <div id="page-history" class="page hidden">
         <section class="panel">
           <div class="panel-header">
             <h2>Session History</h2>
             <span class="panel-meta">Client-side since page load</span>
           </div>
+          <p class="hint">A leading "≈" marks a time reconstructed from browser-side state rather than an exact server event.</p>
+          <div class="connection-search">
+            <label class="connection-search-field" for="sessionSearch">
+              <span class="connection-search-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+                  <path d="M16.5 16.5L21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+              </span>
+              <input
+                id="sessionSearch"
+                class="connection-search-input"
+                type="search"
+                placeholder="Search session history..."
+                autocomplete="off"
+                aria-label="Search session history"
+              />
+            </label>
+          </div>
           <div class="history-table-container">
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>ID</th>
-                    <th>Protocol</th>
-                    <th>Client</th>
-                    <th>Upstream</th>
-                    <th>Start</th>
-                    <th>End</th>
-                    <th>Bytes Up</th>
-                    <th>Bytes Down</th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="id">
+                        ID
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="protocol">
+                        Protocol
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="client">
+                        Client
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="upstream">
+                        Upstream
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="start">
+                        Start
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="end">
+                        End
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="up">
+                        Bytes Up
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button session-sort-button" type="button" data-sort="down">
+                        Bytes Down
+                        <span class="sort-indicator" aria-hidden="true"></span>
+                      </button>
+                    </th>
                     <th>Segs Up</th>
                     <th>Segs Down</th>
                   </tr>
@@ -220,7 +283,6 @@
       </div>
     </main>
 
-    <div id="testDetailsModal" class="modal-overlay hidden"></div>
     <div id="upstreamDetailsModal" class="modal-overlay hidden"></div>
     <div id="toastRegion" class="toast-region"></div>
     <script type="module" src="/src/main.ts"></script>

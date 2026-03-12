@@ -14,6 +14,7 @@ export interface AppState {
     udp: number;
   };
   memoryBytes: number;
+  goroutines: number;
   uptimeSeconds: number;
   totalBytesUp: number;
   totalBytesDown: number;
@@ -92,6 +93,7 @@ export function createInitialState(token: string): AppState {
       udp: 0
     },
     memoryBytes: Number.NaN,
+    goroutines: Number.NaN,
     uptimeSeconds: Number.NaN,
     totalBytesUp: 0,
     totalBytesDown: 0,

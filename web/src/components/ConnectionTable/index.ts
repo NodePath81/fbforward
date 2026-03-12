@@ -1,6 +1,6 @@
 import type { ConnectionEntry } from '../../types';
 import { clearChildren, createEl } from '../../utils/dom';
-import { formatAge, formatBytes, formatTime } from '../../utils/format';
+import { formatAge, formatBytes, formatBytesRate, formatTime } from '../../utils/format';
 
 export function createConnectionTable(tbody: HTMLElement) {
   return (entries: ConnectionEntry[]) => {
@@ -8,12 +8,13 @@ export function createConnectionTable(tbody: HTMLElement) {
     if (entries.length === 0) {
       const row = createEl('tr');
       const cell = createEl('td', 'empty-row', 'No active entries');
-      cell.setAttribute('colspan', '10');
+      cell.setAttribute('colspan', '12');
       row.appendChild(cell);
       tbody.appendChild(row);
       return;
     }
     for (const entry of entries) {
+      const age = Math.max(0, (Date.now() - entry.createdAt) / 1000);
       const row = createEl('tr');
       row.appendChild(createCell(entry.kind.toUpperCase(), 'protocol-cell'));
       row.appendChild(createCell(entry.clientAddr));
@@ -21,10 +22,12 @@ export function createConnectionTable(tbody: HTMLElement) {
       row.appendChild(createCell(entry.upstream));
       row.appendChild(createCell(formatBytes(entry.bytesUp)));
       row.appendChild(createCell(formatBytes(entry.bytesDown)));
+      row.appendChild(createCell(formatBytesRate(entry.rateUp)));
+      row.appendChild(createCell(formatBytesRate(entry.rateDown)));
       row.appendChild(createCell(formatCount(entry.segmentsUp)));
       row.appendChild(createCell(formatCount(entry.segmentsDown)));
       row.appendChild(createCell(formatTime(entry.lastActivity)));
-      row.appendChild(createCell(formatAge(entry.age)));
+      row.appendChild(createCell(formatAge(age)));
       tbody.appendChild(row);
     }
   };

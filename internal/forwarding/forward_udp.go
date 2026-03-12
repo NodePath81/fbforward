@@ -19,7 +19,7 @@ import (
 
 type UDPListener struct {
 	cfg     config.ListenerConfig
-	manager *upstream.UpstreamManager
+	manager upstream.UpstreamSelector
 	metrics *metrics.Metrics
 	status  *control.StatusStore
 	timeout time.Duration
@@ -50,7 +50,7 @@ var udpPacketPool = sync.Pool{
 	},
 }
 
-func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager *upstream.UpstreamManager, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *UDPListener {
+func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *UDPListener {
 	return &UDPListener{
 		cfg:      cfg,
 		manager:  manager,

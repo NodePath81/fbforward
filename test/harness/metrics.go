@@ -103,7 +103,7 @@ func (m *MetricsCollector) CollectOnce() (MetricsSample, error) {
 			entry := sample.UpstreamScores[tag]
 			entry.UDP = v
 			sample.UpstreamScores[tag] = entry
-		case "fbforward_upstream_score_overall":
+		case "fbforward_upstream_score":
 			tag := labels["upstream"]
 			v, _ := strconv.ParseFloat(valStr, 64)
 			entry := sample.UpstreamScores[tag]

@@ -166,6 +166,8 @@ timeline:
 
 ## Running scenarios
 
+Scenario files are executed by the test harness (`scripts/run-scenario.sh` or `build/bin/fbforward-testharness`). They are not part of `go test ./...`.
+
 ```bash
 # Setup and build (first time)
 ./scripts/setup-test-env.sh

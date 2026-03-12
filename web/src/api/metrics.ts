@@ -16,6 +16,7 @@ export interface MetricsSnapshot {
   };
   upstreams: Record<string, UpstreamMetrics>;
   memoryBytes: number;
+  goroutines: number;
   uptimeSeconds: number;
   totalBytesUp: number;
   totalBytesDown: number;
@@ -62,6 +63,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
   const udp = data['fbforward_udp_mappings_active']?.[0]?.value ?? 0;
   const memorySample = data['fbforward_memory_alloc_bytes']?.[0]?.value;
   const memoryBytes = Number.isFinite(memorySample) ? memorySample : Number.NaN;
+  const goroutinesSample = data['fbforward_goroutines']?.[0]?.value;
+  const goroutines = Number.isFinite(goroutinesSample) ? goroutinesSample : Number.NaN;
   const uptimeSample = data['fbforward_uptime_seconds']?.[0]?.value;
   const uptimeSeconds = Number.isFinite(uptimeSample) ? uptimeSample : Number.NaN;
 
@@ -82,6 +85,8 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     if (!upstreams[tag]) {
       upstreams[tag] = {
         rtt: 0,
+        rttTcp: Number.NaN,
+        rttUdp: Number.NaN,
         jitter: 0,
         loss: 0,
         lossRate: 0,
@@ -89,16 +94,6 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
         score: 0,
         scoreTcp: 0,
         scoreUdp: 0,
-        scoreOverall: 0,
-        bandwidthUpBps: 0,
-        bandwidthDownBps: 0,
-        bandwidthTcpUpBps: 0,
-        bandwidthTcpDownBps: 0,
-        bandwidthUdpUpBps: 0,
-        bandwidthUdpDownBps: 0,
-        utilization: 0,
-        utilizationUp: 0,
-        utilizationDown: 0,
         reachable: false,
         unusable: true,
         active: activeTags.has(tag)
@@ -115,60 +110,28 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     ensure(tag).rtt = item.value;
   }
 
+  for (const item of data['fbforward_upstream_rtt_tcp_ms'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).rttTcp = item.value;
+  }
+
+  for (const item of data['fbforward_upstream_rtt_udp_ms'] || []) {
+    const tag = item.labels.upstream;
+    if (!tag) {
+      continue;
+    }
+    ensure(tag).rttUdp = item.value;
+  }
+
   for (const item of data['fbforward_upstream_jitter_ms'] || []) {
     const tag = item.labels.upstream;
     if (!tag) {
       continue;
     }
     ensure(tag).jitter = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_bandwidth_up_bps'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).bandwidthUpBps = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_bandwidth_down_bps'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).bandwidthDownBps = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_bandwidth_tcp_up_bps'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).bandwidthTcpUpBps = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_bandwidth_tcp_down_bps'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).bandwidthTcpDownBps = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_bandwidth_udp_up_bps'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).bandwidthUdpUpBps = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_bandwidth_udp_down_bps'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).bandwidthUdpDownBps = item.value;
   }
 
   for (const item of data['fbforward_upstream_retrans_rate'] || []) {
@@ -211,57 +174,12 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     ensure(tag).scoreUdp = item.value;
   }
 
-  for (const item of data['fbforward_upstream_score_overall'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).scoreOverall = item.value;
-  }
-
   for (const item of data['fbforward_upstream_score'] || []) {
     const tag = item.labels.upstream;
     if (!tag) {
       continue;
     }
     ensure(tag).score = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_utilization'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).utilization = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_utilization_up'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).utilizationUp = item.value;
-  }
-
-  for (const item of data['fbforward_upstream_utilization_down'] || []) {
-    const tag = item.labels.upstream;
-    if (!tag) {
-      continue;
-    }
-    ensure(tag).utilizationDown = item.value;
-  }
-
-  const hasUtilUp = (data['fbforward_upstream_utilization_up'] || []).length > 0;
-  const hasUtilDown = (data['fbforward_upstream_utilization_down'] || []).length > 0;
-  if (!hasUtilUp || !hasUtilDown) {
-    for (const tag of Object.keys(upstreams)) {
-      if (!hasUtilUp) {
-        upstreams[tag].utilizationUp = upstreams[tag].utilization;
-      }
-      if (!hasUtilDown) {
-        upstreams[tag].utilizationDown = upstreams[tag].utilization;
-      }
-    }
   }
 
   for (const item of data['fbforward_upstream_reachable'] || []) {
@@ -302,6 +220,7 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     counts: { tcp, udp },
     upstreams,
     memoryBytes,
+    goroutines,
     uptimeSeconds,
     totalBytesUp,
     totalBytesDown

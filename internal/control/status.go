@@ -170,7 +170,13 @@ func (s *StatusStore) remove(kind, id string) {
 	}
 	s.mu.Unlock()
 	if entry != nil {
-		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "remove", ID: id, Kind: kind})
+		s.hub.Broadcast(statusMessage{
+			SchemaVersion: 1,
+			Type:          "remove",
+			Timestamp:     time.Now().UnixMilli(),
+			ID:            id,
+			Kind:          kind,
+		})
 	}
 }
 
@@ -244,19 +250,17 @@ func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 }
 
 type TestHistoryPayload struct {
-	Upstream         string  `json:"upstream"`
-	Protocol         string  `json:"protocol"`
-	Direction        string  `json:"direction"`
-	Timestamp        int64   `json:"timestamp"`
-	DurationMs       int64   `json:"duration_ms"`
-	Success          bool    `json:"success"`
-	BandwidthUpBps   float64 `json:"bandwidth_up_bps"`
-	BandwidthDownBps float64 `json:"bandwidth_down_bps"`
-	RTTMs            float64 `json:"rtt_ms"`
-	JitterMs         float64 `json:"jitter_ms"`
-	LossRate         float64 `json:"loss_rate"`
-	RetransRate      float64 `json:"retrans_rate"`
-	Error            string  `json:"error,omitempty"`
+	Upstream    string  `json:"upstream"`
+	Protocol    string  `json:"protocol"`
+	Direction   string  `json:"direction"`
+	Timestamp   int64   `json:"timestamp"`
+	DurationMs  int64   `json:"duration_ms"`
+	Success     bool    `json:"success"`
+	RTTMs       float64 `json:"rtt_ms"`
+	JitterMs    float64 `json:"jitter_ms"`
+	LossRate    float64 `json:"loss_rate"`
+	RetransRate float64 `json:"retrans_rate"`
+	Error       string  `json:"error,omitempty"`
 }
 
 type statusErrorPayload struct {
@@ -267,6 +271,7 @@ type statusErrorPayload struct {
 type statusMessage struct {
 	SchemaVersion       int           `json:"schema_version"`
 	Type                string        `json:"type"`
+	Timestamp           int64         `json:"timestamp,omitempty"`
 	TCP                 []StatusEntry `json:"tcp,omitempty"`
 	UDP                 []StatusEntry `json:"udp,omitempty"`
 	Entry               *StatusEntry  `json:"entry,omitempty"`

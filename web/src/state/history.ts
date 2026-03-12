@@ -1,27 +1,12 @@
-export interface TestHistoryEntry {
-  id: string;
-  timestamp: number;
-  upstream: string;
-  protocol: 'tcp' | 'udp';
-  direction: 'upload' | 'download';
-  durationMs: number;
-  success: boolean;
-  bandwidthUpBps?: number;
-  bandwidthDownBps?: number;
-  rttMs?: number;
-  jitterMs?: number;
-  lossRate?: number;
-  retransRate?: number;
-  error?: string;
-}
-
 export interface SessionHistoryEntry {
   id: string;
   kind: 'tcp' | 'udp';
   clientAddr: string;
   upstream: string;
   startTime: number;
+  startApproximate: boolean;
   endTime: number;
+  endApproximate: boolean;
   bytesUp: number;
   bytesDown: number;
   segmentsUp: number;
@@ -34,6 +19,7 @@ interface ActiveSession {
   clientAddr: string;
   upstream: string;
   startTime: number;
+  startApproximate: boolean;
   bytesUp: number;
   bytesDown: number;
   segmentsUp: number;
@@ -41,25 +27,16 @@ interface ActiveSession {
 }
 
 export class HistoryStore {
-  private tests: TestHistoryEntry[] = [];
   private sessions: SessionHistoryEntry[] = [];
   private activeMap: Map<string, ActiveSession> = new Map();
-  private testSeq = 0;
-
-  addTest(entry: Omit<TestHistoryEntry, 'id'>): void {
-    const id = `${Date.now()}-${this.testSeq++}`;
-    this.tests.unshift({ id, ...entry });
-    if (this.tests.length > 1000) {
-      this.tests.length = 1000;
-    }
-  }
 
   trackSessionStart(
     id: string,
     kind: 'tcp' | 'udp',
     clientAddr: string,
     upstream: string,
-    startTime: number
+    startTime: number,
+    startApproximate: boolean
   ): void {
     if (this.activeMap.has(id)) {
       return;
@@ -70,6 +47,7 @@ export class HistoryStore {
       clientAddr,
       upstream,
       startTime,
+      startApproximate,
       bytesUp: 0,
       bytesDown: 0,
       segmentsUp: 0,
@@ -77,7 +55,13 @@ export class HistoryStore {
     });
   }
 
-  trackSessionUpdate(id: string, bytesUp: number, bytesDown: number, segmentsUp: number, segmentsDown: number): void {
+  trackSessionUpdate(
+    id: string,
+    bytesUp: number,
+    bytesDown: number,
+    segmentsUp: number,
+    segmentsDown: number
+  ): void {
     const entry = this.activeMap.get(id);
     if (!entry) {
       return;
@@ -88,7 +72,7 @@ export class HistoryStore {
     entry.segmentsDown = segmentsDown;
   }
 
-  trackSessionEnd(id: string): void {
+  trackSessionEnd(id: string, endTime?: number): void {
     const entry = this.activeMap.get(id);
     if (!entry) {
       return;
@@ -96,15 +80,12 @@ export class HistoryStore {
     this.activeMap.delete(id);
     this.sessions.unshift({
       ...entry,
-      endTime: Date.now()
+      endTime: endTime ?? Date.now(),
+      endApproximate: endTime === undefined
     });
     if (this.sessions.length > 1000) {
       this.sessions.length = 1000;
     }
-  }
-
-  getTests(): TestHistoryEntry[] {
-    return this.tests;
   }
 
   getSessions(): SessionHistoryEntry[] {

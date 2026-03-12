@@ -11,6 +11,8 @@ fbforward has two categories of tests:
 - **Unit tests** (`*_test.go` files) cover bwprobe measurement algorithms and upstream scoring logic. They run on any platform with Go installed.
 - **Integration tests** use a rootless network-namespace harness to run real fbforward instances against simulated upstreams with controlled link conditions. They require Linux with unprivileged user namespace support.
 
+Integration scenarios are harness-driven and are not executed by `go test ./...`.
+
 **Quick start:**
 
 ```bash
@@ -22,8 +24,6 @@ go test ./bwprobe/internal/... ./internal/upstream -v
 ./scripts/run-scenario.sh                      # quick sanity (score-ordering)
 ./scripts/run-scenario.sh -s score-ordering -s confirmation -s hold-time -s fast-failover -s anti-flapping -s stability
 ```
-
-**Current status:** Unit tests are complete and pass. The integration harness is scaffolded -- namespace creation, shaping, metrics scraping, and convergence detection work, but full end-to-end orchestration (process health checks, timeline execution, iperf3 integration, detailed assertion evaluation) remains stub-level.
 
 ---
 
@@ -159,7 +159,7 @@ The harness scrapes fbforward's Prometheus endpoint (`/metrics`) using Bearer to
 | `fbforward_active_upstream{upstream="..."}` | gauge | Identifying the current primary upstream |
 | `fbforward_upstream_score_tcp{upstream="..."}` | gauge | Per-upstream TCP score |
 | `fbforward_upstream_score_udp{upstream="..."}` | gauge | Per-upstream UDP score |
-| `fbforward_upstream_score_overall{upstream="..."}` | gauge | Per-upstream overall score |
+| `fbforward_upstream_score{upstream="..."}` | gauge | Per-upstream overall score |
 | `fbforward_memory_alloc_bytes` | gauge | Heap memory tracking (stability assertions) |
 | `fbforward_goroutines` | gauge | Goroutine count tracking (stability assertions) |
 

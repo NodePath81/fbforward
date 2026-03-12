@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,20 +16,16 @@ const (
 	defaultReachabilityInterval   = 1 * time.Second
 	defaultReachabilityWindowSize = 5
 
-	defaultMeasurementStartupDelay           = 10 * time.Second
-	defaultMeasurementStaleThreshold         = 60 * time.Minute
-	defaultMeasurementFallbackToICMPOnStale  = true
-	defaultMeasurementScheduleMinInterval    = 15 * time.Minute
-	defaultMeasurementScheduleMaxInterval    = 45 * time.Minute
-	defaultMeasurementScheduleUpstreamGap    = 5 * time.Second
-	defaultMeasurementScheduleMaxUtilization = 0.7
-	defaultMeasurementRequiredFreeBandwidth  = "0"
-	defaultFastStartEnabled                  = true
-	defaultFastStartTimeout                  = 500 * time.Millisecond
-	defaultWarmupDuration                    = 15 * time.Second
+	defaultMeasurementStartupDelay          = 10 * time.Second
+	defaultMeasurementStaleThreshold        = 60 * time.Minute
+	defaultMeasurementFallbackToICMPOnStale = true
+	defaultMeasurementScheduleMinInterval   = 15 * time.Minute
+	defaultMeasurementScheduleMaxInterval   = 45 * time.Minute
+	defaultMeasurementScheduleUpstreamGap   = 5 * time.Second
+	defaultFastStartEnabled                 = true
+	defaultFastStartTimeout                 = 500 * time.Millisecond
+	defaultWarmupDuration                   = 15 * time.Second
 
-	defaultMeasurementTargetUp   = "10m"
-	defaultMeasurementTargetDown = "50m"
 	defaultMeasurementChunkSize  = "1200"
 	defaultMeasurementSampleSize = "500kb"
 	defaultMeasurementSampleCnt  = 1
@@ -38,32 +35,20 @@ const (
 	defaultMeasurementUDPEnabled = true
 	defaultMeasurementTCPAlt     = true
 
-	defaultEMAAlpha             = 0.2
-	defaultRefBandwidthUp       = "10m"
-	defaultRefBandwidthDn       = "50m"
-	defaultRefRTTMs             = 50
-	defaultRefJitterMs          = 10
-	defaultRefRetransRate       = 0.01
-	defaultRefLossRate          = 0.01
-	defaultWeightTCPBwUp        = 0.15
-	defaultWeightTCPBwDn        = 0.25
-	defaultWeightTCPRTT         = 0.25
-	defaultWeightTCPJitter      = 0.10
-	defaultWeightTCPRetrans     = 0.25
-	defaultWeightUDPBwUp        = 0.10
-	defaultWeightUDPBwDn        = 0.30
-	defaultWeightUDPRTT         = 0.15
-	defaultWeightUDPJitter      = 0.30
-	defaultWeightUDPLoss        = 0.15
-	defaultProtocolWeightTCP    = 0.5
-	defaultProtocolWeightUDP    = 0.5
-	defaultUtilizationEnabled   = true
-	defaultUtilizationWindow    = 5 * time.Second
-	defaultUtilizationUpdate    = 1 * time.Second
-	defaultUtilizationThreshold = 0.7
-	defaultUtilizationMinMult   = 0.3
-	defaultUtilizationExponent  = 2.0
-	defaultBiasKappa            = 0.693147
+	defaultEMAAlpha          = 0.2
+	defaultRefRTTMs          = 50
+	defaultRefJitterMs       = 10
+	defaultRefRetransRate    = 0.01
+	defaultRefLossRate       = 0.01
+	defaultWeightTCPRTT      = 0.25
+	defaultWeightTCPJitter   = 0.10
+	defaultWeightTCPRetrans  = 0.25
+	defaultWeightUDPRTT      = 0.15
+	defaultWeightUDPJitter   = 0.30
+	defaultWeightUDPLoss     = 0.15
+	defaultProtocolWeightTCP = 0.5
+	defaultProtocolWeightUDP = 0.5
+	defaultBiasKappa         = 0.693147
 
 	defaultSwitchConfirmDuration = 15 * time.Second
 	defaultSwitchScoreDelta      = 5.0
@@ -211,17 +196,11 @@ type MeasurementConfig struct {
 type MeasurementScheduleConfig struct {
 	Interval    MeasurementIntervalConfig `yaml:"interval"`
 	UpstreamGap Duration                  `yaml:"upstream_gap"`
-	Headroom    MeasurementHeadroomConfig `yaml:"headroom"`
 }
 
 type MeasurementIntervalConfig struct {
 	Min Duration `yaml:"min"`
 	Max Duration `yaml:"max"`
-}
-
-type MeasurementHeadroomConfig struct {
-	MaxLinkUtilization    float64 `yaml:"max_link_utilization"`
-	RequiredFreeBandwidth string  `yaml:"required_free_bandwidth"`
 }
 
 type MeasurementFastStartConfig struct {
@@ -236,18 +215,12 @@ type MeasurementProtocolsConfig struct {
 }
 
 type MeasurementProtocolConfig struct {
-	Enabled         *bool                      `yaml:"enabled"`
-	Alternate       *bool                      `yaml:"alternate"`
-	TargetBandwidth MeasurementBandwidthConfig `yaml:"target_bandwidth"`
-	ChunkSize       string                     `yaml:"chunk_size"`
-	SampleSize      string                     `yaml:"sample_size"`
-	SampleCount     int                        `yaml:"sample_count"`
-	Timeout         MeasurementTimeoutConfig   `yaml:"timeout"`
-}
-
-type MeasurementBandwidthConfig struct {
-	Upload   string `yaml:"upload"`
-	Download string `yaml:"download"`
+	Enabled     *bool                    `yaml:"enabled"`
+	Alternate   *bool                    `yaml:"alternate"`
+	ChunkSize   string                   `yaml:"chunk_size"`
+	SampleSize  string                   `yaml:"sample_size"`
+	SampleCount int                      `yaml:"sample_count"`
+	Timeout     MeasurementTimeoutConfig `yaml:"timeout"`
 }
 
 type MeasurementTimeoutConfig struct {
@@ -256,11 +229,10 @@ type MeasurementTimeoutConfig struct {
 }
 
 type ScoringConfig struct {
-	Smoothing          ScoringSmoothingConfig   `yaml:"smoothing"`
-	Reference          ScoringReferenceConfig   `yaml:"reference"`
-	Weights            ScoringWeightsConfig     `yaml:"weights"`
-	UtilizationPenalty UtilizationPenaltyConfig `yaml:"utilization_penalty"`
-	BiasTransform      BiasTransformConfig      `yaml:"bias_transform"`
+	Smoothing     ScoringSmoothingConfig `yaml:"smoothing"`
+	Reference     ScoringReferenceConfig `yaml:"reference"`
+	Weights       ScoringWeightsConfig   `yaml:"weights"`
+	BiasTransform BiasTransformConfig    `yaml:"bias_transform"`
 }
 
 type ScoringSmoothingConfig struct {
@@ -273,15 +245,9 @@ type ScoringReferenceConfig struct {
 }
 
 type ProtocolReferenceConfig struct {
-	Bandwidth      ReferenceBandwidthConfig `yaml:"bandwidth"`
-	Latency        ReferenceLatencyConfig   `yaml:"latency"`
-	RetransmitRate float64                  `yaml:"retransmit_rate"`
-	LossRate       float64                  `yaml:"loss_rate"`
-}
-
-type ReferenceBandwidthConfig struct {
-	Upload   string `yaml:"upload"`
-	Download string `yaml:"download"`
+	Latency        ReferenceLatencyConfig `yaml:"latency"`
+	RetransmitRate float64                `yaml:"retransmit_rate"`
+	LossRate       float64                `yaml:"loss_rate"`
 }
 
 type ReferenceLatencyConfig struct {
@@ -296,33 +262,20 @@ type ScoringWeightsConfig struct {
 }
 
 type WeightsTCPConfig struct {
-	BandwidthUpload   float64 `yaml:"bandwidth_upload"`
-	BandwidthDownload float64 `yaml:"bandwidth_download"`
-	RTT               float64 `yaml:"rtt"`
-	Jitter            float64 `yaml:"jitter"`
-	RetransmitRate    float64 `yaml:"retransmit_rate"`
+	RTT            float64 `yaml:"rtt"`
+	Jitter         float64 `yaml:"jitter"`
+	RetransmitRate float64 `yaml:"retransmit_rate"`
 }
 
 type WeightsUDPConfig struct {
-	BandwidthUpload   float64 `yaml:"bandwidth_upload"`
-	BandwidthDownload float64 `yaml:"bandwidth_download"`
-	RTT               float64 `yaml:"rtt"`
-	Jitter            float64 `yaml:"jitter"`
-	LossRate          float64 `yaml:"loss_rate"`
+	RTT      float64 `yaml:"rtt"`
+	Jitter   float64 `yaml:"jitter"`
+	LossRate float64 `yaml:"loss_rate"`
 }
 
 type ProtocolBlendConfig struct {
 	TCPWeight float64 `yaml:"tcp_weight"`
 	UDPWeight float64 `yaml:"udp_weight"`
-}
-
-type UtilizationPenaltyConfig struct {
-	Enabled        *bool    `yaml:"enabled"`
-	WindowDuration Duration `yaml:"window_duration"`
-	UpdateInterval Duration `yaml:"update_interval"`
-	Threshold      float64  `yaml:"threshold"`
-	MinMultiplier  float64  `yaml:"min_multiplier"`
-	Exponent       float64  `yaml:"exponent"`
 }
 
 type BiasTransformConfig struct {
@@ -389,6 +342,9 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if removed := detectRemovedConfigPaths(raw); len(removed) > 0 {
+		return Config{}, fmt.Errorf("removed config keys are not supported: %s", strings.Join(removed, ", "))
+	}
 	var cfg Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, err
@@ -398,6 +354,105 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func detectRemovedConfigPaths(raw []byte) []string {
+	var root map[string]interface{}
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return nil
+	}
+
+	removed := make([]string, 0)
+	collectRemovedTree(root, []string{"measurement", "schedule", "headroom"}, &removed)
+	collectRemovedTree(root, []string{"measurement", "protocols", "tcp", "target_bandwidth"}, &removed)
+	collectRemovedTree(root, []string{"measurement", "protocols", "udp", "target_bandwidth"}, &removed)
+	collectRemovedTree(root, []string{"scoring", "reference", "tcp", "bandwidth"}, &removed)
+	collectRemovedTree(root, []string{"scoring", "reference", "udp", "bandwidth"}, &removed)
+	collectRemovedTree(root, []string{"scoring", "utilization_penalty"}, &removed)
+	collectSpecificRemovedKeys(root, []string{"scoring", "weights", "tcp"}, []string{"bandwidth_upload", "bandwidth_download"}, &removed)
+	collectSpecificRemovedKeys(root, []string{"scoring", "weights", "udp"}, []string{"bandwidth_upload", "bandwidth_download"}, &removed)
+
+	if len(removed) == 0 {
+		return nil
+	}
+	sort.Strings(removed)
+	return removed
+}
+
+func collectRemovedTree(root map[string]interface{}, path []string, removed *[]string) {
+	node, ok := lookupPath(root, path)
+	if !ok {
+		return
+	}
+	collectLeafPaths(node, strings.Join(path, "."), removed)
+}
+
+func collectSpecificRemovedKeys(root map[string]interface{}, base []string, keys []string, removed *[]string) {
+	node, ok := lookupPath(root, base)
+	if !ok {
+		return
+	}
+	m, ok := asMap(node)
+	if !ok {
+		return
+	}
+	basePath := strings.Join(base, ".")
+	for _, key := range keys {
+		if _, exists := m[key]; exists {
+			*removed = append(*removed, basePath+"."+key)
+		}
+	}
+}
+
+func collectLeafPaths(node interface{}, prefix string, removed *[]string) {
+	m, ok := asMap(node)
+	if !ok || len(m) == 0 {
+		*removed = append(*removed, prefix)
+		return
+	}
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		collectLeafPaths(m[key], prefix+"."+key, removed)
+	}
+}
+
+func lookupPath(root map[string]interface{}, path []string) (interface{}, bool) {
+	var current interface{} = root
+	for _, seg := range path {
+		m, ok := asMap(current)
+		if !ok {
+			return nil, false
+		}
+		next, exists := m[seg]
+		if !exists {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+func asMap(v interface{}) (map[string]interface{}, bool) {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		return t, true
+	case map[interface{}]interface{}:
+		converted := make(map[string]interface{}, len(t))
+		for k, v := range t {
+			key, ok := k.(string)
+			if !ok {
+				continue
+			}
+			converted[key] = v
+		}
+		return converted, true
+	default:
+		return nil, false
+	}
 }
 
 func (c *Config) setDefaults() {
@@ -444,12 +499,6 @@ func (c *Config) setDefaults() {
 	if c.Measurement.Schedule.UpstreamGap == 0 {
 		c.Measurement.Schedule.UpstreamGap = Duration(defaultMeasurementScheduleUpstreamGap)
 	}
-	if c.Measurement.Schedule.Headroom.MaxLinkUtilization == 0 {
-		c.Measurement.Schedule.Headroom.MaxLinkUtilization = defaultMeasurementScheduleMaxUtilization
-	}
-	if c.Measurement.Schedule.Headroom.RequiredFreeBandwidth == "" {
-		c.Measurement.Schedule.Headroom.RequiredFreeBandwidth = defaultMeasurementRequiredFreeBandwidth
-	}
 
 	if c.Measurement.FastStart.Enabled == nil {
 		val := defaultFastStartEnabled
@@ -468,12 +517,6 @@ func (c *Config) setDefaults() {
 	if c.Scoring.Smoothing.Alpha == 0 {
 		c.Scoring.Smoothing.Alpha = defaultEMAAlpha
 	}
-	if c.Scoring.Reference.TCP.Bandwidth.Upload == "" {
-		c.Scoring.Reference.TCP.Bandwidth.Upload = defaultRefBandwidthUp
-	}
-	if c.Scoring.Reference.TCP.Bandwidth.Download == "" {
-		c.Scoring.Reference.TCP.Bandwidth.Download = defaultRefBandwidthDn
-	}
 	if c.Scoring.Reference.TCP.Latency.RTT == 0 {
 		c.Scoring.Reference.TCP.Latency.RTT = defaultRefRTTMs
 	}
@@ -482,12 +525,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Scoring.Reference.TCP.RetransmitRate == 0 {
 		c.Scoring.Reference.TCP.RetransmitRate = defaultRefRetransRate
-	}
-	if c.Scoring.Reference.UDP.Bandwidth.Upload == "" {
-		c.Scoring.Reference.UDP.Bandwidth.Upload = defaultRefBandwidthUp
-	}
-	if c.Scoring.Reference.UDP.Bandwidth.Download == "" {
-		c.Scoring.Reference.UDP.Bandwidth.Download = defaultRefBandwidthDn
 	}
 	if c.Scoring.Reference.UDP.Latency.RTT == 0 {
 		c.Scoring.Reference.UDP.Latency.RTT = defaultRefRTTMs
@@ -501,20 +538,16 @@ func (c *Config) setDefaults() {
 
 	if weightsTCPZero(c.Scoring.Weights.TCP) {
 		c.Scoring.Weights.TCP = WeightsTCPConfig{
-			BandwidthUpload:   defaultWeightTCPBwUp,
-			BandwidthDownload: defaultWeightTCPBwDn,
-			RTT:               defaultWeightTCPRTT,
-			Jitter:            defaultWeightTCPJitter,
-			RetransmitRate:    defaultWeightTCPRetrans,
+			RTT:            defaultWeightTCPRTT,
+			Jitter:         defaultWeightTCPJitter,
+			RetransmitRate: defaultWeightTCPRetrans,
 		}
 	}
 	if weightsUDPZero(c.Scoring.Weights.UDP) {
 		c.Scoring.Weights.UDP = WeightsUDPConfig{
-			BandwidthUpload:   defaultWeightUDPBwUp,
-			BandwidthDownload: defaultWeightUDPBwDn,
-			RTT:               defaultWeightUDPRTT,
-			Jitter:            defaultWeightUDPJitter,
-			LossRate:          defaultWeightUDPLoss,
+			RTT:      defaultWeightUDPRTT,
+			Jitter:   defaultWeightUDPJitter,
+			LossRate: defaultWeightUDPLoss,
 		}
 	}
 	if c.Scoring.Weights.ProtocolBlend.TCPWeight == 0 && c.Scoring.Weights.ProtocolBlend.UDPWeight == 0 {
@@ -522,25 +555,6 @@ func (c *Config) setDefaults() {
 		c.Scoring.Weights.ProtocolBlend.UDPWeight = defaultProtocolWeightUDP
 	}
 
-	if c.Scoring.UtilizationPenalty.Enabled == nil {
-		val := defaultUtilizationEnabled
-		c.Scoring.UtilizationPenalty.Enabled = &val
-	}
-	if c.Scoring.UtilizationPenalty.WindowDuration == 0 {
-		c.Scoring.UtilizationPenalty.WindowDuration = Duration(defaultUtilizationWindow)
-	}
-	if c.Scoring.UtilizationPenalty.UpdateInterval == 0 {
-		c.Scoring.UtilizationPenalty.UpdateInterval = Duration(defaultUtilizationUpdate)
-	}
-	if c.Scoring.UtilizationPenalty.Threshold == 0 {
-		c.Scoring.UtilizationPenalty.Threshold = defaultUtilizationThreshold
-	}
-	if c.Scoring.UtilizationPenalty.MinMultiplier == 0 {
-		c.Scoring.UtilizationPenalty.MinMultiplier = defaultUtilizationMinMult
-	}
-	if c.Scoring.UtilizationPenalty.Exponent == 0 {
-		c.Scoring.UtilizationPenalty.Exponent = defaultUtilizationExponent
-	}
 	if c.Scoring.BiasTransform.Kappa == 0 {
 		c.Scoring.BiasTransform.Kappa = defaultBiasKappa
 	}
@@ -603,17 +617,13 @@ func (c *Config) setDefaults() {
 }
 
 func weightsTCPZero(cfg WeightsTCPConfig) bool {
-	return cfg.BandwidthUpload == 0 &&
-		cfg.BandwidthDownload == 0 &&
-		cfg.RTT == 0 &&
+	return cfg.RTT == 0 &&
 		cfg.Jitter == 0 &&
 		cfg.RetransmitRate == 0
 }
 
 func weightsUDPZero(cfg WeightsUDPConfig) bool {
-	return cfg.BandwidthUpload == 0 &&
-		cfg.BandwidthDownload == 0 &&
-		cfg.RTT == 0 &&
+	return cfg.RTT == 0 &&
 		cfg.Jitter == 0 &&
 		cfg.LossRate == 0
 }
@@ -629,12 +639,6 @@ func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
 	if isTCP && cfg.Alternate == nil {
 		val := defaultMeasurementTCPAlt
 		cfg.Alternate = &val
-	}
-	if cfg.TargetBandwidth.Upload == "" {
-		cfg.TargetBandwidth.Upload = defaultMeasurementTargetUp
-	}
-	if cfg.TargetBandwidth.Download == "" {
-		cfg.TargetBandwidth.Download = defaultMeasurementTargetDown
 	}
 	if cfg.ChunkSize == "" {
 		cfg.ChunkSize = defaultMeasurementChunkSize
@@ -785,12 +789,6 @@ func (c *Config) validate() error {
 	if c.Measurement.Schedule.UpstreamGap.Duration() < 0 {
 		return errors.New("measurement.schedule.upstream_gap must be >= 0")
 	}
-	if c.Measurement.Schedule.Headroom.MaxLinkUtilization <= 0 || c.Measurement.Schedule.Headroom.MaxLinkUtilization > 1 {
-		return errors.New("measurement.schedule.headroom.max_link_utilization must be in (0,1]")
-	}
-	if _, err := ParseBandwidth(c.Measurement.Schedule.Headroom.RequiredFreeBandwidth); err != nil {
-		return fmt.Errorf("measurement.schedule.headroom.required_free_bandwidth: %w", err)
-	}
 
 	tcpEnabled := util.BoolValue(c.Measurement.Protocols.TCP.Enabled, defaultMeasurementTCPEnabled)
 	udpEnabled := util.BoolValue(c.Measurement.Protocols.UDP.Enabled, defaultMeasurementUDPEnabled)
@@ -824,21 +822,6 @@ func (c *Config) validate() error {
 		return err
 	}
 
-	if c.Scoring.UtilizationPenalty.MinMultiplier <= 0 || c.Scoring.UtilizationPenalty.MinMultiplier > 1 {
-		return errors.New("scoring.utilization_penalty.min_multiplier must be in (0,1]")
-	}
-	if c.Scoring.UtilizationPenalty.Threshold <= 0 {
-		return errors.New("scoring.utilization_penalty.threshold must be > 0")
-	}
-	if c.Scoring.UtilizationPenalty.Exponent <= 0 {
-		return errors.New("scoring.utilization_penalty.exponent must be > 0")
-	}
-	if c.Scoring.UtilizationPenalty.WindowDuration.Duration() <= 0 {
-		return errors.New("scoring.utilization_penalty.window_duration must be > 0")
-	}
-	if c.Scoring.UtilizationPenalty.UpdateInterval.Duration() <= 0 {
-		return errors.New("scoring.utilization_penalty.update_interval must be > 0")
-	}
 	if c.Scoring.BiasTransform.Kappa <= 0 {
 		return errors.New("scoring.bias_transform.kappa must be > 0")
 	}
@@ -889,20 +872,6 @@ func validateProtocolConfig(proto string, cfg MeasurementProtocolConfig, enabled
 	if !enabled {
 		return nil
 	}
-	bwUp, err := ParseBandwidth(cfg.TargetBandwidth.Upload)
-	if err != nil {
-		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.upload: %w", proto, err)
-	}
-	if bwUp <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.upload must be > 0", proto)
-	}
-	bwDown, err := ParseBandwidth(cfg.TargetBandwidth.Download)
-	if err != nil {
-		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.download: %w", proto, err)
-	}
-	if bwDown <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.target_bandwidth.download must be > 0", proto)
-	}
 	chunkSize, err := ParseSize(cfg.ChunkSize)
 	if err != nil {
 		return fmt.Errorf("measurement.protocols.%s.chunk_size: %w", proto, err)
@@ -930,20 +899,6 @@ func validateProtocolConfig(proto string, cfg MeasurementProtocolConfig, enabled
 }
 
 func validateReferenceConfig(proto string, cfg ProtocolReferenceConfig) error {
-	bwUp, err := ParseBandwidth(cfg.Bandwidth.Upload)
-	if err != nil {
-		return fmt.Errorf("scoring.reference.%s.bandwidth.upload: %w", proto, err)
-	}
-	if bwUp <= 0 {
-		return fmt.Errorf("scoring.reference.%s.bandwidth.upload must be > 0", proto)
-	}
-	bwDown, err := ParseBandwidth(cfg.Bandwidth.Download)
-	if err != nil {
-		return fmt.Errorf("scoring.reference.%s.bandwidth.download: %w", proto, err)
-	}
-	if bwDown <= 0 {
-		return fmt.Errorf("scoring.reference.%s.bandwidth.download must be > 0", proto)
-	}
 	if cfg.Latency.RTT <= 0 || cfg.Latency.Jitter <= 0 {
 		return fmt.Errorf("scoring.reference.%s.latency.rtt/jitter must be > 0", proto)
 	}
@@ -986,13 +941,11 @@ func validateShapingLimits(cfg *ShapingLimitConfig, path string) error {
 }
 
 func normalizeTCPWeights(cfg *WeightsTCPConfig) error {
-	sum := cfg.BandwidthUpload + cfg.BandwidthDownload + cfg.RTT + cfg.Jitter + cfg.RetransmitRate
+	sum := cfg.RTT + cfg.Jitter + cfg.RetransmitRate
 	if sum <= 0 {
 		return errors.New("scoring.weights.tcp must sum to > 0")
 	}
 	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
-		cfg.BandwidthUpload /= sum
-		cfg.BandwidthDownload /= sum
 		cfg.RTT /= sum
 		cfg.Jitter /= sum
 		cfg.RetransmitRate /= sum
@@ -1001,13 +954,11 @@ func normalizeTCPWeights(cfg *WeightsTCPConfig) error {
 }
 
 func normalizeUDPWeights(cfg *WeightsUDPConfig) error {
-	sum := cfg.BandwidthUpload + cfg.BandwidthDownload + cfg.RTT + cfg.Jitter + cfg.LossRate
+	sum := cfg.RTT + cfg.Jitter + cfg.LossRate
 	if sum <= 0 {
 		return errors.New("scoring.weights.udp must sum to > 0")
 	}
 	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
-		cfg.BandwidthUpload /= sum
-		cfg.BandwidthDownload /= sum
 		cfg.RTT /= sum
 		cfg.Jitter /= sum
 		cfg.LossRate /= sum
@@ -1045,18 +996,12 @@ func DefaultSwitchingConfig() SwitchingConfig {
 // DefaultScoringConfig returns a ScoringConfig populated with the built-in defaults.
 // This is primarily used by tests to construct a valid scoring configuration without parsing YAML.
 func DefaultScoringConfig() ScoringConfig {
-	enabledVal := defaultUtilizationEnabled
-
 	return ScoringConfig{
 		Smoothing: ScoringSmoothingConfig{
 			Alpha: defaultEMAAlpha,
 		},
 		Reference: ScoringReferenceConfig{
 			TCP: ProtocolReferenceConfig{
-				Bandwidth: ReferenceBandwidthConfig{
-					Upload:   defaultRefBandwidthUp,
-					Download: defaultRefBandwidthDn,
-				},
 				Latency: ReferenceLatencyConfig{
 					RTT:    defaultRefRTTMs,
 					Jitter: defaultRefJitterMs,
@@ -1064,10 +1009,6 @@ func DefaultScoringConfig() ScoringConfig {
 				RetransmitRate: defaultRefRetransRate,
 			},
 			UDP: ProtocolReferenceConfig{
-				Bandwidth: ReferenceBandwidthConfig{
-					Upload:   defaultRefBandwidthUp,
-					Download: defaultRefBandwidthDn,
-				},
 				Latency: ReferenceLatencyConfig{
 					RTT:    defaultRefRTTMs,
 					Jitter: defaultRefJitterMs,
@@ -1077,31 +1018,19 @@ func DefaultScoringConfig() ScoringConfig {
 		},
 		Weights: ScoringWeightsConfig{
 			TCP: WeightsTCPConfig{
-				BandwidthUpload:   defaultWeightTCPBwUp,
-				BandwidthDownload: defaultWeightTCPBwDn,
-				RTT:               defaultWeightTCPRTT,
-				Jitter:            defaultWeightTCPJitter,
-				RetransmitRate:    defaultWeightTCPRetrans,
+				RTT:            defaultWeightTCPRTT,
+				Jitter:         defaultWeightTCPJitter,
+				RetransmitRate: defaultWeightTCPRetrans,
 			},
 			UDP: WeightsUDPConfig{
-				BandwidthUpload:   defaultWeightUDPBwUp,
-				BandwidthDownload: defaultWeightUDPBwDn,
-				RTT:               defaultWeightUDPRTT,
-				Jitter:            defaultWeightUDPJitter,
-				LossRate:          defaultWeightUDPLoss,
+				RTT:      defaultWeightUDPRTT,
+				Jitter:   defaultWeightUDPJitter,
+				LossRate: defaultWeightUDPLoss,
 			},
 			ProtocolBlend: ProtocolBlendConfig{
 				TCPWeight: defaultProtocolWeightTCP,
 				UDPWeight: defaultProtocolWeightUDP,
 			},
-		},
-		UtilizationPenalty: UtilizationPenaltyConfig{
-			Enabled:        &enabledVal,
-			WindowDuration: Duration(defaultUtilizationWindow),
-			UpdateInterval: Duration(defaultUtilizationUpdate),
-			Threshold:      defaultUtilizationThreshold,
-			MinMultiplier:  defaultUtilizationMinMult,
-			Exponent:       defaultUtilizationExponent,
 		},
 		BiasTransform: BiasTransformConfig{
 			Kappa: defaultBiasKappa,

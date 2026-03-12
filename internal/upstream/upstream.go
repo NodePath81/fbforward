@@ -37,14 +37,9 @@ type UpstreamStats struct {
 	Reachable     bool      `json:"reachable"`
 	LastReachable time.Time `json:"last_reachable"`
 
-	BandwidthUpBps      float64 `json:"bandwidth_up_bps"`
-	BandwidthDownBps    float64 `json:"bandwidth_down_bps"`
-	BandwidthUpBpsTCP   float64 `json:"bandwidth_up_bps_tcp"`
-	BandwidthDownBpsTCP float64 `json:"bandwidth_down_bps_tcp"`
-	BandwidthUpBpsUDP   float64 `json:"bandwidth_up_bps_udp"`
-	BandwidthDownBpsUDP float64 `json:"bandwidth_down_bps_udp"`
-
 	RTTMs    float64 `json:"rtt_ms"`
+	RTTTcpMs float64 `json:"rtt_tcp_ms"`
+	RTTUdpMs float64 `json:"rtt_udp_ms"`
 	JitterMs float64 `json:"jitter_ms"`
 
 	RetransRate   float64   `json:"retrans_rate"`
@@ -53,12 +48,10 @@ type UpstreamStats struct {
 	LossRate      float64   `json:"loss_rate"`
 	LastUDPUpdate time.Time `json:"last_udp_update"`
 
-	ScoreTCP     float64 `json:"score_tcp"`
-	ScoreUDP     float64 `json:"score_udp"`
-	ScoreOverall float64 `json:"score_overall"`
+	ScoreTCP float64 `json:"score_tcp"`
+	ScoreUDP float64 `json:"score_udp"`
 
-	Usable      bool    `json:"usable"`
-	Utilization float64 `json:"utilization"`
+	Usable bool `json:"usable"`
 
 	Loss  float64 `json:"loss"`
 	Score float64 `json:"score"`
@@ -75,9 +68,9 @@ type Upstream struct {
 	activeIP    atomic.Value
 
 	stats         UpstreamStats
-	bwUpInit      bool
-	bwDnInit      bool
 	rttInit       bool
+	rttTCPInit    bool
+	rttUDPInit    bool
 	jitInit       bool
 	retransInit   bool
 	lossInit      bool
@@ -115,6 +108,7 @@ type UpstreamManager struct {
 	onStateChange  func(tag string, usable bool)
 	switching      config.SwitchingConfig
 	staleThreshold time.Duration
+	scorer         Scorer
 	logger         util.Logger
 
 	pendingSwitch  string
@@ -133,6 +127,7 @@ func NewUpstreamManager(upstreams []*Upstream, rng *rand.Rand, logger util.Logge
 		mode:      ModeAuto,
 		rng:       rng,
 		switching: config.DefaultSwitchingConfig(),
+		scorer:    DefaultScorer{},
 		logger:    logger,
 	}
 	for _, up := range upstreams {
@@ -140,6 +135,16 @@ func NewUpstreamManager(upstreams []*Upstream, rng *rand.Rand, logger util.Logge
 		m.order = append(m.order, up.Tag)
 	}
 	return m
+}
+
+func (m *UpstreamManager) SetScorer(scorer Scorer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if scorer == nil {
+		m.scorer = DefaultScorer{}
+		return
+	}
+	m.scorer = scorer
 }
 
 func (m *UpstreamManager) SetCallbacks(onSelect func(oldTag, newTag string), onStateChange func(tag string, usable bool)) {
@@ -337,7 +342,7 @@ func (m *UpstreamManager) UpdateReachability(tag string, reachable bool) Upstrea
 	return up.stats
 }
 
-func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult, scoring config.ScoringConfig, utilization float64) UpstreamStats {
+func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult, scoring config.ScoringConfig) UpstreamStats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	up, ok := m.upstreams[tag]
@@ -346,36 +351,30 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 	}
 
 	now := result.Timestamp
-	up.stats.BandwidthUpBps = applyEMA(result.BandwidthUpBps, up.stats.BandwidthUpBps, scoring.Smoothing.Alpha, &up.bwUpInit)
-	up.stats.BandwidthDownBps = applyEMA(result.BandwidthDownBps, up.stats.BandwidthDownBps, scoring.Smoothing.Alpha, &up.bwDnInit)
 	up.stats.RTTMs = applyEMA(result.RTTMs, up.stats.RTTMs, scoring.Smoothing.Alpha, &up.rttInit)
 	up.stats.JitterMs = applyEMA(result.JitterMs, up.stats.JitterMs, scoring.Smoothing.Alpha, &up.jitInit)
 
 	if result.Network == "tcp" {
-		up.stats.BandwidthUpBpsTCP = result.BandwidthUpBps
-		up.stats.BandwidthDownBpsTCP = result.BandwidthDownBps
+		up.stats.RTTTcpMs = applyEMA(result.RTTMs, up.stats.RTTTcpMs, scoring.Smoothing.Alpha, &up.rttTCPInit)
 		up.stats.RetransRate = applyEMA(result.RetransRate, up.stats.RetransRate, scoring.Smoothing.Alpha, &up.retransInit)
 		up.stats.LastTCPUpdate = now
 	} else {
-		up.stats.BandwidthUpBpsUDP = result.BandwidthUpBps
-		up.stats.BandwidthDownBpsUDP = result.BandwidthDownBps
+		up.stats.RTTUdpMs = applyEMA(result.RTTMs, up.stats.RTTUdpMs, scoring.Smoothing.Alpha, &up.rttUDPInit)
 		up.stats.LossRate = applyEMA(result.LossRate, up.stats.LossRate, scoring.Smoothing.Alpha, &up.lossInit)
 		up.stats.LastUDPUpdate = now
 	}
 
 	up.stats.Loss = maxFloat(up.stats.RetransRate, up.stats.LossRate)
-	up.stats.Utilization = utilization
 
 	prevUsable := up.stats.Usable
-	prevOverall := up.stats.ScoreOverall
+	prevOverall := up.stats.Score
 	up.stats.Usable = up.stats.ComputeUsable(m.staleThreshold)
-	up.stats.ScoreTCP, up.stats.ScoreUDP, up.stats.ScoreOverall = computeFullScore(up.stats, scoring, up.Bias, utilization, m.staleThreshold)
-	up.stats.Score = up.stats.ScoreOverall
+	up.stats.ScoreTCP, up.stats.ScoreUDP, up.stats.Score = m.scorer.ComputeScore(up.stats, scoring, up.Bias, m.staleThreshold)
 	util.Event(m.logger, slog.LevelDebug, "upstream.score_updated",
 		"upstream", tag,
 		"score.tcp", up.stats.ScoreTCP,
 		"score.udp", up.stats.ScoreUDP,
-		"score.overall", up.stats.ScoreOverall,
+		"score.overall", up.stats.Score,
 		"score.previous", prevOverall,
 	)
 
@@ -424,7 +423,7 @@ func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamSta
 
 	activeScore := 0.0
 	if active != nil {
-		activeScore = active.stats.ScoreOverall
+		activeScore = active.stats.Score
 	}
 
 	threshold := m.switching.Auto.ScoreDeltaThreshold
@@ -591,7 +590,7 @@ func (m *UpstreamManager) selectBestLocked(exclude string) (string, float64) {
 		if !up.stats.Usable || up.dialFailUntil.After(now) {
 			continue
 		}
-		score := up.stats.ScoreOverall
+		score := up.stats.Score
 		if bestTag == "" || score > bestScore+scoreEpsilon {
 			bestTag = tag
 			bestScore = score
@@ -610,10 +609,10 @@ func (m *UpstreamManager) setActiveLocked(tag, reason string) {
 	prevScore := 0.0
 	nextScore := 0.0
 	if oldUp := m.upstreams[old]; oldUp != nil {
-		prevScore = oldUp.stats.ScoreOverall
+		prevScore = oldUp.stats.Score
 	}
 	if nextUp := m.upstreams[tag]; nextUp != nil {
-		nextScore = nextUp.stats.ScoreOverall
+		nextScore = nextUp.stats.Score
 	}
 	m.activeTag = tag
 	m.lastSwitchTime = time.Now()
@@ -678,43 +677,8 @@ func (s *UpstreamStats) ComputeUsable(staleThresh time.Duration) bool {
 	return true
 }
 
-func computeFullScore(stats UpstreamStats, cfg config.ScoringConfig, bias float64, utilization float64, staleThresh time.Duration) (float64, float64, float64) {
+func computeFullScore(stats UpstreamStats, cfg config.ScoringConfig, bias float64, staleThresh time.Duration) (float64, float64, float64) {
 	const epsilon = 0.001
-
-	refTCPUp, err := config.ParseBandwidth(cfg.Reference.TCP.Bandwidth.Upload)
-	if err != nil || refTCPUp == 0 {
-		refTCPUp = 1
-	}
-	refTCPDn, err := config.ParseBandwidth(cfg.Reference.TCP.Bandwidth.Download)
-	if err != nil || refTCPDn == 0 {
-		refTCPDn = 1
-	}
-	refUDPUp, err := config.ParseBandwidth(cfg.Reference.UDP.Bandwidth.Upload)
-	if err != nil || refUDPUp == 0 {
-		refUDPUp = 1
-	}
-	refUDPDn, err := config.ParseBandwidth(cfg.Reference.UDP.Bandwidth.Download)
-	if err != nil || refUDPDn == 0 {
-		refUDPDn = 1
-	}
-
-	tcpBwUp := stats.BandwidthUpBpsTCP
-	tcpBwDn := stats.BandwidthDownBpsTCP
-	if tcpBwUp <= 0 {
-		tcpBwUp = stats.BandwidthUpBps
-	}
-	if tcpBwDn <= 0 {
-		tcpBwDn = stats.BandwidthDownBps
-	}
-
-	udpBwUp := stats.BandwidthUpBpsUDP
-	udpBwDn := stats.BandwidthDownBpsUDP
-	if udpBwUp <= 0 {
-		udpBwUp = stats.BandwidthUpBps
-	}
-	if udpBwDn <= 0 {
-		udpBwDn = stats.BandwidthDownBps
-	}
 
 	tcpRtt := stats.RTTMs
 	tcpJit := stats.JitterMs
@@ -725,8 +689,6 @@ func computeFullScore(stats UpstreamStats, cfg config.ScoringConfig, bias float6
 
 	tcpStale := staleThresh > 0 && (stats.LastTCPUpdate.IsZero() || time.Since(stats.LastTCPUpdate) > staleThresh)
 	if tcpStale {
-		tcpBwUp = float64(refTCPUp) * 0.5
-		tcpBwDn = float64(refTCPDn) * 0.5
 		tcpRtt = cfg.Reference.TCP.Latency.RTT * 2
 		tcpJit = cfg.Reference.TCP.Latency.Jitter * 2
 		retrans = cfg.Reference.TCP.RetransmitRate * 2
@@ -734,53 +696,34 @@ func computeFullScore(stats UpstreamStats, cfg config.ScoringConfig, bias float6
 
 	udpStale := staleThresh > 0 && (stats.LastUDPUpdate.IsZero() || time.Since(stats.LastUDPUpdate) > staleThresh)
 	if udpStale {
-		udpBwUp = float64(refUDPUp) * 0.5
-		udpBwDn = float64(refUDPDn) * 0.5
 		udpRtt = cfg.Reference.UDP.Latency.RTT * 2
 		udpJit = cfg.Reference.UDP.Latency.Jitter * 2
 		loss = cfg.Reference.UDP.LossRate * 2
 	}
 
-	sBwUpTCP := maxFloat(1-math.Exp(-tcpBwUp/float64(refTCPUp)), epsilon)
-	sBwDnTCP := maxFloat(1-math.Exp(-tcpBwDn/float64(refTCPDn)), epsilon)
 	sRTTTCP := maxFloat(math.Exp(-tcpRtt/cfg.Reference.TCP.Latency.RTT), epsilon)
 	sJitTCP := maxFloat(math.Exp(-tcpJit/cfg.Reference.TCP.Latency.Jitter), epsilon)
 	sRetrans := maxFloat(math.Exp(-retrans/cfg.Reference.TCP.RetransmitRate), epsilon)
 
-	sBwUpUDP := maxFloat(1-math.Exp(-udpBwUp/float64(refUDPUp)), epsilon)
-	sBwDnUDP := maxFloat(1-math.Exp(-udpBwDn/float64(refUDPDn)), epsilon)
 	sRTTUDP := maxFloat(math.Exp(-udpRtt/cfg.Reference.UDP.Latency.RTT), epsilon)
 	sJitUDP := maxFloat(math.Exp(-udpJit/cfg.Reference.UDP.Latency.Jitter), epsilon)
 	sLoss := maxFloat(math.Exp(-loss/cfg.Reference.UDP.LossRate), epsilon)
 
 	wTCP := cfg.Weights.TCP
-	tcpScore := 100 * math.Pow(sBwUpTCP, wTCP.BandwidthUpload) *
-		math.Pow(sBwDnTCP, wTCP.BandwidthDownload) *
-		math.Pow(sRTTTCP, wTCP.RTT) *
+	tcpScore := 100 * math.Pow(sRTTTCP, wTCP.RTT) *
 		math.Pow(sJitTCP, wTCP.Jitter) *
 		math.Pow(sRetrans, wTCP.RetransmitRate)
 
 	wUDP := cfg.Weights.UDP
-	udpScore := 100 * math.Pow(sBwUpUDP, wUDP.BandwidthUpload) *
-		math.Pow(sBwDnUDP, wUDP.BandwidthDownload) *
-		math.Pow(sRTTUDP, wUDP.RTT) *
+	udpScore := 100 * math.Pow(sRTTUDP, wUDP.RTT) *
 		math.Pow(sJitUDP, wUDP.Jitter) *
 		math.Pow(sLoss, wUDP.LossRate)
-
-	mult := 1.0
-	utilEnabled := util.BoolValue(cfg.UtilizationPenalty.Enabled, true)
-	if utilEnabled && utilization > 0 {
-		mMin := cfg.UtilizationPenalty.MinMultiplier
-		u0 := cfg.UtilizationPenalty.Threshold
-		p := cfg.UtilizationPenalty.Exponent
-		mult = mMin + (1-mMin)*math.Exp(-math.Pow(utilization/u0, p))
-	}
 
 	biasMult := math.Exp(cfg.BiasTransform.Kappa * bias)
 	biasMult = clampFloat(biasMult, 0.67, 1.5)
 
-	tcpScore = clampFloat(tcpScore*mult*biasMult, 0, 100)
-	udpScore = clampFloat(udpScore*mult*biasMult, 0, 100)
+	tcpScore = clampFloat(tcpScore*biasMult, 0, 100)
+	udpScore = clampFloat(udpScore*biasMult, 0, 100)
 
 	overall := 0.0
 	if tcpStale && !udpStale {

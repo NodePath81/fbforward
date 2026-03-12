@@ -25,6 +25,8 @@ export interface UpstreamConfig {
 
 export interface UpstreamMetrics {
   rtt: number;
+  rttTcp: number;
+  rttUdp: number;
   jitter: number;
   loss: number;
   lossRate: number;
@@ -32,16 +34,6 @@ export interface UpstreamMetrics {
   score: number;
   scoreTcp: number;
   scoreUdp: number;
-  scoreOverall: number;
-  bandwidthUpBps: number;
-  bandwidthDownBps: number;
-  bandwidthTcpUpBps: number;
-  bandwidthTcpDownBps: number;
-  bandwidthUdpUpBps: number;
-  bandwidthUdpDownBps: number;
-  utilization: number;
-  utilizationUp: number;
-  utilizationDown: number;
   reachable: boolean;
   unusable: boolean;
   active: boolean;
@@ -58,6 +50,9 @@ export interface ConnectionEntry {
   segmentsDown: number;
   lastActivity: number;
   age: number;
+  createdAt: number;
+  rateUp: number;
+  rateDown: number;
   kind: 'tcp' | 'udp';
 }
 
@@ -82,8 +77,7 @@ export type RPCMethod =
   | 'ListUpstreams'
   | 'GetMeasurementConfig'
   | 'GetRuntimeConfig'
-  | 'GetScheduleStatus'
-  | 'RunMeasurement';
+  | 'GetScheduleStatus';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;
@@ -95,28 +89,6 @@ export interface StatusResponse {
   mode: Mode;
   active_upstream: string;
   upstreams: UpstreamSnapshot[];
-}
-
-export interface QueueStatus {
-  queueDepth: number;
-  skippedTotal: number;
-  nextDue: string | null;
-  running: RunningTest[];
-  pending: PendingTest[];
-}
-
-export interface RunningTest {
-  upstream: string;
-  protocol: 'tcp' | 'udp';
-  direction: 'upload' | 'download';
-  elapsedMs: number;
-}
-
-export interface PendingTest {
-  upstream: string;
-  protocol: 'tcp' | 'udp';
-  direction: 'upload' | 'download';
-  scheduledAt: string;
 }
 
 export interface IdentityResponse {
@@ -148,8 +120,6 @@ export interface WSMessage {
   direction?: 'upload' | 'download';
   duration_ms?: number;
   success?: boolean;
-  bandwidth_up_bps?: number;
-  bandwidth_down_bps?: number;
   rtt_ms?: number;
   jitter_ms?: number;
   loss_rate?: number;
@@ -158,7 +128,6 @@ export interface WSMessage {
   code?: string;
   message?: string;
   depth?: number;
-  skipped?: number;
   next_due_ms?: number;
   running?: Array<{
     upstream: string;

@@ -50,6 +50,8 @@ Bandwidth fields accept SI unit strings (bits per second):
 
 Valid suffixes: `k` (kilo), `m` (mega), `g` (giga). Case-insensitive.
 
+Non-zero bare numbers are rejected for bandwidth fields. Only `0` or `0.0` may be unitless.
+
 ### Byte size format
 
 Byte size fields accept SI unit strings:
@@ -81,6 +83,8 @@ Validation errors stop startup and report the invalid field path. Use the `check
 ```bash
 ./fbforward check /etc/fbforward/config.yaml
 ```
+
+Removed measurement/scoring keys from older configs are rejected explicitly. The error lists each removed key path found in the input file.
 
 ### Environment variables
 
@@ -279,7 +283,7 @@ Typically `measurement.host` matches `destination.host`. Separate measurement ho
 
 ### priority
 
-Static priority adjustment. Higher priority upstreams are preferred.
+Static priority bonus used by fast-start preselection. It is not applied in steady-state scoring.
 
 **Type:** float64
 
@@ -301,7 +305,7 @@ upstreams:
     priority: 50   # Lower priority
 ```
 
-Priority is multiplied by the computed quality score before upstream selection. See [Section 6.1.2](algorithm-specifications.md#612-formal-description) for scoring algorithm.
+Fast-start score uses `100 / (1 + RTT / 50) + priority`. Steady-state scoring excludes priority. See [Section 6.1.2](algorithm-specifications.md#612-formal-description).
 
 ### bias
 
@@ -495,15 +499,15 @@ Default value ensures at least one full window of probes before reachability aff
 
 ## 4.6 measurement section
 
-The `measurement` section configures bwprobe-based link quality measurement. Measurements drive upstream quality scoring.
+The `measurement` section configures bwprobe-based quality measurements. These measurements feed scoring (RTT, jitter, retransmit/loss).
 
 ### Startup and staleness
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `startup_delay` | duration | `10s` | Delay before first measurement |
-| `stale_threshold` | duration | `60m` | Age at which measurement is stale |
-| `fallback_to_icmp_on_stale` | bool | `true` | Log warning when measurements become stale |
+| `startup_delay` | duration | `10s` | Delay before first measurement loop scheduling |
+| `stale_threshold` | duration | `60m` | Age after which protocol measurements are treated as stale |
+| `fallback_to_icmp_on_stale` | bool | `true` | Controls stale-warning logging only |
 
 **Example:**
 
@@ -514,13 +518,7 @@ measurement:
   fallback_to_icmp_on_stale: false
 ```
 
-`startup_delay` allows listeners and probes to stabilize before measurements begin.
-
-`stale_threshold` defines when a measurement becomes stale (age exceeds this duration since last successful test). Stale measurements trigger penalty scoring.
-
-When measurements are stale, the scoring engine applies reference-value penalties: bandwidth sub-scores are computed using configured reference values rather than measured values, effectively degrading the upstream's quality score. The stale upstream remains selectable but will likely be outscored by upstreams with fresh measurements.
-
-**Note:** ICMP probes monitor reachability continuously but do not contribute to quality scoring. The `fallback_to_icmp_on_stale` flag currently only controls logging behavior (logs "ICMP fallback" warning when stale threshold is exceeded).
+When measurements are stale, scoring substitutes degraded reference values for the stale protocol (RTT/jitter/retransmit/loss). ICMP remains reachability-only and does not contribute numeric quality scores.
 
 **Validation:**
 - `startup_delay` must be ≥ 0
@@ -528,20 +526,19 @@ When measurements are stale, the scoring engine applies reference-value penaltie
 
 ### schedule
 
-Measurement scheduling controls when tests run and how to avoid saturating the link.
+Measurement scheduling controls when tests run.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `interval` | object | *see below* | Time between measurements |
-| `upstream_gap` | duration | `5s` | Gap between upstream tests in a cycle |
-| `headroom` | object | *see below* | Link utilization gating |
+| `interval` | object | *see below* | Randomized measurement interval range |
+| `upstream_gap` | duration | `5s` | Gap between measurement jobs |
 
 #### interval
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `min` | duration | `15m` | Minimum interval between measurements |
-| `max` | duration | `45m` | Maximum interval between measurements |
+| `min` | duration | `15m` | Minimum interval between scheduled measurements |
+| `max` | duration | `45m` | Maximum interval between scheduled measurements |
 
 **Example:**
 
@@ -553,7 +550,7 @@ measurement:
       max: 30m
 ```
 
-fbforward schedules measurements randomly between `min` and `max` to avoid synchronized bursts across multiple instances. Each upstream is measured once per cycle.
+fbforward schedules measurements randomly between `min` and `max` to avoid synchronized bursts across instances.
 
 **Validation:**
 - `min` must be > 0
@@ -562,7 +559,7 @@ fbforward schedules measurements randomly between `min` and `max` to avoid synch
 
 #### upstream_gap
 
-Time gap between consecutive upstream measurements within a cycle.
+Time gap between measurement jobs.
 
 **Type:** duration
 
@@ -576,45 +573,18 @@ measurement:
     upstream_gap: 10s
 ```
 
-Prevents simultaneous measurements to multiple upstreams, which could saturate the link.
-
 **Validation:**
 - Must be ≥ 0
 
-#### headroom
-
-Link utilization gating prevents measurements when link is heavily loaded.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `max_link_utilization` | float64 | `0.7` | Maximum utilization before skipping measurement |
-| `required_free_bandwidth` | string | `"0"` | Minimum free bandwidth required (bits/sec) |
-
-**Example:**
-
-```yaml
-measurement:
-  schedule:
-    headroom:
-      max_link_utilization: 0.8
-      required_free_bandwidth: 10m
-```
-
-Before running a measurement, fbforward checks current link utilization (computed from recent traffic samples). If utilization exceeds `max_link_utilization` or free bandwidth is below `required_free_bandwidth`, the measurement is skipped.
-
-**Validation:**
-- `max_link_utilization` must be in range (0, 1]
-- `required_free_bandwidth` must be valid bandwidth string
-
 ### fast_start
 
-Fast-start mode uses lightweight ICMP RTT probes for immediate upstream selection at startup, then transitions to full bwprobe measurements after warmup period.
+Fast-start uses TCP connect RTT probes to `upstreams[].measurement.host:port` for startup preselection, then transitions to normal scoring after warmup.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable fast-start mode |
-| `timeout` | duration | `500ms` | RTT probe timeout |
-| `warmup_duration` | duration | `15s` | Time before transition to bwprobe |
+| `enabled` | bool | `true` | Enable fast-start preselection |
+| `timeout` | duration | `500ms` | Per-probe TCP connect timeout |
+| `warmup_duration` | duration | `15s` | Warmup duration with relaxed switching |
 
 **Example:**
 
@@ -626,13 +596,7 @@ measurement:
     warmup_duration: 30s
 ```
 
-When `enabled` is `true`, fbforward:
-1. Sends TCP SYN probes to measure RTT
-2. Selects primary upstream based on RTT
-3. Accepts connections immediately
-4. Transitions to bwprobe scoring after `warmup_duration`
-
-When `enabled` is `false`, fbforward waits for first full bwprobe measurement before accepting connections.
+When `enabled` is `false`, startup skips preselection and proceeds directly with normal runtime startup (listeners still start; no blocking on first full measurement).
 
 **Validation:**
 - `timeout` must be > 0
@@ -648,18 +612,10 @@ Protocol-specific measurement parameters for TCP and UDP tests.
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable TCP measurements |
 | `alternate` | bool | `true` | Alternate upload/download direction |
-| `target_bandwidth` | object | *see below* | Target bandwidth for tests |
 | `chunk_size` | string | `"1200"` | Chunk size including headers (bytes) |
 | `sample_size` | string | `"500kb"` | Payload bytes per sample |
 | `sample_count` | int | `1` | Number of samples per test |
 | `timeout` | object | *see below* | Timeout configuration |
-
-**target_bandwidth:**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `upload` | string | `"10m"` | Upload test bandwidth cap |
-| `download` | string | `"50m"` | Download test bandwidth cap |
 
 **timeout:**
 
@@ -676,9 +632,6 @@ measurement:
     tcp:
       enabled: true
       alternate: true
-      target_bandwidth:
-        upload: 20m
-        download: 100m
       chunk_size: 1200
       sample_size: 1mb
       sample_count: 3
@@ -687,25 +640,13 @@ measurement:
         per_cycle: 60s
 ```
 
-When `alternate` is `true`, fbforward alternates between upload and download tests across measurement cycles. When `false`, both upload and download tests run in each cycle.
-
-Set `target_bandwidth` to match expected link capacity or slightly below. Exceeding actual capacity causes congestion and inaccurate results.
-
-**Validation:**
-- `target_bandwidth.upload` must be > 0
-- `target_bandwidth.download` must be > 0
-- `chunk_size` must be > 0
-- `sample_size` must be > 0
-- `sample_count` must be > 0
-- `timeout.per_sample` must be > 0
-- `timeout.per_cycle` must be > 0
+When `alternate` is `true`, upload/download directions alternate across cycles. When `false`, both directions run each cycle.
 
 #### udp
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable UDP measurements |
-| `target_bandwidth` | object | *see tcp* | Target bandwidth for tests |
 | `chunk_size` | string | `"1200"` | Chunk size including headers (bytes) |
 | `sample_size` | string | `"500kb"` | Payload bytes per sample |
 | `sample_count` | int | `1` | Number of samples per test |
@@ -718,9 +659,6 @@ measurement:
   protocols:
     udp:
       enabled: true
-      target_bandwidth:
-        upload: 10m
-        download: 50m
       chunk_size: 1200
       sample_size: 500kb
       sample_count: 1
@@ -729,17 +667,22 @@ measurement:
         per_cycle: 30s
 ```
 
-UDP measurements track packet loss. Higher `sample_count` improves loss rate accuracy.
+**Validation:**
+- At least one of TCP or UDP must be enabled
+- `chunk_size` must be > 0
+- `sample_size` must be > 0
+- `sample_count` must be > 0
+- `timeout.per_sample` must be > 0
+- `timeout.per_cycle` must be > 0
 
-**Validation:** Same as TCP (except `alternate` field does not exist for UDP)
-
-**Protocol requirement:** At least one of TCP or UDP must be enabled.
+**Note:** Measurement send-rate is internal and not user-configurable. fbforward passes fixed non-zero rates to bwprobe for upload and download probes.
+This change does not affect traffic-shaping controls (`shaping.aggregate_limit` and per-listener/per-upstream shaping limits).
 
 ---
 
 ## 4.7 scoring section
 
-The `scoring` section configures the upstream quality scoring algorithm. Scores determine primary upstream selection. See [Section 6.1](algorithm-specifications.md#61-upstream-selection-algorithm) for algorithm details.
+The `scoring` section configures upstream quality scoring. Steady-state scoring uses RTT, jitter, and protocol-specific quality-loss signals (TCP retransmit rate, UDP loss rate), plus protocol blend and bias transform.
 
 ### smoothing
 
@@ -749,223 +692,90 @@ Exponential moving average (EMA) smoothing for metric updates.
 |-------|------|---------|-------------|
 | `alpha` | float64 | `0.2` | EMA smoothing factor |
 
-**Example:**
-
-```yaml
-scoring:
-  smoothing:
-    alpha: 0.3
-```
-
-Higher `alpha` values (closer to 1.0) give more weight to recent measurements. Lower values provide more smoothing. Formula: `smoothed = alpha * new + (1 - alpha) * old`.
-
 **Validation:**
 - Must be in range (0, 1]
 
 ### reference
 
-Reference values for score normalization. Each metric is normalized relative to its reference value.
+Reference values for score normalization.
 
 #### tcp
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bandwidth.upload` | string | `"10m"` | Reference upload bandwidth |
-| `bandwidth.download` | string | `"50m"` | Reference download bandwidth |
 | `latency.rtt` | float64 | `50` | Reference RTT (milliseconds) |
 | `latency.jitter` | float64 | `10` | Reference jitter (milliseconds) |
-| `retransmit_rate` | float64 | `0.01` | Reference retransmit rate (1%) |
-
-**Example:**
-
-```yaml
-scoring:
-  reference:
-    tcp:
-      bandwidth:
-        upload: 20m
-        download: 100m
-      latency:
-        rtt: 30
-        jitter: 5
-      retransmit_rate: 0.005
-```
-
-Reference values define the "target" quality. Upstreams meeting or exceeding reference values receive high sub-scores. See [Section 6.1.2](algorithm-specifications.md#612-formal-description) for normalization formulas.
-
-**Validation:**
-- Bandwidth fields must be > 0
-- Latency fields must be > 0
-- `retransmit_rate` must be in range (0, 1]
+| `retransmit_rate` | float64 | `0.01` | Reference TCP retransmit rate |
 
 #### udp
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bandwidth.upload` | string | `"10m"` | Reference upload bandwidth |
-| `bandwidth.download` | string | `"50m"` | Reference download bandwidth |
 | `latency.rtt` | float64 | `50` | Reference RTT (milliseconds) |
 | `latency.jitter` | float64 | `10` | Reference jitter (milliseconds) |
-| `loss_rate` | float64 | `0.01` | Reference loss rate (1%) |
-
-**Example:**
-
-```yaml
-scoring:
-  reference:
-    udp:
-      bandwidth:
-        upload: 10m
-        download: 50m
-      latency:
-        rtt: 50
-        jitter: 10
-      loss_rate: 0.01
-```
+| `loss_rate` | float64 | `0.01` | Reference UDP packet loss rate |
 
 **Validation:**
-- Bandwidth fields must be > 0
-- Latency fields must be > 0
-- `loss_rate` must be in range (0, 1]
+- Latency values must be > 0
+- `retransmit_rate` (TCP) must be in range (0, 1]
+- `loss_rate` (UDP) must be in range (0, 1]
 
 ### weights
 
-Weights determine how much each metric contributes to the final score.
+Weights are normalized automatically.
 
 #### tcp
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bandwidth_upload` | float64 | `0.15` | Upload bandwidth weight |
-| `bandwidth_download` | float64 | `0.25` | Download bandwidth weight |
 | `rtt` | float64 | `0.25` | RTT weight |
 | `jitter` | float64 | `0.10` | Jitter weight |
 | `retransmit_rate` | float64 | `0.25` | Retransmit rate weight |
 
-**Example:**
-
-```yaml
-scoring:
-  weights:
-    tcp:
-      bandwidth_upload: 0.20
-      bandwidth_download: 0.30
-      rtt: 0.25
-      jitter: 0.05
-      retransmit_rate: 0.20
-```
-
-Weights are automatically normalized to sum to 1.0. Increase weights for metrics that matter most for your application.
-
-**Validation:**
-- All weights must be ≥ 0
-- Sum of weights must be > 0 (normalized automatically)
-
 #### udp
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bandwidth_upload` | float64 | `0.10` | Upload bandwidth weight |
-| `bandwidth_download` | float64 | `0.30` | Download bandwidth weight |
 | `rtt` | float64 | `0.15` | RTT weight |
 | `jitter` | float64 | `0.30` | Jitter weight |
 | `loss_rate` | float64 | `0.15` | Loss rate weight |
 
-**Example:**
-
-```yaml
-scoring:
-  weights:
-    udp:
-      bandwidth_upload: 0.10
-      bandwidth_download: 0.25
-      rtt: 0.20
-      jitter: 0.25
-      loss_rate: 0.20
-```
-
-**Validation:** Same as TCP weights
-
 #### protocol_blend
 
-Blend TCP and UDP sub-scores into final score.
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `tcp_weight` | float64 | `0.5` | TCP sub-score weight |
-| `udp_weight` | float64 | `0.5` | UDP sub-score weight |
-
-**Example:**
-
-```yaml
-scoring:
-  weights:
-    protocol_blend:
-      tcp_weight: 0.6
-      udp_weight: 0.4
-```
-
-Weights are automatically normalized to sum to 1.0. Increase `tcp_weight` for TCP-heavy workloads, increase `udp_weight` for UDP-heavy workloads.
+| `tcp_weight` | float64 | `0.5` | TCP score contribution |
+| `udp_weight` | float64 | `0.5` | UDP score contribution |
 
 **Validation:**
-- Both weights must be ≥ 0
-- Sum of weights must be > 0 (normalized automatically)
-
-### utilization_penalty
-
-Utilization penalty reduces score when upstream carries heavy traffic. Prevents overloading a single upstream.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable utilization penalty |
-| `window_duration` | duration | `5s` | Traffic sampling window |
-| `update_interval` | duration | `1s` | Utilization recomputation interval |
-| `threshold` | float64 | `0.7` | Utilization threshold (70%) |
-| `min_multiplier` | float64 | `0.3` | Minimum score multiplier at 100% util |
-| `exponent` | float64 | `2.0` | Penalty curve exponent |
-
-**Example:**
-
-```yaml
-scoring:
-  utilization_penalty:
-    enabled: true
-    window_duration: 10s
-    update_interval: 2s
-    threshold: 0.8
-    min_multiplier: 0.5
-    exponent: 1.5
-```
-
-When `enabled` is `true`, fbforward computes recent traffic utilization as a fraction of measured link capacity. Above `threshold`, score is multiplied by a penalty factor between 1.0 (at threshold) and `min_multiplier` (at 100% utilization). Penalty curve uses exponential function with `exponent`.
-
-**Validation:**
-- `window_duration` must be > 0
-- `update_interval` must be > 0
-- `threshold` must be > 0
-- `min_multiplier` must be in range (0, 1]
-- `exponent` must be > 0
+- All weights must be ≥ 0
+- Each weight group must have sum > 0 (then normalized)
 
 ### bias_transform
 
-Bias transformation scales the `upstreams[].bias` field.
+Bias transformation scales `upstreams[].bias`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `kappa` | float64 | `0.693147` | Bias scaling constant (ln(2)) |
-
-**Example:**
-
-```yaml
-scoring:
-  bias_transform:
-    kappa: 1.0
-```
-
-Bias is transformed via exponential: `multiplier = exp(bias / kappa)`. Default `kappa = ln(2)` means `bias = 1.0` doubles the score, `bias = -1.0` halves it.
+| `kappa` | float64 | `0.693147` | Exponential scaling constant |
 
 **Validation:**
 - Must be > 0
+
+### Removed measurement/scoring keys
+
+The following keys are no longer supported and fail config loading with explicit path errors:
+
+- `measurement.schedule.headroom.*`
+- `measurement.protocols.tcp.target_bandwidth.*`
+- `measurement.protocols.udp.target_bandwidth.*`
+- `scoring.reference.tcp.bandwidth.*`
+- `scoring.reference.udp.bandwidth.*`
+- `scoring.weights.tcp.bandwidth_upload`
+- `scoring.weights.tcp.bandwidth_download`
+- `scoring.weights.udp.bandwidth_upload`
+- `scoring.weights.udp.bandwidth_download`
+- `scoring.utilization_penalty.*`
 
 ---
 
