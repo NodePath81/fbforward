@@ -35,6 +35,7 @@ The [docs/](docs/) directory contains structured project documentation:
 - [docs/glossary.md](docs/glossary.md): Domain terminology definitions
 - [docs/diagrams.md](docs/diagrams.md): Diagram inventory with Mermaid templates
 - [docs/style-guide.md](docs/style-guide.md): Writing conventions for documentation
+- [doc/logging-guidelines.md](doc/logging-guidelines.md): Structured logging requirements, event naming, OTel alignment, privacy/redaction, and review checks
 
 Legacy documentation has been archived to [docs/archive/2025-01-26-legacy/](docs/archive/2025-01-26-legacy/).
 
@@ -348,6 +349,22 @@ When extending functionality:
 - **Fast failover**: Immediate switch on high loss windows or dial failures
 - **Auto recovery**: Unusable upstreams recover automatically when probes succeed
 - **Measurement-driven**: ICMP for reachability only; bwprobe measurements drive all scoring
+
+## Logging requirements for agents (mandatory)
+
+When adding or modifying code, agents must follow [doc/logging-guidelines.md](doc/logging-guidelines.md).
+
+Required behavior:
+- Use structured logging for operational events. Do not add unstructured/free-form operational logs.
+- Preserve canonical event naming and key conventions, aligned to OTel-style schema used by this repo.
+- Include required correlation fields where context exists (`request.id`, `ws.conn_id`, `flow.id`, `measure.cycle_id`).
+- Apply privacy/redaction rules: never log tokens/secrets/raw sensitive payloads.
+- Ensure control-plane and flow-mapping audit coverage where applicable.
+
+Acceptance checks for agent changes:
+- No unstructured logs introduced.
+- Required correlation fields present for new/changed log events where applicable.
+- Audit-sensitive paths include access outcome and policy/auth decision logs where applicable.
 
 ## Config hints
 
