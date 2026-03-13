@@ -16,7 +16,7 @@ forwarding: {...}                 # Listeners and flow management
 upstreams: [...]                  # Upstream list
 dns: {...}                        # DNS resolution
 reachability: {...}               # ICMP probing
-measurement: {...}                # bwprobe measurement settings
+measurement: {...}                # fbmeasure probe settings
 scoring: {...}                    # Quality scoring algorithm
 switching: {...}                  # Upstream switching behavior
 control: {...}                    # Control plane (HTTP API, web UI)
@@ -253,7 +253,8 @@ The `host` field accepts:
 
 ### measurement
 
-Measurement endpoint for bwprobe tests. Defaults to `destination.host` on port 9876 (fbmeasure default).
+Measurement endpoint for fbmeasure targeted probes. Defaults to
+`destination.host` on port 9876 (fbmeasure default).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -499,7 +500,8 @@ Default value ensures at least one full window of probes before reachability aff
 
 ## 4.6 measurement section
 
-The `measurement` section configures bwprobe-based quality measurements. These measurements feed scoring (RTT, jitter, retransmit/loss).
+The `measurement` section configures fbmeasure-based quality measurements.
+These measurements feed scoring (RTT, jitter, retransmit/loss).
 
 ### Startup and staleness
 
@@ -604,25 +606,23 @@ When `enabled` is `false`, startup skips preselection and proceeds directly with
 
 ### protocols
 
-Protocol-specific measurement parameters for TCP and UDP tests.
+Protocol-specific measurement parameters for TCP and UDP probe cycles.
 
 #### tcp
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable TCP measurements |
-| `alternate` | bool | `true` | Alternate upload/download direction |
-| `chunk_size` | string | `"1200"` | Chunk size including headers (bytes) |
-| `sample_size` | string | `"500kb"` | Payload bytes per sample |
-| `sample_count` | int | `1` | Number of samples per test |
+| `ping_count` | int | `5` | Number of TCP RTT pings per cycle |
+| `retransmit_bytes` | string | `"500kb"` | Payload sent during the TCP retransmission test |
 | `timeout` | object | *see below* | Timeout configuration |
 
 **timeout:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `per_sample` | duration | `10s` | Timeout per sample |
-| `per_cycle` | duration | `30s` | Timeout for entire test cycle |
+| `per_sample` | duration | `10s` | Timeout for each probe stage |
+| `per_cycle` | duration | `30s` | Timeout for the entire TCP cycle |
 
 **Example:**
 
@@ -631,25 +631,21 @@ measurement:
   protocols:
     tcp:
       enabled: true
-      alternate: true
-      chunk_size: 1200
-      sample_size: 1mb
-      sample_count: 3
+      ping_count: 5
+      retransmit_bytes: 1mb
       timeout:
         per_sample: 15s
         per_cycle: 60s
 ```
-
-When `alternate` is `true`, upload/download directions alternate across cycles. When `false`, both directions run each cycle.
 
 #### udp
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable UDP measurements |
-| `chunk_size` | string | `"1200"` | Chunk size including headers (bytes) |
-| `sample_size` | string | `"500kb"` | Payload bytes per sample |
-| `sample_count` | int | `1` | Number of samples per test |
+| `ping_count` | int | `5` | Number of UDP RTT pings per cycle |
+| `loss_packets` | int | `64` | Number of UDP datagrams sent for the loss test |
+| `packet_size` | string | `"1200"` | UDP datagram size in bytes |
 | `timeout` | object | *see tcp* | Timeout configuration |
 
 **Example:**
@@ -659,9 +655,9 @@ measurement:
   protocols:
     udp:
       enabled: true
-      chunk_size: 1200
-      sample_size: 500kb
-      sample_count: 1
+      ping_count: 5
+      loss_packets: 64
+      packet_size: 1200
       timeout:
         per_sample: 10s
         per_cycle: 30s
@@ -669,14 +665,15 @@ measurement:
 
 **Validation:**
 - At least one of TCP or UDP must be enabled
-- `chunk_size` must be > 0
-- `sample_size` must be > 0
-- `sample_count` must be > 0
+- `ping_count` must be > 0
+- `retransmit_bytes` (TCP) must be > 0
+- `loss_packets` (UDP) must be > 0
+- `packet_size` (UDP) must be > 0
 - `timeout.per_sample` must be > 0
 - `timeout.per_cycle` must be > 0
 
-**Note:** Measurement send-rate is internal and not user-configurable. fbforward passes fixed non-zero rates to bwprobe for upload and download probes.
-This change does not affect traffic-shaping controls (`shaping.aggregate_limit` and per-listener/per-upstream shaping limits).
+The legacy bwprobe-oriented fields `alternate`, `chunk_size`, `sample_size`,
+and `sample_count` are rejected during configuration load.
 
 ---
 
@@ -1051,7 +1048,7 @@ fbforward will not create tc qdiscs or require `CAP_NET_ADMIN`.
 | `upstreams` | [6.1.1](algorithm-specifications.md#611-overview) | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `dns` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `reachability` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
-| `measurement` | [6.2](algorithm-specifications.md#62-bandwidth-measurement-algorithm-bwprobe) | [3.1.2](user-guide-fbforward.md#312-configuration) |
+| `measurement` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `scoring` | [6.1.2](algorithm-specifications.md#612-formal-description) | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `switching` | [6.1.4](algorithm-specifications.md#614-edge-cases) | [3.1.1](user-guide-fbforward.md#311-overview) |
 | `control` | - | [3.1.3](user-guide-fbforward.md#313-operation), [5.2](api-reference.md#52-control-plane-api) |

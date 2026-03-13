@@ -86,18 +86,16 @@ measurement:
   protocols:
     tcp:
       enabled: true
-      alternate: true
-      chunk_size: 1200
-      sample_size: 500kb
-      sample_count: 1
+      ping_count: 5
+      retransmit_bytes: 500kb
       timeout:
         per_sample: 10s
         per_cycle: 30s
     udp:
       enabled: true
-      chunk_size: 1200
-      sample_size: 500kb
-      sample_count: 1
+      ping_count: 5
+      loss_packets: 64
+      packet_size: 1200
       timeout:
         per_sample: 10s
         per_cycle: 30s

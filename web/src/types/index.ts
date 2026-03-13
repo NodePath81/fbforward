@@ -117,7 +117,6 @@ export interface WSMessage {
   id?: string;
   upstream?: string;
   protocol?: 'tcp' | 'udp';
-  direction?: 'upload' | 'download';
   duration_ms?: number;
   success?: boolean;
   rtt_ms?: number;
@@ -132,13 +131,11 @@ export interface WSMessage {
   running?: Array<{
     upstream: string;
     protocol: 'tcp' | 'udp';
-    direction: 'upload' | 'download';
     elapsed_ms: number;
   }>;
   pending?: Array<{
     upstream: string;
     protocol: 'tcp' | 'udp';
-    direction: 'upload' | 'download';
     scheduled_at: number;
   }>;
 }

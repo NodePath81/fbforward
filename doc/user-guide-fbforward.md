@@ -8,7 +8,7 @@ This guide covers fbforward operation, configuration, and troubleshooting.
 
 ### What fbforward does
 
-fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on measured network quality. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures upstream quality using bwprobe probes (RTT, jitter, TCP retransmit rate, UDP loss rate) and ICMP reachability probes.
+fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on measured network quality. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures upstream quality using fbmeasure probes (RTT, jitter, TCP retransmit rate, UDP loss rate) and ICMP reachability probes.
 
 ### NAT-style forwarding model
 
@@ -44,7 +44,7 @@ Once a [flow](glossary.md#flow) (TCP connection or UDP 5-tuple mapping) is assig
 
 fbforward supports two upstream selection modes:
 
-**Auto mode** (default): The [scoring engine](glossary.md#scoring-engine) evaluates upstream quality using bwprobe measurements. When a candidate upstream's score exceeds the current primary's score by the configured [threshold](glossary.md#score-delta-threshold) for the [confirmation duration](glossary.md#confirm-duration), fbforward switches to the new primary. Switching requires the [hold time](glossary.md#hold-time) to have elapsed since the last switch.
+**Auto mode** (default): The [scoring engine](glossary.md#scoring-engine) evaluates upstream quality using fbmeasure results. When a candidate upstream's score exceeds the current primary's score by the configured [threshold](glossary.md#score-delta-threshold) for the [confirmation duration](glossary.md#confirm-duration), fbforward switches to the new primary. Switching requires the [hold time](glossary.md#hold-time) to have elapsed since the last switch.
 
 **Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
 
@@ -222,7 +222,7 @@ The forwarder runs in the foreground and logs to stderr. Startup sequence:
 2. Resolve upstream hostnames via DNS
 3. Create upstream manager with scoring configuration
 4. Start ICMP reachability prober
-5. Start bwprobe measurement collector
+5. Start measurement collector
 6. Start TCP/UDP listeners
 7. Start control plane HTTP server
 8. Enter running state
@@ -234,7 +234,7 @@ Expected startup logs:
 2025/01/26 12:00:00 INFO resolved upstream tag=primary host=upstream1.example.com ip=203.0.113.10
 2025/01/26 12:00:00 INFO resolved upstream tag=backup host=upstream2.example.com ip=203.0.113.11
 2025/01/26 12:00:00 INFO starting ICMP prober
-2025/01/26 12:00:00 INFO starting bwprobe collector
+2025/01/26 12:00:00 INFO starting measurement collector
 2025/01/26 12:00:00 INFO fast-start mode enabled timeout=30s
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=tcp
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=udp
@@ -256,7 +256,7 @@ Shutdown sequence:
 2. Wait for active TCP connections to close or timeout
 3. Remove UDP mappings
 4. Stop ICMP prober
-5. Stop bwprobe collector
+5. Stop measurement collector
 6. Shut down control plane
 7. Exit
 
@@ -475,7 +475,7 @@ Resolution: Start fbmeasure on upstream and verify connectivity:
 ./fbmeasure --port 9876
 
 # From fbforward host
-./bwprobe -server <upstream>:9876 -bandwidth 10m
+nc -zv <upstream> 9876
 ```
 
 **"dial failed: no such host"**
@@ -486,7 +486,7 @@ Resolution: Verify DNS configuration or use IP address in `upstreams[].destinati
 
 **"measurement stale: falling back to ICMP"**
 
-Cause: bwprobe measurements have not completed within `measurement.stale_threshold`.
+Cause: fbmeasure probe cycles have not completed within `measurement.stale_threshold`.
 
 Resolution: Check fbmeasure connectivity and network conditions. Review measurement logs for errors.
 
@@ -505,8 +505,8 @@ getcap ./fbforward
 # Test TCP connection to measurement endpoint
 nc -zv <upstream-host> 9876
 
-# Test bwprobe measurement
-./bwprobe -server <upstream-host>:9876 -bandwidth 10m -samples 1
+# Check UDP reachability separately if needed
+nc -zvu <upstream-host> 9876
 ```
 
 **3. DNS resolution**:

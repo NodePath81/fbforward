@@ -26,14 +26,14 @@ const (
 	defaultFastStartTimeout                 = 500 * time.Millisecond
 	defaultWarmupDuration                   = 15 * time.Second
 
-	defaultMeasurementChunkSize  = "1200"
-	defaultMeasurementSampleSize = "500kb"
-	defaultMeasurementSampleCnt  = 1
-	defaultMeasurementPerSample  = 10 * time.Second
-	defaultMeasurementPerCycle   = 30 * time.Second
-	defaultMeasurementTCPEnabled = true
-	defaultMeasurementUDPEnabled = true
-	defaultMeasurementTCPAlt     = true
+	defaultMeasurementPingCount   = 5
+	defaultMeasurementRetransmit  = "500kb"
+	defaultMeasurementLossPackets = 64
+	defaultMeasurementPacketSize  = "1200"
+	defaultMeasurementPerSample   = 10 * time.Second
+	defaultMeasurementPerCycle    = 30 * time.Second
+	defaultMeasurementTCPEnabled  = true
+	defaultMeasurementUDPEnabled  = true
 
 	defaultEMAAlpha          = 0.2
 	defaultRefRTTMs          = 50
@@ -215,12 +215,12 @@ type MeasurementProtocolsConfig struct {
 }
 
 type MeasurementProtocolConfig struct {
-	Enabled     *bool                    `yaml:"enabled"`
-	Alternate   *bool                    `yaml:"alternate"`
-	ChunkSize   string                   `yaml:"chunk_size"`
-	SampleSize  string                   `yaml:"sample_size"`
-	SampleCount int                      `yaml:"sample_count"`
-	Timeout     MeasurementTimeoutConfig `yaml:"timeout"`
+	Enabled         *bool                    `yaml:"enabled"`
+	PingCount       int                      `yaml:"ping_count"`
+	RetransmitBytes string                   `yaml:"retransmit_bytes"`
+	LossPackets     int                      `yaml:"loss_packets"`
+	PacketSize      string                   `yaml:"packet_size"`
+	Timeout         MeasurementTimeoutConfig `yaml:"timeout"`
 }
 
 type MeasurementTimeoutConfig struct {
@@ -366,6 +366,8 @@ func detectRemovedConfigPaths(raw []byte) []string {
 	collectRemovedTree(root, []string{"measurement", "schedule", "headroom"}, &removed)
 	collectRemovedTree(root, []string{"measurement", "protocols", "tcp", "target_bandwidth"}, &removed)
 	collectRemovedTree(root, []string{"measurement", "protocols", "udp", "target_bandwidth"}, &removed)
+	collectSpecificRemovedKeys(root, []string{"measurement", "protocols", "tcp"}, []string{"alternate", "chunk_size", "sample_size", "sample_count"}, &removed)
+	collectSpecificRemovedKeys(root, []string{"measurement", "protocols", "udp"}, []string{"chunk_size", "sample_size", "sample_count"}, &removed)
 	collectRemovedTree(root, []string{"scoring", "reference", "tcp", "bandwidth"}, &removed)
 	collectRemovedTree(root, []string{"scoring", "reference", "udp", "bandwidth"}, &removed)
 	collectRemovedTree(root, []string{"scoring", "utilization_penalty"}, &removed)
@@ -636,18 +638,20 @@ func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
 		}
 		cfg.Enabled = &val
 	}
-	if isTCP && cfg.Alternate == nil {
-		val := defaultMeasurementTCPAlt
-		cfg.Alternate = &val
+	if cfg.PingCount == 0 {
+		cfg.PingCount = defaultMeasurementPingCount
 	}
-	if cfg.ChunkSize == "" {
-		cfg.ChunkSize = defaultMeasurementChunkSize
-	}
-	if cfg.SampleSize == "" {
-		cfg.SampleSize = defaultMeasurementSampleSize
-	}
-	if cfg.SampleCount == 0 {
-		cfg.SampleCount = defaultMeasurementSampleCnt
+	if isTCP {
+		if cfg.RetransmitBytes == "" {
+			cfg.RetransmitBytes = defaultMeasurementRetransmit
+		}
+	} else {
+		if cfg.LossPackets == 0 {
+			cfg.LossPackets = defaultMeasurementLossPackets
+		}
+		if cfg.PacketSize == "" {
+			cfg.PacketSize = defaultMeasurementPacketSize
+		}
 	}
 	if cfg.Timeout.PerSample == 0 {
 		cfg.Timeout.PerSample = Duration(defaultMeasurementPerSample)
@@ -872,22 +876,29 @@ func validateProtocolConfig(proto string, cfg MeasurementProtocolConfig, enabled
 	if !enabled {
 		return nil
 	}
-	chunkSize, err := ParseSize(cfg.ChunkSize)
-	if err != nil {
-		return fmt.Errorf("measurement.protocols.%s.chunk_size: %w", proto, err)
+	if cfg.PingCount <= 0 {
+		return fmt.Errorf("measurement.protocols.%s.ping_count must be > 0", proto)
 	}
-	if chunkSize <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.chunk_size must be > 0", proto)
-	}
-	sampleSize, err := ParseSize(cfg.SampleSize)
-	if err != nil {
-		return fmt.Errorf("measurement.protocols.%s.sample_size: %w", proto, err)
-	}
-	if sampleSize <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.sample_size must be > 0", proto)
-	}
-	if cfg.SampleCount <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.sample_count must be > 0", proto)
+	switch proto {
+	case "tcp":
+		retransmitBytes, err := ParseSize(cfg.RetransmitBytes)
+		if err != nil {
+			return fmt.Errorf("measurement.protocols.%s.retransmit_bytes: %w", proto, err)
+		}
+		if retransmitBytes == 0 {
+			return fmt.Errorf("measurement.protocols.%s.retransmit_bytes must be > 0", proto)
+		}
+	case "udp":
+		if cfg.LossPackets <= 0 {
+			return fmt.Errorf("measurement.protocols.%s.loss_packets must be > 0", proto)
+		}
+		packetSize, err := ParseSize(cfg.PacketSize)
+		if err != nil {
+			return fmt.Errorf("measurement.protocols.%s.packet_size: %w", proto, err)
+		}
+		if packetSize == 0 {
+			return fmt.Errorf("measurement.protocols.%s.packet_size must be > 0", proto)
+		}
 	}
 	if cfg.Timeout.PerSample.Duration() <= 0 {
 		return fmt.Errorf("measurement.protocols.%s.timeout.per_sample must be > 0", proto)
