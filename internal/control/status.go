@@ -252,7 +252,6 @@ func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 type TestHistoryPayload struct {
 	Upstream    string  `json:"upstream"`
 	Protocol    string  `json:"protocol"`
-	Direction   string  `json:"direction"`
 	Timestamp   int64   `json:"timestamp"`
 	DurationMs  int64   `json:"duration_ms"`
 	Success     bool    `json:"success"`

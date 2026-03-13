@@ -29,7 +29,7 @@ build-bwprobe:
 
 build-fbmeasure:
 	mkdir -p $(dir $(FBMEASURE_BIN))
-	go build -o $(FBMEASURE_BIN) ./bwprobe/cmd/fbmeasure
+	go build -ldflags "$(LDFLAGS)" -o $(FBMEASURE_BIN) ./cmd/fbmeasure
 
 test:
 	go test ./...

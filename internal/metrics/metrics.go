@@ -564,7 +564,7 @@ func (m *Metrics) Render() string {
 		if ts.IsZero() {
 			continue
 		}
-		tag, proto, direction, ok := splitScheduleKey(key)
+		tag, proto, ok := splitScheduleKey(key)
 		if !ok {
 			continue
 		}
@@ -572,8 +572,6 @@ func (m *Metrics) Render() string {
 		b.WriteString(tag)
 		b.WriteString("\",protocol=\"")
 		b.WriteString(proto)
-		b.WriteString("\",direction=\"")
-		b.WriteString(direction)
 		b.WriteString("\"} ")
 		b.WriteString(formatFloat(now.Sub(ts).Seconds()))
 		b.WriteString("\n")
@@ -609,13 +607,13 @@ func formatFloat(val float64) string {
 	return strconv.FormatFloat(val, 'f', 6, 64)
 }
 
-func splitScheduleKey(key string) (string, string, string, bool) {
+func splitScheduleKey(key string) (string, string, bool) {
 	parts := strings.Split(key, ":")
-	if len(parts) != 3 {
-		return "", "", "", false
+	if len(parts) != 2 {
+		return "", "", false
 	}
-	if parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return "", "", "", false
+	if parts[0] == "" || parts[1] == "" {
+		return "", "", false
 	}
-	return parts[0], parts[1], parts[2], true
+	return parts[0], parts[1], true
 }

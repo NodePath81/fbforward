@@ -27,10 +27,9 @@ type Scheduler struct {
 }
 
 type scheduledMeasurement struct {
-	upstream  *upstream.Upstream
-	protocol  string
-	direction string
-	dueAt     time.Time
+	upstream *upstream.Upstream
+	protocol string
+	dueAt    time.Time
 }
 
 type SchedulerStatus struct {
@@ -43,7 +42,6 @@ type SchedulerStatus struct {
 type PendingItem struct {
 	Upstream    string
 	Protocol    string
-	Direction   string
 	ScheduledAt time.Time
 }
 
@@ -66,29 +64,25 @@ func (s *Scheduler) Schedule() {
 	now := time.Now()
 	queued := make(map[string]struct{}, len(s.queue))
 	for _, item := range s.queue {
-		queued[s.key(item.upstream.Tag, item.protocol, item.direction)] = struct{}{}
+		queued[s.key(item.upstream.Tag, item.protocol)] = struct{}{}
 	}
 
-	directions := []string{"upload", "download"}
 	for _, up := range s.upstreams {
 		for _, proto := range s.cfg.Protocols {
-			for _, direction := range directions {
-				key := s.key(up.Tag, proto, direction)
-				if _, ok := queued[key]; ok {
-					continue
-				}
-				if last, ok := s.lastRun[key]; ok && now.Sub(last) < s.cfg.MinInterval {
-					continue
-				}
-				dueAt := now.Add(s.nextInterval())
-				s.queue = append(s.queue, scheduledMeasurement{
-					upstream:  up,
-					protocol:  proto,
-					direction: direction,
-					dueAt:     dueAt,
-				})
-				queued[key] = struct{}{}
+			key := s.key(up.Tag, proto)
+			if _, ok := queued[key]; ok {
+				continue
 			}
+			if last, ok := s.lastRun[key]; ok && now.Sub(last) < s.cfg.MinInterval {
+				continue
+			}
+			dueAt := now.Add(s.nextInterval())
+			s.queue = append(s.queue, scheduledMeasurement{
+				upstream: up,
+				protocol: proto,
+				dueAt:    dueAt,
+			})
+			queued[key] = struct{}{}
 		}
 	}
 
@@ -123,7 +117,7 @@ func (s *Scheduler) NextReady() (*scheduledMeasurement, bool) {
 func (s *Scheduler) MarkRun(measurement scheduledMeasurement) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastRun[s.key(measurement.upstream.Tag, measurement.protocol, measurement.direction)] = time.Now()
+	s.lastRun[s.key(measurement.upstream.Tag, measurement.protocol)] = time.Now()
 }
 
 func (s *Scheduler) Requeue(measurement scheduledMeasurement, delay time.Duration) {
@@ -149,7 +143,6 @@ func (s *Scheduler) Status() SchedulerStatus {
 			status.Pending = append(status.Pending, PendingItem{
 				Upstream:    item.upstream.Tag,
 				Protocol:    item.protocol,
-				Direction:   item.direction,
 				ScheduledAt: item.dueAt,
 			})
 		}
@@ -172,6 +165,6 @@ func (s *Scheduler) nextInterval() time.Duration {
 	return s.cfg.MinInterval + jitter
 }
 
-func (s *Scheduler) key(tag, protocol, direction string) string {
-	return tag + ":" + protocol + ":" + direction
+func (s *Scheduler) key(tag, protocol string) string {
+	return tag + ":" + protocol
 }

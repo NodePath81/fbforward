@@ -152,7 +152,6 @@ type statusResponse struct {
 type runningTestEntry struct {
 	Upstream  string `json:"upstream"`
 	Protocol  string `json:"protocol"`
-	Direction string `json:"direction"`
 	ElapsedMs int64  `json:"elapsed_ms"`
 }
 
@@ -177,7 +176,6 @@ type queueSnapshotMessage struct {
 type queuePendingEntry struct {
 	Upstream    string `json:"upstream"`
 	Protocol    string `json:"protocol"`
-	Direction   string `json:"direction"`
 	ScheduledAt int64  `json:"scheduled_at"`
 }
 
@@ -604,11 +602,9 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 		},
 		"protocols": map[string]interface{}{
 			"tcp": map[string]interface{}{
-				"enabled":      util.BoolValue(cfg.Protocols.TCP.Enabled, true),
-				"alternate":    util.BoolValue(cfg.Protocols.TCP.Alternate, true),
-				"chunk_size":   cfg.Protocols.TCP.ChunkSize,
-				"sample_size":  cfg.Protocols.TCP.SampleSize,
-				"sample_count": cfg.Protocols.TCP.SampleCount,
+				"enabled":          util.BoolValue(cfg.Protocols.TCP.Enabled, true),
+				"ping_count":       cfg.Protocols.TCP.PingCount,
+				"retransmit_bytes": cfg.Protocols.TCP.RetransmitBytes,
 				"timeout": map[string]interface{}{
 					"per_sample": cfg.Protocols.TCP.Timeout.PerSample.Duration().String(),
 					"per_cycle":  cfg.Protocols.TCP.Timeout.PerCycle.Duration().String(),
@@ -616,9 +612,9 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 			},
 			"udp": map[string]interface{}{
 				"enabled":      util.BoolValue(cfg.Protocols.UDP.Enabled, true),
-				"chunk_size":   cfg.Protocols.UDP.ChunkSize,
-				"sample_size":  cfg.Protocols.UDP.SampleSize,
-				"sample_count": cfg.Protocols.UDP.SampleCount,
+				"ping_count":   cfg.Protocols.UDP.PingCount,
+				"loss_packets": cfg.Protocols.UDP.LossPackets,
+				"packet_size":  cfg.Protocols.UDP.PacketSize,
 				"timeout": map[string]interface{}{
 					"per_sample": cfg.Protocols.UDP.Timeout.PerSample.Duration().String(),
 					"per_cycle":  cfg.Protocols.UDP.Timeout.PerCycle.Duration().String(),
@@ -824,7 +820,6 @@ func (c *ControlServer) getQueueSnapshot(now time.Time) queueSnapshotMessage {
 			entries = append(entries, queuePendingEntry{
 				Upstream:    item.Upstream,
 				Protocol:    item.Protocol,
-				Direction:   item.Direction,
 				ScheduledAt: item.ScheduledAt.UnixMilli(),
 			})
 		}
@@ -838,7 +833,6 @@ func (c *ControlServer) getQueueSnapshot(now time.Time) queueSnapshotMessage {
 			entries = append(entries, runningTestEntry{
 				Upstream:  test.Upstream,
 				Protocol:  test.Protocol,
-				Direction: test.Direction,
 				ElapsedMs: now.Sub(test.StartTime).Milliseconds(),
 			})
 		}

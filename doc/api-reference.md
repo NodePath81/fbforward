@@ -647,13 +647,17 @@ Retrieve current measurement configuration.
   "protocols": {
     "tcp": {
       "enabled": true,
-      "alternate": true,
-      "chunk_size": "1200",
-      "sample_size": "500kb",
-      "sample_count": 1,
+      "ping_count": 5,
+      "retransmit_bytes": "500kb",
       "timeout": {"per_sample": "10s", "per_cycle": "30s"}
     },
-    "udp": {...}
+    "udp": {
+      "enabled": true,
+      "ping_count": 5,
+      "loss_packets": 64,
+      "packet_size": "1200",
+      "timeout": {"per_sample": "10s", "per_cycle": "30s"}
+    }
   }
 }
 ```
@@ -683,8 +687,8 @@ Retrieve measurement scheduler status.
   "queue_length": 2,
   "next_scheduled": "2026-01-27T10:20:00Z",
   "last_measurements": {
-    "primary:tcp:upload": "2026-01-27T10:15:30Z",
-    "primary:udp:download": "2026-01-27T10:16:15Z"
+    "primary:tcp": "2026-01-27T10:15:30Z",
+    "primary:udp": "2026-01-27T10:16:15Z"
   }
 }
 ```
@@ -693,7 +697,7 @@ Retrieve measurement scheduler status.
 
 - `queue_length`: Number of pending measurements in queue
 - `next_scheduled`: Timestamp of next scheduled measurement (null if queue empty)
-- `last_measurements`: Map key `<upstream>:<protocol>:<direction>` → last successful measurement timestamp
+- `last_measurements`: Map key `<upstream>:<protocol>` → last successful measurement timestamp
 
 **Example:**
 
@@ -858,7 +862,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
     {
       "upstream": "primary",
       "protocol": "tcp",
-      "direction": "upload",
       "elapsed_ms": 1234
     }
   ],
@@ -866,7 +869,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
     {
       "upstream": "backup",
       "protocol": "tcp",
-      "direction": "download",
       "scheduled_at": 1706354415000
     }
   ]
@@ -936,7 +938,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
   "type": "test_history_event",
   "upstream": "primary",
   "protocol": "tcp",
-  "direction": "upload",
   "timestamp": 1706354430000,
   "duration_ms": 2534,
   "success": true,
@@ -985,7 +986,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
 - `schema_version`: Message schema version (currently 1)
 - `upstream`: Upstream tag
 - `protocol`: `tcp` or `udp`
-- `direction`: `upload` or `download`
 - `timestamp`: Unix milliseconds when test started
 - `duration_ms`: Test duration
 - `success`: Whether test completed successfully
@@ -1042,7 +1042,7 @@ ws.onmessage = (event) => {
       console.log('Flow closed:', msg.id);
       break;
     case 'test_history_event':
-      console.log('Test completed:', msg.upstream, msg.protocol, msg.direction, msg.success);
+      console.log('Test completed:', msg.upstream, msg.protocol, msg.success);
       break;
     case 'error':
       console.error('WebSocket error:', msg.code, msg.message);
@@ -1120,7 +1120,7 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 | `fbforward_tcp_active` | gauge | - | Active TCP connections |
 | `fbforward_udp_mappings_active` | gauge | - | Active UDP mappings |
 | `fbforward_measurement_queue_size` | gauge | - | Pending measurements in queue |
-| `fbforward_measurement_last_run_seconds` | gauge | `upstream`, `protocol`, `direction` | Seconds since last measurement |
+| `fbforward_measurement_last_run_seconds` | gauge | `upstream`, `protocol` | Seconds since last measurement |
 | `fbforward_memory_alloc_bytes` | gauge | - | Allocated memory (bytes) |
 | `fbforward_goroutines` | gauge | - | Runtime goroutine count |
 | `fbforward_uptime_seconds` | gauge | - | Process uptime (seconds) |

@@ -10,7 +10,7 @@ This document guides you through installing fbforward and running your first dep
 
 fbforward requires Linux. The forwarder uses platform-specific kernel features that are not available on other operating systems:
 
-- `SO_MAX_PACING_RATE`: Socket option for rate-limiting TCP sends (used by bwprobe)
+- `SO_MAX_PACING_RATE`: Socket option used by the standalone bwprobe tool
 - `TCP_INFO`: Socket option for reading TCP connection statistics
 - Raw ICMP sockets: For sending and receiving ICMP echo requests
 
@@ -52,9 +52,15 @@ The web UI is optional. If Node.js is unavailable, the build process skips UI co
 
 ### fbmeasure on upstream hosts
 
-fbforward requires fbmeasure running on each upstream host to perform bandwidth measurements. Without fbmeasure, fbforward operates in degraded mode using ICMP probes only.
+fbforward requires fbmeasure running on each upstream host to perform targeted
+TCP/UDP measurements. Without fbmeasure, fbforward operates in degraded mode
+using ICMP probes only.
 
-Deploy fbmeasure on upstreams before starting fbforward. See [Section 3.3](user-guide-fbmeasure.md) for fbmeasure setup.
+Deploy fbmeasure on upstreams before starting fbforward. The repository ships:
+
+- `deploy/container/fbmeasure/Containerfile`
+
+See [Section 3.3](user-guide-fbmeasure.md) for deployment details.
 
 ---
 
@@ -102,7 +108,7 @@ go build -o build/bin/fbforward ./cmd/fbforward
 go build -o build/bin/bwprobe ./bwprobe/cmd
 
 # Build fbmeasure
-go build -o build/bin/fbmeasure ./bwprobe/cmd/fbmeasure
+go build -o build/bin/fbmeasure ./cmd/fbmeasure
 ```
 
 ### Debian package installation
@@ -199,7 +205,11 @@ This section walks through a minimal deployment with two upstreams.
 
 ### Step 1: Deploy fbmeasure on upstreams
 
-On each upstream host (example: `upstream1.example.com` and `upstream2.example.com`), start fbmeasure:
+On each upstream host (example: `upstream1.example.com` and
+`upstream2.example.com`), start fbmeasure. For production, prefer the runtime
+`Containerfile` documented in [Section 3.3](user-guide-fbmeasure.md).
+
+For a simple source-based rollout:
 
 ```bash
 # Copy fbmeasure binary to upstream hosts
@@ -207,20 +217,22 @@ scp build/bin/fbmeasure user@upstream1.example.com:/usr/local/bin/
 scp build/bin/fbmeasure user@upstream2.example.com:/usr/local/bin/
 
 # On each upstream, run fbmeasure
-ssh user@upstream1.example.com 'fbmeasure --port 9876 &'
-ssh user@upstream2.example.com 'fbmeasure --port 9876 &'
+ssh user@upstream1.example.com 'nohup /usr/local/bin/fbmeasure --port 9876 --log-format json >/tmp/fbmeasure.log 2>&1 &'
+ssh user@upstream2.example.com 'nohup /usr/local/bin/fbmeasure --port 9876 --log-format json >/tmp/fbmeasure.log 2>&1 &'
 ```
 
-fbmeasure listens on the specified port and accepts bwprobe connections. Ensure firewall rules allow TCP connections to port 9876 from the fbforward host.
+fbmeasure listens on the specified port and accepts targeted probe traffic from
+fbforward. Ensure firewall rules allow both TCP and UDP traffic to port 9876
+from the fbforward host.
 
 Verify connectivity from the fbforward host:
 
 ```bash
-./build/bin/bwprobe -server upstream1.example.com:9876 -bandwidth 10m -samples 3
-./build/bin/bwprobe -server upstream2.example.com:9876 -bandwidth 10m -samples 3
+nc -zv upstream1.example.com 9876
+nc -zv upstream2.example.com 9876
 ```
 
-Both commands should complete without errors.
+Both commands should complete without errors for the TCP control path.
 
 ### Step 2: Create minimal configuration
 
@@ -294,7 +306,7 @@ Expected log output:
 2025/01/26 12:00:00 INFO resolved upstream tag=primary host=upstream1.example.com ip=203.0.113.10
 2025/01/26 12:00:00 INFO resolved upstream tag=backup host=upstream2.example.com ip=203.0.113.11
 2025/01/26 12:00:00 INFO starting ICMP prober
-2025/01/26 12:00:00 INFO starting bwprobe collector
+2025/01/26 12:00:00 INFO starting measurement collector
 2025/01/26 12:00:00 INFO fast-start mode enabled timeout=30s
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=tcp
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=udp
@@ -302,7 +314,9 @@ Expected log output:
 2025/01/26 12:00:05 INFO primary selected tag=primary score=0.85 mode=fast-start
 ```
 
-The `primary selected` line confirms fbforward has chosen an upstream. In fast-start mode, selection uses lightweight TCP dial probes to each measurement endpoint until full bwprobe measurements complete.
+The `primary selected` line confirms fbforward has chosen an upstream. In
+fast-start mode, selection uses lightweight TCP dial probes to each measurement
+endpoint until full fbmeasure probe cycles complete.
 
 ### Step 5: Verify operation
 

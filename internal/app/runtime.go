@@ -182,14 +182,13 @@ func (r *Runtime) startMeasurement() {
 	}
 
 	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, measureLogger)
-	r.collector.OnTestComplete = func(upstream, protocol, direction string, startTime time.Time, duration time.Duration, success bool, result *measure.TestResultMetrics, errMsg string) {
+	r.collector.OnTestComplete = func(upstream, protocol string, startTime time.Time, duration time.Duration, success bool, result *measure.TestResultMetrics, errMsg string) {
 		if r.status == nil {
 			return
 		}
 		payload := control.TestHistoryPayload{
 			Upstream:   upstream,
 			Protocol:   protocol,
-			Direction:  direction,
 			Timestamp:  startTime.UnixMilli(),
 			DurationMs: duration.Milliseconds(),
 			Success:    success,

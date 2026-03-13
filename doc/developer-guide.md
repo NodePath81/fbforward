@@ -20,7 +20,8 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `internal/control/` - HTTP server, RPC handlers, WebSocket status stream
 - `internal/metrics/` - Prometheus metrics aggregation
 - `internal/probe/` - ICMP echo probing for reachability
-- `internal/measure/` - bwprobe measurement orchestration, fast-start, scheduling
+- `internal/measure/` - fbmeasure measurement orchestration, fast-start, scheduling
+- `internal/fbmeasure/` - fbmeasure client/server protocol and test implementations
 - `internal/resolver/` - DNS resolution with configurable strategy
 - `internal/shaping/` - Linux tc traffic shaping (HTB qdisc, IFB device)
 - `internal/util/` - Logger, helpers, type utilities
@@ -30,7 +31,7 @@ The fbforward repository is organized as a monorepo containing two main projects
 **bwprobe packages:**
 
 - `bwprobe/cmd/` - CLI tool entry point
-- `bwprobe/cmd/fbmeasure/` - Measurement server binary
+- `cmd/fbmeasure/` - Measurement server binary
 - `bwprobe/pkg/` - Public API for embedding (`github.com/NodePath81/fbforward/bwprobe/pkg`)
 - `bwprobe/internal/engine/` - Test orchestration, sample loop, metric computation
 - `bwprobe/internal/rpc/` - JSON-RPC 2.0 client/server, session management
@@ -76,7 +77,7 @@ fbforward runs a single process with multiple goroutines for parallel I/O and ba
 | Location | Purpose | Count | Lifecycle |
 |----------|---------|-------|-----------|
 | `Runtime.startProbes()` | ICMP probe loop per upstream | 1 per upstream | Terminated by context cancel |
-| `Runtime.startMeasurement()` | bwprobe measurement scheduler | 1 | Terminated by context cancel |
+| `Runtime.startMeasurement()` | measurement scheduler | 1 | Terminated by context cancel |
 | `Runtime.startDNSRefresh()` | DNS re-resolution for non-IP upstreams | 1 per upstream | Terminated by context cancel |
 | `Runtime.startListeners()` | Accept loop for TCP/UDP listeners | 1 per listener | Terminated by listener close |
 | `TCPListener.handleConn()` | Per-connection proxy goroutine | 1 per TCP connection | Terminates on connection close or idle timeout |
@@ -95,7 +96,7 @@ ctx, cancel := context.WithCancel(context.Background())
 
 All goroutines receive either:
 - The root context directly (for background loops)
-- A timeout-scoped child context (for time-limited operations like bwprobe tests)
+- A timeout-scoped child context (for time-limited operations like measurement probe cycles)
 
 Shutdown sequence:
 1. `Runtime.Stop()` calls `cancel()` to signal all goroutines
@@ -182,47 +183,29 @@ On `Restart` RPC call:
 
 **Measurement queue and scheduler:**
 
-The measurement scheduler (`internal/measure/scheduler.go`) manages when bwprobe tests run to avoid saturating the link.
+The measurement scheduler (`internal/measure/scheduler.go`) manages when
+fbmeasure probe cycles run.
 
 Queue mechanics:
-1. `Schedule(upstream, protocol, direction)` adds test to queue with scheduled timestamp
-2. Queue processes entries in FIFO order respecting minimum inter-upstream gap
-3. Tests are skipped if link utilization exceeds headroom threshold
-4. Skip logic compares current traffic rate (from metrics) + required test bandwidth against configured limits
-
-Headroom gating:
-- Aggregate limit: Total link capacity (`shaping.aggregate_limit` or unlimited if shaping disabled)
-- Per-upstream limits: Optional per-upstream bandwidth caps (`upstreams[].shaping`)
-- Required headroom: `measurement.schedule.headroom.required_free_bandwidth` (bytes/sec)
-- Max utilization: `measurement.schedule.headroom.max_link_utilization` (fraction, e.g., 0.7 = 70%)
-
-Skip decision:
-```
-currentRate = metrics.GetRecentRate(rateWindow)
-testBandwidth = max(tcpTargetUp, tcpTargetDown, udpTargetUp, udpTargetDown)
-required = currentRate + testBandwidth + requiredHeadroom
-
-if aggregateLimit > 0:
-    utilizationFraction = required / aggregateLimit
-    if utilizationFraction > maxUtilization:
-        skip()
-```
+1. `Schedule()` ensures there is at most one queued job per `<upstream>:<protocol>`.
+2. Jobs are assigned randomized due times between `measurement.schedule.interval.min` and `.max`.
+3. `NextReady()` releases a job only after its due time and after the configured
+   inter-upstream gap.
+4. Failed jobs are requeued with a fixed retry delay.
 
 Observability:
-- `GetScheduleStatus` RPC: Returns queue length, next scheduled time, last measurements per upstream, skipped count
-- `GetQueueStatus` RPC: Returns detailed queue state (running tests, pending entries with timestamps)
-- `fbforward_measurement_queue_size` gauge: Current queue depth
-- `fbforward_measurement_skipped_total` counter: Cumulative skip count
-- `fbforward_measurement_duration_seconds` histogram: Test durations
+- `GetScheduleStatus` RPC: queue length, next scheduled time, last measurements per upstream/protocol
+- WebSocket `queue_snapshot`: detailed running and pending queue entries
+- `fbforward_measurement_queue_size` gauge: current queue depth
+- `fbforward_measurement_last_run_seconds{upstream,protocol}` gauge: age of last successful run
 
 Data flow:
-1. Scheduler goroutine calls `Collector.RunLoop()`
-2. Loop dequeues next test, checks headroom
-3. If sufficient headroom, calls `Collector.RunProtocol(ctx, upstream, protocol)`
-4. `RunProtocol` runs TCP/UDP upload/download via bwprobe
-5. Results passed to `UpstreamManager` for scoring update
-6. Metrics updated, WebSocket `test_complete` event broadcast
-7. UI polls `/metrics` for updated scores, WebSocket shows test history
+1. Scheduler goroutine calls `Collector.RunLoop()`.
+2. The collector dequeues a ready job.
+3. `RunProtocol` dials fbmeasure and runs the protocol-specific probe cycle.
+4. Results are converted into `upstream.MeasurementResult`.
+5. `UpstreamManager` updates EMA state and scores.
+6. Metrics and WebSocket status are refreshed.
 
 ### Error handling conventions
 
@@ -242,7 +225,7 @@ fbforward follows Go conventions:
 
 **Graceful degradation:**
 
-- **Missing measurement server**: Falls back to ICMP-only reachability if bwprobe measurements fail
+- **Missing measurement server**: Falls back to ICMP-only reachability if fbmeasure measurements fail
 - **DNS failure**: Continues using last-resolved IPs, logs warning
 - **ICMP probe failure**: Marks upstream unreachable but retries indefinitely
 - **Measurement timeout**: Skips sample, schedules next measurement normally
@@ -508,7 +491,7 @@ export async function callCustomMethod(param1: string, param2: number): Promise<
 
 **Step 4: Document in API reference**
 
-Add method to Section 5.2.2 in [docs/api-reference.md](api-reference.md).
+Add method to Section 5.2.2 in [doc/api-reference.md](api-reference.md).
 
 ### Adding new metrics
 
@@ -554,7 +537,7 @@ l.metrics.IncrementCustom(up.Tag, "some_event")
 
 **Step 4: Document metric**
 
-Add to Section 5.2.4 metric catalog in [docs/api-reference.md](api-reference.md).
+Add to Section 5.2.4 metric catalog in [doc/api-reference.md](api-reference.md).
 
 **Metric naming conventions:**
 
@@ -562,7 +545,7 @@ Add to Section 5.2.4 metric catalog in [docs/api-reference.md](api-reference.md)
 - Counters: `_total` suffix (e.g., `fbforward_bytes_up_total`)
 - Gauges: No suffix (e.g., `fbforward_tcp_active`)
 - Histograms: `_bucket`, `_sum`, `_count` suffixes (auto-generated by Prometheus client)
-- Label names: Lowercase with underscores (e.g., `upstream`, `protocol`, `direction`)
+- Label names: Lowercase with underscores (e.g., `upstream`, `protocol`)
 
 ---
 
@@ -771,11 +754,11 @@ See [Testing guide](test/testing-guide.md) for scenario format, harness architec
 
 **Documentation:**
 
-- Follow [docs/style-guide.md](style-guide.md) for all documentation
+- Follow [doc/style-guide.md](style-guide.md) for all documentation
 - Use sentence case for headings
 - Include code examples with language specification
 - Cross-reference related sections with relative links
-- Define terms on first use, link to [docs/glossary.md](glossary.md)
+- Define terms on first use, link to [doc/glossary.md](glossary.md)
 
 ### Pull request process
 

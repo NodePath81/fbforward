@@ -7,12 +7,12 @@ Primary entry document for LLM agents working with this codebase.
 This repository contains two independent Linux-only networking tools plus a measurement server binary:
 
 1. **bwprobe** - Network quality measurement tool that tests at a user-specified bandwidth cap
-2. **fbforward** - TCP/UDP port forwarder with bwprobe-based upstream selection
+2. **fbforward** - TCP/UDP port forwarder with fbmeasure-based upstream selection
 3. **fbmeasure** - Measurement server used by fbforward for TCP/UDP link metrics
 
 Both projects are production-grade Go implementations focused on network quality measurement and management.
 
-**fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using bwprobe (bandwidth, RTT, jitter, loss/retrans), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI.
+**fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using fbmeasure targeted probes (RTT, jitter, TCP retransmission rate, UDP loss rate), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI.
 
 ## Platform requirements
 
@@ -24,20 +24,20 @@ Both projects require:
 
 ## Documentation structure
 
-The [docs/](docs/) directory contains structured project documentation:
+The [doc/](doc/) directory contains structured project documentation:
 
-- [docs/outline.md](docs/outline.md): Complete documentation outline with 8 major sections
-- [docs/user-guide-fbforward.md](docs/user-guide-fbforward.md): fbforward operation guide
-- [docs/user-guide-bwprobe.md](docs/user-guide-bwprobe.md): bwprobe operation guide
-- [docs/configuration-reference.md](docs/configuration-reference.md): Complete config schema
-- [docs/api-reference.md](docs/api-reference.md): bwprobe API and control plane API
-- [docs/algorithm-specifications.md](docs/algorithm-specifications.md): Upstream selection, bandwidth measurement, RPC protocol
-- [docs/glossary.md](docs/glossary.md): Domain terminology definitions
-- [docs/diagrams.md](docs/diagrams.md): Diagram inventory with Mermaid templates
-- [docs/style-guide.md](docs/style-guide.md): Writing conventions for documentation
+- [doc/outline.md](doc/outline.md): Complete documentation outline with 8 major sections
+- [doc/user-guide-fbforward.md](doc/user-guide-fbforward.md): fbforward operation guide
+- [doc/user-guide-bwprobe.md](doc/user-guide-bwprobe.md): bwprobe operation guide
+- [doc/configuration-reference.md](doc/configuration-reference.md): Complete config schema
+- [doc/api-reference.md](doc/api-reference.md): bwprobe API and control plane API
+- [doc/algorithm-specifications.md](doc/algorithm-specifications.md): Upstream selection, bandwidth measurement, RPC protocol
+- [doc/glossary.md](doc/glossary.md): Domain terminology definitions
+- [doc/diagrams.md](doc/diagrams.md): Diagram inventory with Mermaid templates
+- [doc/style-guide.md](doc/style-guide.md): Writing conventions for documentation
 - [doc/logging-guidelines.md](doc/logging-guidelines.md): Structured logging requirements, event naming, OTel alignment, privacy/redaction, and review checks
 
-Legacy documentation has been archived to [docs/archive/2025-01-26-legacy/](docs/archive/2025-01-26-legacy/).
+Legacy documentation has been archived to [doc/archive/2025-01-26-legacy/](doc/archive/2025-01-26-legacy/).
 
 ## bwprobe architecture
 
@@ -97,7 +97,7 @@ fbforward runs as a single process with three main planes:
 
 1. **Data plane**: TCP/UDP listeners forward traffic to selected upstream with per-connection/mapping pinning
 2. **Control plane**: HTTP server providing RPC, metrics, WebSocket status stream, embedded web UI
-3. **Health/selection plane**: ICMP reachability, bwprobe measurements, scoring, and switching logic
+3. **Health/selection plane**: ICMP reachability, fbmeasure measurements, scoring, and switching logic
 4. **Shaping plane** (optional): Linux tc-based ingress/egress shaping via netlink
 
 ### Startup flow
@@ -111,8 +111,8 @@ fbforward runs as a single process with three main planes:
 
 **CRITICAL**: fbforward requires `fbmeasure` running on each upstream host:
 
-- fbmeasure provides TCP/UDP measurement endpoints for bwprobe tests
-- Default port: 9876 (configurable via `measure_port` in upstream config)
+- fbmeasure provides TCP/UDP measurement endpoints for targeted probes
+- Default port: 9876 (configurable via `upstreams[].measurement.port`)
 - Deploy with: `make build-fbmeasure` then `./build/bin/fbmeasure --port 9876`
 - Without fbmeasure, fbforward falls back to ICMP-only reachability (degraded mode)
 
@@ -130,18 +130,16 @@ This ensures in-flight connections are not disrupted during upstream switches.
 
 ### Scoring and upstream selection
 
-Upstream quality is based on bwprobe TCP/UDP measurements, with detailed algorithm in [docs/algorithm-specifications.md](docs/algorithm-specifications.md):
+Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algorithm in [doc/algorithm-specifications.md](doc/algorithm-specifications.md):
 
-- Each upstream runs periodic bwprobe upload/download tests over TCP/UDP
-- Metrics (bandwidth, RTT/jitter, loss/retrans) are smoothed with EMA
+- Each upstream runs periodic TCP and UDP probe cycles
+- Metrics (RTT, jitter, loss/retrans) are smoothed with EMA
 - Score blends TCP/UDP sub-scores using exponential normalization with configurable weights
 - Protocol weight blends TCP and UDP scores (configurable, default 0.5 each)
-- Utilization penalty applied when actual traffic exceeds configured link capacity
-- Utilization telemetry is computed on-demand from recent traffic samples using the last measured bandwidth baseline
 - Static priority and bias adjustments per upstream
 - **ICMP probing is reachability-only** and does not affect scores (migration from legacy ICMP scoring)
 
-**Fast-start mode**: At startup, uses lightweight ICMP RTT probes for immediate primary selection, then transitions to full bwprobe scoring after warmup period.
+**Fast-start mode**: At startup, uses lightweight ICMP RTT probes for immediate primary selection, then transitions to full fbmeasure scoring after warmup period.
 
 **Auto mode** switching:
 - Requires confirmation duration (time-based), score delta threshold, minimum hold time
@@ -156,13 +154,13 @@ Upstream quality is based on bwprobe TCP/UDP measurements, with detailed algorit
 **Binaries:**
 - `cmd/fbforward/main.go`: fbforward entrypoint and OS guard
 - `bwprobe/cmd/main.go`: bwprobe CLI tool
-- `bwprobe/cmd/fbmeasure/main.go`: fbmeasure server (required on upstream hosts)
+- `cmd/fbmeasure/main.go`: fbmeasure server (required on upstream hosts)
 
 **Core runtime:**
 - `internal/app/supervisor.go`: runtime lifecycle (restart, config reload)
 - `internal/app/runtime.go`: component wiring, DNS refresh loop, listener/probe startup
 - `internal/upstream/upstream.go`: scoring, selection, switching logic, EMA metrics, dial-failure cooldown
-- `internal/measure/collector.go`: bwprobe measurement loop and metric collection
+- `internal/measure/collector.go`: fbmeasure measurement loop and metric collection
 - `internal/measure/fast_start.go`: fast-start TCP RTT selection
 - `internal/probe/probe.go`: ICMP reachability probing (no scoring)
 
@@ -182,7 +180,7 @@ Upstream quality is based on bwprobe TCP/UDP measurements, with detailed algorit
 
 **Config and docs:**
 - `internal/config/config.go`: YAML config schema, defaults, validation
-- `docs/`: structured documentation (outline, user guides, configuration reference, API reference, algorithm specs)
+- `doc/`: structured documentation (outline, user guides, configuration reference, API reference, algorithm specs)
 - `CLAUDE.md`: comprehensive codebase guide for Claude Code
 
 ## Build and run
@@ -250,7 +248,7 @@ make build-fbmeasure
 ./build/bin/fbmeasure --port 9876
 
 # Test connectivity
-./build/bin/bwprobe -server <upstream-host>:9876 -bandwidth 10m
+nc -zv <upstream-host> 9876
 ```
 
 ## Control plane
@@ -273,7 +271,7 @@ make build-fbmeasure
 
 **Key principle:** Single source of truth per data type, no duplication across endpoints.
 
-**Details:** See [docs/api-reference.md](docs/api-reference.md) section 5.2
+**Details:** See [doc/api-reference.md](doc/api-reference.md) section 5.2
 
 ## UI assets
 
@@ -321,7 +319,7 @@ When modifying behavior across control/data boundary:
 When extending functionality:
 
 1. **Switching behavior**: Adjust `SwitchingConfig` and `UpstreamManager` logic in
-   [internal/upstream/upstream.go](internal/upstream/upstream.go). See [docs/algorithm-specifications.md](docs/algorithm-specifications.md) for scoring details.
+   [internal/upstream/upstream.go](internal/upstream/upstream.go). See [doc/algorithm-specifications.md](doc/algorithm-specifications.md) for scoring details.
 
 2. **Control API**: Add new RPC methods in [internal/control/control.go](internal/control/control.go)
 
@@ -348,7 +346,7 @@ When extending functionality:
 - **Flow pinning**: TCP/UDP flows pinned to selected upstream until idle/expired
 - **Fast failover**: Immediate switch on high loss windows or dial failures
 - **Auto recovery**: Unusable upstreams recover automatically when probes succeed
-- **Measurement-driven**: ICMP for reachability only; bwprobe measurements drive all scoring
+- **Measurement-driven**: ICMP for reachability only; fbmeasure measurements drive all scoring
 
 ## Logging requirements for agents (mandatory)
 

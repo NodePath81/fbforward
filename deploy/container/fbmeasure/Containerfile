@@ -1,0 +1,35 @@
+FROM golang:1.25.5-bookworm AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/fbmeasure ./cmd/fbmeasure
+COPY internal ./internal
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG VERSION=dev
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+      -ldflags "-s -w -X github.com/NodePath81/fbforward/internal/version.Version=${VERSION}" \
+      -o /out/fbmeasure ./cmd/fbmeasure
+
+FROM debian:13-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd --system fbmeasure \
+  && useradd --system --gid fbmeasure --home-dir /nonexistent --shell /usr/sbin/nologin fbmeasure
+
+COPY --from=build /out/fbmeasure /usr/local/bin/fbmeasure
+
+USER fbmeasure:fbmeasure
+
+EXPOSE 9876/tcp
+EXPOSE 9876/udp
+
+ENTRYPOINT ["/usr/local/bin/fbmeasure"]
+CMD ["--port", "9876", "--log-format", "json"]
