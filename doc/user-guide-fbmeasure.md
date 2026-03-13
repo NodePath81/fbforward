@@ -106,6 +106,12 @@ upstreams:
 
 ## 3.3.3 Operation
 
+### Repository deployment artifacts
+
+The repository ships a container deployment artifact for fbmeasure:
+
+- `deploy/container/fbmeasure/Containerfile`
+
 ### Running in foreground
 
 ```bash
@@ -115,36 +121,25 @@ upstreams:
 The server logs startup, shutdown, and failed operations through `slog`. In
 JSON mode the `component` field is `fbmeasure`.
 
-### Running as a systemd service
+### Running in a container
 
-Example unit:
-
-```ini
-[Unit]
-Description=fbmeasure targeted measurement server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=fbmeasure
-Group=fbmeasure
-ExecStart=/usr/local/bin/fbmeasure --port 9876 --log-format json
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Install and start:
+Build the supplied image from the repository root:
 
 ```bash
-sudo useradd -r -s /bin/false fbmeasure
-sudo install -m 0755 fbmeasure /usr/local/bin/fbmeasure
-sudo systemctl daemon-reload
-sudo systemctl enable --now fbmeasure
+podman build -f deploy/container/fbmeasure/Containerfile -t fbmeasure:latest .
 ```
+
+Run it with both TCP and UDP ports published:
+
+```bash
+podman run -d --name fbmeasure \
+  --restart unless-stopped \
+  -p 9876:9876/tcp \
+  -p 9876:9876/udp \
+  fbmeasure:latest
+```
+
+Docker can use the same `Containerfile` with equivalent commands.
 
 ### Verification
 
@@ -181,6 +176,12 @@ Check:
 2. TCP and UDP firewall rules allow the fbforward host.
 3. `measurement.host` and `measurement.port` match the deployed service.
 4. The upstream is Linux if TCP retransmission tests are enabled.
+
+If running in a container, inspect:
+
+```bash
+podman logs -f fbmeasure
+```
 
 ### UDP loss tests need a longer receive window
 

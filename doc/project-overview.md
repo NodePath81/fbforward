@@ -18,7 +18,7 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 
 - Accepts client connections on configured TCP and UDP listeners
 - Forwards traffic to one of multiple configured upstreams
-- Measures upstream quality using bwprobe bandwidth tests and ICMP reachability probes
+- Measures upstream quality using fbmeasure targeted probes and ICMP reachability probes
 - Selects the best upstream automatically based on a composite quality score
 - Pins each flow to its assigned upstream until completion, ensuring in-flight connections are not disrupted
 
@@ -33,11 +33,15 @@ bwprobe is a network quality measurement tool included in this repository. The t
 - Packet loss rate (UDP)
 - Retransmit rate (TCP)
 
-bwprobe uses a two-channel design with separate control and data connections to minimize measurement bias. fbforward uses bwprobe to test upstream links continuously.
+bwprobe uses a two-channel design with separate control and data connections to
+minimize measurement bias. fbforward no longer embeds bwprobe for continuous
+selection; it uses fbmeasure targeted probes instead.
 
 ### What fbmeasure does
 
-fbmeasure is the measurement server binary that runs on upstream hosts. The server accepts bwprobe test connections and reports receive-side statistics back to the client. fbforward requires fbmeasure running on each upstream to perform bandwidth measurements.
+fbmeasure is the measurement server binary that runs on upstream hosts. The
+server accepts targeted TCP and UDP probe traffic from fbforward and reports
+RTT, jitter, retransmission, and loss metrics back to the client.
 
 ### Target use cases
 
@@ -75,7 +79,13 @@ The architecture separates concerns into three main planes:
 
 **Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, and status queries. The server also exposes Prometheus metrics at `/metrics`, a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access. All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
 
-**Measurement plane**: Assesses upstream quality. ICMP probes test reachability continuously. bwprobe measurements run periodic TCP and UDP bandwidth tests against each upstream's measurement endpoint. The [scoring engine](glossary.md#scoring-engine) combines metrics into a quality score using exponential normalization and configurable weights. The [upstream manager](glossary.md#upstream-manager) selects the [primary upstream](glossary.md#primary-upstream) based on scores and switching policy.
+**Measurement plane**: Assesses upstream quality. ICMP probes test reachability
+continuously. fbmeasure probe cycles run periodic TCP and UDP targeted tests
+against each upstream's measurement endpoint. The [scoring engine](glossary.md#scoring-engine)
+combines metrics into a quality score using exponential normalization and
+configurable weights. The [upstream manager](glossary.md#upstream-manager)
+selects the [primary upstream](glossary.md#primary-upstream) based on scores
+and switching policy.
 
 **Shaping plane** (optional): Enforces bandwidth limits. When enabled, fbforward configures Linux traffic control (tc) qdiscs via netlink to rate-limit traffic to and from upstreams. Ingress shaping uses an IFB device to redirect incoming traffic through a qdisc.
 
@@ -98,7 +108,7 @@ graph TB
 
     subgraph Measurement Plane
         ICMP[ICMP Prober]
-        BW[bwprobe Client]
+        BW[fbmeasure Client]
         Score[Scoring Engine]
     end
 
@@ -129,7 +139,9 @@ The fbforward repository provides three binaries:
 
 **fbforward**: The main forwarder process. Runs on the host where clients connect. Requires `CAP_NET_RAW` for ICMP probing and optionally `CAP_NET_ADMIN` for traffic shaping.
 
-**fbmeasure**: The measurement server. Runs on each upstream host at a configured port (default 9876). Accepts bwprobe control and data connections. No special capabilities required.
+**fbmeasure**: The measurement server. Runs on each upstream host at a
+configured port (default 9876). Accepts TCP control requests plus TCP/UDP
+probe traffic. No special capabilities required.
 
 **bwprobe**: The standalone measurement CLI tool. Can be run independently for manual link testing or used as a library via the `bwprobe/pkg` Go package.
 
@@ -177,7 +189,7 @@ fbforward initializes components in a specific order to ensure dependencies are 
    - Initializes Metrics aggregator and StatusStore
    - Runs fast-start mode: Performs lightweight TCP dial probes to each upstream's measurement endpoint, computes fast-start scores from dial RTT, and selects initial primary
    - Starts ICMP prober for reachability monitoring (does not affect scoring)
-   - Starts bwprobe measurement collector for full TCP/UDP bandwidth tests
+   - Starts measurement collector for full TCP/UDP probe cycles
    - Creates and starts TCP/UDP listeners for each configured bind address
    - Starts ControlServer with RPC, metrics, WebSocket, and UI endpoints
 4. **Running state**: All goroutines operational, system ready to accept flows
@@ -197,7 +209,7 @@ sequenceDiagram
     Runtime->>Upstream: Create UpstreamManager
     Runtime->>Listeners: Start TCP/UDP listeners
     Runtime->>Probes: Start ICMP probes
-    Runtime->>Probes: Start bwprobe measurements
+    Runtime->>Probes: Start fbmeasure probe cycles
     Runtime-->>Supervisor: Running
 ```
 
@@ -209,7 +221,11 @@ See [Diagram D4](diagrams.md#d4-startup-sequence) for details.
 
 **Traffic forwarding**: The data plane proxies packets bidirectionally between client and upstream without inspecting contents. TCP uses `io.Copy` in both directions. UDP uses dedicated socket pairs to preserve 5-tuple identity.
 
-**Quality measurement**: The measurement plane runs bwprobe tests on a configurable schedule. Each test transfers sample data at a target rate and collects metrics. The scoring engine updates upstream scores using exponential moving average (EMA) smoothing. When scores change, the upstream manager evaluates switching conditions.
+**Quality measurement**: The measurement plane runs fbmeasure probe cycles on a
+configurable schedule. Each cycle collects RTT, jitter, and a
+protocol-specific loss signal. The scoring engine updates upstream scores using
+exponential moving average (EMA) smoothing. When scores change, the upstream
+manager evaluates switching conditions.
 
 **Upstream selection**: In auto mode, the manager compares the candidate upstream's score against the current primary's score. If the delta exceeds the threshold for the configured confirmation duration, the manager switches the primary. In manual mode, the operator selects an upstream via RPC, and the manager validates usability before accepting.
 
@@ -228,7 +244,7 @@ fbforward uses goroutines for concurrency:
 - One goroutine per TCP connection for bidirectional copying
 - One goroutine per UDP listener for packet dispatching
 - One goroutine for ICMP probe loop
-- One goroutine for bwprobe measurement scheduling
+- One goroutine for fbmeasure probe scheduling
 - One goroutine per control plane endpoint (RPC, WebSocket, metrics)
 
 All goroutines receive a context derived from `Runtime.ctx`. Canceling the context triggers shutdown. Components use channels for cross-goroutine communication and `sync.RWMutex` for shared state access.

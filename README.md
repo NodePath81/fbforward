@@ -96,6 +96,21 @@ cp configs/config.example.yaml config.yaml
 ./build/bin/fbforward --config config.yaml
 ```
 
+## Deploy fbmeasure
+
+For upstream hosts, build and run the supplied runtime image:
+
+```bash
+podman build -f deploy/container/fbmeasure/Containerfile -t fbmeasure:latest .
+podman run -d --name fbmeasure \
+  --restart unless-stopped \
+  -p 9876:9876/tcp \
+  -p 9876:9876/udp \
+  fbmeasure:latest
+```
+
+The same `Containerfile` works with Docker by replacing `podman` with `docker`.
+
 ## Debian packaging (fbforward)
 
 ```

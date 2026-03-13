@@ -260,13 +260,13 @@ This outline defines the complete documentation structure for the fbforward mono
 |-------|-------|
 | **ID** | 3.3.1 |
 | **Purpose** | Introduce fbmeasure measurement server |
-| **Source artifacts** | bwprobe/cmd/fbmeasure/main.go |
+| **Source artifacts** | cmd/fbmeasure/main.go, deploy/container/fbmeasure/Containerfile |
 | **Dependencies** | 2.3 |
 | **Audience** | Operators |
 | **Depth** | Overview |
 
 **Content:**
-- Purpose (measurement endpoint for bwprobe tests)
+- Purpose (measurement endpoint for fbforward targeted probes)
 - Deployment requirements
 - Relationship to fbforward
 
@@ -276,7 +276,7 @@ This outline defines the complete documentation structure for the fbforward mono
 |-------|-------|
 | **ID** | 3.3.2 |
 | **Purpose** | Document fbmeasure configuration options |
-| **Source artifacts** | bwprobe/cmd/fbmeasure/main.go |
+| **Source artifacts** | cmd/fbmeasure/main.go |
 | **Dependencies** | 3.3.1 |
 | **Audience** | Operators |
 | **Depth** | Reference |
@@ -291,13 +291,13 @@ This outline defines the complete documentation structure for the fbforward mono
 |-------|-------|
 | **ID** | 3.3.3 |
 | **Purpose** | Describe deployment and monitoring procedures |
-| **Source artifacts** | bwprobe/cmd/fbmeasure/main.go |
+| **Source artifacts** | cmd/fbmeasure/main.go, deploy/container/fbmeasure/Containerfile |
 | **Dependencies** | 3.3.2 |
 | **Audience** | Operators |
 | **Depth** | Reference |
 
 **Content:**
-- Starting as a service
+- Running in a container
 - Verifying connectivity
 - Resource usage
 
