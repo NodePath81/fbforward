@@ -36,8 +36,7 @@ func (c *Client) TCPRetrans(ctx context.Context, bytesToSend uint64) (RetransRes
 	err = c.withLockedCall(ctx, opTCPRetrans, req, func() error {
 		time.Sleep(defaultAuxStartDelay)
 
-		dialer := net.Dialer{}
-		conn, err := dialer.DialContext(ctx, "tcp", c.remoteAddr)
+		conn, err := c.dialAuxTCP(ctx)
 		if err != nil {
 			return err
 		}
@@ -86,13 +85,21 @@ func (s *Server) handleTCPRetrans(ctx context.Context, req tcpRetransRequest) (t
 	if req.Bytes == 0 {
 		return tcpRetransResponse{}, fmt.Errorf("bytes must be > 0")
 	}
+	bytesToSend := req.Bytes
+	if bytesToSend > maxRetransBytes {
+		bytesToSend = maxRetransBytes
+	}
+	timeoutMs := req.TimeoutMs
+	if timeoutMs <= 0 || timeoutMs > maxTimeoutMs {
+		timeoutMs = maxTimeoutMs
+	}
 	id, err := parseTestID(req.TestID)
 	if err != nil {
 		return tcpRetransResponse{}, err
 	}
 	key := id.String()
 	test := &tcpRetransTest{
-		expectedBytes: req.Bytes,
+		expectedBytes: bytesToSend,
 		connCh:        make(chan net.Conn, 1),
 	}
 
@@ -109,7 +116,7 @@ func (s *Server) handleTCPRetrans(ctx context.Context, req tcpRetransRequest) (t
 		s.mu.Unlock()
 	}()
 
-	timeout := time.NewTimer(time.Duration(req.TimeoutMs) * time.Millisecond)
+	timeout := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
 	defer timeout.Stop()
 
 	var conn net.Conn
@@ -121,8 +128,9 @@ func (s *Server) handleTCPRetrans(ctx context.Context, req tcpRetransRequest) (t
 	case conn = <-test.connCh:
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(time.Duration(timeoutMs) * time.Millisecond))
 
-	result, err := runTCPRetransmission(conn, req.Bytes)
+	result, err := runTCPRetransmission(conn, bytesToSend)
 	if err != nil {
 		return tcpRetransResponse{}, err
 	}

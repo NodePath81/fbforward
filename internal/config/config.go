@@ -26,14 +26,15 @@ const (
 	defaultFastStartTimeout                 = 500 * time.Millisecond
 	defaultWarmupDuration                   = 15 * time.Second
 
-	defaultMeasurementPingCount   = 5
-	defaultMeasurementRetransmit  = "500kb"
-	defaultMeasurementLossPackets = 64
-	defaultMeasurementPacketSize  = "1200"
-	defaultMeasurementPerSample   = 10 * time.Second
-	defaultMeasurementPerCycle    = 30 * time.Second
-	defaultMeasurementTCPEnabled  = true
-	defaultMeasurementUDPEnabled  = true
+	defaultMeasurementPingCount    = 5
+	defaultMeasurementRetransmit   = "500kb"
+	defaultMeasurementLossPackets  = 64
+	defaultMeasurementPacketSize   = "1200"
+	defaultMeasurementPerSample    = 10 * time.Second
+	defaultMeasurementPerCycle     = 30 * time.Second
+	defaultMeasurementTCPEnabled   = true
+	defaultMeasurementUDPEnabled   = true
+	defaultMeasurementSecurityMode = "off"
 
 	defaultEMAAlpha          = 0.2
 	defaultRefRTTMs          = 50
@@ -191,6 +192,15 @@ type MeasurementConfig struct {
 	Schedule              MeasurementScheduleConfig  `yaml:"schedule"`
 	FastStart             MeasurementFastStartConfig `yaml:"fast_start"`
 	Protocols             MeasurementProtocolsConfig `yaml:"protocols"`
+	Security              MeasurementSecurityConfig  `yaml:"security"`
+}
+
+type MeasurementSecurityConfig struct {
+	Mode           string `yaml:"mode"`
+	CAFile         string `yaml:"ca_file"`
+	ServerName     string `yaml:"server_name"`
+	ClientCertFile string `yaml:"client_cert_file"`
+	ClientKeyFile  string `yaml:"client_key_file"`
 }
 
 type MeasurementScheduleConfig struct {
@@ -512,6 +522,9 @@ func (c *Config) setDefaults() {
 	if c.Measurement.FastStart.WarmupDuration == 0 {
 		c.Measurement.FastStart.WarmupDuration = Duration(defaultWarmupDuration)
 	}
+	if strings.TrimSpace(c.Measurement.Security.Mode) == "" {
+		c.Measurement.Security.Mode = defaultMeasurementSecurityMode
+	}
 
 	setProtocolDefaults(&c.Measurement.Protocols.TCP, true)
 	setProtocolDefaults(&c.Measurement.Protocols.UDP, false)
@@ -737,8 +750,12 @@ func (c *Config) validate() error {
 		}
 	}
 
+	c.Control.AuthToken = strings.TrimSpace(c.Control.AuthToken)
 	if c.Control.AuthToken == "" {
 		return errors.New("control.auth_token must not be empty")
+	}
+	if err := validateAuthToken(c.Control.AuthToken); err != nil {
+		return err
 	}
 	if c.Control.BindPort <= 0 || c.Control.BindPort > 65535 {
 		return errors.New("control.bind_port must be in 1..65535")
@@ -760,6 +777,9 @@ func (c *Config) validate() error {
 
 	if c.Reachability.ProbeInterval.Duration() <= 0 {
 		return errors.New("reachability.probe_interval must be > 0")
+	}
+	if c.Reachability.ProbeInterval.Duration() < 100*time.Millisecond {
+		return errors.New("reachability.probe_interval must be >= 100ms")
 	}
 	if c.Reachability.WindowSize <= 0 {
 		return errors.New("reachability.window_size must be > 0")
@@ -803,6 +823,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := validateProtocolConfig("udp", c.Measurement.Protocols.UDP, udpEnabled); err != nil {
+		return err
+	}
+	if err := validateMeasurementSecurity(c.Measurement.Security); err != nil {
 		return err
 	}
 
@@ -869,6 +892,32 @@ func (c *Config) validate() error {
 		}
 	}
 
+	return nil
+}
+
+func validateAuthToken(token string) error {
+	if strings.EqualFold(token, "change-me") {
+		return errors.New("control.auth_token must not use the default placeholder value")
+	}
+	if len(token) < 16 {
+		return errors.New("control.auth_token must be at least 16 characters long")
+	}
+	return nil
+}
+
+func validateMeasurementSecurity(cfg MeasurementSecurityConfig) error {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	switch mode {
+	case "", defaultMeasurementSecurityMode, "tls", "mtls":
+	default:
+		return fmt.Errorf("measurement.security.mode must be one of off, tls, or mtls")
+	}
+	if (cfg.ClientCertFile == "") != (cfg.ClientKeyFile == "") {
+		return errors.New("measurement.security.client_cert_file and client_key_file must be set together")
+	}
+	if mode == "mtls" && (cfg.ClientCertFile == "" || cfg.ClientKeyFile == "") {
+		return errors.New("measurement.security.mode mtls requires client_cert_file and client_key_file")
+	}
 	return nil
 }
 

@@ -82,6 +82,14 @@ measurement:
     timeout: 500ms
     warmup_duration: 15s
 
+  # Optional transport security for fbmeasure.
+  security:
+    mode: off   # off, tls, mtls
+    ca_file: ""
+    server_name: ""
+    client_cert_file: ""
+    client_key_file: ""
+
   # Protocol-specific test parameters.
   protocols:
     tcp:
@@ -148,7 +156,7 @@ control:
   # Control plane bind + auth token.
   bind_addr: 127.0.0.1
   bind_port: 8080
-  auth_token: "change-me"
+  auth_token: "replace-with-a-long-random-token"
   webui:
     enabled: true
   metrics:

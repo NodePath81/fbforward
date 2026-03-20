@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
 	"log/slog"
 	"math/rand"
 	"net"
@@ -58,7 +60,12 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	metrics := metrics.NewMetrics(tags)
 	statusHub := control.NewStatusHub(ctx.Done(), util.ComponentLogger(logger, util.CompControl))
 	status := control.NewStatusStore(statusHub, metrics)
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	seed := time.Now().UnixNano()
+	var seedBuf [8]byte
+	if _, err := crand.Read(seedBuf[:]); err == nil {
+		seed = int64(binary.LittleEndian.Uint64(seedBuf[:]))
+	}
+	rng := rand.New(rand.NewSource(seed))
 	manager := upstream.NewUpstreamManager(upstreams, rng, util.ComponentLogger(logger, util.CompUpstream))
 	manager.SetSwitching(cfg.Switching)
 	manager.SetMeasurementConfig(cfg.Measurement)

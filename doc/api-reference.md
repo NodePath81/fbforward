@@ -746,9 +746,15 @@ Bearer token via `Authorization` header or WebSocket subprotocol.
 
 ```javascript
 const token = 'your-auth-token';
-const encoded = btoa(token).replace(/=/g, '');
-const ws = new WebSocket('ws://localhost:8080/status', [`fbforward-token.${encoded}`]);
+const encoded = btoa(token)
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/g, '');
+const ws = new WebSocket('ws://localhost:8080/status', ['fbforward', `fbforward-token.${encoded}`]);
 ```
+
+Browser WebSocket requests must be same-origin. fbforward rejects upgrades whose
+`Origin` host does not match the request host.
 
 **CLI usage (header):**
 
@@ -1013,8 +1019,11 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
 
 ```javascript
 const token = 'your-auth-token';
-const encoded = btoa(token).replace(/=/g, '');
-const ws = new WebSocket('ws://localhost:8080/status', [`fbforward-token.${encoded}`]);
+const encoded = btoa(token)
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/g, '');
+const ws = new WebSocket('ws://localhost:8080/status', ['fbforward', `fbforward-token.${encoded}`]);
 
 ws.onopen = () => {
   console.log('Connected');

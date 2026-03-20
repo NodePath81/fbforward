@@ -22,7 +22,7 @@ import { clearChildren, createEl, qs } from './utils/dom';
 import { formatBytes, formatBytesRate, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
 import { connectStatusSocket } from './websocket/status';
 
-const storedToken = localStorage.getItem('fbforward_token') || '';
+const storedToken = sessionStorage.getItem('fbforward_token') || '';
 if (!storedToken) {
   window.location.href = '/auth';
 } else {
@@ -67,6 +67,7 @@ function startApp(token: string) {
   const sessionSearch = qs<HTMLInputElement>(document, '#sessionSearch');
   const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
   const restartButton = qs<HTMLButtonElement>(document, '#restartButton');
+  const logoutButton = qs<HTMLButtonElement>(document, '#logoutButton');
   const pollStatus = qs<HTMLElement>(document, '#pollStatus');
   const connectionSortButtons = Array.from(
     document.querySelectorAll<HTMLButtonElement>('#page-dashboard .sort-button[data-sort]')
@@ -127,6 +128,11 @@ function startApp(token: string) {
       toast.show('Restart requested.', 'warning');
     }
     restartButton.disabled = false;
+  });
+
+  logoutButton.addEventListener('click', () => {
+    sessionStorage.removeItem('fbforward_token');
+    window.location.href = '/auth';
   });
 
   modeButtons.forEach(button => {

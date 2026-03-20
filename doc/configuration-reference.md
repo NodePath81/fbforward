@@ -450,7 +450,7 @@ reachability:
 fbforward sends one ICMP echo request to each upstream every `probe_interval`. Shorter intervals provide faster failure detection but increase network overhead.
 
 **Validation:**
-- Must be greater than zero
+- Must be greater than or equal to `100ms`
 
 ### window_size
 
@@ -603,6 +603,41 @@ When `enabled` is `false`, startup skips preselection and proceeds directly with
 **Validation:**
 - `timeout` must be > 0
 - `warmup_duration` must be ≥ 0
+
+### security
+
+Transport security settings for fbforward's TCP connections to fbmeasure. This
+applies to the TCP control channel and TCP retransmission data connection. UDP
+probe traffic remains datagram-based and is authenticated per test by the
+fbmeasure protocol.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `off` | Security mode: `off`, `tls`, or `mtls` |
+| `ca_file` | string | empty | Optional CA bundle used to verify the fbmeasure server certificate |
+| `server_name` | string | empty | Optional TLS server name override for certificate verification |
+| `client_cert_file` | string | empty | Client certificate for mutual TLS |
+| `client_key_file` | string | empty | Client private key for mutual TLS |
+
+**Example:**
+
+```yaml
+measurement:
+  security:
+    mode: tls
+    ca_file: /etc/fbforward/measurement-ca.pem
+    server_name: fbmeasure.internal.example.com
+```
+
+If `server_name` is unset and `upstreams[].measurement.host` is a hostname,
+fbforward uses that hostname for TLS verification automatically. When the
+measurement host is configured as an IP address, set `server_name` explicitly if
+the certificate does not contain the IP as a SAN.
+
+**Validation:**
+- `mode` must be `off`, `tls`, or `mtls`
+- `client_cert_file` and `client_key_file` must be set together
+- `mode: mtls` requires both `client_cert_file` and `client_key_file`
 
 ### protocols
 
@@ -873,7 +908,7 @@ The `control` section configures the HTTP control plane: RPC API, web UI, WebSoc
 control:
   bind_addr: 0.0.0.0
   bind_port: 8080
-  auth_token: "secret-token-change-me"
+  auth_token: "replace-with-a-long-random-token"
   webui:
     enabled: true
   metrics:
@@ -882,6 +917,8 @@ control:
 
 **Validation:**
 - `auth_token` must not be empty
+- `auth_token` must not use the placeholder value `change-me`
+- `auth_token` must be at least 16 characters long
 - `bind_port` must be in range 1-65535
 
 ### Endpoints
@@ -895,18 +932,28 @@ The control plane exposes the following HTTP endpoints:
 | `/rpc` | POST | JSON-RPC methods |
 | `/metrics` | GET | Prometheus metrics |
 | `/status` | GET | WebSocket status stream |
+| `/identity` | GET | Instance identity document |
 
 All endpoints except `/` and `/auth` require Bearer token authentication:
 
 ```bash
-curl -H "Authorization: Bearer secret-token-change-me" http://localhost:8080/metrics
+curl -H "Authorization: Bearer replace-with-a-long-random-token" http://localhost:8080/metrics
 ```
 
 WebSocket authentication uses subprotocol for browser compatibility:
 
 ```javascript
-new WebSocket('ws://localhost:8080/status', ['bearer', 'secret-token-change-me'])
+const token = 'replace-with-a-long-random-token';
+const encoded = btoa(token)
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/g, '');
+
+new WebSocket('ws://localhost:8080/status', ['fbforward', `fbforward-token.${encoded}`]);
 ```
+
+Browser WebSocket requests must be same-origin. fbforward rejects upgrades whose
+`Origin` host does not match the request host.
 
 See [Section 5.2](api-reference.md#52-control-plane-api) for API details.
 

@@ -13,6 +13,7 @@ import (
 type udpPingTest struct {
 	expected int
 	done     chan struct{}
+	authKey  [udpAuthKeySize]byte
 
 	mu        sync.Mutex
 	received  int
@@ -45,7 +46,7 @@ func (c *Client) PingUDP(ctx context.Context, count int) (RTTStats, error) {
 		return RTTStats{}, err
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", c.remoteAddr)
+	addr, err := net.ResolveUDPAddr("udp", c.dialAddr)
 	if err != nil {
 		return RTTStats{}, err
 	}
@@ -56,9 +57,15 @@ func (c *Client) PingUDP(ctx context.Context, count int) (RTTStats, error) {
 	}
 	defer udpConn.Close()
 
+	authKey, err := newUDPAuthKey()
+	if err != nil {
+		return RTTStats{}, err
+	}
+
 	var stats RTTStats
 	req := pingUDPRequest{
 		TestID:    id.String(),
+		AuthKey:   udpAuthKeyString(authKey),
 		Count:     count,
 		TimeoutMs: timeoutMillis(ctx, time.Second),
 	}
@@ -67,11 +74,12 @@ func (c *Client) PingUDP(ctx context.Context, count int) (RTTStats, error) {
 		var acc rttAccumulator
 		for seq := 0; seq < count; seq++ {
 			sentAt := time.Now()
-			packet := make([]byte, 0, udpPingHeaderSize)
+			packet := make([]byte, 0, udpPingPacketSize)
 			packet = append(packet, udpPacketKindPing)
 			packet = appendTestID(packet, id)
 			packet = binaryAppendUint64(packet, uint64(seq+1))
 			packet = binaryAppendUint64(packet, uint64(sentAt.UnixNano()))
+			packet = appendUDPAuthTag(packet, authKey)
 			if deadline, ok := ctx.Deadline(); ok {
 				if err := udpConn.SetDeadline(deadline); err != nil {
 					return err
@@ -80,9 +88,12 @@ func (c *Client) PingUDP(ctx context.Context, count int) (RTTStats, error) {
 			if _, err := udpConn.Write(packet); err != nil {
 				return err
 			}
-			buf := make([]byte, udpPingHeaderSize)
+			buf := make([]byte, udpPingPacketSize)
 			if _, err := io.ReadFull(udpConn, buf); err != nil {
 				return err
+			}
+			if !verifyUDPAuthTag(buf, authKey) {
+				return fmt.Errorf("invalid udp pong authenticator")
 			}
 			respID, seqNum, _, err := parseUDPPingPacket(buf)
 			if err != nil {
@@ -122,9 +133,22 @@ func (s *Server) handlePingUDP(ctx context.Context, req pingUDPRequest) (pingUDP
 	if err != nil {
 		return pingUDPResponse{}, err
 	}
+	authKey, err := parseUDPAuthKey(req.AuthKey)
+	if err != nil {
+		return pingUDPResponse{}, err
+	}
+	expected := req.Count
+	if expected > maxPingCount {
+		expected = maxPingCount
+	}
+	timeoutMs := req.TimeoutMs
+	if timeoutMs <= 0 || timeoutMs > maxTimeoutMs {
+		timeoutMs = maxTimeoutMs
+	}
 	test := &udpPingTest{
-		expected: req.Count,
+		expected: expected,
 		done:     make(chan struct{}),
+		authKey:  authKey,
 	}
 	key := id.String()
 
@@ -141,7 +165,7 @@ func (s *Server) handlePingUDP(ctx context.Context, req pingUDPRequest) (pingUDP
 		s.mu.Unlock()
 	}()
 
-	timer := time.NewTimer(time.Duration(req.TimeoutMs) * time.Millisecond)
+	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
 	defer timer.Stop()
 
 	select {
@@ -182,15 +206,19 @@ func (s *Server) handleUDPPingPacket(udpConn *net.UDPConn, addr *net.UDPAddr, da
 	if test == nil {
 		return
 	}
+	if !verifyUDPAuthTag(data, test.authKey) {
+		return
+	}
 
-	reply := append([]byte(nil), data...)
+	reply := append([]byte(nil), data[:udpPingHeaderSize]...)
 	reply[0] = udpPacketKindPong
+	reply = appendUDPAuthTag(reply, test.authKey)
 	_, _ = udpConn.WriteToUDP(reply, addr)
 	test.markReceived()
 }
 
 func parseUDPPingPacket(data []byte) (TestID, uint64, int64, error) {
-	if len(data) < udpPingHeaderSize {
+	if len(data) < udpPingPacketSize {
 		return TestID{}, 0, 0, fmt.Errorf("short udp ping packet")
 	}
 	var id TestID

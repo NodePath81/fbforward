@@ -80,12 +80,15 @@ upstreams:
 control:
   bind_addr: 127.0.0.1
   bind_port: 8080
-  auth_token: "change-me"
+  auth_token: "replace-with-a-long-random-token"
   webui:
     enabled: true
   metrics:
     enabled: true
 ```
+
+Use a random token with at least 16 characters. The placeholder value
+`change-me` is rejected at startup.
 
 See `doc/configuration-reference.md` for the full schema (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `shaping`).
 
@@ -110,6 +113,11 @@ podman run -d --name fbmeasure \
 ```
 
 The same `Containerfile` works with Docker by replacing `podman` with `docker`.
+
+For secure deployments, enable TLS on `fbmeasure` with
+`--tls-cert-file/--tls-key-file` and configure `measurement.security` in
+fbforward. See `doc/user-guide-fbmeasure.md` and
+`doc/configuration-reference.md`.
 
 ## Debian packaging (fbforward)
 

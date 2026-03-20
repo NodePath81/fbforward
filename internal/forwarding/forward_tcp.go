@@ -216,6 +216,7 @@ func (c *tcpConn) proxy(ctx context.Context, dst, src net.Conn, up bool) {
 	buf := *bufPtr
 	defer tcpBufPool.Put(bufPtr)
 	for {
+		_ = src.SetReadDeadline(time.Now().Add(c.timeout))
 		n, err := src.Read(buf)
 		if n > 0 {
 			if werr := writeAll(dst, buf[:n]); werr != nil {
@@ -225,6 +226,17 @@ func (c *tcpConn) proxy(ctx context.Context, dst, src net.Conn, up bool) {
 			c.touch(uint64(n), up)
 		}
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				select {
+				case <-ctx.Done():
+					c.closeWithReason("context_done")
+					return
+				case <-c.done:
+					return
+				default:
+					continue
+				}
+			}
 			if err != io.EOF {
 				c.closeWithReason("read_error")
 			} else {

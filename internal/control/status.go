@@ -281,11 +281,12 @@ type statusMessage struct {
 }
 
 type StatusHub struct {
-	mu        sync.Mutex
-	clients   map[*statusClient]struct{}
-	broadcast chan statusMessage
-	ctxDone   <-chan struct{}
-	logger    util.Logger
+	mu         sync.Mutex
+	clients    map[*statusClient]struct{}
+	broadcast  chan statusMessage
+	ctxDone    <-chan struct{}
+	logger     util.Logger
+	maxClients int
 }
 
 type statusClient struct {
@@ -299,10 +300,11 @@ type statusClient struct {
 
 func NewStatusHub(ctxDone <-chan struct{}, logger util.Logger) *StatusHub {
 	h := &StatusHub{
-		clients:   make(map[*statusClient]struct{}),
-		broadcast: make(chan statusMessage, 128),
-		ctxDone:   ctxDone,
-		logger:    logger,
+		clients:    make(map[*statusClient]struct{}),
+		broadcast:  make(chan statusMessage, 128),
+		ctxDone:    ctxDone,
+		logger:     logger,
+		maxClients: 100,
 	}
 	go h.run()
 	return h
@@ -338,10 +340,20 @@ func (h *StatusHub) run() {
 	}
 }
 
-func (h *StatusHub) Register(client *statusClient) {
+func (h *StatusHub) CanRegister() bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.clients) < h.maxClients
+}
+
+func (h *StatusHub) TryRegister(client *statusClient) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.clients) >= h.maxClients {
+		return false
+	}
 	h.clients[client] = struct{}{}
-	h.mu.Unlock()
+	return true
 }
 
 func (h *StatusHub) Unregister(client *statusClient) {

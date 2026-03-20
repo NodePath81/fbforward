@@ -29,6 +29,9 @@ type UDPListener struct {
 	conn     *net.UDPConn
 	mu       sync.Mutex
 	mappings map[string]*udpMapping
+	pending  map[string]*udpMappingReservation
+	ipCounts map[string]int
+	maxPerIP int
 
 	dropMu            sync.Mutex
 	lastDropLogTime   time.Time
@@ -38,10 +41,13 @@ type UDPListener struct {
 const udpDialFailureCooldown = 5 * time.Second
 
 const (
-	udpPacketQueueSize = 1024
+	udpPacketQueueSize  = 1024
+	udpMaxMappingsPerIP = 50
 )
 
 var errUDPUpstreamSelection = errors.New("udp upstream selection failed")
+var errUDPMappingLimit = errors.New("udp mapping limit reached")
+var errUDPPerIPLimit = errors.New("udp per-ip mapping limit reached")
 
 var udpPacketPool = sync.Pool{
 	New: func() interface{} {
@@ -60,6 +66,9 @@ func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsCon
 		sem:      make(chan struct{}, limits.MaxUDPMappings),
 		logger:   util.ComponentLogger(logger, util.CompForwardUDP),
 		mappings: make(map[string]*udpMapping),
+		pending:  make(map[string]*udpMappingReservation),
+		ipCounts: make(map[string]int),
+		maxPerIP: udpMaxMappingsPerIP,
 	}
 }
 
@@ -146,36 +155,74 @@ func (l *UDPListener) Close() error {
 
 func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr, payload []byte) {
 	key := clientAddr.String()
-	mapping := l.getMapping(key)
-	if mapping == nil {
-		select {
-		case l.sem <- struct{}{}:
-		default:
+	clientIP := clientAddr.IP.String()
+	mapping, reservation, err := l.getOrReserveMapping(key, clientIP)
+	if err != nil {
+		switch {
+		case errors.Is(err, errUDPPerIPLimit):
+			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_per_ip_limit_reached",
+				"client.addr", key,
+				"client.ip", clientIP,
+			)
+		case errors.Is(err, errUDPMappingLimit):
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_limit_reached", "client.addr", key)
-			return
+		case errors.Is(err, errUDPUpstreamSelection):
+			util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)
 		}
-		var err error
-		mapping, err = l.createMapping(ctx, clientAddr)
+		return
+	}
+	if reservation != nil {
+		mapping, err = l.buildMapping(clientAddr)
+		l.finishReservation(key, clientIP, reservation, mapping, err)
 		if err != nil {
-			<-l.sem
 			if errors.Is(err, errUDPUpstreamSelection) {
 				util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)
 			}
 			return
 		}
+		l.activateMapping(ctx, mapping)
 	}
 	if err := mapping.forwardToUpstream(payload); err != nil {
 		mapping.closeWithReason("upstream_write_error")
 	}
 }
 
-func (l *UDPListener) getMapping(key string) *udpMapping {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.mappings[key]
+func (l *UDPListener) getOrReserveMapping(key, clientIP string) (*udpMapping, *udpMappingReservation, error) {
+	for {
+		l.mu.Lock()
+		if mapping := l.mappings[key]; mapping != nil {
+			l.mu.Unlock()
+			return mapping, nil, nil
+		}
+		if pending := l.pending[key]; pending != nil {
+			l.mu.Unlock()
+			<-pending.ready
+			if pending.err != nil {
+				return nil, nil, pending.err
+			}
+			return pending.mapping, nil, nil
+		}
+		if clientIP != "" && l.ipCounts[clientIP] >= l.maxPerIP {
+			l.mu.Unlock()
+			return nil, nil, errUDPPerIPLimit
+		}
+		select {
+		case l.sem <- struct{}{}:
+		default:
+			l.mu.Unlock()
+			return nil, nil, errUDPMappingLimit
+		}
+		pending := &udpMappingReservation{ready: make(chan struct{})}
+		l.pending[key] = pending
+		if clientIP != "" {
+			l.ipCounts[clientIP]++
+		}
+		l.mu.Unlock()
+		return nil, pending, nil
+	}
 }
 
-func (l *UDPListener) createMapping(ctx context.Context, clientAddr *net.UDPAddr) (*udpMapping, error) {
+func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr) (*udpMapping, error) {
 	up, err := l.manager.SelectUpstream()
 	if err != nil {
 		return nil, errors.Join(errUDPUpstreamSelection, err)
@@ -222,9 +269,10 @@ func (l *UDPListener) createMapping(ctx context.Context, clientAddr *net.UDPAddr
 		listenAddr:    listenAddr,
 	}
 	mapping.id = l.status.AddUDP(clientAddrStr, up.Tag, l.cfg.BindPort, mapping.close)
-	l.mu.Lock()
-	l.mappings[clientAddrStr] = mapping
-	l.mu.Unlock()
+	return mapping, nil
+}
+
+func (l *UDPListener) activateMapping(ctx context.Context, mapping *udpMapping) {
 	util.Event(mapping.logger, slog.LevelInfo, "forward.udp.mapping_created",
 		"flow.id", mapping.id,
 		"request.protocol", "udp",
@@ -239,7 +287,31 @@ func (l *UDPListener) createMapping(ctx context.Context, clientAddr *net.UDPAddr
 	)
 	go mapping.readLoop(ctx)
 	go mapping.idleWatcher(ctx)
-	return mapping, nil
+}
+
+func (l *UDPListener) finishReservation(key, clientIP string, pending *udpMappingReservation, mapping *udpMapping, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.pending, key)
+	if err != nil {
+		if clientIP != "" {
+			if l.ipCounts[clientIP] > 1 {
+				l.ipCounts[clientIP]--
+			} else {
+				delete(l.ipCounts, clientIP)
+			}
+		}
+		select {
+		case <-l.sem:
+		default:
+		}
+		pending.err = err
+		close(pending.ready)
+		return
+	}
+	l.mappings[key] = mapping
+	pending.mapping = mapping
+	close(pending.ready)
 }
 
 type udpMapping struct {
@@ -266,6 +338,12 @@ type udpMapping struct {
 	done       chan struct{}
 }
 
+type udpMappingReservation struct {
+	ready   chan struct{}
+	mapping *udpMapping
+	err     error
+}
+
 func (m *udpMapping) forwardToUpstream(payload []byte) error {
 	if _, err := m.upstreamConn.Write(payload); err != nil {
 		return err
@@ -281,8 +359,20 @@ func (m *udpMapping) forwardToUpstream(payload []byte) error {
 func (m *udpMapping) readLoop(ctx context.Context) {
 	buf := make([]byte, 65535)
 	for {
+		_ = m.upstreamConn.SetReadDeadline(time.Now().Add(m.timeout))
 		n, err := m.upstreamConn.Read(buf)
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				select {
+				case <-ctx.Done():
+					m.closeWithReason("context_done")
+					return
+				case <-m.done:
+					return
+				default:
+					continue
+				}
+			}
 			m.closeWithReason("upstream_read_error")
 			return
 		}
@@ -345,7 +435,7 @@ func (m *udpMapping) closeWithReason(reason string) {
 	m.closeOnce.Do(func() {
 		close(m.done)
 		_ = m.upstreamConn.Close()
-		m.parent.removeMapping(m.clientAddr.String())
+		m.parent.removeMapping(m.clientAddr.String(), m.clientIP)
 		m.status.RemoveUDP(m.id)
 		durationMs := int64(0)
 		if !m.created.IsZero() {
@@ -373,9 +463,16 @@ func (m *udpMapping) close() {
 	m.closeWithReason("upstream_unusable")
 }
 
-func (l *UDPListener) removeMapping(key string) {
+func (l *UDPListener) removeMapping(key, clientIP string) {
 	l.mu.Lock()
 	delete(l.mappings, key)
+	if clientIP != "" {
+		if l.ipCounts[clientIP] > 1 {
+			l.ipCounts[clientIP]--
+		} else {
+			delete(l.ipCounts, clientIP)
+		}
+	}
 	l.mu.Unlock()
 }
 

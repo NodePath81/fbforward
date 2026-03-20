@@ -349,6 +349,13 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 	if !ok || result == nil {
 		return UpstreamStats{}
 	}
+	if !sanitizeMeasurementResult(result) {
+		util.Event(m.logger, slog.LevelWarn, "upstream.measurement_rejected",
+			"upstream", tag,
+			"network.protocol", result.Network,
+		)
+		return up.stats
+	}
 
 	now := result.Timestamp
 	up.stats.RTTMs = applyEMA(result.RTTMs, up.stats.RTTMs, scoring.Smoothing.Alpha, &up.rttInit)
@@ -743,6 +750,28 @@ func applyEMA(newValue, oldValue, alpha float64, initialized *bool) float64 {
 		return newValue
 	}
 	return alpha*newValue + (1-alpha)*oldValue
+}
+
+func sanitizeMeasurementResult(result *MeasurementResult) bool {
+	if result == nil {
+		return false
+	}
+	values := []*float64{
+		&result.RTTMs,
+		&result.JitterMs,
+		&result.LossRate,
+		&result.RetransRate,
+	}
+	for _, value := range values {
+		if math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0 {
+			return false
+		}
+	}
+	result.RTTMs = clampFloat(result.RTTMs, 0.01, 10000)
+	result.JitterMs = clampFloat(result.JitterMs, 0, 5000)
+	result.LossRate = clampFloat(result.LossRate, 0, 1)
+	result.RetransRate = clampFloat(result.RetransRate, 0, 1)
+	return true
 }
 
 func clampFloat(val, min, max float64) float64 {

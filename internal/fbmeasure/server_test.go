@@ -29,7 +29,7 @@ func TestServerClientRoundTrip(t *testing.T) {
 	opCtx, opCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer opCancel()
 
-	client, err := Dial(opCtx, addr)
+	client, err := Dial(opCtx, addr, ClientSecurityConfig{})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

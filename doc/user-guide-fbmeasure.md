@@ -55,6 +55,9 @@ path.
 No special capabilities are required. fbmeasure can run as an unprivileged
 user.
 
+When TLS is enabled, the server also needs readable certificate/key material
+and, for mTLS, a CA bundle for client-certificate validation.
+
 ---
 
 ## 3.3.2 Configuration
@@ -69,12 +72,17 @@ fbmeasure uses CLI flags only. It does not read a configuration file.
 | `--log-level` | string | `info` | `debug`, `info`, `warn`, or `error` |
 | `--log-format` | string | `text` | `text` or `json` |
 | `--recv-wait` | duration | `100ms` | UDP receive window after loss-test send phase |
+| `--tls-cert-file` | string | empty | Enable TLS with this server certificate |
+| `--tls-key-file` | string | empty | Private key for `--tls-cert-file` |
+| `--tls-client-ca-file` | string | empty | CA bundle for validating client certificates |
+| `--tls-require-client-cert` | bool | `false` | Require and verify client certificates |
 | `--version` | bool | `false` | Print version and exit |
 
 Example:
 
 ```bash
 ./fbmeasure --port 9876 --log-format json
+./fbmeasure --port 9877 --tls-cert-file server.crt --tls-key-file server.key
 ```
 
 ### Firewall requirements
@@ -89,6 +97,16 @@ sudo ufw allow from <fbforward-host-ip> to any port 9876 proto tcp
 # UDP ping/loss probes
 sudo ufw allow from <fbforward-host-ip> to any port 9876 proto udp
 ```
+
+### Secure deployment notes
+
+- TLS protects the TCP control channel and TCP retransmission data connection.
+- fbforward must be configured to trust the server certificate before enabling
+  secure transport.
+- If `--tls-client-ca-file` and `--tls-require-client-cert` are used, fbforward
+  must also present a client certificate/key pair.
+- The UDP probe path is authenticated per test through the fbmeasure protocol;
+  it is not itself wrapped in TLS.
 
 ### fbforward configuration example
 

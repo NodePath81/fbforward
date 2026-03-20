@@ -114,7 +114,7 @@ fbforward loads configuration from a YAML file specified via `--config` flag. Th
 
 Configuration uses YAML with custom unmarshaling for duration and bandwidth values:
 
-**Duration format**: Number followed by unit suffix. Valid suffixes: `s` (seconds), `m` (minutes), `h` (hours). Examples: `30s`, `5m`, `1h`.
+**Duration format**: Number followed by unit suffix. Valid suffixes: `ms` (milliseconds), `s` (seconds), `m` (minutes), `h` (hours). Examples: `500ms`, `30s`, `5m`, `1h`.
 
 **Bandwidth format**: Number followed by unit suffix. Valid suffixes: `k` (Kbps), `m` (Mbps), `g` (Gbps). Examples: `10m` (10 Mbps), `1g` (1 Gbps).
 
@@ -154,6 +154,7 @@ measurement:
   fallback_to_icmp_on_stale: true   # Log warning when measurements stale
   schedule: {...}                   # Measurement scheduling
   fast_start: {...}                 # Fast-start mode config
+  security: {...}                   # fbmeasure TCP transport security
   protocols: {...}                  # TCP/UDP test parameters
 
 scoring:
@@ -194,7 +195,8 @@ Configuration validation enforces:
 - At least one upstream defined
 - At least one listener defined
 - Valid duration and bandwidth formats
-- Positive probe intervals and timeouts
+- `reachability.probe_interval >= 100ms`
+- Positive protocol timeouts and other time-based limits
 - Weight values sum to 1.0 per protocol
 - Unique upstream tags
 - Unique listener bind address/port/protocol combinations
@@ -295,20 +297,24 @@ Access the web UI at `http://<bind_addr>:<bind_port>/` (configured in `control` 
 
 **Authentication:**
 
-The web UI requires a valid Bearer token (configured in `control.token`). On first access:
+The web UI requires a valid Bearer token (configured in `control.auth_token`).
+On first access:
 
 1. Navigate to `/auth` to enter your token
 2. The UI validates the token by calling the `GetStatus` RPC method
-3. On success, the token is stored in browser `localStorage` (key: `fbforward_token`)
+3. On success, the token is stored in browser `sessionStorage` (key: `fbforward_token`)
 4. You are redirected to the main UI
 
-The token persists across browser sessions. To use a different token or rotate credentials:
+The token is scoped to the current browser session. Closing the browser session
+or clicking `Logout` clears it. To use a different token or rotate credentials:
 
-1. Navigate to `/auth` directly
+1. Click `Logout` in the UI, or navigate to `/auth` directly
 2. Enter the new token
 3. The UI validates and saves the new token
 
-**Security note:** Tokens are stored in browser localStorage, which is accessible to JavaScript running on the same origin. In production, always use HTTPS to protect token transmission.
+**Security note:** Tokens are stored in browser `sessionStorage`, which is still
+accessible to JavaScript running on the same origin. In production, always use
+HTTPS to protect token transmission.
 
 The UI displays:
 
@@ -335,6 +341,7 @@ The UI displays:
 
 **Update mechanisms**:
 - Upstream metrics (RTT, loss/retransmit, scores, traffic rates) are polled from `/metrics` endpoint at a user-selectable interval (1s, 2s, or 5s via UI buttons)
+- Connection and queue snapshots are delivered via WebSocket subscription
 - Connection/flow events and measurement completions are pushed via WebSocket for real-time updates to the active connections list and test history
 
 ### Monitoring via Prometheus metrics

@@ -2,6 +2,7 @@ package fbmeasure
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"math"
 	"net"
@@ -41,23 +42,40 @@ type LossResult struct {
 }
 
 type Client struct {
-	conn       net.Conn
-	remoteAddr string
-	mu         sync.Mutex
-	nextID     uint64
+	conn      net.Conn
+	dialAddr  string
+	tlsConfig *tls.Config
+	mu        sync.Mutex
+	nextID    uint64
 }
 
-func Dial(ctx context.Context, addr string) (*Client, error) {
-	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+func Dial(ctx context.Context, addr string, security ClientSecurityConfig) (*Client, error) {
+	tlsConfig, err := security.TLSConfig(addr)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := dialTCP(ctx, addr, tlsConfig)
 	if err != nil {
 		return nil, err
 	}
 	return &Client{
-		conn:       conn,
-		remoteAddr: conn.RemoteAddr().String(),
-		nextID:     1,
+		conn:      conn,
+		dialAddr:  addr,
+		tlsConfig: tlsConfig,
+		nextID:    1,
 	}, nil
+}
+
+func dialTCP(ctx context.Context, addr string, tlsConfig *tls.Config) (net.Conn, error) {
+	dialer := &net.Dialer{}
+	if tlsConfig == nil {
+		return dialer.DialContext(ctx, "tcp", addr)
+	}
+	tlsDialer := &tls.Dialer{
+		NetDialer: dialer,
+		Config:    tlsConfig.Clone(),
+	}
+	return tlsDialer.DialContext(ctx, "tcp", addr)
 }
 
 func (c *Client) Close() error {
@@ -71,6 +89,10 @@ func (c *Client) nextRequestID() uint64 {
 	id := c.nextID
 	c.nextID++
 	return id
+}
+
+func (c *Client) dialAuxTCP(ctx context.Context) (net.Conn, error) {
+	return dialTCP(ctx, c.dialAddr, c.tlsConfig)
 }
 
 func (c *Client) withLockedCall(ctx context.Context, op string, payload any, sideEffect func() error, decode func(jsonPayload []byte) error) error {

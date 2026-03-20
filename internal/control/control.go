@@ -31,6 +31,7 @@ const (
 	maxRPCBodyBytes   = 1 << 20
 	rpcRatePerSecond  = 5
 	rpcRateBurst      = 10
+	rpcRateTTL        = 5 * time.Minute
 	wsTokenPrefix     = "fbforward-token."
 	wsPrimaryProtocol = "fbforward"
 	wsWriteWait       = 10 * time.Second
@@ -69,7 +70,7 @@ func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, m
 		status:      status,
 		restartFn:   restartFn,
 		logger:      util.ComponentLogger(logger, util.CompControl),
-		limiter:     newRateLimiter(rpcRatePerSecond, rpcRateBurst, 5*time.Minute),
+		limiter:     newRateLimiter(rpcRatePerSecond, rpcRateBurst, rpcRateTTL),
 	}
 }
 
@@ -95,6 +96,7 @@ func (c *ControlServer) Start(ctx context.Context) error {
 		defer cancel()
 		_ = c.server.Shutdown(shutdownCtx)
 	}()
+	go c.limiter.RunCleanup(ctx.Done(), rpcRateTTL)
 
 	go func() {
 		_ = c.server.ListenAndServe()
@@ -600,6 +602,10 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 			"timeout":         cfg.FastStart.Timeout.Duration().String(),
 			"warmup_duration": cfg.FastStart.WarmupDuration.Duration().String(),
 		},
+		"security": map[string]interface{}{
+			"mode":        cfg.Security.Mode,
+			"server_name": cfg.Security.ServerName,
+		},
 		"protocols": map[string]interface{}{
 			"tcp": map[string]interface{}{
 				"enabled":          util.BoolValue(cfg.Protocols.TCP.Enabled, true),
@@ -861,6 +867,28 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	policyAttrs = append(policyAttrs, "result", "success")
 	util.Event(c.logger, slog.LevelInfo, "control.ws.access_policy_decision", policyAttrs...)
 
+	if !c.limiter.Allow(reqCtx.clientIP) {
+		util.Event(c.logger, slog.LevelWarn, "control.ws.rate_limited",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"http.status_code", http.StatusTooManyRequests,
+			"result", "denied",
+		)
+		http.Error(sw, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	if !c.status.hub.CanRegister() {
+		util.Event(c.logger, slog.LevelWarn, "control.ws.connection_limit_reached",
+			"request.id", reqCtx.id,
+			"client.addr", reqCtx.clientAddr,
+			"client.ip", reqCtx.clientIP,
+			"http.status_code", http.StatusServiceUnavailable,
+			"result", "denied",
+		)
+		http.Error(sw, "too many websocket clients", http.StatusServiceUnavailable)
+		return
+	}
 	if !c.originAllowed(r) {
 		util.Event(c.logger, slog.LevelWarn, "control.ws.origin_rejected",
 			"request.id", reqCtx.id,
@@ -894,7 +922,7 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upgrader := websocket.Upgrader{
-		CheckOrigin:  func(*http.Request) bool { return true },
+		CheckOrigin:  c.originAllowed,
 		Subprotocols: []string{wsPrimaryProtocol},
 	}
 	conn, err := upgrader.Upgrade(sw, r, nil)
@@ -906,12 +934,17 @@ func (c *ControlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+	conn.SetReadLimit(4096)
 	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	})
 	client := &statusClient{send: make(chan []byte, 32), connID: connID}
-	c.status.hub.Register(client)
+	if !c.status.hub.TryRegister(client) {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "too many websocket clients"), time.Now().Add(wsWriteWait))
+		_ = conn.Close()
+		return
+	}
 	util.Event(c.logger, slog.LevelInfo, "control.ws.connected",
 		"ws.conn_id", connID,
 		"client.addr", reqCtx.clientAddr,
@@ -1158,6 +1191,11 @@ func (c *ControlServer) handleIdentity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(sw, http.StatusUnauthorized, rpcResponse{Ok: false, Error: completionErr})
 		return
 	}
+	if !c.limiter.Allow(reqCtx.clientIP) {
+		completionErr = "rate limit exceeded"
+		writeJSON(sw, http.StatusTooManyRequests, rpcResponse{Ok: false, Error: completionErr})
+		return
+	}
 	if r.Method != http.MethodGet {
 		completionErr = "method not allowed"
 		writeJSON(sw, http.StatusMethodNotAllowed, rpcResponse{Ok: false, Error: completionErr})
@@ -1283,6 +1321,11 @@ func (c *ControlServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"result", "denied",
 		)
 		http.Error(sw, completionErr, http.StatusUnauthorized)
+		return
+	}
+	if !c.limiter.Allow(reqCtx.clientIP) {
+		completionErr = "rate limit exceeded"
+		http.Error(sw, completionErr, http.StatusTooManyRequests)
 		return
 	}
 	c.metrics.Handler(sw, r)
@@ -1414,6 +1457,33 @@ func (r *rateLimiter) Allow(key string) bool {
 	}
 	limiter.tokens -= 1
 	return true
+}
+
+func (r *rateLimiter) SweepExpired() {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, limiter := range r.clients {
+		if limiter == nil || now.Sub(limiter.last) > r.ttl {
+			delete(r.clients, key)
+		}
+	}
+}
+
+func (r *rateLimiter) RunCleanup(ctxDone <-chan struct{}, interval time.Duration) {
+	if interval <= 0 {
+		interval = r.ttl
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctxDone:
+			return
+		case <-ticker.C:
+			r.SweepExpired()
+		}
+	}
 }
 
 func clientIP(r *http.Request) string {

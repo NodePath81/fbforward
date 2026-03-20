@@ -2,6 +2,8 @@ package probe
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
 	"log/slog"
 	"math/rand"
 	"net"
@@ -89,7 +91,11 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 		case <-time.After(delay):
 		}
 	}
-	timeout := cfg.ProbeInterval.Duration()
+	interval := cfg.ProbeInterval.Duration()
+	if interval < 100*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	timeout := interval
 	if timeout <= 0 {
 		timeout = time.Second
 	}
@@ -97,7 +103,7 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 	if retryDelay <= 0 {
 		retryDelay = time.Second
 	}
-	id := rand.Intn(0xffff)
+	id := secureProbeID()
 	var seq uint16
 	lastReachable := false
 	lastReachableInit := false
@@ -144,7 +150,7 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 		}
 
 		window := newProbeWindow(cfg.WindowSize)
-		ticker := time.NewTicker(cfg.ProbeInterval.Duration())
+		ticker := time.NewTicker(interval)
 	probeLoop:
 		for {
 			select {
@@ -182,6 +188,14 @@ func ProbeLoop(ctx context.Context, up *upstream.Upstream, cfg config.Reachabili
 			}
 		}
 	}
+}
+
+func secureProbeID() int {
+	var buf [2]byte
+	if _, err := crand.Read(buf[:]); err == nil {
+		return int(binary.BigEndian.Uint16(buf[:]))
+	}
+	return rand.Intn(0xffff)
 }
 
 func sendPing(conn *icmp.PacketConn, ip net.IP, id int, seq uint16, echoType, replyType icmp.Type, proto int, timeout time.Duration) (time.Duration, bool) {

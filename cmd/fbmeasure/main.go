@@ -32,6 +32,10 @@ func main() {
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	logFormat := flag.String("log-format", "text", "Log format (text or json)")
 	recvWait := flag.Duration("recv-wait", 100*time.Millisecond, "UDP receive idle window")
+	tlsCertFile := flag.String("tls-cert-file", "", "TLS server certificate file")
+	tlsKeyFile := flag.String("tls-key-file", "", "TLS server key file")
+	tlsClientCAFile := flag.String("tls-client-ca-file", "", "CA bundle for validating client certificates")
+	tlsRequireClientCert := flag.Bool("tls-require-client-cert", false, "Require and verify client certificates")
 	showVersion := flag.Bool("version", false, "Print version")
 	flag.Parse()
 
@@ -52,6 +56,12 @@ func main() {
 	srv := fbmeasure.NewServer(fbmeasure.Config{
 		Port:           *port,
 		UDPReceiveWait: *recvWait,
+		Security: fbmeasure.ServerSecurityConfig{
+			CertFile:          *tlsCertFile,
+			KeyFile:           *tlsKeyFile,
+			ClientCAFile:      *tlsClientCAFile,
+			RequireClientCert: *tlsRequireClientCert,
+		},
 	}, logger)
 	if err := srv.Start(ctx); err != nil {
 		util.Event(logger, slog.LevelError, "fbmeasure.start_failed", "error", err)
@@ -66,6 +76,7 @@ func printHelp() {
 
 Usage:
   fbmeasure --port <port> [--log-level info] [--log-format text]
+  fbmeasure --tls-cert-file server.crt --tls-key-file server.key [--tls-client-ca-file ca.crt --tls-require-client-cert]
   fbmeasure --version
 `)
 }

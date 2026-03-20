@@ -17,17 +17,30 @@ type udpLossReceiver struct {
 	packetsRecv uint64
 	outOfOrder  uint64
 	seen        map[uint64]struct{}
+	maxEntries  uint64
 }
 
-func newUDPLossReceiver() *udpLossReceiver {
+func newUDPLossReceiver(maxEntries uint64) *udpLossReceiver {
 	return &udpLossReceiver{
-		seen: make(map[uint64]struct{}),
+		seen:       make(map[uint64]struct{}),
+		maxEntries: maxEntries,
 	}
 }
 
 func (r *udpLossReceiver) Add(seq uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if seq == 0 {
+		return
+	}
+	if r.maxEntries > 0 {
+		if seq > r.maxEntries {
+			return
+		}
+		if uint64(len(r.seen)) >= r.maxEntries {
+			return
+		}
+	}
 	if _, exists := r.seen[seq]; exists {
 		return
 	}
@@ -66,21 +79,22 @@ type udpLossTest struct {
 	expected uint64
 	receiver *udpLossReceiver
 	notify   chan struct{}
+	authKey  [udpAuthKeySize]byte
 }
 
 func (c *Client) UDPLoss(ctx context.Context, packets, packetSize int) (LossResult, error) {
 	if packets <= 0 {
 		return LossResult{}, fmt.Errorf("packets must be > 0")
 	}
-	if packetSize < udpLossHeaderSize {
-		return LossResult{}, fmt.Errorf("packet_size must be >= %d", udpLossHeaderSize)
+	if packetSize < udpLossMinSize {
+		return LossResult{}, fmt.Errorf("packet_size must be >= %d", udpLossMinSize)
 	}
 
 	id, err := newTestID()
 	if err != nil {
 		return LossResult{}, err
 	}
-	addr, err := net.ResolveUDPAddr("udp", c.remoteAddr)
+	addr, err := net.ResolveUDPAddr("udp", c.dialAddr)
 	if err != nil {
 		return LossResult{}, err
 	}
@@ -90,21 +104,29 @@ func (c *Client) UDPLoss(ctx context.Context, packets, packetSize int) (LossResu
 	}
 	defer udpConn.Close()
 
+	authKey, err := newUDPAuthKey()
+	if err != nil {
+		return LossResult{}, err
+	}
+
 	var result LossResult
 	req := udpLossRequest{
 		TestID:     id.String(),
+		AuthKey:    udpAuthKeyString(authKey),
 		Packets:    packets,
 		PacketSize: packetSize,
 		TimeoutMs:  timeoutMillis(ctx, time.Second),
 	}
 	err = c.withLockedCall(ctx, opUDPLoss, req, func() error {
 		time.Sleep(defaultAuxStartDelay)
-		packet := make([]byte, packetSize)
-		packet[0] = udpPacketKindLoss
-		copy(packet[1:1+testIDSize], id[:])
+		payloadBase := make([]byte, packetSize-udpAuthTagSize)
+		payloadBase[0] = udpPacketKindLoss
+		copy(payloadBase[1:1+testIDSize], id[:])
 		for seq := 0; seq < packets; seq++ {
-			binary.BigEndian.PutUint64(packet[1+testIDSize:udpLossHeaderSize], uint64(seq+1))
-			if _, err := udpConn.Write(packet); err != nil {
+			payload := append([]byte(nil), payloadBase...)
+			binary.BigEndian.PutUint64(payload[1+testIDSize:udpLossHeaderSize], uint64(seq+1))
+			payload = appendUDPAuthTag(payload, authKey)
+			if _, err := udpConn.Write(payload); err != nil {
 				return err
 			}
 		}
@@ -117,12 +139,22 @@ func (c *Client) UDPLoss(ctx context.Context, packets, packetSize int) (LossResu
 		if resp.TestID != id.String() {
 			return fmt.Errorf("unexpected udp_loss test_id")
 		}
+		if resp.PacketsRecv > resp.PacketsSent {
+			return fmt.Errorf("udp_loss invalid recv/sent counters")
+		}
+		if resp.PacketsLost > resp.PacketsSent {
+			return fmt.Errorf("udp_loss invalid lost/sent counters")
+		}
+		lossRate := 0.0
+		if resp.PacketsSent > 0 {
+			lossRate = float64(resp.PacketsLost) / float64(resp.PacketsSent)
+		}
 		result = LossResult{
 			PacketsSent: resp.PacketsSent,
 			PacketsRecv: resp.PacketsRecv,
 			PacketsLost: resp.PacketsLost,
 			OutOfOrder:  resp.OutOfOrder,
-			LossRate:    resp.LossRate,
+			LossRate:    lossRate,
 		}
 		return nil
 	})
@@ -136,18 +168,31 @@ func (s *Server) handleUDPLoss(ctx context.Context, req udpLossRequest) (udpLoss
 	if req.Packets <= 0 {
 		return udpLossResponse{}, fmt.Errorf("packets must be > 0")
 	}
-	if req.PacketSize < udpLossHeaderSize {
-		return udpLossResponse{}, fmt.Errorf("packet_size must be >= %d", udpLossHeaderSize)
+	if req.PacketSize < udpLossMinSize {
+		return udpLossResponse{}, fmt.Errorf("packet_size must be >= %d", udpLossMinSize)
 	}
 	id, err := parseTestID(req.TestID)
 	if err != nil {
 		return udpLossResponse{}, err
 	}
+	authKey, err := parseUDPAuthKey(req.AuthKey)
+	if err != nil {
+		return udpLossResponse{}, err
+	}
+	expected := req.Packets
+	if expected > maxLossPackets {
+		expected = maxLossPackets
+	}
+	timeoutMs := req.TimeoutMs
+	if timeoutMs <= 0 || timeoutMs > maxTimeoutMs {
+		timeoutMs = maxTimeoutMs
+	}
 	key := id.String()
 	test := &udpLossTest{
-		expected: uint64(req.Packets),
-		receiver: newUDPLossReceiver(),
+		expected: uint64(expected),
+		receiver: newUDPLossReceiver(uint64(expected)),
 		notify:   make(chan struct{}, 1),
+		authKey:  authKey,
 	}
 
 	s.mu.Lock()
@@ -163,7 +208,7 @@ func (s *Server) handleUDPLoss(ctx context.Context, req udpLossRequest) (udpLoss
 		s.mu.Unlock()
 	}()
 
-	overallTimer := time.NewTimer(time.Duration(req.TimeoutMs) * time.Millisecond)
+	overallTimer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
 	defer overallTimer.Stop()
 	idleTimer := time.NewTimer(s.cfg.UDPReceiveWait)
 	defer idleTimer.Stop()
@@ -219,6 +264,9 @@ func (s *Server) handleUDPLossPacket(data []byte) {
 	if test == nil {
 		return
 	}
+	if !verifyUDPAuthTag(data, test.authKey) {
+		return
+	}
 
 	test.receiver.Add(seq)
 	select {
@@ -228,7 +276,7 @@ func (s *Server) handleUDPLossPacket(data []byte) {
 }
 
 func parseUDPLossPacket(data []byte) (TestID, uint64, error) {
-	if len(data) < udpLossHeaderSize {
+	if len(data) < udpLossMinSize {
 		return TestID{}, 0, fmt.Errorf("short udp loss packet")
 	}
 	var id TestID

@@ -1,7 +1,10 @@
 package fbmeasure
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -11,8 +14,6 @@ import (
 )
 
 const (
-	maxControlMessageSize = 1 << 20
-
 	opPingTCP    = "ping_tcp"
 	opPingUDP    = "ping_udp"
 	opTCPRetrans = "tcp_retrans"
@@ -25,8 +26,12 @@ const (
 	tcpDataMarker = "\xffFMT"
 	testIDSize    = 16
 
+	udpAuthKeySize    = 32
+	udpAuthTagSize    = 16
 	udpPingHeaderSize = 1 + testIDSize + 8 + 8
 	udpLossHeaderSize = 1 + testIDSize + 8
+	udpPingPacketSize = udpPingHeaderSize + udpAuthTagSize
+	udpLossMinSize    = udpLossHeaderSize + udpAuthTagSize
 
 	defaultAuxStartDelay = 10 * time.Millisecond
 )
@@ -85,6 +90,7 @@ type pingTCPResponse struct {
 
 type pingUDPRequest struct {
 	TestID    string `json:"test_id"`
+	AuthKey   string `json:"auth_key"`
 	Count     int    `json:"count"`
 	TimeoutMs int    `json:"timeout_ms"`
 }
@@ -111,6 +117,7 @@ type tcpRetransResponse struct {
 
 type udpLossRequest struct {
 	TestID     string `json:"test_id"`
+	AuthKey    string `json:"auth_key"`
 	Packets    int    `json:"packets"`
 	PacketSize int    `json:"packet_size"`
 	TimeoutMs  int    `json:"timeout_ms"`
@@ -186,4 +193,48 @@ func readControlMessage(r io.Reader, dst any) error {
 
 func appendTestID(dst []byte, id TestID) []byte {
 	return append(dst, id[:]...)
+}
+
+func newUDPAuthKey() ([udpAuthKeySize]byte, error) {
+	var key [udpAuthKeySize]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return key, err
+	}
+	return key, nil
+}
+
+func parseUDPAuthKey(raw string) ([udpAuthKeySize]byte, error) {
+	var key [udpAuthKeySize]byte
+	if len(raw) != udpAuthKeySize*2 {
+		return key, fmt.Errorf("invalid auth_key length")
+	}
+	buf, err := hex.DecodeString(raw)
+	if err != nil {
+		return key, fmt.Errorf("decode auth_key: %w", err)
+	}
+	copy(key[:], buf)
+	return key, nil
+}
+
+func udpAuthKeyString(key [udpAuthKeySize]byte) string {
+	return hex.EncodeToString(key[:])
+}
+
+func appendUDPAuthTag(dst []byte, key [udpAuthKeySize]byte) []byte {
+	mac := hmac.New(sha256.New, key[:])
+	_, _ = mac.Write(dst)
+	sum := mac.Sum(nil)
+	return append(dst, sum[:udpAuthTagSize]...)
+}
+
+func verifyUDPAuthTag(data []byte, key [udpAuthKeySize]byte) bool {
+	if len(data) < udpAuthTagSize {
+		return false
+	}
+	body := data[:len(data)-udpAuthTagSize]
+	tag := data[len(data)-udpAuthTagSize:]
+	mac := hmac.New(sha256.New, key[:])
+	_, _ = mac.Write(body)
+	expected := mac.Sum(nil)
+	return subtle.ConstantTimeCompare(tag, expected[:udpAuthTagSize]) == 1
 }

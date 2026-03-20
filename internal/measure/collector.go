@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -128,7 +129,8 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 }
 
 func (c *Collector) handleMeasurementFailure(tag string, err error) error {
-	state := c.failure(tag)
+	c.failuresMu.Lock()
+	state := c.failureLocked(tag)
 	state.consecutiveFailures++
 	if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
 		if !state.inFallbackMode {
@@ -139,16 +141,19 @@ func (c *Collector) handleMeasurementFailure(tag string, err error) error {
 		}
 		state.inFallbackMode = true
 	}
+	c.failuresMu.Unlock()
 	return err
 }
 
 func (c *Collector) handleMeasurementSuccess(tag string, result *upstream.MeasurementResult) {
-	state := c.failure(tag)
+	c.failuresMu.Lock()
+	state := c.failureLocked(tag)
 	state.consecutiveFailures = 0
 	if state.inFallbackMode {
 		util.Event(c.logger, slog.LevelInfo, "measure.fallback_recovered", "upstream", tag)
 		state.inFallbackMode = false
 	}
+	c.failuresMu.Unlock()
 	stats := c.manager.UpdateMeasurement(tag, result, c.scoring)
 	if c.metrics != nil {
 		c.metrics.SetUpstreamMetrics(tag, stats)
@@ -190,7 +195,13 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		c.OnTestComplete(up.Tag, network, startTime, time.Since(startTime), success, resultMetrics, errMsg)
 	}()
 
-	client, err := fbmeasure.Dial(ctx, addr)
+	client, err := fbmeasure.Dial(ctx, addr, fbmeasure.ClientSecurityConfig{
+		Mode:           c.cfg.Security.Mode,
+		CAFile:         c.cfg.Security.CAFile,
+		ServerName:     c.cfg.Security.ServerName,
+		ClientCertFile: c.cfg.Security.ClientCertFile,
+		ClientKeyFile:  c.cfg.Security.ClientKeyFile,
+	})
 	if err != nil {
 		errMsg = err.Error()
 		util.Event(c.logger, slog.LevelWarn, "measure.failed",
@@ -247,6 +258,10 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 			errMsg = callErr.Error()
 			return nil, callErr
 		}
+		if err = validateRetransResult(retrans); err != nil {
+			errMsg = err.Error()
+			return nil, err
+		}
 		result.RetransRate = retrans.Rate()
 		resultMetrics.RetransRate = result.RetransRate
 	case "udp":
@@ -262,6 +277,10 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		if callErr != nil {
 			errMsg = callErr.Error()
 			return nil, callErr
+		}
+		if err = validateLossResult(loss); err != nil {
+			errMsg = err.Error()
+			return nil, err
 		}
 		result.LossRate = loss.LossRate
 		resultMetrics.LossRate = result.LossRate
@@ -322,9 +341,7 @@ func (c *Collector) RunningTests() []RunningTest {
 	return result
 }
 
-func (c *Collector) failure(tag string) *failureState {
-	c.failuresMu.Lock()
-	defer c.failuresMu.Unlock()
+func (c *Collector) failureLocked(tag string) *failureState {
 	if c.failures[tag] == nil {
 		c.failures[tag] = &failureState{}
 	}
@@ -340,4 +357,30 @@ func maxMetric(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+func validateRetransResult(result fbmeasure.RetransResult) error {
+	if math.IsNaN(result.Rate()) || math.IsInf(result.Rate(), 0) {
+		return fmt.Errorf("invalid tcp retransmission rate")
+	}
+	if result.Retransmits > result.SegmentsSent {
+		return fmt.Errorf("invalid tcp retransmission counters")
+	}
+	if result.SegmentsSent == 0 && result.Retransmits != 0 {
+		return fmt.Errorf("invalid tcp retransmission counters")
+	}
+	return nil
+}
+
+func validateLossResult(result fbmeasure.LossResult) error {
+	if result.PacketsRecv > result.PacketsSent {
+		return fmt.Errorf("invalid udp loss counters")
+	}
+	if result.PacketsLost > result.PacketsSent {
+		return fmt.Errorf("invalid udp loss counters")
+	}
+	if math.IsNaN(result.LossRate) || math.IsInf(result.LossRate, 0) || result.LossRate < 0 || result.LossRate > 1 {
+		return fmt.Errorf("invalid udp loss rate")
+	}
+	return nil
 }
