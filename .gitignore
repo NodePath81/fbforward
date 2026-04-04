@@ -12,3 +12,5 @@ web/node_modules/
 .vscode/
 .idea/
 task-log/**
+chat/**
+.codex

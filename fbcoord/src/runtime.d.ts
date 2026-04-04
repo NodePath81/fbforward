@@ -9,7 +9,19 @@ interface DurableObjectNamespace {
   get(id: DurableObjectId): DurableObjectStub;
 }
 
-interface DurableObjectState {}
+interface DurableObjectStorage {
+  get<T>(key: string): Promise<T | undefined>;
+  put<T>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<boolean>;
+}
+
+interface DurableObjectState {
+  storage: DurableObjectStorage;
+}
+
+interface Fetcher {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
 
 interface WebSocket {
   accept(): void;

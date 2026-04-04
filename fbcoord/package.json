@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run build:worker && npm run build:ui",
+    "build:worker": "tsc -p tsconfig.json --noEmit",
+    "build:ui": "node ./scripts/prepare-ui-dist.mjs && tsc -p tsconfig.ui.json",
     "test": "vitest run"
   },
   "devDependencies": {

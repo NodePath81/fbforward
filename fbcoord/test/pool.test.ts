@@ -54,4 +54,36 @@ describe('PoolState', () => {
     expect(state.setPreferences('node-2', ['b'], null)).toBe(true);
     expect(state.currentPick()).toEqual({ version: 2, upstream: 'b' });
   });
+
+  it('exposes node snapshots with connection timestamps', () => {
+    let now = 1_000;
+    const state = new PoolState(() => now);
+
+    state.registerConnection('node-1', new FakeConnection());
+    state.setPreferences('node-1', ['a', 'b'], 'a');
+
+    now = 2_000;
+    state.heartbeat('node-1');
+
+    expect(state.nodeSnapshot()).toEqual([
+      {
+        node_id: 'node-1',
+        upstreams: ['a', 'b'],
+        active_upstream: 'a',
+        last_seen: 2_000,
+        connected_at: 1_000
+      }
+    ]);
+  });
+
+  it('resets connection age on reconnect', () => {
+    let now = 1_000;
+    const state = new PoolState(() => now);
+
+    state.registerConnection('node-1', new FakeConnection());
+    now = 4_000;
+    state.registerConnection('node-1', new FakeConnection());
+
+    expect(state.nodeSnapshot()[0]?.connected_at).toBe(4_000);
+  });
 });
