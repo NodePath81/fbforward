@@ -20,6 +20,7 @@ const (
 	CompForwardUDP = "forward.udp"
 	CompMeasure    = "measure"
 	CompProbe      = "probe"
+	CompCoord      = "coordination"
 	CompControl    = "control"
 	CompDNS        = "dns"
 	CompShaping    = "shaping"

@@ -6,6 +6,8 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +21,7 @@ type Mode int
 const (
 	ModeAuto Mode = iota
 	ModeManual
+	ModeCoordination
 )
 
 const (
@@ -27,10 +30,20 @@ const (
 )
 
 func (m Mode) String() string {
-	if m == ModeManual {
+	switch m {
+	case ModeManual:
 		return "manual"
+	case ModeCoordination:
+		return "coordination"
 	}
 	return "auto"
+}
+
+type CoordinationState struct {
+	Connected        bool   `json:"connected"`
+	SelectedUpstream string `json:"selected_upstream"`
+	Version          int64  `json:"version"`
+	FallbackActive   bool   `json:"fallback_active"`
 }
 
 type UpstreamStats struct {
@@ -103,6 +116,10 @@ type UpstreamManager struct {
 	mode           Mode
 	manualTag      string
 	activeTag      string
+	coordConnected bool
+	coordTag       string
+	coordVersion   int64
+	coordFallback  bool
 	rng            *rand.Rand
 	onSelect       func(oldTag, newTag string)
 	onStateChange  func(tag string, usable bool)
@@ -237,10 +254,49 @@ func (m *UpstreamManager) ActiveTag() string {
 	return m.activeTag
 }
 
+func (m *UpstreamManager) CoordinationState() CoordinationState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return CoordinationState{
+		Connected:        m.coordConnected,
+		SelectedUpstream: m.coordTag,
+		Version:          m.coordVersion,
+		FallbackActive:   m.coordFallback,
+	}
+}
+
 func (m *UpstreamManager) Get(tag string) *Upstream {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.upstreams[tag]
+}
+
+func (m *UpstreamManager) RankedTags() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	type candidate struct {
+		tag   string
+		score float64
+	}
+
+	now := time.Now()
+	candidates := make([]candidate, 0, len(m.order))
+	for _, tag := range m.order {
+		up := m.upstreams[tag]
+		if up == nil || !up.stats.Usable || up.dialFailUntil.After(now) {
+			continue
+		}
+		candidates = append(candidates, candidate{tag: tag, score: up.stats.Score})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score+scoreEpsilon
+	})
+	ranked := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ranked = append(ranked, candidate.tag)
+	}
+	return ranked
 }
 
 func (m *UpstreamManager) SetAuto() {
@@ -248,6 +304,7 @@ func (m *UpstreamManager) SetAuto() {
 	defer m.mu.Unlock()
 	m.mode = ModeAuto
 	m.manualTag = ""
+	m.clearCoordinationLocked()
 	m.resetPendingLocked()
 	best, _ := m.selectBestLocked("")
 	m.setActiveLocked(best, "manual")
@@ -265,9 +322,62 @@ func (m *UpstreamManager) SetManual(tag string) error {
 	}
 	m.mode = ModeManual
 	m.manualTag = tag
+	m.clearCoordinationLocked()
 	m.resetPendingLocked()
 	m.setActiveLocked(tag, "manual")
 	return nil
+}
+
+func (m *UpstreamManager) SetCoordination() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mode = ModeCoordination
+	m.manualTag = ""
+	m.clearCoordinationLocked()
+	m.coordFallback = true
+	m.resetPendingLocked()
+	best, _ := m.selectBestLocked("")
+	m.setActiveLocked(best, "coordination_fallback")
+}
+
+func (m *UpstreamManager) SetCoordinationConnected(connected bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordConnected = connected
+	if connected {
+		return
+	}
+	m.activateCoordinationFallbackLocked("coordination_fallback")
+}
+
+func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if version <= m.coordVersion {
+		return false, errors.New("stale coordination version")
+	}
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		m.coordVersion = version
+		m.activateCoordinationFallbackLocked("coordination_fallback")
+		return true, nil
+	}
+	up, ok := m.upstreams[tag]
+	if !ok {
+		m.activateCoordinationFallbackLocked("coordination_fallback")
+		return false, errors.New("coordinated upstream not found")
+	}
+	if !up.stats.Usable || up.dialFailUntil.After(time.Now()) {
+		m.activateCoordinationFallbackLocked("coordination_fallback")
+		return false, errors.New("coordinated upstream is unusable")
+	}
+	m.coordVersion = version
+	m.coordTag = tag
+	m.coordFallback = false
+	if m.mode == ModeCoordination {
+		m.setActiveLocked(tag, "coordination")
+	}
+	return true, nil
 }
 
 func (m *UpstreamManager) SelectByFastStart(scores map[string]float64) {
@@ -339,6 +449,9 @@ func (m *UpstreamManager) UpdateReachability(tag string, reachable bool) Upstrea
 	if prevUsable != up.stats.Usable && m.onStateChange != nil {
 		m.onStateChange(tag, up.stats.Usable)
 	}
+	if tag == m.coordTag && !up.stats.Usable {
+		m.activateCoordinationFallbackLocked("coordination_fallback")
+	}
 	return up.stats
 }
 
@@ -395,13 +508,16 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 			m.onStateChange(tag, up.stats.Usable)
 		}
 	}
+	if tag == m.coordTag && !up.stats.Usable {
+		m.activateCoordinationFallbackLocked("coordination_fallback")
+	}
 
 	m.evaluateSwitching(tag, up.stats)
 	return up.stats
 }
 
 func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamStats) {
-	if m.mode != ModeAuto {
+	if !m.autoSelectionEnabledLocked() {
 		return
 	}
 
@@ -538,8 +654,11 @@ func (m *UpstreamManager) MarkDialFailure(tag string, cooldown time.Duration) {
 		"upstream", tag,
 		"dial_fail_count", up.dialFailCount,
 	)
-	if m.mode == ModeAuto && tag == m.activeTag && up.dialFailCount >= dialFailSwitchCount {
+	if m.autoSelectionEnabledLocked() && tag == m.activeTag && up.dialFailCount >= dialFailSwitchCount {
 		m.immediateFailoverLocked("failover_dial")
+	}
+	if tag == m.coordTag && up.dialFailUntil.After(time.Now()) {
+		m.activateCoordinationFallbackLocked("coordination_fallback")
 	}
 }
 
@@ -657,6 +776,28 @@ func (m *UpstreamManager) resetPendingLocked() {
 	}
 	m.pendingSwitch = ""
 	m.pendingSince = time.Time{}
+}
+
+func (m *UpstreamManager) clearCoordinationLocked() {
+	m.coordConnected = false
+	m.coordTag = ""
+	m.coordVersion = 0
+	m.coordFallback = false
+}
+
+func (m *UpstreamManager) autoSelectionEnabledLocked() bool {
+	return m.mode == ModeAuto || (m.mode == ModeCoordination && m.coordTag == "")
+}
+
+func (m *UpstreamManager) activateCoordinationFallbackLocked(reason string) {
+	m.coordTag = ""
+	if m.mode == ModeCoordination {
+		m.coordFallback = true
+		best, _ := m.selectBestLocked("")
+		m.setActiveLocked(best, reason)
+		return
+	}
+	m.coordFallback = false
 }
 
 func (m *UpstreamManager) usabilityReason(stats UpstreamStats) string {

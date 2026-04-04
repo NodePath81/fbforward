@@ -162,6 +162,15 @@ control:
   metrics:
     enabled: true
 
+# Optional coordination mode.
+# When enabled, runtime mode can be switched to "coordination" from the Web UI or RPC.
+# coordination:
+#   endpoint: https://fbcoord.example.workers.dev
+#   pool: default
+#   node_id: fbforward-01
+#   token: "replace-with-a-separate-long-random-token"
+#   heartbeat_interval: 10s
+
 shaping:
   # Linux tc shaping via netlink (requires CAP_NET_ADMIN).
   enabled: false

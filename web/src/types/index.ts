@@ -1,9 +1,19 @@
-export type Mode = 'auto' | 'manual';
+export type Mode = 'auto' | 'manual' | 'coordination';
 
 export interface ControlState {
   mode: Mode;
   selectedUpstream: string | null;
   isTransitioning: boolean;
+}
+
+export interface CoordinationStatus {
+  available: boolean;
+  connected: boolean;
+  pool: string;
+  node_id: string;
+  selected_upstream: string;
+  version: number;
+  fallback_active: boolean;
 }
 
 export interface UpstreamSnapshot {
@@ -89,6 +99,7 @@ export interface StatusResponse {
   mode: Mode;
   active_upstream: string;
   upstreams: UpstreamSnapshot[];
+  coordination: CoordinationStatus;
 }
 
 export interface IdentityResponse {

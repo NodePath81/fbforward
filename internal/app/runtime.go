@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/forwarding"
@@ -34,6 +35,7 @@ type Runtime struct {
 	metrics   *metrics.Metrics
 	status    *control.StatusStore
 	control   *control.ControlServer
+	coord     *coordination.Controller
 	shaper    *shaping.TrafficShaper
 	upstreams []*upstream.Upstream
 	listeners []closer
@@ -98,11 +100,17 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	})
 
 	metrics.SetMode(upstream.ModeAuto)
+	metrics.SetCoordinationState(manager.CoordinationState())
 	manager.SetAuto()
 	metrics.Start(ctx.Done())
 
-	ctrl := control.NewControlServer(cfg, manager, metrics, status, restartFn, logger)
+	var coordCtrl *coordination.Controller
+	if cfg.Coordination.IsConfigured() {
+		coordCtrl = coordination.NewController(ctx, cfg.Coordination, manager, metrics, util.ComponentLogger(logger, util.CompCoord))
+	}
+	ctrl := control.NewControlServer(cfg, manager, metrics, status, coordCtrl, restartFn, logger)
 	rt.control = ctrl
+	rt.coord = coordCtrl
 
 	return rt, nil
 }
@@ -148,6 +156,9 @@ func (r *Runtime) Stop() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = r.control.Shutdown(ctx)
 		cancel()
+	}
+	if r.coord != nil {
+		r.coord.Close()
 	}
 	r.wait()
 }

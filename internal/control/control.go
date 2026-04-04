@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
@@ -47,6 +48,7 @@ type ControlServer struct {
 	manager     upstream.UpstreamStateReader
 	metrics     *metrics.Metrics
 	status      *StatusStore
+	coord       *coordination.Controller
 	restartFn   func() error
 	logger      util.Logger
 	server      *http.Server
@@ -59,7 +61,7 @@ type ControlServer struct {
 	nextWSID    uint64
 }
 
-func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
+func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, metrics *metrics.Metrics, status *StatusStore, coord *coordination.Controller, restartFn func() error, logger util.Logger) *ControlServer {
 	return &ControlServer{
 		fullCfg:     cfg,
 		cfg:         cfg.Control,
@@ -68,6 +70,7 @@ func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, m
 		manager:     manager,
 		metrics:     metrics,
 		status:      status,
+		coord:       coord,
 		restartFn:   restartFn,
 		logger:      util.ComponentLogger(logger, util.CompControl),
 		limiter:     newRateLimiter(rpcRatePerSecond, rpcRateBurst, rpcRateTTL),
@@ -149,6 +152,17 @@ type statusResponse struct {
 	Mode           string                      `json:"mode"`
 	ActiveUpstream string                      `json:"active_upstream"`
 	Upstreams      []upstream.UpstreamSnapshot `json:"upstreams"`
+	Coordination   coordinationStatusResponse  `json:"coordination"`
+}
+
+type coordinationStatusResponse struct {
+	Available        bool   `json:"available"`
+	Connected        bool   `json:"connected"`
+	Pool             string `json:"pool"`
+	NodeID           string `json:"node_id"`
+	SelectedUpstream string `json:"selected_upstream"`
+	Version          int64  `json:"version"`
+	FallbackActive   bool   `json:"fallback_active"`
 }
 
 type runningTestEntry struct {
@@ -426,7 +440,11 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		mode := strings.ToLower(params.Mode)
 		if mode == "auto" {
 			c.manager.SetAuto()
+			if c.coord != nil {
+				c.coord.Disable()
+			}
 			c.metrics.SetMode(upstream.ModeAuto)
+			c.metrics.SetCoordinationState(c.manager.CoordinationState())
 			util.Event(c.logger, slog.LevelInfo, "control.rpc.set_upstream_applied",
 				"rpc.method", req.Method,
 				"upstream", "",
@@ -441,10 +459,32 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 				writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 				return
 			}
+			if c.coord != nil {
+				c.coord.Disable()
+			}
 			c.metrics.SetMode(upstream.ModeManual)
+			c.metrics.SetCoordinationState(c.manager.CoordinationState())
 			util.Event(c.logger, slog.LevelInfo, "control.rpc.set_upstream_applied",
 				"rpc.method", req.Method,
 				"upstream", params.Tag,
+				"upstream.mode", mode,
+			)
+			writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
+			return
+		}
+		if mode == "coordination" {
+			if c.coord == nil || !c.coord.Configured() {
+				completionErr = "coordination mode is not configured"
+				writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
+				return
+			}
+			c.manager.SetCoordination()
+			c.coord.Enable()
+			c.metrics.SetMode(upstream.ModeCoordination)
+			c.metrics.SetCoordinationState(c.manager.CoordinationState())
+			util.Event(c.logger, slog.LevelInfo, "control.rpc.set_upstream_applied",
+				"rpc.method", req.Method,
+				"upstream", "",
 				"upstream.mode", mode,
 			)
 			writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
@@ -481,10 +521,20 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
 	case "GetStatus":
 		upstreams := c.manager.Snapshot()
+		coordState := c.manager.CoordinationState()
 		resp := statusResponse{
 			Mode:           c.manager.Mode().String(),
 			ActiveUpstream: c.manager.ActiveTag(),
 			Upstreams:      upstreams,
+			Coordination: coordinationStatusResponse{
+				Available:        c.fullCfg.Coordination.IsConfigured(),
+				Connected:        coordState.Connected,
+				Pool:             c.fullCfg.Coordination.Pool,
+				NodeID:           c.fullCfg.Coordination.NodeID,
+				SelectedUpstream: coordState.SelectedUpstream,
+				Version:          coordState.Version,
+				FallbackActive:   coordState.FallbackActive,
+			},
 		}
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: resp})
 	case "GetMeasurementConfig":
@@ -759,6 +809,12 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"metrics": map[string]interface{}{
 				"enabled": cfg.Control.Metrics.IsEnabled(),
 			},
+		},
+		"coordination": map[string]interface{}{
+			"endpoint":           cfg.Coordination.Endpoint,
+			"pool":               cfg.Coordination.Pool,
+			"node_id":            cfg.Coordination.NodeID,
+			"heartbeat_interval": cfg.Coordination.HeartbeatInterval.Duration().String(),
 		},
 		"shaping": map[string]interface{}{
 			"enabled":         cfg.Shaping.Enabled,

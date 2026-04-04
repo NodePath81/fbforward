@@ -38,6 +38,14 @@ type Metrics struct {
 	upstreams          map[string]*UpstreamMetrics
 	mode               upstream.Mode
 	activeTag          string
+	coordConnected     bool
+	coordFallback      bool
+	coordVersion       int64
+	coordSelectedTag   string
+	coordPicksReceived uint64
+	coordPicksApplied  uint64
+	coordPicksRejected uint64
+	coordReconnects    uint64
 	tcpActive          int
 	udpActive          int
 	bytesUpTotal       map[string]*atomic.Uint64
@@ -257,6 +265,39 @@ func (m *Metrics) SetActive(tag string) {
 	m.activeTag = tag
 }
 
+func (m *Metrics) SetCoordinationState(state upstream.CoordinationState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordConnected = state.Connected
+	m.coordFallback = state.FallbackActive
+	m.coordVersion = state.Version
+	m.coordSelectedTag = state.SelectedUpstream
+}
+
+func (m *Metrics) IncCoordinationPicksReceived() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordPicksReceived++
+}
+
+func (m *Metrics) IncCoordinationPicksApplied() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordPicksApplied++
+}
+
+func (m *Metrics) IncCoordinationPicksRejected() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordPicksRejected++
+}
+
+func (m *Metrics) IncCoordinationReconnects() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordReconnects++
+}
+
 func (m *Metrics) IncTCPActive() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -331,6 +372,14 @@ func (m *Metrics) Render() string {
 	sort.Strings(tags)
 	mode := m.mode
 	active := m.activeTag
+	coordConnected := m.coordConnected
+	coordFallback := m.coordFallback
+	coordVersion := m.coordVersion
+	coordSelectedTag := m.coordSelectedTag
+	coordPicksReceived := m.coordPicksReceived
+	coordPicksApplied := m.coordPicksApplied
+	coordPicksRejected := m.coordPicksRejected
+	coordReconnects := m.coordReconnects
 	tcpActive := m.tcpActive
 	udpActive := m.udpActive
 	upstreams := make(map[string]UpstreamMetrics, len(m.upstreams))
@@ -465,11 +514,58 @@ func (m *Metrics) Render() string {
 	}
 	b.WriteString("# TYPE fbforward_mode gauge\n")
 	b.WriteString("fbforward_mode ")
-	if mode == upstream.ModeManual {
+	switch mode {
+	case upstream.ModeManual:
 		b.WriteString("1\n")
-	} else {
+	case upstream.ModeCoordination:
+		b.WriteString("2\n")
+	default:
 		b.WriteString("0\n")
 	}
+	b.WriteString("# TYPE fbforward_coord_connected gauge\n")
+	if coordConnected {
+		b.WriteString("fbforward_coord_connected 1\n")
+	} else {
+		b.WriteString("fbforward_coord_connected 0\n")
+	}
+	b.WriteString("# TYPE fbforward_coord_fallback_active gauge\n")
+	if coordFallback {
+		b.WriteString("fbforward_coord_fallback_active 1\n")
+	} else {
+		b.WriteString("fbforward_coord_fallback_active 0\n")
+	}
+	b.WriteString("# TYPE fbforward_coord_version gauge\n")
+	b.WriteString("fbforward_coord_version ")
+	b.WriteString(strconv.FormatInt(coordVersion, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_coord_selected_upstream gauge\n")
+	for _, tag := range tags {
+		val := "0"
+		if tag == coordSelectedTag && coordSelectedTag != "" {
+			val = "1"
+		}
+		b.WriteString("fbforward_coord_selected_upstream{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(val)
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_coord_picks_received_total counter\n")
+	b.WriteString("fbforward_coord_picks_received_total ")
+	b.WriteString(strconv.FormatUint(coordPicksReceived, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_coord_picks_applied_total counter\n")
+	b.WriteString("fbforward_coord_picks_applied_total ")
+	b.WriteString(strconv.FormatUint(coordPicksApplied, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_coord_picks_rejected_total counter\n")
+	b.WriteString("fbforward_coord_picks_rejected_total ")
+	b.WriteString(strconv.FormatUint(coordPicksRejected, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_coord_reconnects_total counter\n")
+	b.WriteString("fbforward_coord_reconnects_total ")
+	b.WriteString(strconv.FormatUint(coordReconnects, 10))
+	b.WriteString("\n")
 	b.WriteString("# TYPE fbforward_active_upstream gauge\n")
 	for _, tag := range tags {
 		val := "0"

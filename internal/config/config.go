@@ -66,6 +66,7 @@ const (
 	defaultControlPort           = 8080
 	defaultControlWebUIEnabled   = true
 	defaultControlMetricsEnabled = true
+	defaultCoordinationHeartbeat = 10 * time.Second
 	defaultLoggingLevel          = "info"
 	defaultLoggingFormat         = "text"
 
@@ -124,6 +125,7 @@ type Config struct {
 	Scoring      ScoringConfig      `yaml:"scoring"`
 	Switching    SwitchingConfig    `yaml:"switching"`
 	Control      ControlConfig      `yaml:"control"`
+	Coordination CoordinationConfig `yaml:"coordination"`
 	Logging      LoggingConfig      `yaml:"logging"`
 	Shaping      ShapingConfig      `yaml:"shaping"`
 }
@@ -325,6 +327,14 @@ type ControlMetricsConfig struct {
 	Enabled *bool `yaml:"enabled"`
 }
 
+type CoordinationConfig struct {
+	Endpoint          string   `yaml:"endpoint"`
+	Pool              string   `yaml:"pool"`
+	NodeID            string   `yaml:"node_id"`
+	Token             string   `yaml:"token"`
+	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
+}
+
 type ShapingConfig struct {
 	Enabled        bool   `yaml:"enabled"`
 	Interface      string `yaml:"interface"`
@@ -345,6 +355,21 @@ func (w ControlWebUIConfig) IsEnabled() bool {
 
 func (m ControlMetricsConfig) IsEnabled() bool {
 	return util.BoolValue(m.Enabled, defaultControlMetricsEnabled)
+}
+
+func (c CoordinationConfig) HasAnyField() bool {
+	return strings.TrimSpace(c.Endpoint) != "" ||
+		strings.TrimSpace(c.Pool) != "" ||
+		strings.TrimSpace(c.NodeID) != "" ||
+		strings.TrimSpace(c.Token) != "" ||
+		c.HeartbeatInterval != 0
+}
+
+func (c CoordinationConfig) IsConfigured() bool {
+	return strings.TrimSpace(c.Endpoint) != "" &&
+		strings.TrimSpace(c.Pool) != "" &&
+		strings.TrimSpace(c.NodeID) != "" &&
+		strings.TrimSpace(c.Token) != ""
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -604,6 +629,9 @@ func (c *Config) setDefaults() {
 		enabled := defaultControlMetricsEnabled
 		c.Control.Metrics.Enabled = &enabled
 	}
+	if c.Coordination.HasAnyField() && c.Coordination.HeartbeatInterval == 0 {
+		c.Coordination.HeartbeatInterval = Duration(defaultCoordinationHeartbeat)
+	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = defaultLoggingLevel
 	}
@@ -754,11 +782,27 @@ func (c *Config) validate() error {
 	if c.Control.AuthToken == "" {
 		return errors.New("control.auth_token must not be empty")
 	}
-	if err := validateAuthToken(c.Control.AuthToken); err != nil {
+	if err := validateAuthTokenField(c.Control.AuthToken, "control.auth_token"); err != nil {
 		return err
 	}
 	if c.Control.BindPort <= 0 || c.Control.BindPort > 65535 {
 		return errors.New("control.bind_port must be in 1..65535")
+	}
+
+	c.Coordination.Endpoint = strings.TrimSpace(c.Coordination.Endpoint)
+	c.Coordination.Pool = strings.TrimSpace(c.Coordination.Pool)
+	c.Coordination.NodeID = strings.TrimSpace(c.Coordination.NodeID)
+	c.Coordination.Token = strings.TrimSpace(c.Coordination.Token)
+	if c.Coordination.HasAnyField() {
+		if c.Coordination.Endpoint == "" || c.Coordination.Pool == "" || c.Coordination.NodeID == "" || c.Coordination.Token == "" {
+			return errors.New("coordination.endpoint, pool, node_id, and token must be set together")
+		}
+		if c.Coordination.HeartbeatInterval.Duration() <= 0 {
+			return errors.New("coordination.heartbeat_interval must be > 0")
+		}
+		if err := validateAuthTokenField(c.Coordination.Token, "coordination.token"); err != nil {
+			return err
+		}
 	}
 
 	c.Logging.Level = strings.ToLower(strings.TrimSpace(c.Logging.Level))
@@ -896,11 +940,15 @@ func (c *Config) validate() error {
 }
 
 func validateAuthToken(token string) error {
+	return validateAuthTokenField(token, "control.auth_token")
+}
+
+func validateAuthTokenField(token, field string) error {
 	if strings.EqualFold(token, "change-me") {
-		return errors.New("control.auth_token must not use the default placeholder value")
+		return fmt.Errorf("%s must not use the default placeholder value", field)
 	}
 	if len(token) < 16 {
-		return errors.New("control.auth_token must be at least 16 characters long")
+		return fmt.Errorf("%s must be at least 16 characters long", field)
 	}
 	return nil
 }

@@ -137,7 +137,10 @@ function startApp(token: string) {
 
   modeButtons.forEach(button => {
     button.addEventListener('click', () => {
-      const mode = button.dataset.mode === 'manual' ? 'manual' : 'auto';
+      const mode = button.dataset.mode as Mode | undefined;
+      if (!mode) {
+        return;
+      }
       setModeUI(mode, true);
     });
   });
@@ -257,6 +260,7 @@ function startApp(token: string) {
     statusCard({
       mode: state.control.mode,
       activeUpstream: state.activeUpstream,
+      coordination: state.coordination,
       tcp: state.connections.tcp.size,
       udp: state.connections.udp.size,
       memoryBytes: state.memoryBytes,
@@ -470,14 +474,16 @@ function startApp(token: string) {
       return;
     }
     const data = resp.result;
+    const selectedUpstream = data.mode === 'manual' ? data.active_upstream || null : null;
     store.setState({
       upstreams: data.upstreams,
       mode: data.mode,
       activeUpstream: data.active_upstream,
+      coordination: data.coordination,
       control: {
         ...store.getState().control,
         mode: data.mode,
-        selectedUpstream: data.active_upstream || null
+        selectedUpstream
       }
     });
     rebuildUpstreamGrid();
@@ -707,13 +713,31 @@ function startApp(token: string) {
       store.setState({
         mode: snapshot.mode,
         activeUpstream: snapshot.activeUpstream,
+        coordination: {
+          ...store.getState().coordination,
+          connected: snapshot.coordination.connected,
+          fallback_active: snapshot.coordination.fallbackActive,
+          version: snapshot.coordination.version,
+          selected_upstream: snapshot.coordination.selectedUpstream
+        },
         counts: snapshot.counts,
         metrics: snapshot.upstreams,
         memoryBytes: snapshot.memoryBytes,
         goroutines: snapshot.goroutines,
         uptimeSeconds: snapshot.uptimeSeconds,
         totalBytesUp: snapshot.totalBytesUp,
-        totalBytesDown: snapshot.totalBytesDown
+        totalBytesDown: snapshot.totalBytesDown,
+        control: {
+          ...store.getState().control,
+          mode: snapshot.mode,
+          selectedUpstream:
+            snapshot.mode === 'manual'
+              ? store.getState().control.selectedUpstream ||
+                snapshot.activeUpstream ||
+                store.getState().upstreams[0]?.tag ||
+                null
+              : null
+        }
       });
       store.setState({
         pollErrors: {

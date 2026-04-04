@@ -8,7 +8,7 @@ This reference documents all configuration options for fbforward. For operationa
 
 ### YAML structure
 
-fbforward uses YAML for configuration. The top-level structure contains 10 main sections:
+fbforward uses YAML for configuration. The top-level structure contains 11 main sections:
 
 ```yaml
 hostname: fbforward-01           # Optional identifier
@@ -20,6 +20,7 @@ measurement: {...}                # fbmeasure probe settings
 scoring: {...}                    # Quality scoring algorithm
 switching: {...}                  # Upstream switching behavior
 control: {...}                    # Control plane (HTTP API, web UI)
+coordination: {...}               # Optional fbcoord participation
 shaping: {...}                    # Linux tc traffic shaping
 ```
 
@@ -200,7 +201,7 @@ forwarding:
         download_limit: 200m
 ```
 
-At least one of `upload_limit` or `download_limit` must be specified. See [Section 4.10](configuration-reference.md#410-shaping-section) for shaping architecture.
+At least one of `upload_limit` or `download_limit` must be specified. See [Section 4.11](configuration-reference.md#411-shaping-section) for shaping architecture.
 
 ---
 
@@ -355,7 +356,7 @@ upstreams:
       download_limit: 500m
 ```
 
-At least one of `upload_limit` or `download_limit` must be specified. Shaping applies to all traffic to/from the upstream's resolved IP addresses. See [Section 4.10](configuration-reference.md#410-shaping-section).
+At least one of `upload_limit` or `download_limit` must be specified. Shaping applies to all traffic to/from the upstream's resolved IP addresses. See [Section 4.11](configuration-reference.md#411-shaping-section) for shaping architecture.
 
 **Validation:**
 - `tag` must be unique across all upstreams
@@ -957,6 +958,10 @@ Browser WebSocket requests must be same-origin. fbforward rejects upgrades whose
 
 See [Section 5.2](api-reference.md#52-control-plane-api) for API details.
 
+When coordination is configured, the local Web UI can also switch the runtime
+into `coordination` mode and display live coordination status using the same
+local control plane.
+
 ### webui
 
 Web UI enable/disable.
@@ -995,7 +1000,47 @@ When `false`, `GET /metrics` returns 404.
 
 ---
 
-## 4.10 shaping section
+## 4.10 coordination section
+
+The `coordination` section enables optional participation in an external
+`fbcoord` service. When configured, operators can switch the runtime into
+`coordination` mode using the existing local control plane.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `endpoint` | string | *required when section is used* | Base URL for the `fbcoord` service |
+| `pool` | string | *required when section is used* | Coordination pool name |
+| `node_id` | string | *required when section is used* | Stable node identifier submitted to `fbcoord` |
+| `token` | string | *required when section is used* | Bearer token used to authenticate with `fbcoord` |
+| `heartbeat_interval` | duration | `10s` | Heartbeat and full preference submission interval |
+
+**Example:**
+
+```yaml
+coordination:
+  endpoint: https://fbcoord.example.workers.dev
+  pool: default
+  node_id: fbforward-01
+  token: "replace-with-a-separate-long-random-token"
+  heartbeat_interval: 10s
+```
+
+**Behavior:**
+- The section is optional.
+- If any coordination field is set, all of `endpoint`, `pool`, `node_id`, and `token` must be set.
+- fbforward connects to `fbcoord` only while runtime mode is `coordination`, using the node participation endpoint `/ws/node`.
+- The local node submits its sorted upstream preference list in best-first order.
+- If `fbcoord` returns no upstream, disconnects, or returns a locally unusable upstream, fbforward stays in coordination mode and falls back to local auto-selection behavior.
+
+**Validation:**
+- `heartbeat_interval` must be > 0 when the section is used
+- `token` must not be empty
+- `token` must not use the placeholder value `change-me`
+- `token` must be at least 16 characters long
+
+---
+
+## 4.11 shaping section
 
 The `shaping` section configures Linux tc (traffic control) bandwidth shaping via netlink. Shaping is optional and requires `CAP_NET_ADMIN` capability.
 
@@ -1099,4 +1144,5 @@ fbforward will not create tc qdiscs or require `CAP_NET_ADMIN`.
 | `scoring` | [6.1.2](algorithm-specifications.md#612-formal-description) | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `switching` | [6.1.4](algorithm-specifications.md#614-edge-cases) | [3.1.1](user-guide-fbforward.md#311-overview) |
 | `control` | - | [3.1.3](user-guide-fbforward.md#313-operation), [5.2](api-reference.md#52-control-plane-api) |
+| `coordination` | - | [3.1.1](user-guide-fbforward.md#311-overview), [5.2](api-reference.md#52-control-plane-api) |
 | `shaping` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |

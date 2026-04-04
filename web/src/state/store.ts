@@ -1,4 +1,11 @@
-import type { ControlState, ConnectionEntry, Mode, UpstreamMetrics, UpstreamSnapshot } from '../types';
+import type {
+  ControlState,
+  ConnectionEntry,
+  CoordinationStatus,
+  Mode,
+  UpstreamMetrics,
+  UpstreamSnapshot
+} from '../types';
 
 export interface AppState {
   token: string;
@@ -23,6 +30,7 @@ export interface AppState {
   version: string;
   mode: Mode;
   activeUpstream: string;
+  coordination: CoordinationStatus;
   pollErrors: {
     metrics: string | null;
   };
@@ -102,6 +110,15 @@ export function createInitialState(token: string): AppState {
     version: '',
     mode: 'auto',
     activeUpstream: '',
+    coordination: {
+      available: false,
+      connected: false,
+      pool: '',
+      node_id: '',
+      selected_upstream: '',
+      version: 0,
+      fallback_active: false
+    },
     pollErrors: {
       metrics: null
     }

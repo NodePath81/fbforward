@@ -10,6 +10,12 @@ export type MetricsMap = Record<string, MetricSample[]>;
 export interface MetricsSnapshot {
   mode: Mode;
   activeUpstream: string;
+  coordination: {
+    connected: boolean;
+    fallbackActive: boolean;
+    version: number;
+    selectedUpstream: string;
+  };
   counts: {
     tcp: number;
     udp: number;
@@ -57,10 +63,18 @@ export function parseMetrics(text: string): MetricsMap {
 
 export function extractMetrics(data: MetricsMap): MetricsSnapshot {
   const modeValue = data['fbforward_mode']?.[0]?.value ?? 0;
-  const mode: Mode = modeValue === 1 ? 'manual' : 'auto';
+  let mode: Mode = 'auto';
+  if (modeValue === 1) {
+    mode = 'manual';
+  } else if (modeValue === 2) {
+    mode = 'coordination';
+  }
 
   const tcp = data['fbforward_tcp_active']?.[0]?.value ?? 0;
   const udp = data['fbforward_udp_mappings_active']?.[0]?.value ?? 0;
+  const coordConnected = data['fbforward_coord_connected']?.[0]?.value === 1;
+  const coordFallbackActive = data['fbforward_coord_fallback_active']?.[0]?.value === 1;
+  const coordVersion = data['fbforward_coord_version']?.[0]?.value ?? 0;
   const memorySample = data['fbforward_memory_alloc_bytes']?.[0]?.value;
   const memoryBytes = Number.isFinite(memorySample) ? memorySample : Number.NaN;
   const goroutinesSample = data['fbforward_goroutines']?.[0]?.value;
@@ -70,10 +84,17 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
 
   const activeTags = new Set<string>();
   let activeUpstream = '';
+  let coordSelectedUpstream = '';
   for (const item of data['fbforward_active_upstream'] || []) {
     if (item.value === 1 && item.labels.upstream) {
       activeTags.add(item.labels.upstream);
       activeUpstream = item.labels.upstream;
+    }
+  }
+  for (const item of data['fbforward_coord_selected_upstream'] || []) {
+    if (item.value === 1 && item.labels.upstream) {
+      coordSelectedUpstream = item.labels.upstream;
+      break;
     }
   }
 
@@ -217,6 +238,12 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
   return {
     mode,
     activeUpstream,
+    coordination: {
+      connected: coordConnected,
+      fallbackActive: coordFallbackActive,
+      version: coordVersion,
+      selectedUpstream: coordSelectedUpstream
+    },
     counts: { tcp, udp },
     upstreams,
     memoryBytes,

@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"math/rand"
 	"testing"
 	"time"
 
@@ -93,5 +94,163 @@ func TestApplyEMA(t *testing.T) {
 	val3 := applyEMA(100, val2, 0.2, &init)
 	if val3 != 92 {
 		t.Fatalf("expected EMA second iteration to be 92, got %v", val3)
+	}
+}
+
+func TestModeStringCoordination(t *testing.T) {
+	if got := ModeCoordination.String(); got != "coordination" {
+		t.Fatalf("expected coordination mode string, got %q", got)
+	}
+}
+
+func TestRankedTagsExcludesUnavailableAndPreservesConfigOrder(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 80, true),
+		testUpstream("beta", 80, true),
+		testUpstream("gamma", 95, true),
+		testUpstream("delta", 70, true),
+	)
+	manager.upstreams["delta"].dialFailUntil = time.Now().Add(time.Minute)
+
+	got := manager.RankedTags()
+	want := []string{"gamma", "alpha", "beta"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v ranked tags, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected ranked tags %v, got %v", want, got)
+		}
+	}
+}
+
+func TestCoordinationPickApplied(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 90, true),
+		testUpstream("beta", 70, true),
+	)
+
+	manager.SetCoordination()
+	applied, err := manager.ApplyCoordinationPick(1, "beta")
+	if err != nil {
+		t.Fatalf("expected valid coordination pick, got error %v", err)
+	}
+	if !applied {
+		t.Fatalf("expected coordination pick to apply")
+	}
+
+	state := manager.CoordinationState()
+	if state.FallbackActive || state.SelectedUpstream != "beta" || state.Version != 1 {
+		t.Fatalf("unexpected coordination state: %+v", state)
+	}
+	if manager.ActiveTag() != "beta" {
+		t.Fatalf("expected active upstream beta, got %q", manager.ActiveTag())
+	}
+}
+
+func TestCoordinationStaleVersionIgnored(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 90, true),
+		testUpstream("beta", 70, true),
+	)
+
+	manager.SetCoordination()
+	if _, err := manager.ApplyCoordinationPick(2, "beta"); err != nil {
+		t.Fatalf("expected first coordination pick to apply: %v", err)
+	}
+	applied, err := manager.ApplyCoordinationPick(1, "alpha")
+	if err == nil {
+		t.Fatalf("expected stale coordination version error")
+	}
+	if applied {
+		t.Fatalf("expected stale coordination pick to be ignored")
+	}
+	if manager.ActiveTag() != "beta" {
+		t.Fatalf("expected active upstream to remain beta, got %q", manager.ActiveTag())
+	}
+	if got := manager.CoordinationState().Version; got != 2 {
+		t.Fatalf("expected coordination version 2, got %d", got)
+	}
+}
+
+func TestCoordinationModeWithoutPickFallsBackToAutoSelection(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 95, true),
+		testUpstream("beta", 65, true),
+	)
+
+	manager.SetCoordination()
+
+	state := manager.CoordinationState()
+	if !state.FallbackActive {
+		t.Fatalf("expected fallback to local auto selection, got %+v", state)
+	}
+	if manager.ActiveTag() != "alpha" {
+		t.Fatalf("expected best local upstream alpha during fallback, got %q", manager.ActiveTag())
+	}
+}
+
+func TestCoordinationInvalidPickFallsBackToAutoSelection(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 95, true),
+		testUpstream("beta", 65, false),
+	)
+
+	manager.SetCoordination()
+	applied, err := manager.ApplyCoordinationPick(1, "beta")
+	if err == nil {
+		t.Fatalf("expected invalid coordination pick to be rejected")
+	}
+	if applied {
+		t.Fatalf("expected invalid coordination pick to be ignored")
+	}
+
+	state := manager.CoordinationState()
+	if !state.FallbackActive {
+		t.Fatalf("expected fallback state after invalid coordination pick, got %+v", state)
+	}
+	if manager.ActiveTag() != "alpha" {
+		t.Fatalf("expected fallback to best local upstream alpha, got %q", manager.ActiveTag())
+	}
+}
+
+func TestSwitchingAwayFromCoordinationClearsCoordinationState(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 95, true),
+		testUpstream("beta", 65, true),
+	)
+
+	manager.SetCoordination()
+	if _, err := manager.ApplyCoordinationPick(3, "beta"); err != nil {
+		t.Fatalf("expected coordination pick to apply: %v", err)
+	}
+	manager.SetAuto()
+
+	state := manager.CoordinationState()
+	if state.Connected || state.SelectedUpstream != "" || state.Version != 0 || state.FallbackActive {
+		t.Fatalf("expected coordination state to be cleared, got %+v", state)
+	}
+	if manager.Mode() != ModeAuto {
+		t.Fatalf("expected auto mode, got %s", manager.Mode().String())
+	}
+}
+
+func newTestManager(upstreams ...*Upstream) *UpstreamManager {
+	manager := NewUpstreamManager(upstreams, rand.New(rand.NewSource(1)), nil)
+	manager.staleThreshold = time.Minute
+	return manager
+}
+
+func testUpstream(tag string, score float64, usable bool) *Upstream {
+	now := time.Now()
+	return &Upstream{
+		Tag: tag,
+		stats: UpstreamStats{
+			Reachable:     usable,
+			Usable:        usable,
+			Score:         score,
+			LastTCPUpdate: now,
+			LastUDPUpdate: now,
+		},
 	}
 }

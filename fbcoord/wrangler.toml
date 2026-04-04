@@ -1,0 +1,11 @@
+name = "fbcoord"
+main = "src/worker.ts"
+compatibility_date = "2026-04-04"
+
+[[durable_objects.bindings]]
+name = "FBCOORD_POOL"
+class_name = "PoolDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["PoolDurableObject"]

@@ -13,12 +13,14 @@ Behavior highlights:
 - NAT-style forwarding: clients connect to fbforward; upstream sees fbforward as source.
 - Multiple listeners, single global upstream list; outbound port matches listener port.
 - Probing uses fbmeasure RTT/jitter/retransmission/loss measurements for scoring; ICMP is reachability-only.
-- Auto mode uses time-based confirmation, score threshold, and a minimum hold time; manual mode rejects unusable tags.
+- Auto mode uses time-based confirmation, score threshold, and a minimum hold time; manual mode rejects unusable tags; optional coordination mode applies shared picks from `fbcoord` and falls back to local auto behavior when no valid coordinated pick is available.
 - Fast failover triggers on loss/retrans thresholds or consecutive dial failures.
 - TCP/UDP flows are pinned to the selected upstream until idle/expired.
 
 fbforward relies on the `fbmeasure` server binary running on each upstream host
 to provide targeted TCP/UDP measurement endpoints.
+Coordination mode is optional and depends on a separate `fbcoord` service
+deployed on Workers with Durable Objects.
 
 Docs: `doc/` (start with `doc/project-overview.md`, `doc/user-guide-fbforward.md`, and `doc/configuration-reference.md`).
 
@@ -85,12 +87,20 @@ control:
     enabled: true
   metrics:
     enabled: true
+
+# Optional coordination mode via fbcoord
+coordination:
+  endpoint: https://fbcoord.example.workers.dev
+  pool: default
+  node_id: fbforward-01
+  token: "replace-with-a-separate-long-random-token"
+  heartbeat_interval: 10s
 ```
 
 Use a random token with at least 16 characters. The placeholder value
 `change-me` is rejected at startup.
 
-See `doc/configuration-reference.md` for the full schema (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `shaping`).
+See `doc/configuration-reference.md` for the full schema (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `shaping`).
 
 ## Run (fbforward)
 

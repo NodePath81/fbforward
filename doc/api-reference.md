@@ -515,12 +515,16 @@ Set upstream selection mode.
 
 ```json
 {
-  "mode": "auto" | "manual",
+  "mode": "auto" | "manual" | "coordination",
   "tag": "upstream-tag" // Required if mode=manual
 }
 ```
 
 **Result:** `null` (success indicated by `ok: true`)
+
+**Notes:**
+- `tag` is required only when `mode` is `manual`.
+- `mode: "coordination"` is rejected if the `coordination` config section is not present and valid.
 
 **Example (switch to auto mode):**
 
@@ -538,6 +542,15 @@ curl -X POST http://localhost:8080/rpc \
   -H "Authorization: Bearer token" \
   -H "Content-Type: application/json" \
   -d '{"method": "SetUpstream", "params": {"mode": "manual", "tag": "primary"}}'
+```
+
+**Example (enter coordination mode):**
+
+```bash
+curl -X POST http://localhost:8080/rpc \
+  -H "Authorization: Bearer token" \
+  -H "Content-Type: application/json" \
+  -d '{"method": "SetUpstream", "params": {"mode": "coordination"}}'
 ```
 
 #### Restart
@@ -573,8 +586,17 @@ Retrieve current runtime status.
 
 ```json
 {
-  "mode": "auto" | "manual",
+  "mode": "auto" | "manual" | "coordination",
   "active_upstream": "tag",
+  "coordination": {
+    "available": true,
+    "connected": true,
+    "pool": "default",
+    "node_id": "fbforward-01",
+    "selected_upstream": "primary",
+    "version": 4,
+    "fallback_active": false
+  },
   "upstreams": [
     {
       "tag": "primary",
@@ -591,6 +613,8 @@ Retrieve current runtime status.
 
 **Field descriptions:**
 
+- `mode`: Current runtime mode
+- `active_upstream`: Current primary upstream for new flows
 - `tag`: Upstream identifier
 - `host`: Configured hostname or IP
 - `ips`: All resolved IP addresses
@@ -598,6 +622,13 @@ Retrieve current runtime status.
 - `active`: Whether this is the primary upstream (receives new flows)
 - `usable`: Whether upstream is eligible for selection (not failed/unreachable)
 - `reachable`: ICMP probe reachability status
+- `coordination.available`: Whether coordination mode is configured locally
+- `coordination.connected`: Whether the node is currently connected to `fbcoord`
+- `coordination.pool`: Configured coordination pool name
+- `coordination.node_id`: Configured node identifier
+- `coordination.selected_upstream`: Latest coordinated upstream pick, if any
+- `coordination.version`: Latest applied coordination version
+- `coordination.fallback_active`: Whether coordination mode is currently using local auto-selection fallback
 
 **Note:** Numeric metrics (RTT, jitter, loss/retransmit, scores, traffic rates) are available via Prometheus `/metrics`. Active connection counts are available via WebSocket `connections_snapshot` or Prometheus metrics.
 
@@ -670,7 +701,9 @@ Retrieve complete runtime configuration (all sections).
 
 **Parameters:** Empty object `{}`
 
-**Result:** Full configuration object with all sections (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `shaping`).
+**Result:** Full configuration object with all sections (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `shaping`).
+
+**Note:** The `coordination` block includes non-secret fields such as `endpoint`, `pool`, `node_id`, and `heartbeat_interval`. The coordination token is not returned.
 
 #### GetScheduleStatus
 
@@ -755,6 +788,10 @@ const ws = new WebSocket('ws://localhost:8080/status', ['fbforward', `fbforward-
 
 Browser WebSocket requests must be same-origin. fbforward rejects upgrades whose
 `Origin` host does not match the request host.
+
+**Schema note:** The v1 `/status` WebSocket protocol does not include a
+coordination-specific message type. Live coordination state is bootstrapped from
+`GetStatus` and refreshed from `/metrics`.
 
 **CLI usage (header):**
 
@@ -1124,7 +1161,15 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `fbforward_mode` | gauge | - | Selection mode: 1=manual, 0=auto |
+| `fbforward_mode` | gauge | - | Selection mode: 0=auto, 1=manual, 2=coordination |
+| `fbforward_coord_connected` | gauge | - | Coordination service connection state: 1=connected, 0=disconnected |
+| `fbforward_coord_fallback_active` | gauge | - | Coordination fallback state: 1=using local auto fallback, 0=inactive |
+| `fbforward_coord_version` | gauge | - | Last applied coordination version |
+| `fbforward_coord_selected_upstream` | gauge | `upstream` | Coordinated upstream indicator: 1=selected, 0=not selected |
+| `fbforward_coord_picks_received_total` | counter | - | Total coordination picks received from `fbcoord` |
+| `fbforward_coord_picks_applied_total` | counter | - | Total coordination picks applied locally |
+| `fbforward_coord_picks_rejected_total` | counter | - | Total coordination picks rejected locally |
+| `fbforward_coord_reconnects_total` | counter | - | Total coordination reconnect attempts after session loss |
 | `fbforward_active_upstream` | gauge | `upstream` | Active upstream: 1=active, 0=inactive |
 | `fbforward_tcp_active` | gauge | - | Active TCP connections |
 | `fbforward_udp_mappings_active` | gauge | - | Active UDP mappings |

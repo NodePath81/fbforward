@@ -42,15 +42,21 @@ Once a [flow](glossary.md#flow) (TCP connection or UDP 5-tuple mapping) is assig
 
 ### Operational modes
 
-fbforward supports two upstream selection modes:
+fbforward supports three upstream selection modes:
 
 **Auto mode** (default): The [scoring engine](glossary.md#scoring-engine) evaluates upstream quality using fbmeasure results. When a candidate upstream's score exceeds the current primary's score by the configured [threshold](glossary.md#score-delta-threshold) for the [confirmation duration](glossary.md#confirm-duration), fbforward switches to the new primary. Switching requires the [hold time](glossary.md#hold-time) to have elapsed since the last switch.
 
 **Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
 
+**Coordination mode**: An operator selects coordination mode via the control plane RPC method `SetUpstream` with `mode: "coordination"`. fbforward then connects to `fbcoord`, submits its sorted local upstream preference list, and applies the coordinated upstream returned by `fbcoord` when that pick is locally usable.
+
 Mode behavior:
 - Startup mode is always auto
 - Manual mode is entered only when operator calls `SetUpstream` RPC with `mode: "manual"`
+- Coordination mode is entered only when operator calls `SetUpstream` RPC with `mode: "coordination"` and coordination is configured
+- In coordination mode, a valid coordinated pick overrides local auto selection for new flows
+- If `fbcoord` returns no upstream, disconnects, or returns a locally invalid upstream, fbforward remains in coordination mode but falls back to local auto-selection behavior
+- The local Web UI exposes `auto`, `manual`, and `coordination` mode buttons when enabled
 
 ### Fast failover
 
