@@ -33,8 +33,10 @@ class ProcessInfo:
 
 @dataclass(slots=True)
 class ProxyInfo:
+    listen_host: str
     host_port: int
-    target_ip: str
+    target_ns: str
+    target_host: str
     target_port: int
 
 

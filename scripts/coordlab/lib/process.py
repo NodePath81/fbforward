@@ -85,13 +85,12 @@ class ProcessManager:
         self._processes: dict[str, ManagedProcess] = {}
         self._start_order: list[str] = []
 
-    def start(
+    def _spawn(
         self,
-        ns_pid: int,
-        ns_name: str,
         cmd: list[str],
         name: str,
         *,
+        ns_name: str,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> ManagedProcess:
@@ -104,17 +103,7 @@ class ProcessManager:
         if env:
             full_env.update(env)
         process = subprocess.Popen(
-            [
-                "nsenter",
-                "--preserve-credentials",
-                "--keep-caps",
-                "-t",
-                str(ns_pid),
-                "-U",
-                "-n",
-                "--",
-                *cmd,
-            ],
+            cmd,
             cwd=cwd,
             env=full_env,
             stdout=log_handle,
@@ -132,6 +121,44 @@ class ProcessManager:
         self._processes[name] = managed
         self._start_order.append(name)
         return managed
+
+    def start(
+        self,
+        ns_pid: int,
+        ns_name: str,
+        cmd: list[str],
+        name: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ManagedProcess:
+        return self._spawn(
+            [
+                "nsenter",
+                "--preserve-credentials",
+                "--keep-caps",
+                "-t",
+                str(ns_pid),
+                "-U",
+                "-n",
+                "--",
+                *cmd,
+            ],
+            name,
+            ns_name=ns_name,
+            cwd=cwd,
+            env=env,
+        )
+
+    def start_host(
+        self,
+        cmd: list[str],
+        name: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ManagedProcess:
+        return self._spawn(cmd, name, ns_name="host", cwd=cwd, env=env)
 
     def stop(self, name: str, timeout_sec: float = 5.0) -> None:
         managed = self._processes.pop(name, None)

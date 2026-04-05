@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
+import socket
 import subprocess
 import sys
 import textwrap
@@ -14,20 +16,31 @@ from typing import Iterable
 
 from lib import config as coordconfig
 from lib import netns
+from lib.output import render_summary
 from lib.process import ProcessManager, is_alive, terminate_pid, terminate_process_group
-from lib.state import LabState, LinkInfo, NamespaceInfo, ProcessInfo, TokenInfo, TopologyInfo, load_state, save_state
+from lib.proxy import run_proxy_daemon
+from lib.state import LabState, LinkInfo, NamespaceInfo, ProcessInfo, ProxyInfo, TokenInfo, TopologyInfo, load_state, save_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+COORDLAB_SCRIPT = Path(__file__).resolve()
 DEFAULT_WORKDIR = Path("/tmp/coordlab")
 STATE_FILENAME = "state.json"
 FBFORWARD_BIN = REPO_ROOT / "build/bin/fbforward"
 FBMEASURE_BIN = REPO_ROOT / "build/bin/fbmeasure"
 FBCOORD_BUILD_SENTINEL = REPO_ROOT / "fbcoord/ui/dist/index.html"
+VENV_PYTHON = REPO_ROOT / ".venv/bin/python"
+REQUIREMENTS_FILE = REPO_ROOT / "scripts/coordlab/requirements.txt"
 CONFIGS_DIRNAME = "configs"
 LOGS_DIRNAME = "logs"
 RUNTIME_DIRNAME = coordconfig.FBCOORD_RUNTIME_DIR
 POLL_INTERVAL_SEC = 0.5
 READINESS_TIMEOUT_SEC = 30.0
+PROXY_PROCESS_NAME = "coordlab-proxy"
+PROXY_SPECS = {
+    "fbcoord": ("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
+    "node-1": ("127.0.0.1", 18701, "node-1", "127.0.0.1", 8080),
+    "node-2": ("127.0.0.1", 18702, "node-2", "127.0.0.1", 8080),
+}
 
 HTTP_HELPER = textwrap.dedent(
     """\
@@ -68,6 +81,26 @@ def runtime_dir_for(workdir: Path) -> Path:
     return workdir / RUNTIME_DIRNAME
 
 
+def require_runtime_environment() -> None:
+    actual = Path(sys.executable).resolve()
+    if actual != VENV_PYTHON.resolve():
+        raise RuntimeError(
+            "coordlab must be run with the repo venv interpreter.\n"
+            f"expected: {VENV_PYTHON}\n"
+            f"actual:   {actual}\n"
+            "bootstrap:\n"
+            "  python3 -m venv .venv\n"
+            "  .venv/bin/pip install -r scripts/coordlab/requirements.txt"
+        )
+    if importlib.util.find_spec("httpx") is None:
+        raise RuntimeError(
+            "coordlab requires httpx in the repo venv.\n"
+            "bootstrap:\n"
+            "  python3 -m venv .venv\n"
+            "  .venv/bin/pip install -r scripts/coordlab/requirements.txt"
+        )
+
+
 def build_state(
     workdir: Path,
     topology: netns.Topology,
@@ -75,6 +108,7 @@ def build_state(
     *,
     active: bool,
     processes: dict[str, ProcessInfo] | None = None,
+    proxies: dict[str, ProxyInfo] | None = None,
     tokens: TokenInfo | None = None,
 ) -> LabState:
     namespaces = {
@@ -100,6 +134,7 @@ def build_state(
         work_dir=str(workdir),
         namespaces=namespaces,
         processes=processes or {},
+        proxies=proxies or {},
         tokens=tokens or TokenInfo(),
         topology=TopologyInfo(base_cidr=topology.base_cidr, links=links),
     )
@@ -121,7 +156,7 @@ def process_shutdown_order(processes: dict[str, ProcessInfo]) -> list[tuple[str,
     return sorted(processes.items(), key=lambda item: (item[1].order, item[0]), reverse=True)
 
 
-def print_status(state: LabState) -> None:
+def print_basic_status(state: LabState) -> None:
     workdir = Path(state.work_dir)
     print(f"coordlab phase={state.phase} active={state.active}")
     print(f"work_dir={state.work_dir}")
@@ -141,6 +176,13 @@ def print_status(state: LabState) -> None:
             f"  {link.left_ns}:{link.left_if} {link.left_ip} <-> "
             f"{link.right_ns}:{link.right_if} {link.right_ip} subnet={link.subnet}"
         )
+    if state.proxies:
+        print("proxies:")
+        for name, proxy in sorted(state.proxies.items()):
+            print(
+                f"  {name}: {proxy.listen_host}:{proxy.host_port} -> "
+                f"{proxy.target_ns}:{proxy.target_host}:{proxy.target_port}"
+            )
     if state.tokens.coord_token or state.tokens.control_token:
         print("tokens:")
         if state.tokens.coord_token:
@@ -205,6 +247,16 @@ def wrangler_command() -> list[str]:
     if shutil.which("wrangler"):
         run_host(["wrangler", "--version"], cwd=REPO_ROOT)
         return ["wrangler", "dev"]
+
+    node = shutil.which("node")
+    candidates = sorted(
+        Path.home().glob(".npm/_npx/*/node_modules/wrangler/wrangler-dist/cli.js"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if node is not None and candidates:
+        return [node, str(candidates[0]), "dev"]
+
     if shutil.which("npx"):
         run_host(["npx", "--yes", "wrangler", "--version"], cwd=REPO_ROOT)
         node = shutil.which("node")
@@ -239,7 +291,7 @@ def ns_http_request(pid: int, url: str, *, method: str = "GET", headers: dict[st
     result = netns.nsenter_run(
         pid,
         [
-            "python3",
+            str(VENV_PYTHON),
             "-c",
             HTTP_HELPER,
             url,
@@ -271,7 +323,7 @@ def wait_for_condition(timeout_sec: float, poll_fn, failure_message: str) -> Non
     raise RuntimeError(failure_message)
 
 
-def verify_fbcoord_health(topology: netns.Topology, manager: ProcessManager) -> None:
+def verify_fbcoord_health_in_namespace(topology: netns.Topology, manager: ProcessManager) -> None:
     fbcoord_ip = netns.find_link(topology.links, "hub", "fbcoord").right_ip
     node_pid = topology.namespaces["node-1"].pid
 
@@ -286,7 +338,7 @@ def verify_fbcoord_health(topology: netns.Topology, manager: ProcessManager) -> 
     wait_for_condition(READINESS_TIMEOUT_SEC, check, "fbcoord did not become healthy from node-1 namespace")
 
 
-def verify_fbforward_rpc(topology: netns.Topology, manager: ProcessManager, node_name: str, control_token: str) -> None:
+def verify_fbforward_rpc_in_namespace(topology: netns.Topology, manager: ProcessManager, node_name: str, control_token: str) -> None:
     node_pid = topology.namespaces[node_name].pid
     process_name = f"fbforward-{node_name}"
 
@@ -313,6 +365,46 @@ def verify_fbforward_rpc(topology: netns.Topology, manager: ProcessManager, node
     wait_for_condition(READINESS_TIMEOUT_SEC, check, f"{process_name} RPC did not become ready")
 
 
+def assert_host_ports_available() -> None:
+    busy: list[str] = []
+    for name, (listen_host, host_port, _, _, _) in PROXY_SPECS.items():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((listen_host, host_port))
+            except OSError:
+                busy.append(f"{name}:{listen_host}:{host_port}")
+    if busy:
+        raise RuntimeError(f"coordlab proxy ports are already in use: {', '.join(busy)}")
+
+
+def apply_coordination_mode(node_url: str, control_token: str, *, skip_build: bool) -> None:
+    from lib import rpc
+
+    try:
+        rpc.set_mode_coordination(node_url, control_token)
+    except RuntimeError as exc:
+        if skip_build and "invalid mode" in str(exc).lower():
+            raise RuntimeError(
+                f"{exc}. The existing fbforward binary may be stale; rerun coordlab without --skip-build "
+                "or rebuild with `make build`."
+            ) from exc
+        raise
+
+
+def build_proxy_infos() -> dict[str, ProxyInfo]:
+    return {
+        name: ProxyInfo(
+            listen_host=listen_host,
+            host_port=host_port,
+            target_ns=target_ns,
+            target_host=target_host,
+            target_port=target_port,
+        )
+        for name, (listen_host, host_port, target_ns, target_host, target_port) in PROXY_SPECS.items()
+    }
+
+
 def cmd_net_up(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).expanduser().resolve()
     workdir.mkdir(parents=True, exist_ok=True)
@@ -336,7 +428,7 @@ def cmd_net_up(args: argparse.Namespace) -> int:
 
     state = build_state(workdir, topology, phase=1, active=True)
     save_state(state_path, state)
-    print_status(state)
+    print_basic_status(state)
     return 0
 
 
@@ -364,11 +456,13 @@ def cmd_net_status(args: argparse.Namespace) -> int:
     if state is None:
         print(f"no coordlab state found at {state_path}")
         return 1
-    print_status(state)
+    print_basic_status(state)
     return 0
 
 
 def cmd_up(args: argparse.Namespace) -> int:
+    from lib import readiness, rpc
+
     workdir = Path(args.workdir).expanduser().resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     state_path = state_path_for(workdir)
@@ -380,7 +474,8 @@ def cmd_up(args: argparse.Namespace) -> int:
                 f"existing coordlab state is still active in {workdir}: alive entries={', '.join(alive)}"
             )
 
-    require_tools(["unshare", "nsenter", "ip", "sysctl", "ping", "python3"])
+    require_tools(["unshare", "nsenter", "ip", "sysctl", "ping", str(VENV_PYTHON)])
+    assert_host_ports_available()
     ensure_fbforward_binaries(args.skip_build)
     ensure_fbcoord_assets(args.skip_build)
 
@@ -416,7 +511,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             "fbcoord",
             [*wrangler_command(), "--ip", "0.0.0.0", "--port", "8787"],
             "fbcoord",
-            cwd=runtime_dir,
+            cwd=str(runtime_dir),
             env={"FBCOORD_TOKEN": tokens.coord_token},
         )
         manager.start(
@@ -432,20 +527,69 @@ def cmd_up(args: argparse.Namespace) -> int:
             "fbforward-node-2",
         )
 
-        verify_fbcoord_health(topology, manager)
-        verify_fbforward_rpc(topology, manager, "node-1", tokens.control_token)
-        verify_fbforward_rpc(topology, manager, "node-2", tokens.control_token)
+        verify_fbcoord_health_in_namespace(topology, manager)
+        verify_fbforward_rpc_in_namespace(topology, manager, "node-1", tokens.control_token)
+        verify_fbforward_rpc_in_namespace(topology, manager, "node-2", tokens.control_token)
+
+        proxies = build_proxy_infos()
+        state = build_state(
+            workdir,
+            topology,
+            phase=3,
+            active=True,
+            processes=manager.infos(),
+            proxies=proxies,
+            tokens=tokens,
+        )
+        save_state(state_path, state)
+
+        manager.start_host(
+            [str(VENV_PYTHON), str(COORDLAB_SCRIPT), "proxy-daemon", "--state", str(state_path)],
+            PROXY_PROCESS_NAME,
+            cwd=str(REPO_ROOT),
+        )
 
         state = build_state(
             workdir,
             topology,
-            phase=2,
+            phase=3,
             active=True,
             processes=manager.infos(),
+            proxies=proxies,
             tokens=tokens,
         )
         save_state(state_path, state)
-        print_status(state)
+
+        fbcoord_url = f"http://{proxies['fbcoord'].listen_host}:{proxies['fbcoord'].host_port}"
+        node1_url = f"http://{proxies['node-1'].listen_host}:{proxies['node-1'].host_port}"
+        node2_url = f"http://{proxies['node-2'].listen_host}:{proxies['node-2'].host_port}"
+
+        readiness.wait_http_ok(f"{fbcoord_url}/healthz")
+        readiness.wait_for_status(node1_url, tokens.control_token, predicate=lambda status: True)
+        readiness.wait_for_status(node2_url, tokens.control_token, predicate=lambda status: True)
+
+        apply_coordination_mode(node1_url, tokens.control_token, skip_build=args.skip_build)
+        apply_coordination_mode(node2_url, tokens.control_token, skip_build=args.skip_build)
+
+        def coordination_connected(status: dict) -> bool:
+            coordination = status.get("coordination") or {}
+            return status.get("mode") == "coordination" and bool(coordination.get("connected"))
+
+        readiness.wait_for_status(node1_url, tokens.control_token, predicate=coordination_connected)
+        readiness.wait_for_status(node2_url, tokens.control_token, predicate=coordination_connected)
+        readiness.verify_fbcoord_api(fbcoord_url, tokens.coord_token, expected_pool="lab")
+
+        state = build_state(
+            workdir,
+            topology,
+            phase=3,
+            active=True,
+            processes=manager.infos(),
+            proxies=proxies,
+            tokens=tokens,
+        )
+        save_state(state_path, state)
+        print(render_summary(state, str(VENV_PYTHON)))
         return 0
     except Exception:
         manager.stop_all()
@@ -461,7 +605,12 @@ def cmd_down(args: argparse.Namespace) -> int:
         print(f"no coordlab state found at {state_path}")
         return 0
 
-    for _, info in process_shutdown_order(state.processes):
+    proxy_info = state.processes.get(PROXY_PROCESS_NAME)
+    if proxy_info is not None:
+        terminate_process_group(proxy_info.pid, timeout_sec=5)
+    for name, info in process_shutdown_order(state.processes):
+        if name == PROXY_PROCESS_NAME:
+            continue
         terminate_process_group(info.pid, timeout_sec=5)
     for _, info in namespace_shutdown_order(state.namespaces):
         terminate_pid(info.pid, timeout_sec=5)
@@ -479,7 +628,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     if state is None:
         print(f"no coordlab state found at {state_path}")
         return 1
-    print_status(state)
+    print(render_summary(state, str(VENV_PYTHON)))
+    return 0
+
+
+def cmd_proxy_daemon(args: argparse.Namespace) -> int:
+    run_proxy_daemon(args.state)
     return 0
 
 
@@ -497,9 +651,9 @@ def build_parser() -> argparse.ArgumentParser:
         sub.set_defaults(handler=handler)
 
     for name, handler, help_text in (
-        ("up", cmd_up, "start the Phase 2 coordlab services inside the topology"),
-        ("down", cmd_down, "stop the Phase 2 coordlab services and topology"),
-        ("status", cmd_status, "show the Phase 2 coordlab state"),
+        ("up", cmd_up, "start the Phase 3 coordlab services and host proxies"),
+        ("down", cmd_down, "stop the Phase 3 coordlab services and topology"),
+        ("status", cmd_status, "show the Phase 3 coordlab state"),
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
@@ -507,10 +661,15 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--skip-build", action="store_true")
         sub.set_defaults(handler=handler)
 
+    hidden = subparsers.add_parser("proxy-daemon", help=argparse.SUPPRESS)
+    hidden.add_argument("--state", required=True)
+    hidden.set_defaults(handler=cmd_proxy_daemon)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    require_runtime_environment()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.handler(args)

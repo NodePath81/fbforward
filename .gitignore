@@ -14,3 +14,4 @@ web/node_modules/
 task-log/**
 chat/**
 .codex
+.venv/
