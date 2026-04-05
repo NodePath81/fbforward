@@ -13,6 +13,8 @@ fbforward has two categories of tests:
 
 Integration scenarios are harness-driven and are not executed by `go test ./...`.
 
+For the separate manual coordination lab, see [coordlab.md](coordlab.md).
+
 **Quick start:**
 
 ```bash
@@ -24,7 +26,7 @@ go test ./bwprobe/internal/... ./internal/upstream -v
 ./scripts/run-scenario.sh                      # quick sanity (score-ordering)
 ./scripts/run-scenario.sh -s score-ordering -s confirmation -s hold-time -s fast-failover -s anti-flapping -s stability
 
-# Coordlab Phase 4 manual smoke
+# Coordlab Phase 5 manual smoke
 .venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # Open http://127.0.0.1:18800
@@ -157,6 +159,21 @@ build/bin/fbforward-testharness run test/scenarios/score-ordering.yaml
 The harness CLI (`cmd/fbforward-testharness/main.go`) supports two subcommands:
 - `validate <scenario.yaml>` -- parse and validate without running
 - `run <scenario.yaml>` -- execute full lifecycle: Setup -> Start -> Run -> Verify -> ExportArtifacts -> Cleanup
+
+---
+
+## 3.8 coordlab manual test framework
+
+coordlab is a separate Python-based manual lab for `fbcoord` and coordinated `fbforward` nodes. It does not reuse the scenario runner and is intended for interactive testing, browser-based inspection, and manual upstream degradation.
+
+Use coordlab when you need:
+
+- a local `fbcoord` plus two coordinated `fbforward` nodes
+- host-accessible UIs and RPC endpoints
+- live delay/loss shaping on upstream links
+- the Flask dashboard for status, coordination, shaping, and log viewing
+
+See [coordlab.md](coordlab.md) for the full architecture, command set, file layout, and dashboard/API behavior.
 
 ### 3.6 Metrics collection
 

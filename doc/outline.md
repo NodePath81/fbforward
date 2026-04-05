@@ -1039,6 +1039,25 @@ This outline defines the complete documentation structure for the fbforward mono
 
 See [test/testing-guide.md](test/testing-guide.md)
 
+### 8.2 coordlab manual lab
+
+| Field | Value |
+|-------|-------|
+| **ID** | 8.2 |
+| **Purpose** | Document the Python-based manual coordination lab and dashboard |
+| **Source artifacts** | scripts/coordlab/, fbcoord/, internal/coordination/ |
+| **Dependencies** | 8.1, 2.1 |
+| **Audience** | Developers, operators |
+| **Depth** | Reference |
+
+**Content:**
+- coordlab topology and process model
+- CLI commands and workdir/state layout
+- host proxy ports and dashboard routes
+- shaping model and known limitations
+
+See [test/coordlab.md](test/coordlab.md)
+
 ---
 
 ## 9. Appendices

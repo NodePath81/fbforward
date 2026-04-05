@@ -344,7 +344,7 @@ button.ghost:hover {
 .topology text {
   fill: #f5f0e2;
   text-anchor: middle;
-  font-size: 16px;
+  dominant-baseline: middle;
 }
 
 .node-box rect,
@@ -359,15 +359,52 @@ button.ghost:hover {
   transition: stroke-opacity 0.3s ease;
 }
 
-.link.emphasis line {
+.link.dashed line {
   stroke: rgba(255, 255, 255, 0.7);
-  stroke-dasharray: 8 4;
+  stroke-dasharray: 10 8;
 }
 
-.shape-label,
-.link-label {
+.link.branch line {
+  stroke-width: 3;
+  opacity: 0.82;
+}
+
+.box-label {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.router-label {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.section-tag,
+.caption-label,
+.shape-label {
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+}
+
+.section-tag {
+  fill: rgba(245, 240, 226, 0.72);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+.caption-label {
+  fill: rgba(245, 240, 226, 0.82);
+  font-size: 12px;
+}
+
+.shape-pill rect {
+  fill: rgba(255, 249, 239, 0.14);
+  stroke: rgba(255, 249, 239, 0.42);
+  stroke-width: 1;
+}
+
+.shape-label {
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .log-output {
