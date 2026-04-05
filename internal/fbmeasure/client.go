@@ -102,6 +102,7 @@ func (c *Client) withLockedCall(ctx context.Context, op string, payload any, sid
 	if c.conn == nil {
 		return fmt.Errorf("client closed")
 	}
+	conn := c.conn
 
 	reqID := c.nextRequestID()
 	reqPayload, err := marshalPayload(payload)
@@ -110,15 +111,15 @@ func (c *Client) withLockedCall(ctx context.Context, op string, payload any, sid
 	}
 
 	if deadline, ok := ctx.Deadline(); ok {
-		if err := c.conn.SetDeadline(deadline); err != nil {
+		if err := conn.SetDeadline(deadline); err != nil {
 			return err
 		}
 		defer func() {
-			_ = c.conn.SetDeadline(time.Time{})
+			_ = conn.SetDeadline(time.Time{})
 		}()
 	}
 
-	if err := writeControlMessage(c.conn, controlRequest{
+	if err := writeControlMessage(conn, controlRequest{
 		ID:      reqID,
 		Op:      op,
 		Payload: reqPayload,
@@ -128,14 +129,14 @@ func (c *Client) withLockedCall(ctx context.Context, op string, payload any, sid
 
 	if sideEffect != nil {
 		if err := sideEffect(); err != nil {
-			_ = c.conn.Close()
+			_ = conn.Close()
 			c.conn = nil
 			return err
 		}
 	}
 
 	var resp controlResponse
-	if err := readControlMessage(c.conn, &resp); err != nil {
+	if err := readControlMessage(conn, &resp); err != nil {
 		return err
 	}
 	if resp.ID != reqID || resp.Op != op {

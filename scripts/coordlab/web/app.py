@@ -17,6 +17,11 @@ DEFAULT_POOL = "lab"
 DEFAULT_LOG_LINES = 100
 MAX_LOG_LINES = 500
 MIN_LOG_LINES = 1
+NODE_PROCESS_NAMES = {
+    "node-1": "fbforward-node-1",
+    "node-2": "fbforward-node-2",
+}
+FBCOORD_PROCESS_NAME = "fbcoord"
 
 
 def state_path_for(workdir: Path) -> Path:
@@ -196,6 +201,13 @@ def fetch_node_status(state: LabState, node_name: str) -> dict:
     return get_status(base_url, state.tokens.control_token)
 
 
+def process_is_alive(state: LabState, process_name: str) -> bool | None:
+    process = state.processes.get(process_name)
+    if process is None:
+        return None
+    return is_alive(process.pid)
+
+
 def coordination_payload(state: LabState) -> dict:
     payload = {
         "active": True,
@@ -204,16 +216,38 @@ def coordination_payload(state: LabState) -> dict:
         "errors": {},
     }
 
-    try:
-        payload["fbcoord"] = fetch_fbcoord_pool(state, pool=DEFAULT_POOL)
-    except Exception as exc:
-        payload["errors"]["fbcoord"] = str(exc)
-
-    for node_name in ("node-1", "node-2"):
+    node_process_alive: dict[str, bool] = {}
+    for node_name, process_name in NODE_PROCESS_NAMES.items():
+        alive = process_is_alive(state, process_name)
+        if alive is None:
+            payload["errors"][node_name] = f"coordlab state is missing process metadata for {process_name}"
+            node_process_alive[node_name] = False
+            continue
+        if not alive:
+            payload["errors"][node_name] = "process exited; see log"
+            node_process_alive[node_name] = False
+            continue
+        node_process_alive[node_name] = True
         try:
             payload["nodes"][node_name] = fetch_node_status(state, node_name)
         except Exception as exc:
             payload["errors"][node_name] = str(exc)
+
+    fbcoord_alive = process_is_alive(state, FBCOORD_PROCESS_NAME)
+    if fbcoord_alive is None:
+        payload["errors"]["fbcoord"] = f"coordlab state is missing process metadata for {FBCOORD_PROCESS_NAME}"
+        return payload
+    if not fbcoord_alive:
+        payload["errors"]["fbcoord"] = "fbcoord process exited; see log"
+        return payload
+
+    try:
+        payload["fbcoord"] = fetch_fbcoord_pool(state, pool=DEFAULT_POOL)
+    except Exception as exc:
+        message = str(exc)
+        if "status=404" in message and node_process_alive and not any(node_process_alive.values()):
+            message = "pool disappeared after node disconnect"
+        payload["errors"]["fbcoord"] = message
 
     return payload
 

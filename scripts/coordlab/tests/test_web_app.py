@@ -69,6 +69,7 @@ def sample_state(workdir: Path) -> LabState:
         processes={
             "fbcoord": ProcessInfo(pid=200, ns="fbcoord", log_path=str(workdir / "fbcoord.log"), order=1),
             "fbforward-node-1": ProcessInfo(pid=201, ns="node-1", log_path=str(workdir / "node1.log"), order=2),
+            "fbforward-node-2": ProcessInfo(pid=202, ns="node-2", log_path=str(workdir / "node2.log"), order=3),
         },
         proxies={
             "fbcoord": ProxyInfo("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
@@ -121,6 +122,7 @@ class WebAppTest(unittest.TestCase):
     def test_coordination_returns_partial_errors(self) -> None:
         self.write_state(sample_state(self.workdir))
         with (
+            mock.patch("web.app.is_alive", return_value=True),
             mock.patch("web.app.fetch_fbcoord_pool", return_value={"pool": "lab", "pick": {"version": 2, "upstream": "us-2"}, "node_count": 2, "nodes": []}),
             mock.patch("web.app.fetch_node_status", side_effect=[{"mode": "coordination"}, RuntimeError("node-2 unavailable")]),
         ):
@@ -131,6 +133,47 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("coordination", payload["nodes"]["node-1"]["mode"])
         self.assertIsNone(payload["nodes"]["node-2"])
         self.assertIn("node-2", payload["errors"])
+
+    def test_coordination_reports_dead_node_process_without_fetching_status(self) -> None:
+        self.write_state(sample_state(self.workdir))
+
+        def fake_is_alive(pid: int) -> bool:
+            if pid == 201:
+                return False
+            return True
+
+        with (
+            mock.patch("web.app.is_alive", side_effect=fake_is_alive),
+            mock.patch("web.app.fetch_fbcoord_pool", return_value={"pool": "lab", "pick": {"version": 2, "upstream": "us-2"}, "node_count": 1, "nodes": []}),
+            mock.patch("web.app.fetch_node_status", return_value={"mode": "coordination"}) as fetch_node_status,
+        ):
+            response = self.client.get("/api/coordination")
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertIsNone(payload["nodes"]["node-1"])
+        self.assertEqual("process exited; see log", payload["errors"]["node-1"])
+        fetch_node_status.assert_called_once_with(mock.ANY, "node-2")
+
+    def test_coordination_maps_missing_pool_after_node_disconnect(self) -> None:
+        self.write_state(sample_state(self.workdir))
+
+        def fake_is_alive(pid: int) -> bool:
+            return pid == 200
+
+        with (
+            mock.patch("web.app.is_alive", side_effect=fake_is_alive),
+            mock.patch("web.app.fetch_fbcoord_pool", side_effect=RuntimeError('fbcoord pool fetch failed: status=404 body={"error":"pool not found"}')),
+            mock.patch("web.app.fetch_node_status") as fetch_node_status,
+        ):
+            response = self.client.get("/api/coordination")
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual("pool disappeared after node disconnect", payload["errors"]["fbcoord"])
+        self.assertEqual("process exited; see log", payload["errors"]["node-1"])
+        self.assertEqual("process exited; see log", payload["errors"]["node-2"])
+        fetch_node_status.assert_not_called()
 
     def test_shaping_routes_reuse_shaper_and_return_current_state(self) -> None:
         self.write_state(sample_state(self.workdir))

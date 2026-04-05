@@ -55,10 +55,14 @@ function updateTopology(upstreams) {
     if (!label) {
       continue;
     }
-    const detail = entry.delay_ms > 0 || entry.loss_pct > 0
-      ? `delay ${entry.delay_ms}ms / loss ${entry.loss_pct}%`
-      : "none";
-    label.textContent = `${entry.upstream}: ${detail}`;
+    const parts = [];
+    if (entry.delay_ms > 0) {
+      parts.push(`${entry.delay_ms}ms delay`);
+    }
+    if (entry.loss_pct > 0) {
+      parts.push(`${entry.loss_pct}% loss`);
+    }
+    label.textContent = parts.length ? parts.join(" • ") : "healthy";
   }
 }
 
@@ -96,8 +100,9 @@ function renderCoordination(payload) {
   const errors = document.querySelector("#coord-errors");
   const fbcoordCard = document.querySelector("#fbcoord-card");
   const nodeCards = document.querySelector("#node-cards");
+  const errorMap = payload.errors || {};
 
-  const errorEntries = Object.entries(payload.errors || {});
+  const errorEntries = Object.entries(errorMap);
   errors.innerHTML = errorEntries.map(([name, message]) => `<p>${name}: ${message}</p>`).join("");
 
   if (payload.fbcoord) {
@@ -108,14 +113,22 @@ function renderCoordination(payload) {
       <div class="stat-line"><strong>Version:</strong> ${pick.version ?? 0}</div>
       <div class="stat-line"><strong>Nodes:</strong> ${payload.fbcoord.node_count}</div>
     `;
+  } else if (errorMap.fbcoord) {
+    fbcoordCard.innerHTML = `<p class="subtle">${errorMap.fbcoord}</p>`;
   } else {
     fbcoordCard.innerHTML = `<p class="subtle">fbcoord pool data unavailable.</p>`;
   }
 
   nodeCards.innerHTML = ["node-1", "node-2"].map((nodeName) => {
     const node = payload.nodes ? payload.nodes[nodeName] : null;
+    const nodeError = errorMap[nodeName];
     if (!node) {
-      return `<article class="node-card"><h3>${nodeName}</h3><p class="subtle">No data.</p></article>`;
+      return `
+        <article class="node-card">
+          <h3>${nodeName}</h3>
+          <p class="subtle">${nodeError || "No data."}</p>
+        </article>
+      `;
     }
     const coordination = node.coordination || {};
     return `
