@@ -2,25 +2,81 @@
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
+import subprocess
 import sys
-from dataclasses import asdict
+import textwrap
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from lib import config as coordconfig
 from lib import netns
-from lib.process import is_alive, terminate_pid
-from lib.state import LabState, LinkInfo, NamespaceInfo, TopologyInfo, load_state, save_state
+from lib.process import ProcessManager, is_alive, terminate_pid, terminate_process_group
+from lib.state import LabState, LinkInfo, NamespaceInfo, ProcessInfo, TokenInfo, TopologyInfo, load_state, save_state
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WORKDIR = Path("/tmp/coordlab")
 STATE_FILENAME = "state.json"
+FBFORWARD_BIN = REPO_ROOT / "build/bin/fbforward"
+FBMEASURE_BIN = REPO_ROOT / "build/bin/fbmeasure"
+FBCOORD_BUILD_SENTINEL = REPO_ROOT / "fbcoord/ui/dist/index.html"
+CONFIGS_DIRNAME = "configs"
+LOGS_DIRNAME = "logs"
+RUNTIME_DIRNAME = coordconfig.FBCOORD_RUNTIME_DIR
+POLL_INTERVAL_SEC = 0.5
+READINESS_TIMEOUT_SEC = 30.0
+
+HTTP_HELPER = textwrap.dedent(
+    """\
+    import json
+    import sys
+    import urllib.error
+    import urllib.request
+
+    url = sys.argv[1]
+    method = sys.argv[2]
+    headers = json.loads(sys.argv[3])
+    body = sys.argv[4].encode("utf-8") if len(sys.argv) > 4 and sys.argv[4] else None
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            print(resp.status)
+            print(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        print(exc.code)
+        print(exc.read().decode("utf-8"))
+    """
+)
 
 
 def state_path_for(workdir: Path) -> Path:
     return workdir / STATE_FILENAME
 
 
-def build_phase1_state(workdir: Path, topology: netns.Topology) -> LabState:
+def configs_dir_for(workdir: Path) -> Path:
+    return workdir / CONFIGS_DIRNAME
+
+
+def logs_dir_for(workdir: Path) -> Path:
+    return workdir / LOGS_DIRNAME
+
+
+def runtime_dir_for(workdir: Path) -> Path:
+    return workdir / RUNTIME_DIRNAME
+
+
+def build_state(
+    workdir: Path,
+    topology: netns.Topology,
+    phase: int,
+    *,
+    active: bool,
+    processes: dict[str, ProcessInfo] | None = None,
+    tokens: TokenInfo | None = None,
+) -> LabState:
     namespaces = {
         name: NamespaceInfo(pid=ns.pid, parent=ns.parent, role=ns.role)
         for name, ns in topology.namespaces.items()
@@ -38,11 +94,13 @@ def build_phase1_state(workdir: Path, topology: netns.Topology) -> LabState:
         for link in topology.links
     ]
     return LabState(
-        phase=1,
-        active=True,
+        phase=phase,
+        active=active,
         created_at=datetime.now(timezone.utc).isoformat(),
         work_dir=str(workdir),
         namespaces=namespaces,
+        processes=processes or {},
+        tokens=tokens or TokenInfo(),
         topology=TopologyInfo(base_cidr=topology.base_cidr, links=links),
     )
 
@@ -59,27 +117,200 @@ def namespace_shutdown_order(namespaces: dict[str, NamespaceInfo]) -> list[tuple
     return sorted(namespaces.items(), key=lambda item: (depth(item[0]), item[0]), reverse=True)
 
 
+def process_shutdown_order(processes: dict[str, ProcessInfo]) -> list[tuple[str, ProcessInfo]]:
+    return sorted(processes.items(), key=lambda item: (item[1].order, item[0]), reverse=True)
+
+
 def print_status(state: LabState) -> None:
+    workdir = Path(state.work_dir)
     print(f"coordlab phase={state.phase} active={state.active}")
     print(f"work_dir={state.work_dir}")
     print("namespaces:")
     for name, info in sorted(state.namespaces.items()):
-        alive = is_alive(info.pid)
         parent = info.parent or "-"
-        status = "alive" if alive else "dead"
+        status = "alive" if is_alive(info.pid) else "dead"
         print(f"  {name}: pid={info.pid} parent={parent} role={info.role} status={status}")
+    if state.processes:
+        print("processes:")
+        for name, info in sorted(state.processes.items(), key=lambda item: (item[1].order, item[0])):
+            status = "alive" if is_alive(info.pid) else "dead"
+            print(f"  {name}: pid={info.pid} ns={info.ns} order={info.order} status={status} log={info.log_path}")
     print("links:")
     for link in state.topology.links:
         print(
             f"  {link.left_ns}:{link.left_if} {link.left_ip} <-> "
             f"{link.right_ns}:{link.right_if} {link.right_ip} subnet={link.subnet}"
         )
+    if state.tokens.coord_token or state.tokens.control_token:
+        print("tokens:")
+        if state.tokens.coord_token:
+            print(f"  coord_token={state.tokens.coord_token}")
+        if state.tokens.control_token:
+            print(f"  control_token={state.tokens.control_token}")
+    print("artifacts:")
+    print(f"  configs={configs_dir_for(workdir)}")
+    print(f"  logs={logs_dir_for(workdir)}")
+    print(f"  fbcoord_runtime={runtime_dir_for(workdir)}")
+    print(f"  state={state_path_for(workdir)}")
 
 
 def require_tools(tools: Iterable[str]) -> None:
-    missing = [tool for tool in tools if netns.which(tool) is None]
+    missing = [tool for tool in tools if shutil.which(tool) is None]
     if missing:
         raise RuntimeError(f"missing required tools: {', '.join(missing)}")
+
+
+def run_host(args: list[str], *, cwd: str | Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(args, cwd=cwd, env=env, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        details = []
+        if exc.stdout.strip():
+            details.append(f"stdout={exc.stdout.strip()}")
+        if exc.stderr.strip():
+            details.append(f"stderr={exc.stderr.strip()}")
+        suffix = f" ({'; '.join(details)})" if details else ""
+        raise RuntimeError(f"command failed: {' '.join(args)}{suffix}") from exc
+
+
+def existing_lab_is_alive(state: LabState) -> list[str]:
+    alive: list[str] = []
+    alive.extend(f"ns:{name}" for name, info in state.namespaces.items() if is_alive(info.pid))
+    alive.extend(f"proc:{name}" for name, info in state.processes.items() if is_alive(info.pid))
+    return sorted(alive)
+
+
+def ensure_fbforward_binaries(skip_build: bool) -> None:
+    missing = [str(path) for path in (FBFORWARD_BIN, FBMEASURE_BIN) if not path.exists()]
+    if not missing:
+        return
+    if skip_build:
+        raise RuntimeError(f"missing required binaries with --skip-build: {', '.join(missing)}")
+    require_tools(["make"])
+    run_host(["make", "build"], cwd=REPO_ROOT)
+
+
+def ensure_fbcoord_assets(skip_build: bool) -> None:
+    if not (coordconfig.FBCOORD_SOURCE_DIR / "node_modules").exists():
+        raise RuntimeError("fbcoord/node_modules is missing; run `npm --prefix fbcoord install` before coordlab up")
+    if skip_build:
+        if not FBCOORD_BUILD_SENTINEL.exists():
+            raise RuntimeError(f"missing fbcoord build output with --skip-build: {FBCOORD_BUILD_SENTINEL}")
+        return
+    require_tools(["npm"])
+    run_host(["npm", "--prefix", "fbcoord", "run", "build"], cwd=REPO_ROOT)
+
+
+def wrangler_command() -> list[str]:
+    if shutil.which("wrangler"):
+        run_host(["wrangler", "--version"], cwd=REPO_ROOT)
+        return ["wrangler", "dev"]
+    if shutil.which("npx"):
+        run_host(["npx", "--yes", "wrangler", "--version"], cwd=REPO_ROOT)
+        node = shutil.which("node")
+        if node is None:
+            raise RuntimeError("node is required for the npx-based wrangler fallback")
+        candidates = sorted(
+            Path.home().glob(".npm/_npx/*/node_modules/wrangler/wrangler-dist/cli.js"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            raise RuntimeError("unable to locate cached wrangler CLI after npx warmup")
+        return [node, str(candidates[0]), "dev"]
+    raise RuntimeError("wrangler is not available and npx is missing")
+
+
+def validate_fbforward_config(config_path: Path) -> None:
+    run_host([str(FBFORWARD_BIN), "check", "--config", str(config_path)])
+
+
+def log_excerpt(log_path: str, *, lines: int = 20) -> str:
+    path = Path(log_path)
+    if not path.exists():
+        return "<log file not found>"
+    content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if not content:
+        return "<log file empty>"
+    return "\n".join(content[-lines:])
+
+
+def ns_http_request(pid: int, url: str, *, method: str = "GET", headers: dict[str, str] | None = None, body: str = "") -> tuple[int, str]:
+    result = netns.nsenter_run(
+        pid,
+        [
+            "python3",
+            "-c",
+            HTTP_HELPER,
+            url,
+            method,
+            json.dumps(headers or {}),
+            body,
+        ],
+    )
+    lines = result.stdout.splitlines()
+    if not lines:
+        raise RuntimeError(f"no HTTP response returned for {url}")
+    status = int(lines[0].strip())
+    body_text = "\n".join(lines[1:])
+    return status, body_text
+
+
+def wait_for_condition(timeout_sec: float, poll_fn, failure_message: str) -> None:
+    deadline = time.monotonic() + timeout_sec
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            if poll_fn():
+                return
+        except Exception as exc:
+            last_error = exc
+        time.sleep(POLL_INTERVAL_SEC)
+    if last_error is not None:
+        raise RuntimeError(f"{failure_message}: {last_error}") from last_error
+    raise RuntimeError(failure_message)
+
+
+def verify_fbcoord_health(topology: netns.Topology, manager: ProcessManager) -> None:
+    fbcoord_ip = netns.find_link(topology.links, "hub", "fbcoord").right_ip
+    node_pid = topology.namespaces["node-1"].pid
+
+    def check() -> bool:
+        managed = manager.get("fbcoord")
+        if managed is None or not manager.is_alive("fbcoord"):
+            excerpt = log_excerpt(managed.log_path) if managed is not None else "<process not started>"
+            raise RuntimeError(f"fbcoord exited early\n{excerpt}")
+        status, body = ns_http_request(node_pid, f"http://{fbcoord_ip}:8787/healthz")
+        return status == 200 and body.strip() == "ok"
+
+    wait_for_condition(READINESS_TIMEOUT_SEC, check, "fbcoord did not become healthy from node-1 namespace")
+
+
+def verify_fbforward_rpc(topology: netns.Topology, manager: ProcessManager, node_name: str, control_token: str) -> None:
+    node_pid = topology.namespaces[node_name].pid
+    process_name = f"fbforward-{node_name}"
+
+    def check() -> bool:
+        managed = manager.get(process_name)
+        if managed is None or not manager.is_alive(process_name):
+            excerpt = log_excerpt(managed.log_path) if managed is not None else "<process not started>"
+            raise RuntimeError(f"{process_name} exited early\n{excerpt}")
+        status, body = ns_http_request(
+            node_pid,
+            "http://127.0.0.1:8080/rpc",
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {control_token}",
+                "Content-Type": "application/json",
+            },
+            body=json.dumps({"method": "GetStatus", "params": {}}),
+        )
+        if status != 200:
+            return False
+        payload = json.loads(body)
+        return bool(payload.get("ok"))
+
+    wait_for_condition(READINESS_TIMEOUT_SEC, check, f"{process_name} RPC did not become ready")
 
 
 def cmd_net_up(args: argparse.Namespace) -> int:
@@ -88,10 +319,10 @@ def cmd_net_up(args: argparse.Namespace) -> int:
     state_path = state_path_for(workdir)
     existing = load_state(state_path)
     if existing is not None:
-        alive = [name for name, info in existing.namespaces.items() if is_alive(info.pid)]
+        alive = existing_lab_is_alive(existing)
         if alive:
             raise RuntimeError(
-                f"existing Phase 1 state is still active in {workdir}: alive namespaces={', '.join(sorted(alive))}"
+                f"existing coordlab state is still active in {workdir}: alive entries={', '.join(alive)}"
             )
 
     require_tools(["unshare", "nsenter", "ip", "sysctl", "ping"])
@@ -103,7 +334,7 @@ def cmd_net_up(args: argparse.Namespace) -> int:
         netns.destroy_topology(topology)
         raise
 
-    state = build_phase1_state(workdir, topology)
+    state = build_state(workdir, topology, phase=1, active=True)
     save_state(state_path, state)
     print_status(state)
     return 0
@@ -114,7 +345,7 @@ def cmd_net_down(args: argparse.Namespace) -> int:
     state_path = state_path_for(workdir)
     state = load_state(state_path)
     if state is None:
-        print(f"no Phase 1 state found at {state_path}")
+        print(f"no coordlab state found at {state_path}")
         return 0
 
     for _, info in namespace_shutdown_order(state.namespaces):
@@ -131,7 +362,122 @@ def cmd_net_status(args: argparse.Namespace) -> int:
     state_path = state_path_for(workdir)
     state = load_state(state_path)
     if state is None:
-        print(f"no Phase 1 state found at {state_path}")
+        print(f"no coordlab state found at {state_path}")
+        return 1
+    print_status(state)
+    return 0
+
+
+def cmd_up(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    state_path = state_path_for(workdir)
+    existing = load_state(state_path)
+    if existing is not None:
+        alive = existing_lab_is_alive(existing)
+        if alive:
+            raise RuntimeError(
+                f"existing coordlab state is still active in {workdir}: alive entries={', '.join(alive)}"
+            )
+
+    require_tools(["unshare", "nsenter", "ip", "sysctl", "ping", "python3"])
+    ensure_fbforward_binaries(args.skip_build)
+    ensure_fbcoord_assets(args.skip_build)
+
+    tokens = coordconfig.generate_tokens()
+    topology = netns.build_topology(str(workdir))
+    manager = ProcessManager(logs_dir_for(workdir))
+
+    try:
+        netns.verify_connectivity(topology)
+        runtime_dir = coordconfig.prepare_fbcoord_runtime(workdir, tokens.coord_token)
+
+        config_paths = {
+            node: coordconfig.generate_fbforward_config(node, topology, tokens, workdir)
+            for node in ("node-1", "node-2")
+        }
+        for config_path in config_paths.values():
+            validate_fbforward_config(config_path)
+
+        manager.start(
+            topology.namespaces["upstream-1"].pid,
+            "upstream-1",
+            [str(FBMEASURE_BIN), "--port", "9876"],
+            "fbmeasure-upstream-1",
+        )
+        manager.start(
+            topology.namespaces["upstream-2"].pid,
+            "upstream-2",
+            [str(FBMEASURE_BIN), "--port", "9876"],
+            "fbmeasure-upstream-2",
+        )
+        manager.start(
+            topology.namespaces["fbcoord"].pid,
+            "fbcoord",
+            [*wrangler_command(), "--ip", "0.0.0.0", "--port", "8787"],
+            "fbcoord",
+            cwd=runtime_dir,
+            env={"FBCOORD_TOKEN": tokens.coord_token},
+        )
+        manager.start(
+            topology.namespaces["node-1"].pid,
+            "node-1",
+            [str(FBFORWARD_BIN), "run", "--config", str(config_paths["node-1"])],
+            "fbforward-node-1",
+        )
+        manager.start(
+            topology.namespaces["node-2"].pid,
+            "node-2",
+            [str(FBFORWARD_BIN), "run", "--config", str(config_paths["node-2"])],
+            "fbforward-node-2",
+        )
+
+        verify_fbcoord_health(topology, manager)
+        verify_fbforward_rpc(topology, manager, "node-1", tokens.control_token)
+        verify_fbforward_rpc(topology, manager, "node-2", tokens.control_token)
+
+        state = build_state(
+            workdir,
+            topology,
+            phase=2,
+            active=True,
+            processes=manager.infos(),
+            tokens=tokens,
+        )
+        save_state(state_path, state)
+        print_status(state)
+        return 0
+    except Exception:
+        manager.stop_all()
+        netns.destroy_topology(topology)
+        raise
+
+
+def cmd_down(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state_path = state_path_for(workdir)
+    state = load_state(state_path)
+    if state is None:
+        print(f"no coordlab state found at {state_path}")
+        return 0
+
+    for _, info in process_shutdown_order(state.processes):
+        terminate_process_group(info.pid, timeout_sec=5)
+    for _, info in namespace_shutdown_order(state.namespaces):
+        terminate_pid(info.pid, timeout_sec=5)
+
+    state.active = False
+    save_state(state_path, state)
+    print(f"coordlab services stopped for {workdir}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state_path = state_path_for(workdir)
+    state = load_state(state_path)
+    if state is None:
+        print(f"no coordlab state found at {state_path}")
         return 1
     print_status(state)
     return 0
@@ -148,6 +494,17 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+        sub.set_defaults(handler=handler)
+
+    for name, handler, help_text in (
+        ("up", cmd_up, "start the Phase 2 coordlab services inside the topology"),
+        ("down", cmd_down, "stop the Phase 2 coordlab services and topology"),
+        ("status", cmd_status, "show the Phase 2 coordlab state"),
+    ):
+        sub = subparsers.add_parser(name, help=help_text)
+        sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+        if name == "up":
+            sub.add_argument("--skip-build", action="store_true")
         sub.set_defaults(handler=handler)
 
     return parser

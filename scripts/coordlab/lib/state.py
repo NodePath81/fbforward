@@ -28,6 +28,7 @@ class ProcessInfo:
     pid: int
     ns: str
     log_path: str
+    order: int = 0
 
 
 @dataclass(slots=True)

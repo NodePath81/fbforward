@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lib.state import LabState, LinkInfo, NamespaceInfo, TopologyInfo, load_state, save_state
+from lib.state import LabState, LinkInfo, NamespaceInfo, ProcessInfo, TokenInfo, TopologyInfo, load_state, save_state
 
 
 class StateRoundTripTest(unittest.TestCase):
@@ -23,6 +23,10 @@ class StateRoundTripTest(unittest.TestCase):
                 "hub": NamespaceInfo(pid=101, parent=None, role="hub"),
                 "node-1": NamespaceInfo(pid=202, parent="hub", role="node"),
             },
+            processes={
+                "fbforward-node-1": ProcessInfo(pid=303, ns="node-1", log_path="/tmp/coordlab-test/logs/node-1.log", order=3),
+            },
+            tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
             topology=TopologyInfo(
                 base_cidr="10.99.0.0/24",
                 links=[
@@ -50,6 +54,8 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.active, loaded.active)
         self.assertEqual(state.work_dir, loaded.work_dir)
         self.assertEqual(state.namespaces["hub"].pid, loaded.namespaces["hub"].pid)
+        self.assertEqual(state.processes["fbforward-node-1"].order, loaded.processes["fbforward-node-1"].order)
+        self.assertEqual(state.tokens.coord_token, loaded.tokens.coord_token)
         self.assertEqual(state.topology.links[0].right_if, loaded.topology.links[0].right_if)
 
 

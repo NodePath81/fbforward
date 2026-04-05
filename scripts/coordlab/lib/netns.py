@@ -296,6 +296,7 @@ def _launch_namespace(command: list[str], name: str, parent: str | None, role: s
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     try:
         pid_line = (process.stdout.readline() if process.stdout else "").strip()
