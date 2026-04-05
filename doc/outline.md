@@ -301,6 +301,76 @@ This outline defines the complete documentation structure for the fbforward mono
 - Verifying connectivity
 - Resource usage
 
+### 3.4 fbcoord
+
+#### 3.4.1 Overview
+
+| Field | Value |
+|-------|-------|
+| **ID** | 3.4.1 |
+| **Purpose** | Introduce fbcoord coordination service and operator-facing behavior |
+| **Source artifacts** | fbcoord/src/worker.ts, fbcoord/src/durable-objects/pool.ts |
+| **Dependencies** | 3.1.1 |
+| **Audience** | Operators, developers |
+| **Depth** | Overview |
+
+**Content:**
+- Purpose (shared upstream coordination across multiple fbforward nodes)
+- Relationship to fbforward local control plane
+- Cloudflare Workers + Durable Objects deployment model
+- Web UI overview
+
+#### 3.4.2 Deployment and configuration
+
+| Field | Value |
+|-------|-------|
+| **ID** | 3.4.2 |
+| **Purpose** | Document how to deploy and bootstrap fbcoord |
+| **Source artifacts** | fbcoord/wrangler.toml, fbcoord/package.json, configs/config.example.yaml |
+| **Dependencies** | 3.4.1 |
+| **Audience** | Operators |
+| **Depth** | Reference |
+
+**Content:**
+- Wrangler deployment
+- Worker secret bootstrap (`FBCOORD_TOKEN`)
+- Shared token distribution to fbforward nodes
+- Health checks and basic verification
+
+#### 3.4.3 Operation and web UI
+
+| Field | Value |
+|-------|-------|
+| **ID** | 3.4.3 |
+| **Purpose** | Describe day-to-day fbcoord operation and admin UI usage |
+| **Source artifacts** | fbcoord/src/worker.ts, fbcoord/ui/src/main.ts |
+| **Dependencies** | 3.4.2 |
+| **Audience** | Operators |
+| **Depth** | Reference |
+
+**Content:**
+- Dashboard and node detail views
+- Token rotation flow
+- Rate limiting behavior
+- Pool lifecycle and redeploy/reconnect behavior
+
+#### 3.4.4 Troubleshooting
+
+| Field | Value |
+|-------|-------|
+| **ID** | 3.4.4 |
+| **Purpose** | Help diagnose fbcoord deployment and coordination issues |
+| **Source artifacts** | fbcoord/src/worker.ts, fbcoord/src/durable-objects/token.ts |
+| **Dependencies** | 3.4.3 |
+| **Audience** | Operators |
+| **Depth** | Reference |
+
+**Content:**
+- Token mismatch and auth failures
+- Rate-limit lockouts
+- Empty pool / no-consensus conditions
+- Stale node eviction and reconnection behavior
+
 ---
 
 ## 4. Configuration reference
@@ -611,6 +681,77 @@ This outline defines the complete documentation structure for the fbforward mono
 - Metric names and labels
 - Counter vs gauge vs histogram
 - Scrape configuration
+
+### 5.3 fbcoord protocol
+
+#### 5.3.1 Transport and authentication
+
+| Field | Value |
+|-------|-------|
+| **ID** | 5.3.1 |
+| **Purpose** | Define the node-to-coordinator transport and auth contract |
+| **Source artifacts** | fbcoord/src/worker.ts, fbcoord/src/auth.ts |
+| **Dependencies** | 3.4.1 |
+| **Audience** | Developers, operators |
+| **Depth** | Reference |
+
+**Content:**
+- `GET /ws/node?pool=...`
+- Bearer token auth
+- Rate-limit behavior before upgrade
+- First-message requirements
+
+#### 5.3.2 Message reference
+
+| Field | Value |
+|-------|-------|
+| **ID** | 5.3.2 |
+| **Purpose** | Document the fbcoord WebSocket message types |
+| **Source artifacts** | fbcoord/src/protocol/types.ts, fbcoord/src/durable-objects/pool.ts |
+| **Dependencies** | 5.3.1 |
+| **Audience** | Developers |
+| **Depth** | Reference |
+
+**Content:**
+- `hello`
+- `preferences`
+- `heartbeat`
+- `pick`
+- `error`
+
+#### 5.3.3 Selection algorithm
+
+| Field | Value |
+|-------|-------|
+| **ID** | 5.3.3 |
+| **Purpose** | Define how fbcoord chooses a coordinated upstream |
+| **Source artifacts** | fbcoord/src/coordination/selector.ts |
+| **Dependencies** | 5.3.2 |
+| **Audience** | Developers, operators |
+| **Depth** | Reference |
+
+**Content:**
+- Intersection-based selection
+- Aggregate-rank scoring
+- Lexicographic tie-break
+- No-consensus cases
+
+#### 5.3.4 Pool state and lifecycle
+
+| Field | Value |
+|-------|-------|
+| **ID** | 5.3.4 |
+| **Purpose** | Document pool membership, stale eviction, and version semantics |
+| **Source artifacts** | fbcoord/src/durable-objects/pool.ts, fbcoord/src/durable-objects/registry.ts |
+| **Dependencies** | 5.3.3 |
+| **Audience** | Developers |
+| **Depth** | Reference |
+
+**Content:**
+- Node registration and replacement by `node_id`
+- Pool registration/deregistration
+- Stale eviction timing
+- Pick version increment rules
 
 ---
 

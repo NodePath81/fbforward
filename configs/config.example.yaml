@@ -163,12 +163,14 @@ control:
     enabled: true
 
 # Optional coordination mode.
+# Generate the shared fbcoord token with: openssl rand -hex 32
+# Use the same token value here and in the deployed fbcoord Worker secret FBCOORD_TOKEN.
 # When enabled, runtime mode can be switched to "coordination" from the Web UI or RPC.
 # coordination:
 #   endpoint: https://fbcoord.example.workers.dev
 #   pool: default
 #   node_id: fbforward-01
-#   token: "replace-with-a-separate-long-random-token"
+#   token: "replace-with-the-same-fbcoord-token"
 #   heartbeat_interval: 10s
 
 shaping:

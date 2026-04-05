@@ -20,6 +20,7 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 - Forwards traffic to one of multiple configured upstreams
 - Measures upstream quality using fbmeasure targeted probes and ICMP reachability probes
 - Selects the best upstream automatically based on a composite quality score
+- Can optionally participate in an external fbcoord service to coordinate upstream selection across multiple fbforward nodes
 - Pins each flow to its assigned upstream until completion, ensuring in-flight connections are not disrupted
 
 The forwarder exposes a control plane with HTTP API, Prometheus metrics, WebSocket status stream, and an embedded web UI for monitoring and manual control.
@@ -77,7 +78,7 @@ The architecture separates concerns into three main planes:
 
 **Data plane**: Handles actual traffic forwarding. TCP listeners accept client connections and proxy bidirectionally to the assigned upstream. UDP listeners create per-5-tuple mappings and forward packets to the assigned upstream. Each [flow](glossary.md#flow) (TCP connection or UDP mapping) is [pinned](glossary.md#flow-pinning) to an upstream at creation time and remains pinned until termination or expiry.
 
-**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, and status queries. The server also exposes Prometheus metrics at `/metrics`, a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access. All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
+**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, and status queries. The server also exposes Prometheus metrics at `/metrics`, a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access. All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. This node-local control plane is separate from the optional fbcoord coordination service, which coordinates picks across multiple fbforward nodes but does not replace local APIs or the local Web UI. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
 
 **Measurement plane**: Assesses upstream quality. ICMP probes test reachability
 continuously. fbmeasure probe cycles run periodic TCP and UDP targeted tests
@@ -144,6 +145,8 @@ configured port (default 9876). Accepts TCP control requests plus TCP/UDP
 probe traffic. No special capabilities required.
 
 **bwprobe**: The standalone measurement CLI tool. Can be run independently for manual link testing or used as a library via the `bwprobe/pkg` Go package.
+
+The repository also contains `fbcoord`, a Cloudflare Workers service backed by Durable Objects. It is a companion service for multi-node coordination, not a Go binary.
 
 <!-- Diagram: D3 Binary relationships -->
 ```mermaid

@@ -58,6 +58,8 @@ Mode behavior:
 - If `fbcoord` returns no upstream, disconnects, or returns a locally invalid upstream, fbforward remains in coordination mode but falls back to local auto-selection behavior
 - The local Web UI exposes `auto`, `manual`, and `coordination` mode buttons when enabled
 
+For deploying and operating the coordination service itself, see [fbcoord user guide](user-guide-fbcoord.md). For the node-to-coordinator wire contract and selector details, see [fbcoord protocol reference](fbcoord-protocol.md).
+
 ### Fast failover
 
 fbforward triggers immediate upstream switching on severe quality degradation:
