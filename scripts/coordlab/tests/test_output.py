@@ -52,6 +52,7 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:18701", summary)
         self.assertIn("/repo/.venv/bin/python", summary)
         self.assertIn("coordlab-proxy: alive", summary)
+        self.assertIn(" web --workdir ", summary)
 
 
 if __name__ == "__main__":

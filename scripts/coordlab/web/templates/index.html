@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>coordlab</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Manual Coordination Lab</p>
+          <h1>coordlab dashboard</h1>
+          <p class="subtle">Live status, coordination, shaping, and service access for the local fbcoord lab.</p>
+        </div>
+        <div class="controls">
+          <label>
+            Refresh
+            <select id="refresh-interval">
+              <option value="2000">2s</option>
+              <option value="5000" selected>5s</option>
+              <option value="15000">15s</option>
+            </select>
+          </label>
+          <button id="refresh-now" type="button">Refresh Now</button>
+        </div>
+      </header>
+
+      <section id="global-error" class="banner hidden"></section>
+
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Lab Status</h2>
+            <span id="lab-phase" class="chip">phase ?</span>
+          </div>
+          <div id="lab-meta" class="meta"></div>
+          <div class="split">
+            <div>
+              <h3>Namespaces</h3>
+              <div id="namespace-list" class="list"></div>
+            </div>
+            <div>
+              <h3>Processes</h3>
+              <div id="process-list" class="list"></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Coordination State</h2>
+            <button id="refresh-coordination" type="button" class="ghost">Refresh</button>
+          </div>
+          <div id="coord-errors" class="error-list"></div>
+          <div id="fbcoord-card" class="coord-card"></div>
+          <div id="node-cards" class="card-grid"></div>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Network Topology</h2>
+            <span class="chip">fixed layout</span>
+          </div>
+          <svg class="topology" viewBox="0 0 900 360" role="img" aria-label="coordlab topology">
+            <defs>
+              <linearGradient id="topology-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#1f5f52"></stop>
+                <stop offset="100%" stop-color="#0f2f3a"></stop>
+              </linearGradient>
+            </defs>
+            <rect x="0" y="0" width="900" height="360" rx="18" fill="url(#topology-gradient)"></rect>
+
+            <g class="link">
+              <line x1="180" y1="190" x2="360" y2="190"></line>
+              <text x="260" y="176" class="link-label">node side</text>
+            </g>
+            <g class="link">
+              <line x1="540" y1="190" x2="720" y2="190"></line>
+              <text x="620" y="176" class="link-label">upstream side</text>
+            </g>
+            <g class="link">
+              <line x1="450" y1="105" x2="450" y2="275"></line>
+              <text x="466" y="190" class="link-label">internet</text>
+            </g>
+
+            <g class="node-box">
+              <rect x="40" y="65" width="140" height="60" rx="12"></rect>
+              <text x="110" y="100">fbcoord</text>
+            </g>
+            <g class="node-box">
+              <rect x="40" y="150" width="140" height="60" rx="12"></rect>
+              <text x="110" y="185">node-1</text>
+            </g>
+            <g class="node-box">
+              <rect x="40" y="235" width="140" height="60" rx="12"></rect>
+              <text x="110" y="270">node-2</text>
+            </g>
+
+            <g class="hub-box">
+              <rect x="360" y="120" width="180" height="55" rx="14"></rect>
+              <text x="450" y="154">hub / internet / hub-up</text>
+            </g>
+
+            <g class="node-box">
+              <rect x="720" y="105" width="140" height="60" rx="12"></rect>
+              <text x="790" y="140">upstream-1</text>
+            </g>
+            <g class="node-box">
+              <rect x="720" y="215" width="140" height="60" rx="12"></rect>
+              <text x="790" y="250">upstream-2</text>
+            </g>
+
+            <g class="link emphasis">
+              <line x1="540" y1="145" x2="720" y2="135"></line>
+              <text id="topology-upstream-1" x="610" y="122" class="shape-label">upstream-1: none</text>
+            </g>
+            <g class="link emphasis">
+              <line x1="540" y1="225" x2="720" y2="245"></line>
+              <text id="topology-upstream-2" x="600" y="274" class="shape-label">upstream-2: none</text>
+            </g>
+          </svg>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Traffic Shaping</h2>
+            <div class="inline-actions">
+              <select id="preset-select">
+                <option value="">Presets</option>
+                <option value="healthy">Healthy</option>
+                <option value="upstream-1-delay">Degrade upstream-1 (200ms)</option>
+                <option value="upstream-2-delay">Degrade upstream-2 (200ms)</option>
+                <option value="both-delay">Degrade both (200ms)</option>
+              </select>
+              <button id="apply-preset" type="button" class="ghost">Apply</button>
+              <button id="clear-all" type="button">Clear All</button>
+            </div>
+          </div>
+          <div id="shaping-error" class="error-list"></div>
+          <div id="shaping-list" class="stack"></div>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Service Links</h2>
+          </div>
+          <div id="service-links" class="card-grid"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Log Viewer</h2>
+            <div class="inline-actions">
+              <label>
+                Process
+                <select id="log-process"></select>
+              </label>
+              <label>
+                Lines
+                <input id="log-lines" type="number" min="1" max="500" value="100">
+              </label>
+              <button id="refresh-logs" type="button">Refresh Log</button>
+            </div>
+          </div>
+          <div id="log-error" class="error-list"></div>
+          <pre id="log-output" class="log-output">Select a process and refresh to view recent logs.</pre>
+        </article>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  </body>
+</html>

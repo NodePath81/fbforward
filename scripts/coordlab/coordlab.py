@@ -104,6 +104,16 @@ def require_runtime_environment() -> None:
             "  python3 -m venv .venv\n"
             "  .venv/bin/pip install -r scripts/coordlab/requirements.txt"
         )
+
+
+def require_flask_environment() -> None:
+    if importlib.util.find_spec("flask") is None:
+        raise RuntimeError(
+            "coordlab web requires flask in the repo venv.\n"
+            "bootstrap:\n"
+            "  python3 -m venv .venv\n"
+            "  .venv/bin/pip install -r scripts/coordlab/requirements.txt"
+        )
     if importlib.util.find_spec("httpx") is None:
         raise RuntimeError(
             "coordlab requires httpx in the repo venv.\n"
@@ -603,7 +613,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         state = build_state(
             workdir,
             topology,
-            phase=4,
+            phase=5,
             active=True,
             processes=manager.infos(),
             proxies=proxies,
@@ -620,7 +630,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         state = build_state(
             workdir,
             topology,
-            phase=4,
+            phase=5,
             active=True,
             processes=manager.infos(),
             proxies=proxies,
@@ -650,7 +660,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         state = build_state(
             workdir,
             topology,
-            phase=4,
+            phase=5,
             active=True,
             processes=manager.infos(),
             proxies=proxies,
@@ -735,6 +745,16 @@ def cmd_shaping_clear_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    require_flask_environment()
+    from web.app import create_app
+
+    workdir = Path(args.workdir).expanduser().resolve()
+    app = create_app(workdir)
+    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+    return 0
+
+
 def cmd_proxy_daemon(args: argparse.Namespace) -> int:
     run_proxy_daemon(args.state)
     return 0
@@ -754,15 +774,21 @@ def build_parser() -> argparse.ArgumentParser:
         sub.set_defaults(handler=handler)
 
     for name, handler, help_text in (
-        ("up", cmd_up, "start the Phase 4 coordlab services and host proxies"),
-        ("down", cmd_down, "stop the Phase 4 coordlab services and topology"),
-        ("status", cmd_status, "show the Phase 4 coordlab state"),
+        ("up", cmd_up, "start the Phase 5 coordlab services and host proxies"),
+        ("down", cmd_down, "stop the Phase 5 coordlab services and topology"),
+        ("status", cmd_status, "show the Phase 5 coordlab state"),
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
         if name == "up":
             sub.add_argument("--skip-build", action="store_true")
         sub.set_defaults(handler=handler)
+
+    web = subparsers.add_parser("web", help="start the Phase 5 coordlab dashboard")
+    web.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=18800)
+    web.set_defaults(handler=cmd_web)
 
     shaping_status = subparsers.add_parser("shaping-status", help="show current upstream shaping state")
     shaping_status.add_argument("--workdir", default=str(DEFAULT_WORKDIR))

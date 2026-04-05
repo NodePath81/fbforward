@@ -68,5 +68,6 @@ def render_summary(state: LabState, python_executable: str) -> str:
     script = Path(__file__).resolve().parents[1] / "coordlab.py"
     lines.append("  commands:")
     lines.append(f"    {python_executable} {script} status --workdir {workdir}")
+    lines.append(f"    {python_executable} {script} web --workdir {workdir}")
     lines.append(f"    {python_executable} {script} down --workdir {workdir}")
     return "\n".join(lines)
