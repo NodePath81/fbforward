@@ -67,8 +67,10 @@
   --radius-full: 9999px;
 
   --shadow-card: 0 20px 40px rgba(20, 20, 20, 0.12);
+  --shadow-card-hover: 0 24px 48px rgba(20, 20, 20, 0.16);
   --shadow-elevated: 0 12px 30px rgba(217, 108, 74, 0.18);
   --shadow-button-hover: 0 8px 18px var(--color-accent-glow);
+  --shadow-input-focus: 0 0 0 3px var(--color-accent-subtle), 0 0 16px rgba(217, 108, 74, 0.06);
 
   /* Animation tokens */
   --duration-fast: 150ms;

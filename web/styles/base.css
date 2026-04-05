@@ -1,4 +1,6 @@
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -12,6 +14,43 @@ body {
   min-height: 100vh;
   position: relative;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes orb-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(12px, -8px) scale(1.04); }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(20, 20, 20, 0.12);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(20, 20, 20, 0.22);
 }
 
 img {
@@ -27,6 +66,11 @@ img {
   filter: blur(60px);
   opacity: 0.35;
   z-index: 0;
+  animation: orb-drift 20s ease-in-out infinite;
+}
+
+.orb-b {
+  animation-delay: -10s;
 }
 
 .orb-a {
@@ -51,6 +95,7 @@ img {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  animation: fade-up var(--duration-slow) var(--ease-out) both;
 }
 
 .auth-shell {
@@ -84,6 +129,13 @@ img {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  transition: box-shadow var(--duration-normal) var(--ease-out),
+    border-color var(--duration-normal) var(--ease-out);
+}
+
+.header-widget:hover {
+  box-shadow: var(--shadow-card-hover);
+  border-color: rgba(20, 20, 20, 0.12);
 }
 
 .header-top {
@@ -203,6 +255,8 @@ img {
   font-weight: 600;
   text-transform: lowercase;
   box-shadow: none;
+  transition: background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .segmented .segmented-button:hover {
@@ -238,6 +292,13 @@ h1 {
   font-size: var(--text-display);
   letter-spacing: var(--tracking-tight);
   line-height: var(--leading-tight);
+}
+
+.hero-copy h1 {
+  background: linear-gradient(135deg, var(--color-ink) 50%, var(--color-accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 h2 {

@@ -5,6 +5,13 @@
   padding: var(--space-3);
   box-shadow: var(--shadow-card);
   border: 1px solid var(--color-border);
+  transition: box-shadow var(--duration-normal) var(--ease-out),
+    border-color var(--duration-normal) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out);
+}
+
+.panel:hover {
+  box-shadow: var(--shadow-card-hover);
 }
 
 .panel-header {
@@ -72,13 +79,24 @@ select {
   font-size: var(--text-base);
   background: var(--color-bg-soft);
   color: var(--color-ink);
+  transition: border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+input::placeholder {
+  color: rgba(92, 92, 92, 0.5);
+}
+
+input:hover,
+select:hover {
+  border-color: rgba(20, 20, 20, 0.16);
 }
 
 input:focus,
 select:focus {
   outline: none;
   border-color: var(--color-border-active);
-  box-shadow: 0 0 0 3px var(--color-accent-subtle);
+  box-shadow: var(--shadow-input-focus);
 }
 
 button {
@@ -98,6 +116,11 @@ button:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow-button-hover);
   background: var(--color-accent-hover);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
 }
 
 button:disabled {
@@ -164,14 +187,31 @@ thead {
   color: var(--color-muted);
 }
 
+tbody tr {
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
 tbody tr:hover {
   background: var(--color-accent-subtle);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .empty-row {
   text-align: center;
   color: var(--color-muted);
   padding: var(--space-2) 0;
+}
+
+.auth-card {
+  border-color: rgba(217, 108, 74, 0.15);
+}
+
+.auth-card:hover {
+  border-color: rgba(217, 108, 74, 0.25);
+  box-shadow: var(--shadow-card), 0 0 40px rgba(217, 108, 74, 0.06);
 }
 
 .auth-card h1 {

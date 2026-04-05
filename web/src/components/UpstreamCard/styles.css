@@ -12,11 +12,24 @@
   position: relative;
   display: grid;
   gap: var(--space-1);
+  transition: border-color var(--duration-normal) var(--ease-out),
+    box-shadow var(--duration-normal) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out);
+}
+
+.upstream-card:hover {
+  border-color: rgba(20, 20, 20, 0.14);
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
 }
 
 .upstream-card.active {
   border-color: var(--color-border-active);
   box-shadow: var(--shadow-elevated);
+}
+
+.upstream-card.active:hover {
+  box-shadow: var(--shadow-elevated), 0 0 20px rgba(217, 108, 74, 0.1);
 }
 
 .upstream-card.selectable {
@@ -35,6 +48,12 @@
 
 .upstream-card.unusable {
   opacity: 0.6;
+}
+
+.upstream-card.disabled:hover,
+.upstream-card.unusable:hover {
+  transform: none;
+  box-shadow: var(--shadow-card);
 }
 
 .upstream-header {
@@ -71,6 +90,8 @@
   background: var(--color-accent-subtle);
   color: var(--color-accent-dark);
   border: 1px solid var(--color-border-accent);
+  transition: background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .badge.active {
@@ -102,7 +123,8 @@
   height: 100%;
   background: linear-gradient(90deg, var(--color-accent), var(--color-accent-dark));
   width: 0;
-  transition: width var(--duration-normal) var(--ease-out);
+  border-radius: var(--radius-full);
+  transition: width var(--duration-slow) var(--ease-out);
 }
 
 .metric-list {
