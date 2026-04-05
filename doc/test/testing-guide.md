@@ -24,10 +24,12 @@ go test ./bwprobe/internal/... ./internal/upstream -v
 ./scripts/run-scenario.sh                      # quick sanity (score-ordering)
 ./scripts/run-scenario.sh -s score-ordering -s confirmation -s hold-time -s fast-failover -s anti-flapping -s stability
 
-# Coordlab Phase 1 network smoke
-python3 scripts/coordlab/coordlab.py net-up
-python3 scripts/coordlab/coordlab.py net-status
-python3 scripts/coordlab/coordlab.py net-down
+# Coordlab Phase 4 manual smoke
+.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase4
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase4 --upstream upstream-1 --delay-ms 200
+.venv/bin/python scripts/coordlab/coordlab.py shaping-status --workdir /tmp/coordlab-phase4
+.venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all --workdir /tmp/coordlab-phase4
+.venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase4
 ```
 
 ---

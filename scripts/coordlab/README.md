@@ -11,12 +11,12 @@ python3 -m venv .venv
 .venv/bin/pip install -r scripts/coordlab/requirements.txt
 ```
 
-## Phase 3 usage
+## Phase 4 usage
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase3
-.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase3
-.venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase3
+.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase4
+.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase4
+.venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase4
 ```
 
 Host proxy ports:
@@ -31,4 +31,14 @@ Phase 1 network-only commands are still available:
 .venv/bin/python scripts/coordlab/coordlab.py net-up
 .venv/bin/python scripts/coordlab/coordlab.py net-status
 .venv/bin/python scripts/coordlab/coordlab.py net-down
+```
+
+Traffic shaping commands:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py shaping-status --workdir /tmp/coordlab-phase4
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase4 --upstream upstream-1 --delay-ms 200
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase4 --upstream upstream-2 --loss-pct 30
+.venv/bin/python scripts/coordlab/coordlab.py shaping-clear --workdir /tmp/coordlab-phase4 --upstream upstream-1
+.venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all --workdir /tmp/coordlab-phase4
 ```

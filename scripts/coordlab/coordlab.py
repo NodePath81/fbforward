@@ -19,7 +19,19 @@ from lib import netns
 from lib.output import render_summary
 from lib.process import ProcessManager, is_alive, terminate_pid, terminate_process_group
 from lib.proxy import run_proxy_daemon
-from lib.state import LabState, LinkInfo, NamespaceInfo, ProcessInfo, ProxyInfo, TokenInfo, TopologyInfo, load_state, save_state
+from lib.state import (
+    LabState,
+    LinkInfo,
+    NamespaceInfo,
+    ProcessInfo,
+    ProxyInfo,
+    ShapingInfo,
+    ShapingTargetInfo,
+    TokenInfo,
+    TopologyInfo,
+    load_state,
+    save_state,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COORDLAB_SCRIPT = Path(__file__).resolve()
@@ -109,6 +121,7 @@ def build_state(
     active: bool,
     processes: dict[str, ProcessInfo] | None = None,
     proxies: dict[str, ProxyInfo] | None = None,
+    shaping: ShapingInfo | None = None,
     tokens: TokenInfo | None = None,
 ) -> LabState:
     namespaces = {
@@ -135,8 +148,27 @@ def build_state(
         namespaces=namespaces,
         processes=processes or {},
         proxies=proxies or {},
+        shaping=shaping or build_shaping_info(topology),
         tokens=tokens or TokenInfo(),
         topology=TopologyInfo(base_cidr=topology.base_cidr, links=links),
+    )
+
+
+def build_shaping_info(topology: netns.Topology) -> ShapingInfo:
+    return ShapingInfo(
+        router_ns="hub-up",
+        targets={
+            "upstream-1": ShapingTargetInfo(
+                tag="us-1",
+                namespace="upstream-1",
+                device=netns.find_link(topology.links, "hub-up", "upstream-1").left_if,
+            ),
+            "upstream-2": ShapingTargetInfo(
+                tag="us-2",
+                namespace="upstream-2",
+                device=netns.find_link(topology.links, "hub-up", "upstream-2").left_if,
+            ),
+        },
     )
 
 
@@ -405,6 +437,42 @@ def build_proxy_infos() -> dict[str, ProxyInfo]:
     }
 
 
+def load_active_state(workdir: Path) -> LabState:
+    state_path = state_path_for(workdir)
+    state = load_state(state_path)
+    if state is None:
+        raise RuntimeError(f"no coordlab state found at {state_path}")
+    if not state.active:
+        raise RuntimeError(f"coordlab state is not active: {state_path}")
+    return state
+
+
+def build_shaper_from_state(state: LabState):
+    from lib.shaping import TrafficShaper
+
+    require_tools(["tc"])
+    if not state.shaping.router_ns:
+        raise RuntimeError("coordlab state does not contain shaping topology; rerun `coordlab.py up`")
+    router_info = state.namespaces.get(state.shaping.router_ns)
+    if router_info is None:
+        raise RuntimeError(f"coordlab state references unknown shaping router namespace: {state.shaping.router_ns}")
+    if not is_alive(router_info.pid):
+        raise RuntimeError(f"shaping router namespace is not alive: {state.shaping.router_ns} pid={router_info.pid}")
+    return TrafficShaper(router_info.pid, state.shaping)
+
+
+def format_shaping_state(states: dict[str, object | None]) -> str:
+    lines: list[str] = []
+    for upstream, shaping_state in states.items():
+        if shaping_state is None:
+            lines.append(f"{upstream}: none")
+            continue
+        delay_ms = getattr(shaping_state, "delay_ms")
+        loss_pct = getattr(shaping_state, "loss_pct")
+        lines.append(f"{upstream}: delay={delay_ms}ms loss={loss_pct:g}%")
+    return "\n".join(lines)
+
+
 def cmd_net_up(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).expanduser().resolve()
     workdir.mkdir(parents=True, exist_ok=True)
@@ -461,7 +529,7 @@ def cmd_net_status(args: argparse.Namespace) -> int:
 
 
 def cmd_up(args: argparse.Namespace) -> int:
-    from lib import readiness, rpc
+    from lib import readiness
 
     workdir = Path(args.workdir).expanduser().resolve()
     workdir.mkdir(parents=True, exist_ok=True)
@@ -535,7 +603,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         state = build_state(
             workdir,
             topology,
-            phase=3,
+            phase=4,
             active=True,
             processes=manager.infos(),
             proxies=proxies,
@@ -552,7 +620,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         state = build_state(
             workdir,
             topology,
-            phase=3,
+            phase=4,
             active=True,
             processes=manager.infos(),
             proxies=proxies,
@@ -582,7 +650,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         state = build_state(
             workdir,
             topology,
-            phase=3,
+            phase=4,
             active=True,
             processes=manager.infos(),
             proxies=proxies,
@@ -632,6 +700,41 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_shaping_status(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state = load_active_state(workdir)
+    shaper = build_shaper_from_state(state)
+    print(format_shaping_state(shaper.get_all()))
+    return 0
+
+
+def cmd_shaping_set(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state = load_active_state(workdir)
+    shaper = build_shaper_from_state(state)
+    shaper.set(args.upstream, delay_ms=args.delay_ms, loss_pct=args.loss_pct)
+    print(format_shaping_state(shaper.get_all()))
+    return 0
+
+
+def cmd_shaping_clear(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state = load_active_state(workdir)
+    shaper = build_shaper_from_state(state)
+    shaper.clear(args.upstream)
+    print(format_shaping_state(shaper.get_all()))
+    return 0
+
+
+def cmd_shaping_clear_all(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state = load_active_state(workdir)
+    shaper = build_shaper_from_state(state)
+    shaper.clear_all()
+    print(format_shaping_state(shaper.get_all()))
+    return 0
+
+
 def cmd_proxy_daemon(args: argparse.Namespace) -> int:
     run_proxy_daemon(args.state)
     return 0
@@ -651,15 +754,35 @@ def build_parser() -> argparse.ArgumentParser:
         sub.set_defaults(handler=handler)
 
     for name, handler, help_text in (
-        ("up", cmd_up, "start the Phase 3 coordlab services and host proxies"),
-        ("down", cmd_down, "stop the Phase 3 coordlab services and topology"),
-        ("status", cmd_status, "show the Phase 3 coordlab state"),
+        ("up", cmd_up, "start the Phase 4 coordlab services and host proxies"),
+        ("down", cmd_down, "stop the Phase 4 coordlab services and topology"),
+        ("status", cmd_status, "show the Phase 4 coordlab state"),
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
         if name == "up":
             sub.add_argument("--skip-build", action="store_true")
         sub.set_defaults(handler=handler)
+
+    shaping_status = subparsers.add_parser("shaping-status", help="show current upstream shaping state")
+    shaping_status.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    shaping_status.set_defaults(handler=cmd_shaping_status)
+
+    shaping_set = subparsers.add_parser("shaping-set", help="apply delay/loss shaping to an upstream")
+    shaping_set.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    shaping_set.add_argument("--upstream", required=True, choices=["upstream-1", "upstream-2"])
+    shaping_set.add_argument("--delay-ms", type=int, default=0)
+    shaping_set.add_argument("--loss-pct", type=float, default=0.0)
+    shaping_set.set_defaults(handler=cmd_shaping_set)
+
+    shaping_clear = subparsers.add_parser("shaping-clear", help="clear shaping on one upstream")
+    shaping_clear.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    shaping_clear.add_argument("--upstream", required=True, choices=["upstream-1", "upstream-2"])
+    shaping_clear.set_defaults(handler=cmd_shaping_clear)
+
+    shaping_clear_all = subparsers.add_parser("shaping-clear-all", help="clear shaping on all upstreams")
+    shaping_clear_all.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    shaping_clear_all.set_defaults(handler=cmd_shaping_clear_all)
 
     hidden = subparsers.add_parser("proxy-daemon", help=argparse.SUPPRESS)
     hidden.add_argument("--state", required=True)

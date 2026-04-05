@@ -47,6 +47,19 @@ class TerminalInfo:
 
 
 @dataclass(slots=True)
+class ShapingTargetInfo:
+    tag: str
+    namespace: str
+    device: str
+
+
+@dataclass(slots=True)
+class ShapingInfo:
+    router_ns: str = ""
+    targets: dict[str, ShapingTargetInfo] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class TokenInfo:
     coord_token: str = ""
     control_token: str = ""
@@ -68,6 +81,7 @@ class LabState:
     processes: dict[str, ProcessInfo] = field(default_factory=dict)
     proxies: dict[str, ProxyInfo] = field(default_factory=dict)
     terminals: dict[str, TerminalInfo] = field(default_factory=dict)
+    shaping: ShapingInfo = field(default_factory=ShapingInfo)
     tokens: TokenInfo = field(default_factory=TokenInfo)
     topology: TopologyInfo = field(default_factory=lambda: TopologyInfo(base_cidr=""))
 
@@ -92,6 +106,14 @@ class LabState:
             name: TerminalInfo(**info)
             for name, info in data.get("terminals", {}).items()
         }
+        shaping_raw = data.get("shaping", {})
+        shaping = ShapingInfo(
+            router_ns=str(shaping_raw.get("router_ns", "")),
+            targets={
+                name: ShapingTargetInfo(**info)
+                for name, info in shaping_raw.get("targets", {}).items()
+            },
+        )
         tokens = TokenInfo(**data.get("tokens", {}))
         topology_raw = data.get("topology", {})
         topology = TopologyInfo(
@@ -107,6 +129,7 @@ class LabState:
             processes=processes,
             proxies=proxies,
             terminals=terminals,
+            shaping=shaping,
             tokens=tokens,
             topology=topology,
         )
