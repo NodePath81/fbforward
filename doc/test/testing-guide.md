@@ -23,6 +23,11 @@ go test ./bwprobe/internal/... ./internal/upstream -v
 ./scripts/setup-test-env.sh                    # preflight + build
 ./scripts/run-scenario.sh                      # quick sanity (score-ordering)
 ./scripts/run-scenario.sh -s score-ordering -s confirmation -s hold-time -s fast-failover -s anti-flapping -s stability
+
+# Coordlab Phase 1 network smoke
+python3 scripts/coordlab/coordlab.py net-up
+python3 scripts/coordlab/coordlab.py net-status
+python3 scripts/coordlab/coordlab.py net-down
 ```
 
 ---
