@@ -1,3 +1,17 @@
+const TARGET_ORDER = ["node-1", "node-2", "upstream-1", "upstream-2"];
+const TARGET_LABELS = {
+  "node-1": "node-1",
+  "node-2": "node-2",
+  "upstream-1": "upstream-1",
+  "upstream-2": "upstream-2",
+};
+const TOPOLOGY_LABEL_IDS = {
+  "node-1": "topology-node-1",
+  "node-2": "topology-node-2",
+  "upstream-1": "topology-upstream-1",
+  "upstream-2": "topology-upstream-2",
+};
+
 const state = {
   refreshMs: 5000,
   timer: null,
@@ -49,20 +63,29 @@ function renderList(containerId, items, formatter) {
   element.innerHTML = items.map(formatter).join("");
 }
 
-function updateTopology(upstreams) {
-  for (const entry of upstreams) {
-    const label = document.querySelector(`#topology-${entry.upstream}`);
+function shapeStateText(entry) {
+  const parts = [];
+  if (entry.delay_ms > 0) {
+    parts.push(`${entry.delay_ms}ms delay`);
+  }
+  if (entry.loss_pct > 0) {
+    parts.push(`${entry.loss_pct}% loss`);
+  }
+  return parts.length ? parts.join(" • ") : "healthy";
+}
+
+function sortTargets(entries) {
+  return [...entries].sort((left, right) => TARGET_ORDER.indexOf(left.target) - TARGET_ORDER.indexOf(right.target));
+}
+
+function updateTopology(targets) {
+  const byTarget = Object.fromEntries(targets.map((entry) => [entry.target, entry]));
+  for (const target of TARGET_ORDER) {
+    const label = document.querySelector(`#${TOPOLOGY_LABEL_IDS[target]}`);
     if (!label) {
       continue;
     }
-    const parts = [];
-    if (entry.delay_ms > 0) {
-      parts.push(`${entry.delay_ms}ms delay`);
-    }
-    if (entry.loss_pct > 0) {
-      parts.push(`${entry.loss_pct}% loss`);
-    }
-    label.textContent = parts.length ? parts.join(" • ") : "healthy";
+    label.textContent = byTarget[target] ? shapeStateText(byTarget[target]) : "unknown";
   }
 }
 
@@ -144,20 +167,35 @@ function renderCoordination(payload) {
   }).join("");
 }
 
+function targetAxis(entry) {
+  return entry.target.startsWith("node-") ? "node-side / hub" : "upstream-side / hub-up";
+}
+
+function targetEffect(entry) {
+  if (entry.target.startsWith("node-")) {
+    return "Affects this node broadly, including coordination traffic.";
+  }
+  return "Affects both nodes only when they use this upstream.";
+}
+
 function renderShaping(payload) {
   const list = document.querySelector("#shaping-list");
   const errorBox = document.querySelector("#shaping-error");
   errorBox.innerHTML = "";
 
-  const upstreams = payload.upstreams || [];
-  updateTopology(upstreams);
-  list.innerHTML = upstreams.map((entry) => `
-    <article class="shape-card" data-upstream="${entry.upstream}">
+  const targets = sortTargets(payload.targets || []);
+  updateTopology(targets);
+  list.innerHTML = targets.map((entry) => `
+    <article class="shape-card" data-target="${entry.target}">
       <div class="shape-header">
-        <h3>${entry.upstream}</h3>
-        <span class="chip">${entry.tag}</span>
+        <h3>${TARGET_LABELS[entry.target] || entry.target}</h3>
+        <div class="chip-row">
+          <span class="chip muted-chip">${targetAxis(entry)}</span>
+          ${entry.tag ? `<span class="chip">${entry.tag}</span>` : ""}
+        </div>
       </div>
       <p class="subtle">${entry.namespace} / ${entry.device}</p>
+      <p class="shape-note">${targetEffect(entry)}</p>
       <div class="shape-values">
         <label>
           Delay (ms)
@@ -241,9 +279,9 @@ async function loadLogs() {
   }
 }
 
-async function applyShaping(upstream, delayMs, lossPct) {
+async function applyShaping(target, delayMs, lossPct) {
   try {
-    const payload = await requestJson(`/api/shaping/${encodeURIComponent(upstream)}`, {
+    const payload = await requestJson(`/api/shaping/${encodeURIComponent(target)}`, {
       method: "PUT",
       body: JSON.stringify({ delay_ms: delayMs, loss_pct: lossPct }),
     });
@@ -254,9 +292,9 @@ async function applyShaping(upstream, delayMs, lossPct) {
   }
 }
 
-async function clearShaping(upstream) {
+async function clearShaping(target) {
   try {
-    const payload = await requestJson(`/api/shaping/${encodeURIComponent(upstream)}`, {
+    const payload = await requestJson(`/api/shaping/${encodeURIComponent(target)}`, {
       method: "DELETE",
     });
     renderShaping(payload);
@@ -281,17 +319,16 @@ async function applyPreset() {
   if (!value) {
     return;
   }
+  await clearAllShaping();
   if (value === "healthy") {
-    await clearAllShaping();
     return;
   }
-  await clearAllShaping();
-  if (value === "upstream-1-delay") {
+  if (value === "node-1-delay") {
+    await applyShaping("node-1", 200, 0);
+  } else if (value === "upstream-1-delay") {
     await applyShaping("upstream-1", 200, 0);
-  } else if (value === "upstream-2-delay") {
-    await applyShaping("upstream-2", 200, 0);
-  } else if (value === "both-delay") {
-    await applyShaping("upstream-1", 200, 0);
+  } else if (value === "node-1-upstream-2-delay") {
+    await applyShaping("node-1", 200, 0);
     await applyShaping("upstream-2", 200, 0);
   }
 }
@@ -328,19 +365,19 @@ function bindEvents() {
     if (!button) {
       return;
     }
-    const card = button.closest("[data-upstream]");
+    const card = button.closest("[data-target]");
     if (!card) {
       return;
     }
-    const upstream = card.dataset.upstream;
+    const target = card.dataset.target;
     if (button.dataset.action === "clear") {
-      void clearShaping(upstream);
+      void clearShaping(target);
       return;
     }
     if (button.dataset.action === "apply") {
       const delay = Number(card.querySelector('[data-field="delay"]').value || "0");
       const loss = Number(card.querySelector('[data-field="loss"]').value || "0");
-      void applyShaping(upstream, delay, loss);
+      void applyShaping(target, delay, loss);
     }
   });
 }

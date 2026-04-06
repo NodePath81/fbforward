@@ -2,7 +2,7 @@
 
 This document describes `coordlab`, the Python-based manual testing environment for `fbcoord` and coordinated `fbforward` nodes.
 
-coordlab is separate from the Go scenario harness in `test/harness/`. It is intended for interactive operator and developer testing on one Linux host, with a browser-accessible dashboard and explicit control over upstream degradation.
+coordlab is separate from the Go scenario harness in `test/harness/`. It is intended for interactive operator and developer testing on one Linux host, with a browser-accessible dashboard and explicit control over node-side and upstream-side degradation.
 
 ---
 
@@ -14,7 +14,7 @@ coordlab provides a reusable local lab that can:
 - start two real `fbforward` nodes against that coordinator
 - start two real `fbmeasure` upstreams
 - expose `fbcoord` and both node control planes back to the host
-- apply live delay and packet-loss shaping to each upstream
+- apply live delay and packet-loss shaping on both node-side and upstream-side links
 - expose a browser dashboard for lab status, coordination state, shaping, and log viewing
 
 It is a manual environment, not a CI runner and not a scenario/assertion engine.
@@ -44,10 +44,10 @@ The main entrypoint is:
 | `down` | Stop proxies and services, tear down namespaces, and mark the lab inactive |
 | `status` | Print host URLs, process state, namespace state, and artifact paths |
 | `web` | Start the Flask dashboard on the host |
-| `shaping-status` | Show current live shaping on both upstream links |
-| `shaping-set` | Apply delay and/or loss to one upstream |
-| `shaping-clear` | Remove shaping from one upstream |
-| `shaping-clear-all` | Remove shaping from both upstreams |
+| `shaping-status` | Show current live shaping on all node-side and upstream-side targets |
+| `shaping-set` | Apply delay and/or loss to one shaping target |
+| `shaping-clear` | Remove shaping from one target |
+| `shaping-clear-all` | Remove shaping from all targets |
 | `net-up` / `net-status` / `net-down` | Phase 1 topology-only debugging commands |
 
 ### Work directory
@@ -80,7 +80,7 @@ coordlab builds a fixed namespace topology:
 - `upstream-1`
 - `upstream-2`
 
-The topology is a two-hub layout joined by an `internet` transit namespace. Node-side traffic stays on `hub`, upstream-side traffic stays on `hub-up`, and upstream degradation is applied on `hub-up`'s upstream-facing veths.
+The topology is a two-hub layout joined by an `internet` transit namespace. Node-side traffic stays on `hub`, upstream-side traffic stays on `hub-up`, node-side degradation is applied on `hub`'s node-facing veths, and upstream-side degradation is applied on `hub-up`'s upstream-facing veths.
 
 ### Managed processes
 
@@ -132,7 +132,7 @@ Host-facing access points:
 - namespace PIDs and roles
 - managed process PIDs and log paths
 - host proxy mappings
-- shaping topology (`hub-up` plus upstream-facing devices)
+- shaping topology (target name, router namespace, and shaped device for both shaping axes)
 - generated coordination and control tokens
 - topology link metadata
 
@@ -154,8 +154,8 @@ It serves:
 - `GET /api/status`
 - `GET /api/coordination`
 - `GET /api/shaping`
-- `PUT /api/shaping/<upstream>`
-- `DELETE /api/shaping/<upstream>`
+- `PUT /api/shaping/<target>`
+- `DELETE /api/shaping/<target>`
 - `DELETE /api/shaping`
 - `GET /api/logs/<process>?lines=N`
 
@@ -182,7 +182,8 @@ Typical manual smoke:
 .venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # open http://127.0.0.1:18800
-.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --upstream upstream-1 --delay-ms 200
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target node-1 --delay-ms 200
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target upstream-1 --delay-ms 200
 .venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
@@ -200,6 +201,7 @@ Developer-side validation:
 
 - coordlab is Linux-only and depends on unprivileged user namespaces being enabled.
 - The topology is fixed at two nodes and two upstreams.
+- The shaping model provides two axes only: node-side on `hub` and upstream-side on `hub-up`. It does not provide a full independent `(node, upstream)` matrix.
 - The dashboard is a local operator tool with no auth; it should remain bound to `127.0.0.1`.
 - Terminal integration is not implemented yet.
 - There is a known product issue in `fbforward`: induced packet loss can trigger a UDP measurement crash. For Phase 5 validation, use delay-based degradation as the primary smoke path.

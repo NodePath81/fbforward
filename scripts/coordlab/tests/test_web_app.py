@@ -29,6 +29,8 @@ class FakeShaper:
     def __init__(self):
         self.calls: list[tuple] = []
         self.states = {
+            "node-1": {"delay_ms": 0, "loss_pct": 0.0},
+            "node-2": {"delay_ms": 0, "loss_pct": 0.0},
             "upstream-1": {"delay_ms": 0, "loss_pct": 0.0},
             "upstream-2": {"delay_ms": 0, "loss_pct": 0.0},
         }
@@ -42,13 +44,13 @@ class FakeShaper:
                 result[name] = type("ShapingState", (), state)()
         return result
 
-    def set(self, upstream: str, delay_ms: int = 0, loss_pct: float = 0):
-        self.calls.append(("set", upstream, delay_ms, loss_pct))
-        self.states[upstream] = {"delay_ms": delay_ms, "loss_pct": loss_pct}
+    def set(self, target: str, delay_ms: int = 0, loss_pct: float = 0):
+        self.calls.append(("set", target, delay_ms, loss_pct))
+        self.states[target] = {"delay_ms": delay_ms, "loss_pct": loss_pct}
 
-    def clear(self, upstream: str):
-        self.calls.append(("clear", upstream))
-        self.states[upstream] = {"delay_ms": 0, "loss_pct": 0.0}
+    def clear(self, target: str):
+        self.calls.append(("clear", target))
+        self.states[target] = {"delay_ms": 0, "loss_pct": 0.0}
 
     def clear_all(self):
         self.calls.append(("clear_all",))
@@ -63,6 +65,7 @@ def sample_state(workdir: Path) -> LabState:
         created_at="2026-04-05T00:00:00+00:00",
         work_dir=str(workdir),
         namespaces={
+            "hub": NamespaceInfo(pid=99, parent=None, role="hub"),
             "hub-up": NamespaceInfo(pid=100, parent="hub", role="hub-up"),
             "node-1": NamespaceInfo(pid=101, parent="hub", role="node"),
         },
@@ -77,10 +80,21 @@ def sample_state(workdir: Path) -> LabState:
             "node-2": ProxyInfo("127.0.0.1", 18702, "node-2", "127.0.0.1", 8080),
         },
         shaping=ShapingInfo(
-            router_ns="hub-up",
             targets={
-                "upstream-1": ShapingTargetInfo(tag="us-1", namespace="upstream-1", device="hubup-u1"),
-                "upstream-2": ShapingTargetInfo(tag="us-2", namespace="upstream-2", device="hubup-u2"),
+                "node-1": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-1", device="hub-node1"),
+                "node-2": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-2", device="hub-node2"),
+                "upstream-1": ShapingTargetInfo(
+                    router_ns="hub-up",
+                    tag="us-1",
+                    namespace="upstream-1",
+                    device="hubup-u1",
+                ),
+                "upstream-2": ShapingTargetInfo(
+                    router_ns="hub-up",
+                    tag="us-2",
+                    namespace="upstream-2",
+                    device="hubup-u2",
+                ),
             },
         ),
         tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
@@ -117,7 +131,7 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(payload["active"])
         self.assertNotIn("tokens", payload)
         self.assertIn("fbcoord", payload["service_links"])
-        self.assertEqual("upstream-1", payload["shaping_targets"][0]["upstream"])
+        self.assertEqual("node-1", payload["shaping_targets"][0]["target"])
 
     def test_coordination_returns_partial_errors(self) -> None:
         self.write_state(sample_state(self.workdir))
@@ -181,7 +195,7 @@ class WebAppTest(unittest.TestCase):
         with mock.patch("web.app.build_shaper_from_state", return_value=fake):
             get_response = self.client.get("/api/shaping")
             put_response = self.client.put(
-                "/api/shaping/upstream-1",
+                "/api/shaping/node-1",
                 data=json.dumps({"delay_ms": 200, "loss_pct": 0}),
                 content_type="application/json",
             )
@@ -192,7 +206,9 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, put_response.status_code)
         self.assertEqual(200, delete_response.status_code)
         self.assertEqual(200, clear_all_response.status_code)
-        self.assertEqual(("set", "upstream-1", 200, 0.0), fake.calls[0])
+        payload = get_response.get_json()
+        self.assertEqual(["node-1", "node-2", "upstream-1", "upstream-2"], [entry["target"] for entry in payload["targets"]])
+        self.assertEqual(("set", "node-1", 200, 0.0), fake.calls[0])
         self.assertEqual(("clear", "upstream-1"), fake.calls[1])
         self.assertEqual(("clear_all",), fake.calls[2])
 

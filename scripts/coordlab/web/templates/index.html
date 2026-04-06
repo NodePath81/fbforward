@@ -65,18 +65,18 @@
             <h2>Network Topology</h2>
             <span class="chip">fixed layout</span>
           </div>
-          <svg class="topology" viewBox="0 0 960 340" role="img" aria-label="coordlab topology">
+          <svg class="topology" viewBox="0 0 960 360" role="img" aria-label="coordlab topology">
             <defs>
               <linearGradient id="topology-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" stop-color="#1f5f52"></stop>
                 <stop offset="100%" stop-color="#0f2f3a"></stop>
               </linearGradient>
             </defs>
-            <rect x="0" y="0" width="960" height="340" rx="22" fill="url(#topology-gradient)"></rect>
+            <rect x="0" y="0" width="960" height="360" rx="22" fill="url(#topology-gradient)"></rect>
 
             <text x="134" y="38" class="section-tag">coordination plane</text>
-            <text x="356" y="38" class="section-tag">node side</text>
-            <text x="676" y="38" class="section-tag">upstream shaping</text>
+            <text x="356" y="38" class="section-tag">node-side shaping</text>
+            <text x="676" y="38" class="section-tag">upstream-side shaping</text>
 
             <g class="node-box">
               <rect x="48" y="48" width="172" height="64" rx="16"></rect>
@@ -136,6 +136,14 @@
             </g>
 
             <g class="shape-pill">
+              <rect x="262" y="118" width="150" height="30" rx="15"></rect>
+              <text id="topology-node-1" x="337" y="133" class="shape-label">healthy</text>
+            </g>
+            <g class="shape-pill">
+              <rect x="262" y="210" width="150" height="30" rx="15"></rect>
+              <text id="topology-node-2" x="337" y="225" class="shape-label">healthy</text>
+            </g>
+            <g class="shape-pill">
               <rect x="580" y="86" width="164" height="30" rx="15"></rect>
               <text id="topology-upstream-1" x="662" y="101" class="shape-label">healthy</text>
             </g>
@@ -144,8 +152,10 @@
               <text id="topology-upstream-2" x="662" y="247" class="shape-label">healthy</text>
             </g>
 
+            <text x="337" y="260" class="caption-label">node-side netem on hub egress</text>
             <text x="496" y="222" class="caption-label">transit only</text>
-            <text x="638" y="222" class="caption-label">netem on upstream egress</text>
+            <text x="662" y="286" class="caption-label">upstream-side netem on hub-up egress</text>
+            <text x="496" y="324" class="caption-label">effective path = node-side(node) + upstream-side(upstream)</text>
           </svg>
         </article>
 
@@ -156,15 +166,16 @@
               <select id="preset-select">
                 <option value="">Presets</option>
                 <option value="healthy">Healthy</option>
+                <option value="node-1-delay">Degrade node-1 (200ms)</option>
                 <option value="upstream-1-delay">Degrade upstream-1 (200ms)</option>
-                <option value="upstream-2-delay">Degrade upstream-2 (200ms)</option>
-                <option value="both-delay">Degrade both (200ms)</option>
+                <option value="node-1-upstream-2-delay">Degrade node-1 + upstream-2 (200ms)</option>
               </select>
               <button id="apply-preset" type="button" class="ghost">Apply</button>
               <button id="clear-all" type="button">Clear All</button>
             </div>
           </div>
           <div id="shaping-error" class="error-list"></div>
+          <p class="subtle">Node-side shaping affects all traffic from that node, including coordination traffic. Upstream-side shaping affects both nodes only when they use that upstream.</p>
           <div id="shaping-list" class="stack"></div>
         </article>
       </section>

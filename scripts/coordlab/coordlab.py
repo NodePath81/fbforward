@@ -166,14 +166,27 @@ def build_state(
 
 def build_shaping_info(topology: netns.Topology) -> ShapingInfo:
     return ShapingInfo(
-        router_ns="hub-up",
         targets={
+            "node-1": ShapingTargetInfo(
+                router_ns="hub",
+                tag="",
+                namespace="node-1",
+                device=netns.find_link(topology.links, "hub", "node-1").left_if,
+            ),
+            "node-2": ShapingTargetInfo(
+                router_ns="hub",
+                tag="",
+                namespace="node-2",
+                device=netns.find_link(topology.links, "hub", "node-2").left_if,
+            ),
             "upstream-1": ShapingTargetInfo(
+                router_ns="hub-up",
                 tag="us-1",
                 namespace="upstream-1",
                 device=netns.find_link(topology.links, "hub-up", "upstream-1").left_if,
             ),
             "upstream-2": ShapingTargetInfo(
+                router_ns="hub-up",
                 tag="us-2",
                 namespace="upstream-2",
                 device=netns.find_link(topology.links, "hub-up", "upstream-2").left_if,
@@ -461,25 +474,30 @@ def build_shaper_from_state(state: LabState):
     from lib.shaping import TrafficShaper
 
     require_tools(["tc"])
-    if not state.shaping.router_ns:
+    if not state.shaping.targets:
         raise RuntimeError("coordlab state does not contain shaping topology; rerun `coordlab.py up`")
-    router_info = state.namespaces.get(state.shaping.router_ns)
-    if router_info is None:
-        raise RuntimeError(f"coordlab state references unknown shaping router namespace: {state.shaping.router_ns}")
-    if not is_alive(router_info.pid):
-        raise RuntimeError(f"shaping router namespace is not alive: {state.shaping.router_ns} pid={router_info.pid}")
-    return TrafficShaper(router_info.pid, state.shaping)
+    router_pids: dict[str, int] = {}
+    for target_name, target in sorted(state.shaping.targets.items()):
+        router_info = state.namespaces.get(target.router_ns)
+        if router_info is None:
+            raise RuntimeError(
+                f"coordlab state references unknown shaping router namespace: {target.router_ns} for {target_name}"
+            )
+        if not is_alive(router_info.pid):
+            raise RuntimeError(f"shaping router namespace is not alive: {target.router_ns} pid={router_info.pid}")
+        router_pids[target.router_ns] = router_info.pid
+    return TrafficShaper(router_pids, state.shaping)
 
 
 def format_shaping_state(states: dict[str, object | None]) -> str:
     lines: list[str] = []
-    for upstream, shaping_state in states.items():
+    for target_name, shaping_state in states.items():
         if shaping_state is None:
-            lines.append(f"{upstream}: none")
+            lines.append(f"{target_name}: none")
             continue
         delay_ms = getattr(shaping_state, "delay_ms")
         loss_pct = getattr(shaping_state, "loss_pct")
-        lines.append(f"{upstream}: delay={delay_ms}ms loss={loss_pct:g}%")
+        lines.append(f"{target_name}: delay={delay_ms}ms loss={loss_pct:g}%")
     return "\n".join(lines)
 
 
@@ -722,7 +740,7 @@ def cmd_shaping_set(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).expanduser().resolve()
     state = load_active_state(workdir)
     shaper = build_shaper_from_state(state)
-    shaper.set(args.upstream, delay_ms=args.delay_ms, loss_pct=args.loss_pct)
+    shaper.set(args.target, delay_ms=args.delay_ms, loss_pct=args.loss_pct)
     print(format_shaping_state(shaper.get_all()))
     return 0
 
@@ -731,7 +749,7 @@ def cmd_shaping_clear(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).expanduser().resolve()
     state = load_active_state(workdir)
     shaper = build_shaper_from_state(state)
-    shaper.clear(args.upstream)
+    shaper.clear(args.target)
     print(format_shaping_state(shaper.get_all()))
     return 0
 
@@ -790,23 +808,29 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--port", type=int, default=18800)
     web.set_defaults(handler=cmd_web)
 
-    shaping_status = subparsers.add_parser("shaping-status", help="show current upstream shaping state")
+    shaping_status = subparsers.add_parser(
+        "shaping-status",
+        help="show current node-side and upstream-side shaping state",
+    )
     shaping_status.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
     shaping_status.set_defaults(handler=cmd_shaping_status)
 
-    shaping_set = subparsers.add_parser("shaping-set", help="apply delay/loss shaping to an upstream")
+    shaping_set = subparsers.add_parser("shaping-set", help="apply delay/loss shaping to a node or upstream target")
     shaping_set.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
-    shaping_set.add_argument("--upstream", required=True, choices=["upstream-1", "upstream-2"])
+    shaping_set.add_argument("--target", required=True, choices=["node-1", "node-2", "upstream-1", "upstream-2"])
     shaping_set.add_argument("--delay-ms", type=int, default=0)
     shaping_set.add_argument("--loss-pct", type=float, default=0.0)
     shaping_set.set_defaults(handler=cmd_shaping_set)
 
-    shaping_clear = subparsers.add_parser("shaping-clear", help="clear shaping on one upstream")
+    shaping_clear = subparsers.add_parser("shaping-clear", help="clear shaping on one node or upstream target")
     shaping_clear.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
-    shaping_clear.add_argument("--upstream", required=True, choices=["upstream-1", "upstream-2"])
+    shaping_clear.add_argument("--target", required=True, choices=["node-1", "node-2", "upstream-1", "upstream-2"])
     shaping_clear.set_defaults(handler=cmd_shaping_clear)
 
-    shaping_clear_all = subparsers.add_parser("shaping-clear-all", help="clear shaping on all upstreams")
+    shaping_clear_all = subparsers.add_parser(
+        "shaping-clear-all",
+        help="clear shaping on all node and upstream targets",
+    )
     shaping_clear_all.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
     shaping_clear_all.set_defaults(handler=cmd_shaping_clear_all)
 

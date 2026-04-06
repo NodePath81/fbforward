@@ -48,10 +48,14 @@ class StateRoundTripTest(unittest.TestCase):
                 ),
             },
             shaping=ShapingInfo(
-                router_ns="hub-up",
                 targets={
-                    "upstream-1": ShapingTargetInfo(tag="us-1", namespace="upstream-1", device="hubup-u1"),
-                    "upstream-2": ShapingTargetInfo(tag="us-2", namespace="upstream-2", device="hubup-u2"),
+                    "node-1": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-1", device="hub-node1"),
+                    "upstream-1": ShapingTargetInfo(
+                        router_ns="hub-up",
+                        tag="us-1",
+                        namespace="upstream-1",
+                        device="hubup-u1",
+                    ),
                 },
             ),
             tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
@@ -84,8 +88,8 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.namespaces["hub"].pid, loaded.namespaces["hub"].pid)
         self.assertEqual(state.processes["fbforward-node-1"].order, loaded.processes["fbforward-node-1"].order)
         self.assertEqual(state.proxies["node-1"].target_port, loaded.proxies["node-1"].target_port)
-        self.assertEqual(state.shaping.router_ns, loaded.shaping.router_ns)
-        self.assertEqual(state.shaping.targets["upstream-2"].device, loaded.shaping.targets["upstream-2"].device)
+        self.assertEqual(state.shaping.targets["node-1"].router_ns, loaded.shaping.targets["node-1"].router_ns)
+        self.assertEqual(state.shaping.targets["upstream-1"].device, loaded.shaping.targets["upstream-1"].device)
         self.assertEqual(state.tokens.coord_token, loaded.tokens.coord_token)
         self.assertEqual(state.topology.links[0].right_if, loaded.topology.links[0].right_if)
 

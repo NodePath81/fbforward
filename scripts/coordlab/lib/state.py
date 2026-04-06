@@ -48,6 +48,7 @@ class TerminalInfo:
 
 @dataclass(slots=True)
 class ShapingTargetInfo:
+    router_ns: str
     tag: str
     namespace: str
     device: str
@@ -55,7 +56,6 @@ class ShapingTargetInfo:
 
 @dataclass(slots=True)
 class ShapingInfo:
-    router_ns: str = ""
     targets: dict[str, ShapingTargetInfo] = field(default_factory=dict)
 
 
@@ -108,7 +108,6 @@ class LabState:
         }
         shaping_raw = data.get("shaping", {})
         shaping = ShapingInfo(
-            router_ns=str(shaping_raw.get("router_ns", "")),
             targets={
                 name: ShapingTargetInfo(**info)
                 for name, info in shaping_raw.get("targets", {}).items()

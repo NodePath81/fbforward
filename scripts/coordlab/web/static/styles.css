@@ -173,6 +173,11 @@ h1 {
   font-weight: 600;
 }
 
+.muted-chip {
+  background: rgba(21, 50, 60, 0.08);
+  color: var(--muted);
+}
+
 .badge.ok {
   background: rgba(31, 95, 82, 0.12);
   color: var(--accent);
@@ -265,6 +270,19 @@ h1 {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+
+.chip-row {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.shape-note {
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
 .shape-values label,

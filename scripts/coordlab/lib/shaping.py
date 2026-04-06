@@ -24,22 +24,23 @@ class ShapingState:
 
 @dataclass(slots=True)
 class ShapingTarget:
-    upstream: str
+    target: str
+    router_ns: str
     tag: str
     namespace: str
     device: str
 
 
 class TrafficShaper:
-    def __init__(self, router_pid: int, config: ShapingInfo) -> None:
-        self.router_pid = router_pid
+    def __init__(self, router_pids: dict[str, int], config: ShapingInfo) -> None:
+        self.router_pids = router_pids
         self.config = config
 
-    def set(self, upstream: str, delay_ms: int = 0, loss_pct: float = 0) -> None:
-        target = self._target(upstream)
+    def set(self, target_name: str, delay_ms: int = 0, loss_pct: float = 0) -> None:
+        target = self._target(target_name)
         validate_shaping_values(delay_ms, loss_pct)
         if delay_ms == 0 and loss_pct == 0:
-            self.clear(upstream)
+            self.clear(target_name)
             return
 
         args = ["tc", "qdisc", "replace", "dev", target.device, "root", "netem"]
@@ -47,45 +48,48 @@ class TrafficShaper:
             args.extend(["delay", f"{delay_ms}ms"])
         if loss_pct > 0:
             args.extend(["loss", f"{loss_pct:g}%"])
-        self._run(args)
+        self._run(target, args)
 
-    def clear(self, upstream: str) -> None:
-        target = self._target(upstream)
+    def clear(self, target_name: str) -> None:
+        target = self._target(target_name)
         try:
-            self._run(["tc", "qdisc", "del", "dev", target.device, "root"])
+            self._run(target, ["tc", "qdisc", "del", "dev", target.device, "root"])
         except RuntimeError as exc:
             if is_missing_qdisc_error(str(exc)):
                 return
             raise
 
     def clear_all(self) -> None:
-        for upstream in sorted(self.config.targets):
-            self.clear(upstream)
+        for target_name in sorted(self.config.targets):
+            self.clear(target_name)
 
-    def get(self, upstream: str) -> ShapingState | None:
-        target = self._target(upstream)
-        result = self._run(["tc", "qdisc", "show", "dev", target.device])
+    def get(self, target_name: str) -> ShapingState | None:
+        target = self._target(target_name)
+        result = self._run(target, ["tc", "qdisc", "show", "dev", target.device])
         return parse_qdisc_show(result.stdout)
 
     def get_all(self) -> dict[str, ShapingState | None]:
         return {
-            upstream: self.get(upstream)
-            for upstream in sorted(self.config.targets)
+            target_name: self.get(target_name)
+            for target_name in sorted(self.config.targets)
         }
 
-    def _target(self, upstream: str) -> ShapingTarget:
-        target = self.config.targets.get(upstream)
+    def _target(self, target_name: str) -> ShapingTarget:
+        target = self.config.targets.get(target_name)
         if target is None:
-            raise ValueError(f"unknown upstream {upstream!r}")
+            raise ValueError(f"unknown target {target_name!r}")
+        if target.router_ns not in self.router_pids:
+            raise RuntimeError(f"missing router pid for shaping namespace {target.router_ns!r}")
         return ShapingTarget(
-            upstream=upstream,
+            target=target_name,
+            router_ns=target.router_ns,
             tag=target.tag,
             namespace=target.namespace,
             device=target.device,
         )
 
-    def _run(self, args: list[str]) -> CompletedProcess[str]:
-        return netns.nsenter_run(self.router_pid, args)
+    def _run(self, target: ShapingTarget, args: list[str]) -> CompletedProcess[str]:
+        return netns.nsenter_run(self.router_pids[target.router_ns], args)
 
 
 def validate_shaping_values(delay_ms: int, loss_pct: float) -> None:

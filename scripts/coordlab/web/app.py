@@ -109,12 +109,13 @@ def status_payload(state: LabState | None, workdir: Path) -> dict:
         "service_links": service_links(state),
         "shaping_targets": [
             {
-                "upstream": upstream,
+                "target": target_name,
+                "router_ns": target.router_ns,
                 "tag": target.tag,
                 "namespace": target.namespace,
                 "device": target.device,
             }
-            for upstream, target in sorted(state.shaping.targets.items())
+            for target_name, target in sorted(state.shaping.targets.items())
         ],
         "topology_links": [
             {
@@ -141,14 +142,19 @@ def load_active_state_or_error(workdir: Path) -> tuple[LabState | None, tuple[di
 
 
 def build_shaper_from_state(state: LabState) -> TrafficShaper:
-    if not state.shaping.router_ns:
+    if not state.shaping.targets:
         raise RuntimeError("coordlab state does not contain shaping topology")
-    router_info = state.namespaces.get(state.shaping.router_ns)
-    if router_info is None:
-        raise RuntimeError(f"coordlab state references unknown shaping router namespace: {state.shaping.router_ns}")
-    if not is_alive(router_info.pid):
-        raise RuntimeError(f"shaping router namespace is not alive: {state.shaping.router_ns} pid={router_info.pid}")
-    return TrafficShaper(router_info.pid, state.shaping)
+    router_pids: dict[str, int] = {}
+    for target_name, target in sorted(state.shaping.targets.items()):
+        router_info = state.namespaces.get(target.router_ns)
+        if router_info is None:
+            raise RuntimeError(
+                f"coordlab state references unknown shaping router namespace: {target.router_ns} for {target_name}"
+            )
+        if not is_alive(router_info.pid):
+            raise RuntimeError(f"shaping router namespace is not alive: {target.router_ns} pid={router_info.pid}")
+        router_pids[target.router_ns] = router_info.pid
+    return TrafficShaper(router_pids, state.shaping)
 
 
 def shaping_payload(state: LabState, shaper: TrafficShaper | None = None) -> dict:
@@ -157,17 +163,17 @@ def shaping_payload(state: LabState, shaper: TrafficShaper | None = None) -> dic
     shaping_state = shaper.get_all()
     return {
         "active": True,
-        "router_ns": state.shaping.router_ns,
-        "upstreams": [
+        "targets": [
             {
-                "upstream": upstream,
+                "target": target_name,
+                "router_ns": target.router_ns,
                 "tag": target.tag,
                 "namespace": target.namespace,
                 "device": target.device,
-                "delay_ms": shaping_state[upstream].delay_ms if shaping_state[upstream] else 0,
-                "loss_pct": shaping_state[upstream].loss_pct if shaping_state[upstream] else 0.0,
+                "delay_ms": shaping_state[target_name].delay_ms if shaping_state[target_name] else 0,
+                "loss_pct": shaping_state[target_name].loss_pct if shaping_state[target_name] else 0.0,
             }
-            for upstream, target in sorted(state.shaping.targets.items())
+            for target_name, target in sorted(state.shaping.targets.items())
         ],
     }
 
@@ -318,8 +324,8 @@ def create_app(workdir: Path | str) -> Flask:
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
 
-    @app.put("/api/shaping/<upstream>")
-    def api_shaping_set(upstream: str):
+    @app.put("/api/shaping/<target>")
+    def api_shaping_set(target: str):
         state, error = load_active_state_or_error(workdir)
         if error is not None:
             payload, status = error
@@ -327,22 +333,22 @@ def create_app(workdir: Path | str) -> Flask:
         try:
             delay_ms, loss_pct = parse_shaping_body(request.get_json(silent=True))
             shaper = build_shaper_from_state(state)
-            shaper.set(upstream, delay_ms=delay_ms, loss_pct=loss_pct)
+            shaper.set(target, delay_ms=delay_ms, loss_pct=loss_pct)
             return jsonify(shaping_payload(state, shaper))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
 
-    @app.delete("/api/shaping/<upstream>")
-    def api_shaping_clear(upstream: str):
+    @app.delete("/api/shaping/<target>")
+    def api_shaping_clear(target: str):
         state, error = load_active_state_or_error(workdir)
         if error is not None:
             payload, status = error
             return jsonify(payload), status
         try:
             shaper = build_shaper_from_state(state)
-            shaper.clear(upstream)
+            shaper.clear(target)
             return jsonify(shaping_payload(state, shaper))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
