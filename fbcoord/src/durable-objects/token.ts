@@ -1,13 +1,8 @@
 const TOKEN_RECORD_KEY = 'token_record';
 const MASK_PREFIX_LENGTH = 8;
 const MIN_TOKEN_LENGTH = 32;
-
-export interface TokenRecord {
-  tokenHash: string;
-  maskedPrefix: string;
-  createdAt: number;
-  sessionSecret: string;
-}
+const PBKDF2_ITERATIONS = 50_000;
+const PBKDF2_VERSION = 'pbkdf2-sha256-v1';
 
 export interface TokenInfo {
   masked_prefix: string;
@@ -23,6 +18,23 @@ interface RotateBody {
   generate?: boolean;
 }
 
+interface LegacyTokenRecord {
+  tokenHash: string;
+  maskedPrefix: string;
+  createdAt: number;
+  sessionSecret: string;
+}
+
+export interface TokenRecord {
+  version: typeof PBKDF2_VERSION;
+  iterations: number;
+  salt: string;
+  verifier: string;
+  maskedPrefix: string;
+  createdAt: number;
+  sessionSecret: string;
+}
+
 const encoder = new TextEncoder();
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -33,8 +45,30 @@ function bytesToBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-function randomToken(): string {
-  const bytes = new Uint8Array(32);
+function base64UrlToBytes(value: string): Uint8Array {
+  const padding = value.length % 4 === 0 ? '' : '='.repeat(4 - (value.length % 4));
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/') + padding;
+  const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < left.length; i += 1) {
+    diff |= left[i] ^ right[i];
+  }
+  return diff === 0;
+}
+
+function randomToken(byteLength: number = 32): string {
+  const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);
   return bytesToBase64Url(bytes);
 }
@@ -44,8 +78,47 @@ async function sha256(value: string): Promise<string> {
   return bytesToBase64Url(new Uint8Array(digest));
 }
 
+async function importPbkdf2Key(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+}
+
+async function deriveVerifier(token: string, salt: string, pepper: string, iterations: number): Promise<string> {
+  const key = await importPbkdf2Key(`${token}\u0000${pepper}`);
+  const saltBytes = base64UrlToBytes(salt);
+  const saltBuffer = saltBytes.buffer.slice(
+    saltBytes.byteOffset,
+    saltBytes.byteOffset + saltBytes.byteLength
+  ) as ArrayBuffer;
+  const bits = await crypto.subtle.deriveBits({
+    name: 'PBKDF2',
+    hash: 'SHA-256',
+    salt: saltBuffer,
+    iterations
+  }, key, 256);
+  return bytesToBase64Url(new Uint8Array(bits));
+}
+
 function maskToken(token: string): string {
   return `${token.slice(0, MASK_PREFIX_LENGTH)}...`;
+}
+
+function repeatedPatternLength(value: string): number | null {
+  for (let size = 1; size <= Math.min(12, Math.floor(value.length / 2)); size += 1) {
+    if (value.length % size !== 0) {
+      continue;
+    }
+    const chunk = value.slice(0, size);
+    if (chunk.repeat(value.length / size) === value) {
+      return size;
+    }
+  }
+  return null;
 }
 
 export function validateSharedTokenFormat(token: string): string | null {
@@ -56,7 +129,31 @@ export function validateSharedTokenFormat(token: string): string | null {
   if (value.length < MIN_TOKEN_LENGTH) {
     return `token must be at least ${MIN_TOKEN_LENGTH} characters`;
   }
+
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!normalized) {
+    return 'token must contain usable characters';
+  }
+
+  const weakRepeatedPattern = repeatedPatternLength(normalized);
+  if (weakRepeatedPattern !== null) {
+    return 'token must not repeat a short pattern';
+  }
+
+  if (/(.)\1{7,}/.test(normalized)) {
+    return 'token must not contain long repeated character runs';
+  }
+
+  const uniqueCharacters = new Set(normalized);
+  if (uniqueCharacters.size < 8) {
+    return 'token must contain more variation';
+  }
+
   return null;
+}
+
+function isCurrentRecord(record: LegacyTokenRecord | TokenRecord): record is TokenRecord {
+  return (record as TokenRecord).version === PBKDF2_VERSION;
 }
 
 function json(data: unknown, status: number = 200): Response {
@@ -72,13 +169,26 @@ export class TokenStore {
   constructor(
     private readonly storage: DurableObjectStorage,
     private readonly bootstrapToken: string,
+    private readonly pepper: string,
     private readonly now: () => number = () => Date.now()
   ) {}
 
   async validate(candidate: string): Promise<boolean> {
     const record = await this.ensureRecord();
-    const candidateHash = await sha256(candidate.trim());
-    return candidateHash === record.tokenHash;
+    const trimmed = candidate.trim();
+    if (isCurrentRecord(record)) {
+      const derived = await deriveVerifier(trimmed, record.salt, this.pepper, record.iterations);
+      return constantTimeEqual(base64UrlToBytes(derived), base64UrlToBytes(record.verifier));
+    }
+
+    const candidateHash = await sha256(trimmed);
+    if (candidateHash !== record.tokenHash) {
+      return false;
+    }
+
+    const migrated = await this.createRecord(trimmed, record.maskedPrefix, record.createdAt, record.sessionSecret);
+    await this.storage.put(TOKEN_RECORD_KEY, migrated);
+    return true;
   }
 
   async info(): Promise<TokenInfo> {
@@ -102,12 +212,7 @@ export class TokenStore {
     }
 
     const current = await this.ensureRecord();
-    const record: TokenRecord = {
-      tokenHash: await sha256(nextToken),
-      maskedPrefix: maskToken(nextToken),
-      createdAt: this.now(),
-      sessionSecret: current.sessionSecret
-    };
+    const record = await this.createRecord(nextToken, maskToken(nextToken), this.now(), current.sessionSecret);
     await this.storage.put(TOKEN_RECORD_KEY, record);
 
     return {
@@ -119,8 +224,8 @@ export class TokenStore {
     };
   }
 
-  private async ensureRecord(): Promise<TokenRecord> {
-    const existing = await this.storage.get<TokenRecord>(TOKEN_RECORD_KEY);
+  private async ensureRecord(): Promise<LegacyTokenRecord | TokenRecord> {
+    const existing = await this.storage.get<LegacyTokenRecord | TokenRecord>(TOKEN_RECORD_KEY);
     if (existing) {
       return existing;
     }
@@ -131,22 +236,35 @@ export class TokenStore {
       throw new Error(`FBCOORD_TOKEN ${error}`);
     }
 
-    const record: TokenRecord = {
-      tokenHash: await sha256(bootstrap),
-      maskedPrefix: maskToken(bootstrap),
-      createdAt: this.now(),
-      sessionSecret: randomToken()
-    };
+    const record = await this.createRecord(bootstrap, maskToken(bootstrap), this.now(), randomToken());
     await this.storage.put(TOKEN_RECORD_KEY, record);
     return record;
+  }
+
+  private async createRecord(
+    token: string,
+    maskedPrefix: string,
+    createdAt: number,
+    sessionSecret: string
+  ): Promise<TokenRecord> {
+    const salt = randomToken(16);
+    return {
+      version: PBKDF2_VERSION,
+      iterations: PBKDF2_ITERATIONS,
+      salt,
+      verifier: await deriveVerifier(token, salt, this.pepper, PBKDF2_ITERATIONS),
+      maskedPrefix,
+      createdAt,
+      sessionSecret
+    };
   }
 }
 
 export class TokenDurableObject {
   private readonly store: TokenStore;
 
-  constructor(state: DurableObjectState, env: { FBCOORD_TOKEN: string }) {
-    this.store = new TokenStore(state.storage, env.FBCOORD_TOKEN);
+  constructor(state: DurableObjectState, env: { FBCOORD_TOKEN: string; FBCOORD_TOKEN_PEPPER: string }) {
+    this.store = new TokenStore(state.storage, env.FBCOORD_TOKEN, env.FBCOORD_TOKEN_PEPPER);
   }
 
   async fetch(request: Request): Promise<Response> {

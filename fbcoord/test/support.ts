@@ -57,6 +57,66 @@ export class StaticNamespace implements DurableObjectNamespace {
   }
 }
 
+export class FactoryNamespace implements DurableObjectNamespace {
+  private readonly stubs = new Map<string, DurableObjectStub>();
+
+  constructor(private readonly factory: (name: string) => DurableObjectStub) {}
+
+  idFromName(name: string): DurableObjectId {
+    return { __name: name } as DurableObjectId;
+  }
+
+  get(id: DurableObjectId): DurableObjectStub {
+    const name = (id as { __name?: string }).__name;
+    if (!name) {
+      throw new Error('missing durable object name');
+    }
+    let stub = this.stubs.get(name);
+    if (!stub) {
+      stub = this.factory(name);
+      this.stubs.set(name, stub);
+    }
+    return stub;
+  }
+}
+
+interface StoredKVValue {
+  value: string;
+  expiresAt: number | null;
+}
+
+export class MemoryKV implements KVNamespace {
+  private readonly values = new Map<string, StoredKVValue>();
+
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  async get<T>(key: string, type?: 'json'): Promise<string | T | null> {
+    const entry = this.values.get(key);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAt !== null && entry.expiresAt <= this.now()) {
+      this.values.delete(key);
+      return null;
+    }
+    if (type === 'json') {
+      return JSON.parse(entry.value) as T;
+    }
+    return entry.value;
+  }
+
+  async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
+    this.values.set(key, {
+      value,
+      expiresAt: options?.expirationTtl ? this.now() + (options.expirationTtl * 1000) : null
+    });
+  }
+
+  async delete(key: string): Promise<void> {
+    this.values.delete(key);
+  }
+}
+
 export function jsonResponse(data: unknown, status: number = 200): Response {
   return new Response(JSON.stringify(data), {
     status,

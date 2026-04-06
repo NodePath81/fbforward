@@ -10,8 +10,8 @@ function formatTimestamp(timestamp: number): string {
 export function renderTokenPage(options: {
   info: TokenInfo;
   generatedToken: string | null;
-  onGenerate: () => Promise<void>;
-  onSubmitCustom: (token: string) => Promise<void>;
+  onGenerate: (currentToken: string) => Promise<void>;
+  onSubmitCustom: (currentToken: string, token: string) => Promise<void>;
   onCopyGenerated: () => Promise<void>;
 }): HTMLElement {
   const shell = document.createElement('main');
@@ -63,11 +63,22 @@ export function renderTokenPage(options: {
   header.innerHTML = `
     <div class="kicker">Rotate Token</div>
     <h2>Replace the shared credential</h2>
-    <p class="muted">You can mint a fresh random token or paste your own replacement. Minimum length is 32 characters.</p>
+    <p class="muted">You can mint a fresh random token or paste your own replacement. Re-enter the current token to confirm the change.</p>
   `;
 
   const body = document.createElement('div');
   body.className = 'panel-body stack';
+
+  const currentTokenField = document.createElement('label');
+  currentTokenField.className = 'stack';
+  const currentTokenLabel = document.createElement('span');
+  currentTokenLabel.className = 'field-label';
+  currentTokenLabel.textContent = 'Current token';
+  const currentTokenInput = document.createElement('input');
+  currentTokenInput.className = 'text-input';
+  currentTokenInput.type = 'password';
+  currentTokenInput.placeholder = 'Re-enter the current shared token to confirm rotation';
+  currentTokenField.append(currentTokenLabel, currentTokenInput);
 
   if (options.generatedToken) {
     const tokenOnce = document.createElement('div');
@@ -94,12 +105,27 @@ export function renderTokenPage(options: {
     body.append(tokenOnce);
   }
 
+  const notice = document.createElement('div');
+  notice.className = 'notice';
+  notice.hidden = true;
+
   const generateButton = document.createElement('button');
   generateButton.className = 'button warn';
   generateButton.type = 'button';
   generateButton.textContent = 'Generate random token';
   generateButton.addEventListener('click', () => {
-    void options.onGenerate();
+    const currentToken = currentTokenInput.value.trim();
+    if (!currentToken) {
+      notice.hidden = false;
+      notice.textContent = 'Enter the current token to confirm rotation.';
+      return;
+    }
+    notice.hidden = true;
+    void options.onGenerate(currentToken)
+      .catch(error => {
+        notice.hidden = false;
+        notice.textContent = error instanceof Error ? error.message : 'Token rotation failed';
+      });
   });
 
   const customForm = document.createElement('form');
@@ -121,28 +147,30 @@ export function renderTokenPage(options: {
   submit.type = 'submit';
   submit.textContent = 'Apply custom token';
 
-  const notice = document.createElement('div');
-  notice.className = 'notice';
-  notice.hidden = true;
-
   customForm.append(label, notice, submit);
   customForm.addEventListener('submit', event => {
     event.preventDefault();
+    const currentToken = currentTokenInput.value.trim();
     const token = input.value.trim();
+    if (!currentToken) {
+      notice.hidden = false;
+      notice.textContent = 'Enter the current token to confirm rotation.';
+      return;
+    }
     if (token.length < 32) {
       notice.hidden = false;
       notice.textContent = 'Custom tokens must be at least 32 characters.';
       return;
     }
     notice.hidden = true;
-    void options.onSubmitCustom(token)
+    void options.onSubmitCustom(currentToken, token)
       .catch(error => {
         notice.hidden = false;
         notice.textContent = error instanceof Error ? error.message : 'Token rotation failed';
       });
   });
 
-  body.append(generateButton, customForm);
+  body.append(currentTokenField, generateButton, customForm);
   rotatePanel.append(header, body);
 
   grid.append(currentPanel, rotatePanel);

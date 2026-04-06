@@ -1,15 +1,19 @@
-import { extractBearerToken, extractSourceIp, getCookie } from './auth';
+import { extractBearerToken, extractClientKey, getCookie, isAllowedOrigin } from './auth';
+import { AuthGuardDurableObject, activeBanKey, manualDenyKey, type AuthScope, type GuardStatusResponse } from './durable-objects/auth-guard';
 import { RegistryDurableObject } from './durable-objects/registry';
 import { PoolDurableObject } from './durable-objects/pool';
 import { TokenDurableObject } from './durable-objects/token';
-import { RateLimiter } from './ratelimit';
-import { createSession, createSessionCookie, SESSION_COOKIE_NAME, validateSession } from './session';
+import { clearSessionCookie, createSession, createSessionCookie, SESSION_COOKIE_NAME, validateSession } from './session';
+import { validatePoolName } from './validation';
 
 export interface Env {
   FBCOORD_POOL: DurableObjectNamespace;
   FBCOORD_REGISTRY: DurableObjectNamespace;
   FBCOORD_TOKEN_STORE: DurableObjectNamespace;
+  FBCOORD_AUTH_GUARD: DurableObjectNamespace;
+  FBCOORD_AUTH_KV: KVNamespace;
   FBCOORD_TOKEN: string;
+  FBCOORD_TOKEN_PEPPER: string;
   ASSETS?: Fetcher;
 }
 
@@ -53,6 +57,10 @@ interface RotateTokenResponse {
   token?: string;
 }
 
+interface BanMarker {
+  blocked_until?: number;
+}
+
 function json(data: unknown, status: number = 200, headers?: HeadersInit): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -70,6 +78,20 @@ function methodNotAllowed(allow: string): Response {
       Allow: allow
     }
   });
+}
+
+function tooManyRequests(retryAfterSeconds: number | null = null): Response {
+  return json({ error: 'too many requests' }, 429, retryAfterSeconds
+    ? { 'Retry-After': String(retryAfterSeconds) }
+    : undefined);
+}
+
+function originMismatchResponse(): Response {
+  return json({ error: 'forbidden' }, 403);
+}
+
+function secureCookiesFor(request: Request): boolean {
+  return new URL(request.url).protocol === 'https:';
 }
 
 async function parseJsonBody<T>(request: Request): Promise<T | null> {
@@ -94,6 +116,10 @@ function tokenStoreStub(env: Env): DurableObjectStub {
 
 function registryStub(env: Env): DurableObjectStub {
   return env.FBCOORD_REGISTRY.get(env.FBCOORD_REGISTRY.idFromName(GLOBAL_OBJECT_NAME));
+}
+
+function authGuardStub(env: Env, scope: AuthScope, clientKey: string): DurableObjectStub {
+  return env.FBCOORD_AUTH_GUARD.get(env.FBCOORD_AUTH_GUARD.idFromName(`${scope}:${clientKey}`));
 }
 
 async function validateSharedToken(env: Env, token: string): Promise<boolean> {
@@ -145,37 +171,111 @@ async function fetchPoolState(env: Env, pool: string): Promise<PoolStateResponse
   return response.json() as Promise<PoolStateResponse>;
 }
 
-function createWorker(rateLimiter: RateLimiter = new RateLimiter()) {
+async function checkKVBan(env: Env, scope: AuthScope, clientKey: string): Promise<{ blocked: boolean; retryAfterSeconds: number | null }> {
+  const anyDeny = await env.FBCOORD_AUTH_KV.get(manualDenyKey('any', clientKey));
+  if (anyDeny !== null) {
+    return { blocked: true, retryAfterSeconds: null };
+  }
+
+  const scopedDeny = await env.FBCOORD_AUTH_KV.get(manualDenyKey(scope, clientKey));
+  if (scopedDeny !== null) {
+    return { blocked: true, retryAfterSeconds: null };
+  }
+
+  const activeBan = await env.FBCOORD_AUTH_KV.get<BanMarker>(activeBanKey(scope, clientKey), 'json');
+  if (!activeBan?.blocked_until) {
+    return { blocked: false, retryAfterSeconds: null };
+  }
+
+  const remainingMs = activeBan.blocked_until - Date.now();
+  if (remainingMs <= 0) {
+    return { blocked: false, retryAfterSeconds: null };
+  }
+  return {
+    blocked: true,
+    retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000))
+  };
+}
+
+async function authGuardStatus(env: Env, scope: AuthScope, clientKey: string): Promise<GuardStatusResponse> {
+  const response = await authGuardStub(env, scope, clientKey).fetch(new Request('https://auth-guard.internal/status', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ scope, client_key: clientKey })
+  }));
+  return response.json() as Promise<GuardStatusResponse>;
+}
+
+async function recordAuthFailure(env: Env, scope: AuthScope, clientKey: string): Promise<void> {
+  await authGuardStub(env, scope, clientKey).fetch(new Request('https://auth-guard.internal/failure', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ scope, client_key: clientKey })
+  }));
+}
+
+async function recordAuthSuccess(env: Env, scope: AuthScope, clientKey: string): Promise<void> {
+  await authGuardStub(env, scope, clientKey).fetch(new Request('https://auth-guard.internal/success', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ scope, client_key: clientKey })
+  }));
+}
+
+async function enforceAuthGuard(env: Env, scope: AuthScope, clientKey: string): Promise<Response | null> {
+  const kvStatus = await checkKVBan(env, scope, clientKey);
+  if (kvStatus.blocked) {
+    return tooManyRequests(kvStatus.retryAfterSeconds);
+  }
+
+  const status = await authGuardStatus(env, scope, clientKey);
+  if (status.blocked) {
+    return tooManyRequests(status.retry_after_seconds || null);
+  }
+
+  return null;
+}
+
+function requireSameOrigin(request: Request): Response | null {
+  return isAllowedOrigin(request) ? null : originMismatchResponse();
+}
+
+function createWorker() {
   return {
     async fetch(request: Request, env: Env): Promise<Response> {
       const url = new URL(request.url);
-      const ip = extractSourceIp(request);
+      const clientKey = extractClientKey(request);
 
       if (url.pathname === '/healthz') {
         return new Response('ok', { status: 200 });
       }
 
       if (url.pathname === '/ws/node') {
-        const status = rateLimiter.getStatus(ip);
-        if (status.blocked) {
-          return new Response('too many requests', {
-            status: 429,
-            headers: {
-              'Retry-After': String(status.retryAfterSeconds)
-            }
-          });
+        const preflight = await enforceAuthGuard(env, 'node-auth', clientKey);
+        if (preflight) {
+          return preflight;
         }
 
         const token = extractBearerToken(request);
         if (!token || !(await validateSharedToken(env, token))) {
-          rateLimiter.recordFailure(ip);
+          await recordAuthFailure(env, 'node-auth', clientKey);
           return new Response('unauthorized', { status: 401 });
         }
-        rateLimiter.recordSuccess(ip);
+        await recordAuthSuccess(env, 'node-auth', clientKey);
 
         const pool = url.searchParams.get('pool')?.trim();
         if (!pool) {
           return new Response('missing pool', { status: 400 });
+        }
+        const poolError = validatePoolName(pool);
+        if (poolError) {
+          return new Response(poolError, { status: 400 });
         }
 
         const durableObjectId = env.FBCOORD_POOL.idFromName(pool);
@@ -187,26 +287,28 @@ function createWorker(rateLimiter: RateLimiter = new RateLimiter()) {
         if (request.method !== 'POST') {
           return methodNotAllowed('POST');
         }
+        const originError = requireSameOrigin(request);
+        if (originError) {
+          return originError;
+        }
 
-        const status = rateLimiter.getStatus(ip);
-        if (status.blocked) {
-          return json({ error: 'too many requests' }, 429, {
-            'Retry-After': String(status.retryAfterSeconds)
-          });
+        const preflight = await enforceAuthGuard(env, 'login', clientKey);
+        if (preflight) {
+          return preflight;
         }
 
         const body = await parseJsonBody<{ token?: string }>(request);
         const token = body?.token?.trim();
         if (!token || !(await validateSharedToken(env, token))) {
-          rateLimiter.recordFailure(ip);
+          await recordAuthFailure(env, 'login', clientKey);
           return json({ error: 'invalid token' }, 401);
         }
-        rateLimiter.recordSuccess(ip);
+        await recordAuthSuccess(env, 'login', clientKey);
 
         const sessionSecret = await getSessionSecret(env);
         const session = await createSession(sessionSecret);
         return json({ ok: true }, 200, {
-          'Set-Cookie': createSessionCookie(session)
+          'Set-Cookie': createSessionCookie(session, undefined, secureCookiesFor(request))
         });
       }
 
@@ -228,6 +330,19 @@ function createWorker(rateLimiter: RateLimiter = new RateLimiter()) {
           return json({ ok: true });
         }
 
+        if (url.pathname === '/api/auth/logout') {
+          if (request.method !== 'POST') {
+            return methodNotAllowed('POST');
+          }
+          const originError = requireSameOrigin(request);
+          if (originError) {
+            return originError;
+          }
+          return json({ ok: true }, 200, {
+            'Set-Cookie': clearSessionCookie(secureCookiesFor(request))
+          });
+        }
+
         if (url.pathname === '/api/pools') {
           if (request.method !== 'GET') {
             return methodNotAllowed('GET');
@@ -236,6 +351,9 @@ function createWorker(rateLimiter: RateLimiter = new RateLimiter()) {
           const poolNames = await listPools(env);
           const pools = [];
           for (const pool of poolNames) {
+            if (validatePoolName(pool)) {
+              continue;
+            }
             const state = await fetchPoolState(env, pool);
             if (state.node_count === 0) {
               continue;
@@ -258,6 +376,10 @@ function createWorker(rateLimiter: RateLimiter = new RateLimiter()) {
           if (!pool) {
             return json({ error: 'missing pool' }, 400);
           }
+          const poolError = validatePoolName(pool);
+          if (poolError) {
+            return json({ error: poolError }, 400);
+          }
 
           const state = await fetchPoolState(env, pool);
           if (state.node_count === 0) {
@@ -277,13 +399,25 @@ function createWorker(rateLimiter: RateLimiter = new RateLimiter()) {
           if (request.method !== 'POST') {
             return methodNotAllowed('POST');
           }
+          const originError = requireSameOrigin(request);
+          if (originError) {
+            return originError;
+          }
 
-          const body = await parseJsonBody<{ token?: string; generate?: boolean }>(request);
+          const body = await parseJsonBody<{ current_token?: string; token?: string; generate?: boolean }>(request);
           if (!body) {
             return json({ error: 'invalid json' }, 400);
           }
 
-          const response = await rotateToken(env, body);
+          const currentToken = body.current_token?.trim();
+          if (!currentToken || !(await validateSharedToken(env, currentToken))) {
+            return json({ error: 'invalid current token' }, 401);
+          }
+
+          const response = await rotateToken(env, {
+            token: body.token,
+            generate: body.generate
+          });
           if (!response.ok) {
             const errorBody = await parseJsonResponse<{ error?: string }>(response.clone());
             return json({ error: errorBody?.error ?? 'invalid token' }, response.status);
@@ -315,4 +449,4 @@ function createWorker(rateLimiter: RateLimiter = new RateLimiter()) {
 const worker = createWorker();
 
 export default worker;
-export { createWorker, PoolDurableObject, RegistryDurableObject, TokenDurableObject };
+export { AuthGuardDurableObject, createWorker, PoolDurableObject, RegistryDurableObject, TokenDurableObject };

@@ -19,6 +19,7 @@ fbcoord runs as a Cloudflare Worker backed by Durable Objects:
 - one pool Durable Object stores live node state and the current coordinated pick for that pool
 - one registry Durable Object tracks which pools are active
 - one token Durable Object persists the active shared token hash, masked token metadata, and the session signing secret
+- one auth-guard Durable Object family enforces authoritative auth-rate limits and active bans
 - the Worker serves both the node coordination endpoint and the operator Web UI
 
 ### Coordination behavior
@@ -62,6 +63,7 @@ From the repository root:
 npm --prefix fbcoord install
 npm --prefix fbcoord run build
 wrangler secret put FBCOORD_TOKEN
+wrangler secret put FBCOORD_TOKEN_PEPPER
 wrangler deploy
 ```
 
@@ -70,6 +72,8 @@ The current Worker configuration in [fbcoord/wrangler.toml](../fbcoord/wrangler.
 - `FBCOORD_POOL`
 - `FBCOORD_REGISTRY`
 - `FBCOORD_TOKEN_STORE`
+- `FBCOORD_AUTH_GUARD`
+- `FBCOORD_AUTH_KV`
 - `ASSETS`
 
 Do not rename those bindings unless the Worker code changes with them.
@@ -86,6 +90,7 @@ Use that value in two places:
 
 1. Set it as the Worker secret `FBCOORD_TOKEN`
 2. Configure the same value in each fbforward node's `coordination.token`
+3. Set a distinct Worker secret `FBCOORD_TOKEN_PEPPER` for slow token verification
 
 Example fbforward config snippet:
 
@@ -105,6 +110,7 @@ See [fbforward user guide](user-guide-fbforward.md) and [configuration reference
 On first use, fbcoord seeds its active token from the deploy-time Worker secret `FBCOORD_TOKEN`. After that:
 
 - the active token is persisted as a hash in a Durable Object
+- the verifier is derived with PBKDF2 plus a per-record salt and a Worker-side pepper
 - generated or custom replacement tokens must be at least 32 characters
 - the full current token is never displayed back to operators after rotation
 
@@ -144,10 +150,11 @@ Current routes:
 | `/ws/node?pool=<pool>` | GET upgrade | Bearer token | Node coordination endpoint |
 | `/api/auth/login` | POST | shared token | Create an operator session |
 | `/api/auth/check` | GET | session | Validate current operator session |
+| `/api/auth/logout` | POST | session | Clear the current operator session |
 | `/api/pools` | GET | session | List active pools |
 | `/api/pools/:pool` | GET | session | Fetch one pool's node detail |
 | `/api/token/info` | GET | session | Return masked token metadata |
-| `/api/token/rotate` | POST | session | Rotate the shared token |
+| `/api/token/rotate` | POST | session + current token | Rotate the shared token |
 
 The UI is served from `/` and uses hash routes:
 
@@ -216,6 +223,7 @@ Rotation behavior:
 
 - the new token takes effect immediately
 - the previous token is invalidated immediately
+- rotation requires the current shared token as confirmation, even for an already-authenticated operator session
 - the generated token is shown once and must be copied then
 - the UI only shows a masked prefix for the current token afterward
 - currently connected nodes keep their existing WebSocket session, but any reconnect using the old token will fail
@@ -235,7 +243,7 @@ wrangler secret put FBCOORD_TOKEN
 
 ### Rate limiting
 
-fbcoord applies a fail2ban-style in-memory rate limiter to both:
+fbcoord applies a fail2ban-style rate limiter to both:
 
 - `POST /api/auth/login`
 - `GET /ws/node`
@@ -244,11 +252,40 @@ Current defaults:
 
 - threshold: 3 failed attempts
 - window: 10 minutes
-- block duration: 15 minutes
+- initial block duration: 15 minutes
 
-Blocked clients receive `429 Too Many Requests` with a `Retry-After` header. A successful login or a successful node authentication resets the failure counter for that source IP.
+Implementation notes:
 
-Because the limiter also applies to `/ws/node`, a repeatedly misconfigured node can block its own source IP until the cooldown expires.
+- auth rate limiting is enforced by a Durable Object (`FBCOORD_AUTH_GUARD`), not isolate-local Worker memory
+- Cloudflare KV (`FBCOORD_AUTH_KV`) is used as a fast replicated ban cache and manual denylist layer
+- login and node authentication use separate buckets — a successful node auth does not clear failed login attempts from the same source IP
+- IPv6 clients are bucketed by `/64` prefix
+
+#### Escalation
+
+If a client triggers another block within 24 hours of a previous one, the penalty level increases (up to level 4). Each level multiplies the block duration:
+
+| Level | Block duration |
+|-------|---------------|
+| 0 | 15 minutes |
+| 1 | 30 minutes |
+| 2 | 45 minutes |
+| 3 | 60 minutes |
+| 4 | 75 minutes |
+
+The penalty level resets after 24 hours without a new block.
+
+#### Manual denylist
+
+Operators can permanently ban a client key by writing a KV entry directly:
+
+- `deny:login:<client_key>` — blocks login attempts from that key
+- `deny:node-auth:<client_key>` — blocks node auth attempts from that key
+- `deny:any:<client_key>` — blocks both login and node auth
+
+These entries do not expire automatically. Remove the KV key to unban.
+
+Blocked clients receive `429 Too Many Requests` with a `Retry-After` header when a temporary auth ban is active. Permanently denied clients also receive `429`. Because the limiter also applies to `/ws/node`, a repeatedly misconfigured node can still block its own source key until the cooldown expires.
 
 ---
 

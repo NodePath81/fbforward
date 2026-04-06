@@ -68,7 +68,11 @@ export async function getTokenInfo(): Promise<TokenInfo> {
   return request<TokenInfo>('/api/token/info');
 }
 
-export async function rotateToken(payload: { token?: string; generate?: boolean }): Promise<TokenRotateResponse> {
+export async function rotateToken(payload: {
+  current_token: string;
+  token?: string;
+  generate?: boolean;
+}): Promise<TokenRotateResponse> {
   return request<TokenRotateResponse>('/api/token/rotate', {
     method: 'POST',
     body: JSON.stringify(payload)

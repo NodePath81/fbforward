@@ -155,19 +155,19 @@ async function renderRoute(): Promise<void> {
   setContent(renderTokenPage({
     info,
     generatedToken: appState.generatedToken,
-    onGenerate: async () => {
+    onGenerate: async currentToken => {
       if (!requiresConfirmation('Rotate the shared token now? Connected nodes using the old token will need to be updated.')) {
         return;
       }
-      const result = await rotateToken({ generate: true });
+      const result = await rotateToken({ current_token: currentToken, generate: true });
       appState.generatedToken = result.token ?? null;
       await renderRoute();
     },
-    onSubmitCustom: async token => {
+    onSubmitCustom: async (currentToken, token) => {
       if (!requiresConfirmation('Replace the shared token with this custom value? Connected nodes using the old token will need to be updated.')) {
         return;
       }
-      await rotateToken({ token });
+      await rotateToken({ current_token: currentToken, token });
       appState.generatedToken = null;
       await renderRoute();
     },

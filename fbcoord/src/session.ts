@@ -98,13 +98,31 @@ export async function validateSession(
   return constantTimeEqual(providedSignature, expectedSignature);
 }
 
-export function createSessionCookie(session: string, ttlSeconds: number = SESSION_TTL_SECONDS): string {
+function buildCookieAttributes(ttlSeconds: number, secure: boolean): string[] {
   return [
-    `${SESSION_COOKIE_NAME}=${encodeURIComponent(session)}`,
     `Max-Age=${ttlSeconds}`,
     'HttpOnly',
     'Path=/',
     'SameSite=Strict',
-    'Secure'
+    ...(secure ? ['Secure'] : [])
+  ];
+}
+
+export function createSessionCookie(
+  session: string,
+  ttlSeconds?: number,
+  secure: boolean = true
+): string {
+  const ttl = ttlSeconds ?? SESSION_TTL_SECONDS;
+  return [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(session)}`,
+    ...buildCookieAttributes(ttl, secure)
+  ].join('; ');
+}
+
+export function clearSessionCookie(secure: boolean = true): string {
+  return [
+    `${SESSION_COOKIE_NAME}=`,
+    ...buildCookieAttributes(0, secure)
   ].join('; ');
 }

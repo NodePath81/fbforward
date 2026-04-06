@@ -23,6 +23,17 @@ interface Fetcher {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
+interface KVPutOptions {
+  expirationTtl?: number;
+}
+
+interface KVNamespace {
+  get(key: string): Promise<string | null>;
+  get<T>(key: string, type: 'json'): Promise<T | null>;
+  put(key: string, value: string, options?: KVPutOptions): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
 interface WebSocket {
   accept(): void;
 }

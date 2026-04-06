@@ -3,13 +3,18 @@ import type {
   ErrorMessage,
   HeartbeatMessage,
   HelloMessage,
+  NodeInboundMessage,
   PickMessage,
   PreferencesMessage
 } from '../protocol/types';
+import { MAX_UPSTREAMS, validateNodeId, validatePoolName, validateUpstreamTag } from '../validation';
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 const DEFAULT_STALE_AFTER_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
 const REGISTRY_OBJECT_NAME = 'global';
+const MESSAGE_WINDOW_MS = 5_000;
+const MAX_MESSAGES_PER_WINDOW = 10;
+const RECONNECT_THROTTLE_MS = 5_000;
 
 type ConnectionLike = Pick<WebSocket, 'close' | 'send'>;
 
@@ -32,9 +37,135 @@ export interface PoolSnapshot {
   upstream: string | null;
 }
 
+export class ConnectionRateLimiter {
+  private readonly timestamps: number[] = [];
+
+  constructor(
+    private readonly now: () => number = () => Date.now(),
+    private readonly windowMs: number = MESSAGE_WINDOW_MS,
+    private readonly maxMessages: number = MAX_MESSAGES_PER_WINDOW
+  ) {}
+
+  allow(): boolean {
+    const now = this.now();
+    while (this.timestamps.length > 0 && now - (this.timestamps[0] ?? 0) > this.windowMs) {
+      this.timestamps.shift();
+    }
+    if (this.timestamps.length >= this.maxMessages) {
+      return false;
+    }
+    this.timestamps.push(now);
+    return true;
+  }
+}
+
+function parseString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+export function parseNodeInboundMessage(raw: unknown, expectedPool: string): { message?: NodeInboundMessage; error?: string; close: boolean } {
+  if (!raw || typeof raw !== 'object') {
+    return { error: 'invalid message payload', close: true };
+  }
+
+  const type = parseString((raw as { type?: unknown }).type);
+  if (!type) {
+    return { error: 'missing message type', close: true };
+  }
+
+  if (type === 'hello') {
+    const pool = parseString((raw as { pool?: unknown }).pool);
+    const nodeId = parseString((raw as { node_id?: unknown }).node_id);
+    if (!pool || !nodeId) {
+      return { error: 'hello requires pool and node_id', close: true };
+    }
+    const poolError = validatePoolName(pool);
+    if (poolError) {
+      return { error: poolError, close: true };
+    }
+    if (pool !== expectedPool) {
+      return { error: 'Pool mismatch', close: true };
+    }
+    const nodeError = validateNodeId(nodeId);
+    if (nodeError) {
+      return { error: nodeError, close: true };
+    }
+    return {
+      message: {
+        type: 'hello',
+        pool,
+        node_id: nodeId.trim()
+      },
+      close: false
+    };
+  }
+
+  if (type === 'preferences') {
+    const upstreams = (raw as { upstreams?: unknown }).upstreams;
+    const activeUpstream = (raw as { active_upstream?: unknown }).active_upstream;
+    if (!Array.isArray(upstreams)) {
+      return { error: 'preferences requires an upstream array', close: true };
+    }
+    if (upstreams.length > MAX_UPSTREAMS) {
+      return { error: `upstreams must contain at most ${MAX_UPSTREAMS} entries`, close: true };
+    }
+
+    const normalizedUpstreams: string[] = [];
+    for (const entry of upstreams) {
+      const upstream = parseString(entry);
+      if (!upstream) {
+        return { error: 'upstreams must contain only strings', close: true };
+      }
+      const upstreamError = validateUpstreamTag(upstream);
+      if (upstreamError) {
+        return { error: upstreamError, close: true };
+      }
+      normalizedUpstreams.push(upstream.trim());
+    }
+
+    if (activeUpstream !== undefined && activeUpstream !== null) {
+      const active = parseString(activeUpstream);
+      if (!active) {
+        return { error: 'active_upstream must be a string or null', close: true };
+      }
+      const upstreamError = validateUpstreamTag(active);
+      if (upstreamError) {
+        return { error: upstreamError, close: true };
+      }
+      if (!normalizedUpstreams.includes(active.trim())) {
+        return { error: 'active_upstream must be present in upstreams', close: true };
+      }
+      return {
+        message: {
+          type: 'preferences',
+          upstreams: normalizedUpstreams,
+          active_upstream: active.trim()
+        },
+        close: false
+      };
+    }
+
+    return {
+      message: {
+        type: 'preferences',
+        upstreams: normalizedUpstreams,
+        active_upstream: activeUpstream ?? null
+      },
+      close: false
+    };
+  }
+
+  if (type === 'heartbeat') {
+    return { message: { type: 'heartbeat' } satisfies HeartbeatMessage, close: false };
+  }
+
+  return { error: 'unknown message type', close: true };
+}
+
 export class PoolState {
   private readonly nodes = new Map<string, PoolNodeState>();
   private readonly connections = new Map<string, ConnectionLike>();
+  private readonly lastReplacementAt = new Map<string, number>();
   private snapshot: PoolSnapshot = { version: 0, upstream: null };
 
   constructor(
@@ -65,23 +196,37 @@ export class PoolState {
   registerConnection(
     nodeId: string,
     connection: ConnectionLike
-  ): { previous?: ConnectionLike; changed: boolean } {
+  ): { previous?: ConnectionLike; changed: boolean; throttled: boolean } {
     const created = !this.nodes.has(nodeId);
-    const node = this.ensureNode(nodeId);
+    const previous = this.connections.get(nodeId);
     const now = this.now();
+    if (previous && previous !== connection) {
+      const lastReplacementAt = this.lastReplacementAt.get(nodeId);
+      if (lastReplacementAt !== undefined && now - lastReplacementAt < RECONNECT_THROTTLE_MS) {
+        return {
+          previous,
+          changed: false,
+          throttled: true
+        };
+      }
+      this.lastReplacementAt.set(nodeId, now);
+    }
+
+    const node = this.ensureNode(nodeId);
     node.connectedAt = now;
     node.lastSeen = now;
-    const previous = this.connections.get(nodeId);
     this.connections.set(nodeId, connection);
     return {
       previous,
-      changed: created ? this.recompute() : false
+      changed: created ? this.recompute() : false,
+      throttled: false
     };
   }
 
   removeNode(nodeId: string): boolean {
     const removedNode = this.nodes.delete(nodeId);
     this.connections.delete(nodeId);
+    this.lastReplacementAt.delete(nodeId);
     if (!removedNode) {
       return false;
     }
@@ -109,6 +254,7 @@ export class PoolState {
       if (node.lastSeen < cutoff) {
         this.nodes.delete(nodeId);
         this.connections.delete(nodeId);
+        this.lastReplacementAt.delete(nodeId);
         removed = true;
       }
     }
@@ -196,6 +342,7 @@ export class PoolDurableObject {
 
   private attach(socket: WebSocket, expectedPool: string): void {
     let nodeId: string | null = null;
+    const messageLimiter = new ConnectionRateLimiter();
 
     const sendPick = (target: WebSocket): void => {
       const snapshot = this.state.currentPick();
@@ -239,6 +386,7 @@ export class PoolDurableObject {
         event,
         expectedPool,
         socket,
+        messageLimiter,
         sendPick,
         broadcastPick,
         sendError,
@@ -261,29 +409,46 @@ export class PoolDurableObject {
     event: MessageEvent,
     expectedPool: string,
     socket: WebSocket,
+    messageLimiter: ConnectionRateLimiter,
     sendPick: (target: WebSocket) => void,
     broadcastPick: () => void,
     sendError: (code: string, message: string) => void,
     getNodeId: () => string | null,
     setNodeId: (nodeId: string | null) => void
   ): Promise<void> {
-    let message: HelloMessage | PreferencesMessage | HeartbeatMessage;
-    try {
-      message = JSON.parse(String(event.data)) as HelloMessage | PreferencesMessage | HeartbeatMessage;
-    } catch {
-      sendError('invalid_json', 'Invalid JSON payload');
+    if (!messageLimiter.allow()) {
+      sendError('rate_limited', 'Too many messages');
+      socket.close(1008, 'rate_limited');
       return;
     }
 
+    let rawMessage: unknown;
+    try {
+      rawMessage = JSON.parse(String(event.data));
+    } catch {
+      sendError('invalid_json', 'Invalid JSON payload');
+      socket.close(1008, 'invalid_json');
+      return;
+    }
+
+    const parsed = parseNodeInboundMessage(rawMessage, expectedPool);
+    if (!parsed.message) {
+      sendError('invalid_message', parsed.error ?? 'Invalid message');
+      if (parsed.close) {
+        socket.close(1008, 'invalid_message');
+      }
+      return;
+    }
+    const message = parsed.message;
+
     if (message.type === 'hello') {
-      if (message.pool !== expectedPool) {
-        sendError('invalid_pool', 'Pool mismatch');
-        socket.close(1008, 'invalid_pool');
+      const beforeCount = this.state.nodeCount();
+      const { previous: replaced, changed, throttled } = this.state.registerConnection(message.node_id, socket);
+      if (throttled) {
+        sendError('reconnect_throttled', 'node reconnect is temporarily throttled');
+        socket.close(1013, 'reconnect_throttled');
         return;
       }
-
-      const beforeCount = this.state.nodeCount();
-      const { previous: replaced, changed } = this.state.registerConnection(message.node_id, socket);
       setNodeId(message.node_id);
       const reaped = this.state.reapStaleNodes();
       await this.syncRegistry(expectedPool, beforeCount, this.state.nodeCount());
@@ -301,6 +466,7 @@ export class PoolDurableObject {
     const nodeId = getNodeId();
     if (!nodeId) {
       sendError('missing_hello', 'hello must be sent first');
+      socket.close(1008, 'missing_hello');
       return;
     }
 

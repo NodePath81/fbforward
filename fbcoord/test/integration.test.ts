@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
+import { activeBanKey, AuthGuardDurableObject } from '../src/durable-objects/auth-guard';
 import { RegistryDurableObject } from '../src/durable-objects/registry';
 import { TokenDurableObject } from '../src/durable-objects/token';
 import { createWorker, type Env } from '../src/worker';
-import { jsonResponse, MemoryStorage, RecordingStub, StaticNamespace } from './support';
+import { FactoryNamespace, jsonResponse, MemoryKV, MemoryStorage, RecordingStub, StaticNamespace } from './support';
 
 const BOOTSTRAP_TOKEN = 'bootstrap-token-abcdefghijklmnopqrstuvwxyz123456';
 const ROTATED_TOKEN = 'rotated-token-abcdefghijklmnopqrstuvwxyz789012';
+const TOKEN_PEPPER = 'pepper-abcdefghijklmnopqrstuvwxyz1234567890';
 
 function cookieHeader(response: Response): string {
   return response.headers.get('Set-Cookie')?.split(';', 1)[0] ?? '';
@@ -17,6 +19,7 @@ function createEnv(poolState: Record<string, unknown> = {}): {
   poolNamespace: StaticNamespace;
   poolStub: RecordingStub;
   registry: RegistryDurableObject;
+  authKv: MemoryKV;
 } {
   const poolStub = new RecordingStub(request => {
     const url = new URL(request.url);
@@ -40,8 +43,9 @@ function createEnv(poolState: Record<string, unknown> = {}): {
   const registry = new RegistryDurableObject({ storage: new MemoryStorage() } as DurableObjectState);
   const tokenStore = new TokenDurableObject(
     { storage: new MemoryStorage() } as DurableObjectState,
-    { FBCOORD_TOKEN: BOOTSTRAP_TOKEN }
+    { FBCOORD_TOKEN: BOOTSTRAP_TOKEN, FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER }
   );
+  const authKv = new MemoryKV();
 
   const registryNamespace = new StaticNamespace({
     global: new RecordingStub(request => registry.fetch(request))
@@ -51,16 +55,28 @@ function createEnv(poolState: Record<string, unknown> = {}): {
     global: new RecordingStub(request => tokenStore.fetch(request))
   });
 
+  const authGuardNamespace = new FactoryNamespace(name => {
+    const guard = new AuthGuardDurableObject(
+      { storage: new MemoryStorage() } as DurableObjectState,
+      { FBCOORD_AUTH_KV: authKv }
+    );
+    return new RecordingStub(request => guard.fetch(request));
+  });
+
   return {
     env: {
       FBCOORD_POOL: poolNamespace,
       FBCOORD_REGISTRY: registryNamespace,
       FBCOORD_TOKEN_STORE: tokenNamespace,
-      FBCOORD_TOKEN: BOOTSTRAP_TOKEN
+      FBCOORD_AUTH_GUARD: authGuardNamespace,
+      FBCOORD_AUTH_KV: authKv,
+      FBCOORD_TOKEN: BOOTSTRAP_TOKEN,
+      FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER
     },
     poolNamespace,
     poolStub,
-    registry
+    registry,
+    authKv
   };
 }
 
@@ -153,9 +169,10 @@ describe('worker fetch', () => {
     });
   });
 
-  it('rate-limits repeated failed logins', async () => {
+  it('rate-limits repeated failed logins across worker instances', async () => {
     const { env } = createEnv();
-    const worker = createWorker();
+    const workerA = createWorker();
+    const workerB = createWorker();
     const makeRequest = () => new Request('https://example.com/api/auth/login', {
       method: 'POST',
       headers: {
@@ -165,13 +182,107 @@ describe('worker fetch', () => {
       body: JSON.stringify({ token: 'wrong-token-value-abcdefghijklmnopqrstuvwxyz' })
     });
 
-    expect((await worker.fetch(makeRequest(), env)).status).toBe(401);
-    expect((await worker.fetch(makeRequest(), env)).status).toBe(401);
-    expect((await worker.fetch(makeRequest(), env)).status).toBe(401);
-    expect((await worker.fetch(makeRequest(), env)).status).toBe(429);
+    expect((await workerA.fetch(makeRequest(), env)).status).toBe(401);
+    expect((await workerB.fetch(makeRequest(), env)).status).toBe(401);
+    expect((await workerA.fetch(makeRequest(), env)).status).toBe(401);
+    expect((await workerB.fetch(makeRequest(), env)).status).toBe(429);
   });
 
-  it('keeps the current session valid after token rotation', async () => {
+  it('does not let node auth reset failed login attempts from the same client key', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const badLogin = () => new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'cf-connecting-ip': '203.0.113.9'
+      },
+      body: JSON.stringify({ token: 'wrong-token-value-abcdefghijklmnopqrstuvwxyz' })
+    });
+
+    expect((await worker.fetch(badLogin(), env)).status).toBe(401);
+    expect((await worker.fetch(badLogin(), env)).status).toBe(401);
+
+    const nodeAuth = await worker.fetch(new Request('https://example.com/ws/node?pool=default', {
+      headers: {
+        Authorization: `Bearer ${BOOTSTRAP_TOKEN}`,
+        'cf-connecting-ip': '203.0.113.9'
+      }
+    }), env);
+    expect(nodeAuth.status).toBe(200);
+
+    expect((await worker.fetch(badLogin(), env)).status).toBe(401);
+    expect((await worker.fetch(badLogin(), env)).status).toBe(429);
+  });
+
+  it('blocks immediately when the KV ban cache contains an active ban', async () => {
+    const { env, authKv } = createEnv();
+    const worker = createWorker();
+    await authKv.put(activeBanKey('login', '203.0.113.10'), JSON.stringify({
+      blocked_until: Date.now() + 60_000
+    }));
+
+    const response = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'cf-connecting-ip': '203.0.113.10'
+      },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env);
+
+    expect(response.status).toBe(429);
+  });
+
+  it('requires current_token for token rotation', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env);
+
+    const response = await worker.fetch(new Request('https://example.com/api/token/rotate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: cookieHeader(loginResponse)
+      },
+      body: JSON.stringify({ token: ROTATED_TOKEN })
+    }), env);
+
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects token rotation when current_token is wrong', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env);
+
+    const response = await worker.fetch(new Request('https://example.com/api/token/rotate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: cookieHeader(loginResponse)
+      },
+      body: JSON.stringify({
+        current_token: 'wrong-token-value-abcdefghijklmnopqrstuvwxyz',
+        token: ROTATED_TOKEN
+      })
+    }), env);
+
+    expect(response.status).toBe(401);
+  });
+
+  it('keeps the current session valid after token rotation when current_token is supplied', async () => {
     const { env } = createEnv();
     const worker = createWorker();
 
@@ -189,7 +300,7 @@ describe('worker fetch', () => {
         'content-type': 'application/json',
         Cookie: cookie
       },
-      body: JSON.stringify({ token: ROTATED_TOKEN })
+      body: JSON.stringify({ current_token: BOOTSTRAP_TOKEN, token: ROTATED_TOKEN })
     }), env);
 
     expect(rotateResponse.status).toBe(200);
@@ -214,5 +325,70 @@ describe('worker fetch', () => {
       }
     }), env);
     expect(newTokenResponse.status).toBe(200);
+  });
+
+  it('rejects invalid origins on mutating endpoints and allows missing Origin', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const forbidden = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Origin: 'https://evil.example'
+      },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env);
+    expect(forbidden.status).toBe(403);
+
+    const allowed = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env);
+    expect(allowed.status).toBe(200);
+  });
+
+  it('clears the session cookie on logout', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env);
+
+    const logoutResponse = await worker.fetch(new Request('https://example.com/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        Cookie: cookieHeader(loginResponse)
+      }
+    }), env);
+
+    expect(logoutResponse.status).toBe(200);
+
+    const authCheck = await worker.fetch(new Request('https://example.com/api/auth/check', {
+      headers: {
+        Cookie: cookieHeader(logoutResponse)
+      }
+    }), env);
+    expect(authCheck.status).toBe(401);
+  });
+
+  it('rejects invalid pool names before routing to the pool durable object', async () => {
+    const { env, poolStub } = createEnv();
+    const worker = createWorker();
+
+    const response = await worker.fetch(new Request('https://example.com/ws/node?pool=../bad', {
+      headers: {
+        Authorization: `Bearer ${BOOTSTRAP_TOKEN}`
+      }
+    }), env);
+
+    expect(response.status).toBe(400);
+    expect(poolStub.requests).toHaveLength(0);
   });
 });
