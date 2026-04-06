@@ -9,6 +9,7 @@ from flask import Flask, jsonify, render_template, request
 from lib.output import proxy_url
 from lib.process import is_alive
 from lib.rpc import get_status
+from lib.linkstate import LinkStateController
 from lib.shaping import TrafficShaper
 from lib.state import LabState, load_state
 
@@ -142,19 +143,29 @@ def load_active_state_or_error(workdir: Path) -> tuple[LabState | None, tuple[di
 
 
 def build_shaper_from_state(state: LabState) -> TrafficShaper:
+    router_pids = resolve_target_router_pids(state, kind="shaping")
+    return TrafficShaper(router_pids, state.shaping)
+
+
+def build_link_state_controller_from_state(state: LabState) -> LinkStateController:
+    router_pids = resolve_target_router_pids(state, kind="link-state")
+    return LinkStateController(router_pids, state.shaping)
+
+
+def resolve_target_router_pids(state: LabState, *, kind: str) -> dict[str, int]:
     if not state.shaping.targets:
-        raise RuntimeError("coordlab state does not contain shaping topology")
+        raise RuntimeError("coordlab state does not contain target topology")
     router_pids: dict[str, int] = {}
     for target_name, target in sorted(state.shaping.targets.items()):
         router_info = state.namespaces.get(target.router_ns)
         if router_info is None:
             raise RuntimeError(
-                f"coordlab state references unknown shaping router namespace: {target.router_ns} for {target_name}"
+                f"coordlab state references unknown {kind} router namespace: {target.router_ns} for {target_name}"
             )
         if not is_alive(router_info.pid):
-            raise RuntimeError(f"shaping router namespace is not alive: {target.router_ns} pid={router_info.pid}")
+            raise RuntimeError(f"{kind} router namespace is not alive: {target.router_ns} pid={router_info.pid}")
         router_pids[target.router_ns] = router_info.pid
-    return TrafficShaper(router_pids, state.shaping)
+    return router_pids
 
 
 def shaping_payload(state: LabState, shaper: TrafficShaper | None = None) -> dict:
@@ -174,6 +185,25 @@ def shaping_payload(state: LabState, shaper: TrafficShaper | None = None) -> dic
                 "loss_pct": shaping_state[target_name].loss_pct if shaping_state[target_name] else 0.0,
             }
             for target_name, target in sorted(state.shaping.targets.items())
+        ],
+    }
+
+
+def link_state_payload(state: LabState, controller: LinkStateController | None = None) -> dict:
+    if controller is None:
+        controller = build_link_state_controller_from_state(state)
+    link_states = controller.get_all()
+    return {
+        "active": True,
+        "targets": [
+            {
+                "target": target_name,
+                "router_ns": link_state.router_ns,
+                "namespace": link_state.namespace,
+                "device": link_state.device,
+                "connected": link_state.connected,
+            }
+            for target_name, link_state in sorted(link_states.items())
         ],
     }
 
@@ -324,6 +354,17 @@ def create_app(workdir: Path | str) -> Flask:
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
 
+    @app.get("/api/link-state")
+    def api_link_state():
+        state, error = load_active_state_or_error(workdir)
+        if error is not None:
+            payload, status = error
+            return jsonify(payload), status
+        try:
+            return jsonify(link_state_payload(state))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
     @app.put("/api/shaping/<target>")
     def api_shaping_set(target: str):
         state, error = load_active_state_or_error(workdir)
@@ -365,6 +406,27 @@ def create_app(workdir: Path | str) -> Flask:
             shaper = build_shaper_from_state(state)
             shaper.clear_all()
             return jsonify(shaping_payload(state, shaper))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
+    @app.put("/api/link-state/<target>")
+    def api_link_state_set(target: str):
+        state, error = load_active_state_or_error(workdir)
+        if error is not None:
+            payload, status = error
+            return jsonify(payload), status
+        body = request.get_json(silent=True)
+        if body is None or not isinstance(body, Mapping) or "connected" not in body:
+            return jsonify({"error": "expected json body with connected boolean"}), 400
+        connected = body.get("connected")
+        if not isinstance(connected, bool):
+            return jsonify({"error": "connected must be a boolean"}), 400
+        try:
+            controller = build_link_state_controller_from_state(state)
+            controller.set_connected(target, connected)
+            return jsonify(link_state_payload(state, controller))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
 

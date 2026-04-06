@@ -48,17 +48,29 @@ Traffic shaping commands:
 .venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all --workdir /tmp/coordlab-phase5
 ```
 
+Link-state commands:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py link-status --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py disconnect --workdir /tmp/coordlab-phase5 --target node-1
+.venv/bin/python scripts/coordlab/coordlab.py reconnect --workdir /tmp/coordlab-phase5 --target upstream-1
+```
+
 The web dashboard mirrors the same controls:
 
 - lab and process status
 - live coordination state from `fbcoord` and both nodes
 - node-side and upstream-side delay/loss controls and presets
+- per-target disconnect/reconnect controls inside the same cards
 - direct links to the `fbcoord` admin UI and both node UIs
 - on-demand log tailing for any tracked process
 
-Shaping model:
+Control model:
 
 - `node-1` / `node-2` targets run on `hub` and affect that node broadly, including coordination traffic
 - `upstream-1` / `upstream-2` targets run on `hub-up` and affect both nodes only when they use that upstream
+- shaping is a soft impairment using delay/loss
+- disconnect is a hard partition using `ip link set ... down/up`
 - effective path impairment is `node-side(node) + upstream-side(upstream)`
 - this is still a two-axis model, not full per-node/per-upstream matrix shaping
+- reconnect preserves any existing shaping on that target

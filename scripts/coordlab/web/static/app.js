@@ -11,11 +11,19 @@ const TOPOLOGY_LABEL_IDS = {
   "upstream-1": "topology-upstream-1",
   "upstream-2": "topology-upstream-2",
 };
+const TOPOLOGY_LINE_IDS = {
+  "node-1": "topology-link-node-1",
+  "node-2": "topology-link-node-2",
+  "upstream-1": "topology-link-upstream-1",
+  "upstream-2": "topology-link-upstream-2",
+};
 
 const state = {
   refreshMs: 5000,
   timer: null,
   processes: [],
+  shapingTargets: [],
+  linkTargets: {},
 };
 
 async function requestJson(url, options = {}) {
@@ -63,7 +71,10 @@ function renderList(containerId, items, formatter) {
   element.innerHTML = items.map(formatter).join("");
 }
 
-function shapeStateText(entry) {
+function shapeStateText(entry, linkState) {
+  if (linkState && linkState.connected === false) {
+    return "disconnected";
+  }
   const parts = [];
   if (entry.delay_ms > 0) {
     parts.push(`${entry.delay_ms}ms delay`);
@@ -78,14 +89,24 @@ function sortTargets(entries) {
   return [...entries].sort((left, right) => TARGET_ORDER.indexOf(left.target) - TARGET_ORDER.indexOf(right.target));
 }
 
-function updateTopology(targets) {
+function updateTopology(targets, linkTargets) {
   const byTarget = Object.fromEntries(targets.map((entry) => [entry.target, entry]));
   for (const target of TARGET_ORDER) {
     const label = document.querySelector(`#${TOPOLOGY_LABEL_IDS[target]}`);
+    const line = document.querySelector(`#${TOPOLOGY_LINE_IDS[target]}`);
+    const pill = label ? label.closest(".shape-pill") : null;
+    const linkState = linkTargets[target];
     if (!label) {
       continue;
     }
-    label.textContent = byTarget[target] ? shapeStateText(byTarget[target]) : "unknown";
+    label.textContent = byTarget[target] ? shapeStateText(byTarget[target], linkState) : "unknown";
+    const disconnected = linkState ? linkState.connected === false : false;
+    if (line) {
+      line.classList.toggle("offline", disconnected);
+    }
+    if (pill) {
+      pill.classList.toggle("offline", disconnected);
+    }
   }
 }
 
@@ -178,40 +199,59 @@ function targetEffect(entry) {
   return "Affects both nodes only when they use this upstream.";
 }
 
-function renderShaping(payload) {
+function linkStateBadge(connected) {
+  return connected
+    ? `<span class="badge ok">connected</span>`
+    : `<span class="badge bad">disconnected</span>`;
+}
+
+function renderShapingView() {
   const list = document.querySelector("#shaping-list");
+  const targets = sortTargets(state.shapingTargets || []);
+  updateTopology(targets, state.linkTargets || {});
+  list.innerHTML = targets.map((entry) => {
+    const linkState = state.linkTargets[entry.target] || { connected: true };
+    const connected = linkState.connected !== false;
+    const disabled = connected ? "" : "disabled";
+    const toggleLabel = connected ? "Disconnect" : "Reconnect";
+    const toggleClass = connected ? "ghost warn-button" : "";
+    return `
+      <article class="shape-card ${connected ? "" : "shape-card-offline"}" data-target="${entry.target}">
+        <div class="shape-header">
+          <h3>${TARGET_LABELS[entry.target] || entry.target}</h3>
+          <div class="chip-row">
+            ${linkStateBadge(connected)}
+            <span class="chip muted-chip">${targetAxis(entry)}</span>
+            ${entry.tag ? `<span class="chip">${entry.tag}</span>` : ""}
+          </div>
+        </div>
+        <p class="subtle">${entry.namespace} / ${entry.device}</p>
+        <p class="shape-note">${targetEffect(entry)}</p>
+        <div class="shape-values">
+          <label>
+            Delay (ms)
+            <input type="number" min="0" value="${entry.delay_ms}" data-field="delay" ${disabled}>
+          </label>
+          <label>
+            Loss (%)
+            <input type="number" min="0" max="100" step="0.1" value="${entry.loss_pct}" data-field="loss" ${disabled}>
+          </label>
+        </div>
+        <div class="inline-actions">
+          <button type="button" data-action="apply" ${disabled}>Apply</button>
+          <button type="button" class="ghost" data-action="clear" ${disabled}>Clear</button>
+          <button type="button" class="${toggleClass}" data-action="link" data-connected="${connected ? "true" : "false"}">${toggleLabel}</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderShaping(payload) {
   const errorBox = document.querySelector("#shaping-error");
   errorBox.innerHTML = "";
-
-  const targets = sortTargets(payload.targets || []);
-  updateTopology(targets);
-  list.innerHTML = targets.map((entry) => `
-    <article class="shape-card" data-target="${entry.target}">
-      <div class="shape-header">
-        <h3>${TARGET_LABELS[entry.target] || entry.target}</h3>
-        <div class="chip-row">
-          <span class="chip muted-chip">${targetAxis(entry)}</span>
-          ${entry.tag ? `<span class="chip">${entry.tag}</span>` : ""}
-        </div>
-      </div>
-      <p class="subtle">${entry.namespace} / ${entry.device}</p>
-      <p class="shape-note">${targetEffect(entry)}</p>
-      <div class="shape-values">
-        <label>
-          Delay (ms)
-          <input type="number" min="0" value="${entry.delay_ms}" data-field="delay">
-        </label>
-        <label>
-          Loss (%)
-          <input type="number" min="0" max="100" step="0.1" value="${entry.loss_pct}" data-field="loss">
-        </label>
-      </div>
-      <div class="inline-actions">
-        <button type="button" data-action="apply">Apply</button>
-        <button type="button" class="ghost" data-action="clear">Clear</button>
-      </div>
-    </article>
-  `).join("");
+  state.shapingTargets = payload.targets || [];
+  renderShapingView();
 }
 
 async function loadStatus() {
@@ -259,6 +299,16 @@ async function loadShaping() {
   try {
     const payload = await requestJson("/api/shaping");
     renderShaping(payload);
+  } catch (error) {
+    document.querySelector("#shaping-error").innerHTML = `<p>${error.message}</p>`;
+  }
+}
+
+async function loadLinkState() {
+  try {
+    const payload = await requestJson("/api/link-state");
+    state.linkTargets = Object.fromEntries((payload.targets || []).map((entry) => [entry.target, entry]));
+    renderShapingView();
   } catch (error) {
     document.querySelector("#shaping-error").innerHTML = `<p>${error.message}</p>`;
   }
@@ -314,6 +364,20 @@ async function clearAllShaping() {
   }
 }
 
+async function setLinkConnected(target, connected) {
+  try {
+    const payload = await requestJson(`/api/link-state/${encodeURIComponent(target)}`, {
+      method: "PUT",
+      body: JSON.stringify({ connected }),
+    });
+    state.linkTargets = Object.fromEntries((payload.targets || []).map((entry) => [entry.target, entry]));
+    renderShapingView();
+    await loadCoordination();
+  } catch (error) {
+    document.querySelector("#shaping-error").innerHTML = `<p>${error.message}</p>`;
+  }
+}
+
 async function applyPreset() {
   const value = document.querySelector("#preset-select").value;
   if (!value) {
@@ -337,6 +401,7 @@ async function refreshAll() {
   await loadStatus();
   await loadCoordination();
   await loadShaping();
+  await loadLinkState();
 }
 
 function schedulePolling() {
@@ -372,6 +437,11 @@ function bindEvents() {
     const target = card.dataset.target;
     if (button.dataset.action === "clear") {
       void clearShaping(target);
+      return;
+    }
+    if (button.dataset.action === "link") {
+      const connected = button.dataset.connected === "true";
+      void setLinkConnected(target, !connected);
       return;
     }
     if (button.dataset.action === "apply") {

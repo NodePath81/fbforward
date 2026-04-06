@@ -15,6 +15,7 @@ coordlab provides a reusable local lab that can:
 - start two real `fbmeasure` upstreams
 - expose `fbcoord` and both node control planes back to the host
 - apply live delay and packet-loss shaping on both node-side and upstream-side links
+- disconnect and reconnect individual node-side and upstream-side links
 - expose a browser dashboard for lab status, coordination state, shaping, and log viewing
 
 It is a manual environment, not a CI runner and not a scenario/assertion engine.
@@ -48,6 +49,9 @@ The main entrypoint is:
 | `shaping-set` | Apply delay and/or loss to one shaping target |
 | `shaping-clear` | Remove shaping from one target |
 | `shaping-clear-all` | Remove shaping from all targets |
+| `link-status` | Show current live link state for all targets |
+| `disconnect` | Bring one target link down |
+| `reconnect` | Bring one target link back up |
 | `net-up` / `net-status` / `net-down` | Phase 1 topology-only debugging commands |
 
 ### Work directory
@@ -116,6 +120,7 @@ Host-facing access points:
 | `lib/readiness.py` | HTTP/RPC readiness polling |
 | `lib/rpc.py` | Node RPC helpers (`GetStatus`, `SetUpstream`) |
 | `lib/shaping.py` | `tc netem` shaping backend |
+| `lib/linkstate.py` | Per-target link down/up control on `hub` and `hub-up` |
 | `lib/state.py` | Persistent state model and JSON serialization |
 | `lib/output.py` | CLI status rendering |
 | `web/app.py` | Flask app and JSON API |
@@ -137,6 +142,7 @@ Host-facing access points:
 - topology link metadata
 
 Live shaping values are not stored in state; they are always read from `tc`.
+Live link state is not stored in state; it is always read from `ip link show`.
 
 ---
 
@@ -157,6 +163,8 @@ It serves:
 - `PUT /api/shaping/<target>`
 - `DELETE /api/shaping/<target>`
 - `DELETE /api/shaping`
+- `GET /api/link-state`
+- `PUT /api/link-state/<target>`
 - `GET /api/logs/<process>?lines=N`
 
 The dashboard does not own any background state. It reads the current `state.json` on each request and talks to the live lab through the existing host proxies.
@@ -169,6 +177,12 @@ The dashboard does not own any background state. It reads the current `state.jso
 - Traffic shaping
 - Service links
 - Log viewer
+
+Disconnect is modeled separately from shaping:
+
+- shaping is a soft impairment using delay/loss
+- disconnect is a hard partition using interface admin down/up
+- shaping values remain visible while disconnected and are restored when the link is reconnected
 
 Terminal links are intentionally out of scope for Phase 5 and remain part of the planned Phase 6 ttyd work.
 
@@ -183,6 +197,8 @@ Typical manual smoke:
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # open http://127.0.0.1:18800
 .venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target node-1 --delay-ms 200
+.venv/bin/python scripts/coordlab/coordlab.py disconnect --workdir /tmp/coordlab-phase5 --target upstream-1
+.venv/bin/python scripts/coordlab/coordlab.py reconnect --workdir /tmp/coordlab-phase5 --target upstream-1
 .venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target upstream-1 --delay-ms 200
 .venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
@@ -202,6 +218,7 @@ Developer-side validation:
 - coordlab is Linux-only and depends on unprivileged user namespaces being enabled.
 - The topology is fixed at two nodes and two upstreams.
 - The shaping model provides two axes only: node-side on `hub` and upstream-side on `hub-up`. It does not provide a full independent `(node, upstream)` matrix.
+- Disconnect controls follow the same two-axis target model and preserve any shaping already configured on that target.
 - The dashboard is a local operator tool with no auth; it should remain bound to `127.0.0.1`.
 - Terminal integration is not implemented yet.
 - There is a known product issue in `fbforward`: induced packet loss can trigger a UDP measurement crash. For Phase 5 validation, use delay-based degradation as the primary smoke path.

@@ -58,6 +58,29 @@ class FakeShaper:
             self.states[upstream] = {"delay_ms": 0, "loss_pct": 0.0}
 
 
+class FakeLinkStateController:
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self.states = {
+            "node-1": {"target": "node-1", "router_ns": "hub", "namespace": "node-1", "device": "hub-node1", "connected": True},
+            "node-2": {"target": "node-2", "router_ns": "hub", "namespace": "node-2", "device": "hub-node2", "connected": True},
+            "upstream-1": {"target": "upstream-1", "router_ns": "hub-up", "namespace": "upstream-1", "device": "hubup-u1", "connected": True},
+            "upstream-2": {"target": "upstream-2", "router_ns": "hub-up", "namespace": "upstream-2", "device": "hubup-u2", "connected": True},
+        }
+
+    def get_all(self):
+        result = {}
+        for name, state in self.states.items():
+            result[name] = type("LinkState", (), state)()
+        return result
+
+    def set_connected(self, target: str, connected: bool):
+        if target not in self.states:
+            raise ValueError(f"unknown target {target!r}")
+        self.calls.append(("set_connected", target, connected))
+        self.states[target]["connected"] = connected
+
+
 def sample_state(workdir: Path) -> LabState:
     return LabState(
         phase=5,
@@ -211,6 +234,40 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(("set", "node-1", 200, 0.0), fake.calls[0])
         self.assertEqual(("clear", "upstream-1"), fake.calls[1])
         self.assertEqual(("clear_all",), fake.calls[2])
+
+    def test_link_state_routes_return_current_state_and_apply_changes(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        fake = FakeLinkStateController()
+        with mock.patch("web.app.build_link_state_controller_from_state", return_value=fake):
+            get_response = self.client.get("/api/link-state")
+            put_response = self.client.put(
+                "/api/link-state/node-1",
+                data=json.dumps({"connected": False}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(200, get_response.status_code)
+        self.assertEqual(200, put_response.status_code)
+        payload = get_response.get_json()
+        self.assertEqual(["node-1", "node-2", "upstream-1", "upstream-2"], [entry["target"] for entry in payload["targets"]])
+        self.assertEqual(("set_connected", "node-1", False), fake.calls[0])
+
+    def test_link_state_route_rejects_bad_target_and_inactive_state(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        fake = FakeLinkStateController()
+        with mock.patch("web.app.build_link_state_controller_from_state", return_value=fake):
+            bad = self.client.put(
+                "/api/link-state/node-9",
+                data=json.dumps({"connected": False}),
+                content_type="application/json",
+            )
+        self.assertEqual(400, bad.status_code)
+
+        inactive = sample_state(self.workdir)
+        inactive.active = False
+        self.write_state(inactive)
+        response = self.client.get("/api/link-state")
+        self.assertEqual(409, response.status_code)
 
     def test_logs_route_clamps_lines_and_returns_404_for_unknown_process(self) -> None:
         state = sample_state(self.workdir)

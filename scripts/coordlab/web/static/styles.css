@@ -285,6 +285,11 @@ h1 {
   font-size: 0.92rem;
 }
 
+.shape-card-offline {
+  border-color: rgba(143, 63, 47, 0.28);
+  background: rgba(246, 221, 214, 0.42);
+}
+
 .shape-values label,
 .controls label,
 .inline-actions label {
@@ -353,6 +358,24 @@ button.ghost:hover {
   transform: translateY(-1px);
 }
 
+.warn-button {
+  color: var(--warn);
+  border-color: rgba(143, 63, 47, 0.28);
+}
+
+.warn-button:hover {
+  background: rgba(143, 63, 47, 0.06);
+  border-color: rgba(143, 63, 47, 0.4);
+}
+
+button:disabled,
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: none;
+  transform: none;
+}
+
 .topology {
   width: 100%;
   height: auto;
@@ -387,6 +410,12 @@ button.ghost:hover {
   opacity: 0.82;
 }
 
+.link.offline line {
+  stroke: rgba(246, 221, 214, 0.9);
+  stroke-width: 5;
+  stroke-dasharray: 8 8;
+}
+
 .box-label {
   font-size: 16px;
   font-weight: 600;
@@ -418,6 +447,11 @@ button.ghost:hover {
   fill: rgba(255, 249, 239, 0.14);
   stroke: rgba(255, 249, 239, 0.42);
   stroke-width: 1;
+}
+
+.shape-pill.offline rect {
+  fill: rgba(246, 221, 214, 0.18);
+  stroke: rgba(246, 221, 214, 0.68);
 }
 
 .shape-label {

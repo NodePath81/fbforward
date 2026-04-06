@@ -474,19 +474,32 @@ def build_shaper_from_state(state: LabState):
     from lib.shaping import TrafficShaper
 
     require_tools(["tc"])
+    router_pids = resolve_target_router_pids(state, kind="shaping")
+    return TrafficShaper(router_pids, state.shaping)
+
+
+def build_link_state_controller_from_state(state: LabState):
+    from lib.linkstate import LinkStateController
+
+    require_tools(["ip"])
+    router_pids = resolve_target_router_pids(state, kind="link-state")
+    return LinkStateController(router_pids, state.shaping)
+
+
+def resolve_target_router_pids(state: LabState, *, kind: str) -> dict[str, int]:
     if not state.shaping.targets:
-        raise RuntimeError("coordlab state does not contain shaping topology; rerun `coordlab.py up`")
+        raise RuntimeError("coordlab state does not contain target topology; rerun `coordlab.py up`")
     router_pids: dict[str, int] = {}
     for target_name, target in sorted(state.shaping.targets.items()):
         router_info = state.namespaces.get(target.router_ns)
         if router_info is None:
             raise RuntimeError(
-                f"coordlab state references unknown shaping router namespace: {target.router_ns} for {target_name}"
+                f"coordlab state references unknown {kind} router namespace: {target.router_ns} for {target_name}"
             )
         if not is_alive(router_info.pid):
-            raise RuntimeError(f"shaping router namespace is not alive: {target.router_ns} pid={router_info.pid}")
+            raise RuntimeError(f"{kind} router namespace is not alive: {target.router_ns} pid={router_info.pid}")
         router_pids[target.router_ns] = router_info.pid
-    return TrafficShaper(router_pids, state.shaping)
+    return router_pids
 
 
 def format_shaping_state(states: dict[str, object | None]) -> str:
@@ -498,6 +511,14 @@ def format_shaping_state(states: dict[str, object | None]) -> str:
         delay_ms = getattr(shaping_state, "delay_ms")
         loss_pct = getattr(shaping_state, "loss_pct")
         lines.append(f"{target_name}: delay={delay_ms}ms loss={loss_pct:g}%")
+    return "\n".join(lines)
+
+
+def format_link_state(states: dict[str, object]) -> str:
+    lines: list[str] = []
+    for target_name, link_state in states.items():
+        connected = getattr(link_state, "connected", False)
+        lines.append(f"{target_name}: {'connected' if connected else 'disconnected'}")
     return "\n".join(lines)
 
 
@@ -763,6 +784,32 @@ def cmd_shaping_clear_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_link_status(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state = load_active_state(workdir)
+    controller = build_link_state_controller_from_state(state)
+    print(format_link_state(controller.get_all()))
+    return 0
+
+
+def cmd_disconnect(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state = load_active_state(workdir)
+    controller = build_link_state_controller_from_state(state)
+    controller.set_connected(args.target, False)
+    print(format_link_state(controller.get_all()))
+    return 0
+
+
+def cmd_reconnect(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    state = load_active_state(workdir)
+    controller = build_link_state_controller_from_state(state)
+    controller.set_connected(args.target, True)
+    print(format_link_state(controller.get_all()))
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     require_flask_environment()
     from web.app import create_app
@@ -833,6 +880,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shaping_clear_all.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
     shaping_clear_all.set_defaults(handler=cmd_shaping_clear_all)
+
+    link_status = subparsers.add_parser("link-status", help="show current live link state for all targets")
+    link_status.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    link_status.set_defaults(handler=cmd_link_status)
+
+    disconnect = subparsers.add_parser("disconnect", help="disconnect one node or upstream target")
+    disconnect.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    disconnect.add_argument("--target", required=True, choices=["node-1", "node-2", "upstream-1", "upstream-2"])
+    disconnect.set_defaults(handler=cmd_disconnect)
+
+    reconnect = subparsers.add_parser("reconnect", help="reconnect one node or upstream target")
+    reconnect.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    reconnect.add_argument("--target", required=True, choices=["node-1", "node-2", "upstream-1", "upstream-2"])
+    reconnect.set_defaults(handler=cmd_reconnect)
 
     hidden = subparsers.add_parser("proxy-daemon", help=argparse.SUPPRESS)
     hidden.add_argument("--state", required=True)
