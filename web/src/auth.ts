@@ -7,7 +7,7 @@ const saveButton = qs<HTMLButtonElement>(document, '#saveButton');
 const authHint = qs<HTMLElement>(document, '#authHint');
 const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
 
-const existing = sessionStorage.getItem('fbforward_token') || '';
+const existing = localStorage.getItem('fbforward_token') || '';
 tokenInput.value = existing;
 
 saveButton.addEventListener('click', async () => {
@@ -26,7 +26,7 @@ saveButton.addEventListener('click', async () => {
     saveButton.disabled = false;
     return;
   }
-  sessionStorage.setItem('fbforward_token', token);
+  localStorage.setItem('fbforward_token', token);
   window.location.href = '/';
 });
 

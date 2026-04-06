@@ -310,17 +310,19 @@ On first access:
 
 1. Navigate to `/auth` to enter your token
 2. The UI validates the token by calling the `GetStatus` RPC method
-3. On success, the token is stored in browser `sessionStorage` (key: `fbforward_token`)
+3. On success, the token is stored in browser `localStorage` (key: `fbforward_token`)
 4. You are redirected to the main UI
 
-The token is scoped to the current browser session. Closing the browser session
-or clicking `Logout` clears it. To use a different token or rotate credentials:
+The token persists in that browser until you click `Logout` or manually clear
+site data. Closing the browser or reopening the tab does not remove it. Because
+older builds stored the token only in `sessionStorage`, users upgrading to this
+version must log in again once. To use a different token or rotate credentials:
 
 1. Click `Logout` in the UI, or navigate to `/auth` directly
 2. Enter the new token
 3. The UI validates and saves the new token
 
-**Security note:** Tokens are stored in browser `sessionStorage`, which is still
+**Security note:** Tokens are stored in browser `localStorage`, which is still
 accessible to JavaScript running on the same origin. In production, always use
 HTTPS to protect token transmission.
 

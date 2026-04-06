@@ -22,7 +22,7 @@ import { clearChildren, createEl, qs } from './utils/dom';
 import { formatBytes, formatBytesRate, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
 import { connectStatusSocket } from './websocket/status';
 
-const storedToken = sessionStorage.getItem('fbforward_token') || '';
+const storedToken = localStorage.getItem('fbforward_token') || '';
 if (!storedToken) {
   window.location.href = '/auth';
 } else {
@@ -131,7 +131,7 @@ function startApp(token: string) {
   });
 
   logoutButton.addEventListener('click', () => {
-    sessionStorage.removeItem('fbforward_token');
+    localStorage.removeItem('fbforward_token');
     window.location.href = '/auth';
   });
 

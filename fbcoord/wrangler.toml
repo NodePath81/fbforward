@@ -20,8 +20,8 @@ class_name = "AuthGuardDurableObject"
 
 [[kv_namespaces]]
 binding = "FBCOORD_AUTH_KV"
-id = "replace-with-cloudflare-kv-namespace-id"
-preview_id = "replace-with-cloudflare-kv-preview-id"
+id = "18c8b11112c14f938c5d79d023e04c9e"
+preview_id = ""
 
 [assets]
 directory = "./ui/dist"
@@ -29,12 +29,12 @@ binding = "ASSETS"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["PoolDurableObject"]
+new_sqlite_classes = ["PoolDurableObject"]
 
 [[migrations]]
 tag = "v2"
-new_classes = ["RegistryDurableObject", "TokenDurableObject"]
+new_sqlite_classes = ["RegistryDurableObject", "TokenDurableObject"]
 
 [[migrations]]
 tag = "v3"
-new_classes = ["AuthGuardDurableObject"]
+new_sqlite_classes = ["AuthGuardDurableObject"]
