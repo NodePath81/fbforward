@@ -13,6 +13,10 @@ def proxy_url(state: LabState, name: str) -> str | None:
     return f"http://{proxy.listen_host}:{proxy.host_port}"
 
 
+def terminal_url(host_port: int) -> str:
+    return f"http://127.0.0.1:{host_port}"
+
+
 def render_summary(state: LabState, python_executable: str) -> str:
     lines: list[str] = []
     workdir = Path(state.work_dir)
@@ -49,6 +53,19 @@ def render_summary(state: LabState, python_executable: str) -> str:
                 f"    {name}: {proxy.listen_host}:{proxy.host_port} -> "
                 f"{proxy.target_ns}:{proxy.target_host}:{proxy.target_port}"
             )
+        lines.append("")
+
+    if state.clients:
+        lines.append("  clients:")
+        for name, info in sorted(state.clients.items()):
+            lines.append(f"    {name}: {info.identity_ip}")
+        lines.append("")
+
+    if state.terminals:
+        lines.append("  terminals:")
+        for name, info in sorted(state.terminals.items()):
+            status = "alive" if is_alive(info.pid) else "dead"
+            lines.append(f"    {name}: {terminal_url(info.host_port)} ({status})")
         lines.append("")
 
     if state.tokens.coord_token or state.tokens.control_token:

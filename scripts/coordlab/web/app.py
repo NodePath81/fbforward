@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 from flask import Flask, jsonify, render_template, request
 
-from lib.output import proxy_url
+from lib.output import proxy_url, terminal_url
 from lib.process import is_alive
 from lib.rpc import get_status
 from lib.linkstate import LinkStateController
@@ -43,6 +43,8 @@ def lab_inactive_payload(workdir: Path, error: str) -> dict:
         "namespaces": [],
         "processes": [],
         "proxies": {},
+        "clients": {},
+        "terminals": {},
         "service_links": {},
         "shaping_targets": [],
         "topology_links": [],
@@ -69,6 +71,27 @@ def service_links(state: LabState) -> dict[str, str]:
         if url:
             links[name] = url
     return links
+
+
+def client_dict(state: LabState) -> dict[str, dict]:
+    return {
+        name: {
+            "identity_ip": info.identity_ip,
+        }
+        for name, info in sorted(state.clients.items())
+    }
+
+
+def terminal_dict(state: LabState) -> dict[str, dict]:
+    return {
+        name: {
+            "host_port": info.host_port,
+            "pid": info.pid,
+            "alive": is_alive(info.pid),
+            "url": terminal_url(info.host_port),
+        }
+        for name, info in sorted(state.terminals.items())
+    }
 
 
 def status_payload(state: LabState | None, workdir: Path) -> dict:
@@ -107,6 +130,8 @@ def status_payload(state: LabState | None, workdir: Path) -> dict:
             for name, info in sorted(state.processes.items(), key=lambda item: (item[1].order, item[0]))
         ],
         "proxies": proxy_dict(state),
+        "clients": client_dict(state),
+        "terminals": terminal_dict(state),
         "service_links": service_links(state),
         "shaping_targets": [
             {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .process import is_alive, terminate_pid
@@ -55,6 +55,7 @@ class Topology:
     namespaces: dict[str, Namespace]
     links: list[Link]
     base_cidr: str
+    clients: dict[str, str] = field(default_factory=dict)
 
 
 def which(binary: str) -> str | None:
@@ -73,10 +74,30 @@ def allocate_subnets(base_cidr: str, count: int) -> list[ipaddress.IPv4Network]:
     return subnets[:count]
 
 
-def default_links(base_cidr: str = DEFAULT_BASE_CIDR) -> list[Link]:
-    subnets = allocate_subnets(base_cidr, len(LINK_NAME_ORDER))
+def compute_namespace_order(client_names: list[str] | tuple[str, ...] | set[str]) -> tuple[tuple[str, str | None, str], ...]:
+    ordered = list(PHASE1_NAMESPACE_ORDER)
+    sorted_names = sorted(client_names)
+    if sorted_names:
+        ordered.append(("client-edge", "hub", "client-edge"))
+        ordered.extend((name, "client-edge", "client") for name in sorted_names)
+    return tuple(ordered)
+
+
+def compute_link_order(client_names: list[str] | tuple[str, ...] | set[str]) -> tuple[tuple[str, str, str, str], ...]:
+    ordered = list(LINK_NAME_ORDER)
+    sorted_names = sorted(client_names)
+    if sorted_names:
+        ordered.append(("internet", "client-edge", "inet-cedge", "cedge-inet"))
+        for index, name in enumerate(sorted_names, start=1):
+            ordered.append(("client-edge", name, f"cedge-c{index}", f"c{index}-peer"))
+    return tuple(ordered)
+
+
+def default_links(base_cidr: str = DEFAULT_BASE_CIDR, *, client_names: list[str] | tuple[str, ...] | set[str] = ()) -> list[Link]:
+    link_order = compute_link_order(client_names)
+    subnets = allocate_subnets(base_cidr, len(link_order))
     links: list[Link] = []
-    for (left_ns, right_ns, left_if, right_if), subnet in zip(LINK_NAME_ORDER, subnets, strict=True):
+    for (left_ns, right_ns, left_if, right_if), subnet in zip(link_order, subnets, strict=True):
         hosts = list(subnet.hosts())
         links.append(
             Link(
@@ -162,40 +183,33 @@ def destroy(namespace: Namespace) -> None:
     terminate_pid(namespace.pid, timeout_sec=5)
 
 
-def build_topology(work_dir: str, base_cidr: str = DEFAULT_BASE_CIDR) -> Topology:
+def build_topology(
+    work_dir: str,
+    base_cidr: str = DEFAULT_BASE_CIDR,
+    *,
+    client_specs: dict[str, str] | None = None,
+) -> Topology:
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     namespaces: dict[str, Namespace] = {}
-    links = default_links(base_cidr)
+    client_specs = dict(client_specs or {})
+    client_names = sorted(client_specs)
+    links = default_links(base_cidr, client_names=client_names)
 
     try:
-        hub = create_hub("hub")
-        namespaces[hub.name] = hub
-
-        hub_up = create_child(hub, "hub-up", "hub-up")
-        namespaces[hub_up.name] = hub_up
-
-        internet = create_child(hub, "internet", "internet")
-        namespaces[internet.name] = internet
-
-        fbcoord = create_child(hub, "fbcoord", "fbcoord")
-        namespaces[fbcoord.name] = fbcoord
-
-        node1 = create_child(hub, "node-1", "node")
-        namespaces[node1.name] = node1
-
-        node2 = create_child(hub, "node-2", "node")
-        namespaces[node2.name] = node2
-
-        upstream1 = create_child(hub_up, "upstream-1", "upstream")
-        namespaces[upstream1.name] = upstream1
-
-        upstream2 = create_child(hub_up, "upstream-2", "upstream")
-        namespaces[upstream2.name] = upstream2
+        for name, parent_name, role in compute_namespace_order(client_names):
+            if parent_name is None:
+                namespace = create_hub(name)
+            else:
+                namespace = create_child(namespaces[parent_name], name, role)
+            namespaces[name] = namespace
 
         for link in links:
             create_veth(link, namespaces[link.left_ns], namespaces[link.right_ns])
 
-        for router in ("hub", "internet", "hub-up"):
+        router_names = ["hub", "internet", "hub-up"]
+        if client_names:
+            router_names.append("client-edge")
+        for router in router_names:
             enable_forwarding(namespaces[router].pid)
 
         for leaf in ("fbcoord", "node-1", "node-2"):
@@ -205,6 +219,17 @@ def build_topology(work_dir: str, base_cidr: str = DEFAULT_BASE_CIDR) -> Topolog
         for leaf in ("upstream-1", "upstream-2"):
             link = find_link(links, "hub-up", leaf)
             add_default_route(namespaces[leaf].pid, link.left_ip, link.right_if)
+
+        for client_name in client_names:
+            identity_ip = client_specs[client_name]
+            link = find_link(links, "client-edge", client_name)
+            add_identity_ip(namespaces[client_name].pid, identity_ip)
+            add_default_route(
+                namespaces[client_name].pid,
+                link.left_ip,
+                link.right_if,
+                src=identity_ip,
+            )
 
         hub_to_internet = find_link(links, "hub", "internet")
         internet_to_hub_up = find_link(links, "internet", "hub-up")
@@ -219,9 +244,52 @@ def build_topology(work_dir: str, base_cidr: str = DEFAULT_BASE_CIDR) -> Topolog
             add_route(namespaces["hub-up"].pid, link.subnet, internet_to_hub_up.left_ip, internet_to_hub_up.right_if)
             add_route(namespaces["internet"].pid, link.subnet, hub_to_internet.left_ip, hub_to_internet.right_if)
 
-        return Topology(work_dir=str(Path(work_dir)), namespaces=namespaces, links=links, base_cidr=base_cidr)
+        if client_names:
+            internet_to_client_edge = find_link(links, "internet", "client-edge")
+            add_default_route(
+                namespaces["client-edge"].pid,
+                internet_to_client_edge.left_ip,
+                internet_to_client_edge.right_if,
+            )
+            for client_name in client_names:
+                identity_ip = client_specs[client_name]
+                link = find_link(links, "client-edge", client_name)
+                add_route(
+                    namespaces["client-edge"].pid,
+                    f"{identity_ip}/32",
+                    link.right_ip,
+                    link.left_if,
+                )
+                add_route(
+                    namespaces["internet"].pid,
+                    f"{identity_ip}/32",
+                    internet_to_client_edge.right_ip,
+                    internet_to_client_edge.left_if,
+                )
+                add_route(
+                    namespaces["hub"].pid,
+                    f"{identity_ip}/32",
+                    hub_to_internet.right_ip,
+                    hub_to_internet.left_if,
+                )
+
+        return Topology(
+            work_dir=str(Path(work_dir)),
+            namespaces=namespaces,
+            links=links,
+            base_cidr=base_cidr,
+            clients=client_specs,
+        )
     except Exception:
-        destroy_topology(Topology(work_dir=str(Path(work_dir)), namespaces=namespaces, links=links, base_cidr=base_cidr))
+        destroy_topology(
+            Topology(
+                work_dir=str(Path(work_dir)),
+                namespaces=namespaces,
+                links=links,
+                base_cidr=base_cidr,
+                clients=client_specs,
+            )
+        )
         raise
 
 
@@ -255,6 +323,9 @@ def verify_connectivity(topology: Topology) -> None:
         ("internet", link_hub_internet.left_ip),
         ("internet", link_internet_hubup.right_ip),
     ]
+    if topology.clients:
+        node_transport_ip = find_link(topology.links, "hub", "node-1").right_ip
+        checks.extend((client_name, node_transport_ip) for client_name in sorted(topology.clients))
     for source, target in checks:
         nsenter_run(namespaces[source].pid, ["ping", "-c", "1", "-W", "1", target])
 
@@ -263,8 +334,15 @@ def add_route(pid: int, destination: str, via: str, dev: str) -> None:
     nsenter_run(pid, ["ip", "route", "replace", destination, "via", via, "dev", dev])
 
 
-def add_default_route(pid: int, gateway: str, dev: str) -> None:
-    nsenter_run(pid, ["ip", "route", "replace", "default", "via", gateway, "dev", dev])
+def add_default_route(pid: int, gateway: str, dev: str, *, src: str | None = None) -> None:
+    command = ["ip", "route", "replace", "default", "via", gateway, "dev", dev]
+    if src:
+        command.extend(["src", src])
+    nsenter_run(pid, command)
+
+
+def add_identity_ip(pid: int, ip: str) -> None:
+    nsenter_run(pid, ["ip", "addr", "add", f"{ip}/32", "dev", "lo"])
 
 
 def enable_forwarding(pid: int) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import ipaddress
 import json
 import shutil
 import socket
@@ -20,6 +21,7 @@ from lib.output import render_summary
 from lib.process import ProcessManager, is_alive, terminate_pid, terminate_process_group
 from lib.proxy import run_proxy_daemon
 from lib.state import (
+    ClientInfo,
     LabState,
     LinkInfo,
     NamespaceInfo,
@@ -27,6 +29,7 @@ from lib.state import (
     ProxyInfo,
     ShapingInfo,
     ShapingTargetInfo,
+    TerminalInfo,
     TokenInfo,
     TopologyInfo,
     load_state,
@@ -48,6 +51,7 @@ RUNTIME_DIRNAME = coordconfig.FBCOORD_RUNTIME_DIR
 POLL_INTERVAL_SEC = 0.5
 READINESS_TIMEOUT_SEC = 30.0
 PROXY_PROCESS_NAME = "coordlab-proxy"
+TTYD_BASE_PORT = 18900
 PROXY_SPECS = {
     "fbcoord": ("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
     "node-1": ("127.0.0.1", 18701, "node-1", "127.0.0.1", 8080),
@@ -131,12 +135,18 @@ def build_state(
     active: bool,
     processes: dict[str, ProcessInfo] | None = None,
     proxies: dict[str, ProxyInfo] | None = None,
+    clients: dict[str, ClientInfo] | None = None,
+    terminals: dict[str, TerminalInfo] | None = None,
     shaping: ShapingInfo | None = None,
     tokens: TokenInfo | None = None,
 ) -> LabState:
     namespaces = {
         name: NamespaceInfo(pid=ns.pid, parent=ns.parent, role=ns.role)
         for name, ns in topology.namespaces.items()
+    }
+    client_infos = clients or {
+        name: ClientInfo(identity_ip=identity_ip)
+        for name, identity_ip in sorted(topology.clients.items())
     }
     links = [
         LinkInfo(
@@ -158,6 +168,8 @@ def build_state(
         namespaces=namespaces,
         processes=processes or {},
         proxies=proxies or {},
+        clients=client_infos,
+        terminals=terminals or {},
         shaping=shaping or build_shaping_info(topology),
         tokens=tokens or TokenInfo(),
         topology=TopologyInfo(base_cidr=topology.base_cidr, links=links),
@@ -238,6 +250,15 @@ def print_basic_status(state: LabState) -> None:
                 f"  {name}: {proxy.listen_host}:{proxy.host_port} -> "
                 f"{proxy.target_ns}:{proxy.target_host}:{proxy.target_port}"
             )
+    if state.clients:
+        print("clients:")
+        for name, info in sorted(state.clients.items()):
+            print(f"  {name}: identity_ip={info.identity_ip}")
+    if state.terminals:
+        print("terminals:")
+        for name, info in sorted(state.terminals.items()):
+            status = "alive" if is_alive(info.pid) else "dead"
+            print(f"  {name}: http://127.0.0.1:{info.host_port} pid={info.pid} status={status}")
     if state.tokens.coord_token or state.tokens.control_token:
         print("tokens:")
         if state.tokens.coord_token:
@@ -255,6 +276,68 @@ def require_tools(tools: Iterable[str]) -> None:
     missing = [tool for tool in tools if shutil.which(tool) is None]
     if missing:
         raise RuntimeError(f"missing required tools: {', '.join(missing)}")
+
+
+def parse_client_specs(raw_specs: list[str], *, base_cidr: str = netns.DEFAULT_BASE_CIDR) -> dict[str, str]:
+    if not raw_specs:
+        return {}
+    base_network = ipaddress.ip_network(base_cidr)
+    parsed: dict[str, str] = {}
+    seen_ips: set[str] = set()
+    for raw in raw_specs:
+        name, separator, raw_ip = raw.partition("=")
+        if separator != "=" or not name or not raw_ip:
+            raise RuntimeError(f"invalid client spec {raw!r}; expected NAME=IP")
+        if not name.startswith("client-"):
+            raise RuntimeError(f"invalid client name {name!r}; expected prefix 'client-'")
+        if name in parsed:
+            raise RuntimeError(f"duplicate client name: {name}")
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+        except ValueError as exc:
+            raise RuntimeError(f"invalid client IP {raw_ip!r} for {name}") from exc
+        if not isinstance(ip, ipaddress.IPv4Address):
+            raise RuntimeError(f"client IP must be IPv4: {raw_ip}")
+        if raw_ip in seen_ips:
+            raise RuntimeError(f"duplicate client IP: {raw_ip}")
+        if ip in base_network:
+            raise RuntimeError(f"client IP {raw_ip} overlaps transport base CIDR {base_cidr}")
+        parsed[name] = raw_ip
+        seen_ips.add(raw_ip)
+    return parsed
+
+
+def allocate_ttyd_ports(
+    client_names: Iterable[str],
+    upstream_names: Iterable[str] = ("upstream-1", "upstream-2"),
+) -> dict[str, int]:
+    ports: dict[str, int] = {}
+    port = TTYD_BASE_PORT
+    for name in [*sorted(client_names), *sorted(upstream_names)]:
+        ports[name] = port
+        port += 1
+    return ports
+
+
+def build_ttyd_command(*, ns_pid: int, port: int) -> list[str]:
+    return [
+        "ttyd",
+        "--interface",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--writable",
+        "nsenter",
+        "--preserve-credentials",
+        "--keep-caps",
+        "-t",
+        str(ns_pid),
+        "-U",
+        "-n",
+        "--",
+        "/bin/bash",
+        "-l",
+    ]
 
 
 def run_host(args: list[str], *, cwd: str | Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -420,9 +503,11 @@ def verify_fbforward_rpc_in_namespace(topology: netns.Topology, manager: Process
     wait_for_condition(READINESS_TIMEOUT_SEC, check, f"{process_name} RPC did not become ready")
 
 
-def assert_host_ports_available() -> None:
+def assert_host_ports_available(extra_bindings: Iterable[tuple[str, str, int]] | None = None) -> None:
     busy: list[str] = []
-    for name, (listen_host, host_port, _, _, _) in PROXY_SPECS.items():
+    bindings = [(name, listen_host, host_port) for name, (listen_host, host_port, _, _, _) in PROXY_SPECS.items()]
+    bindings.extend(list(extra_bindings or ()))
+    for name, listen_host, host_port in bindings:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -458,6 +543,21 @@ def build_proxy_infos() -> dict[str, ProxyInfo]:
         )
         for name, (listen_host, host_port, target_ns, target_host, target_port) in PROXY_SPECS.items()
     }
+
+
+def start_ttyd_terminals(
+    manager: ProcessManager,
+    topology: netns.Topology,
+    ttyd_ports: dict[str, int],
+) -> dict[str, TerminalInfo]:
+    terminals: dict[str, TerminalInfo] = {}
+    for namespace_name, port in sorted(ttyd_ports.items(), key=lambda item: item[1]):
+        managed = manager.start_host(
+            build_ttyd_command(ns_pid=topology.namespaces[namespace_name].pid, port=port),
+            f"ttyd-{namespace_name}",
+        )
+        terminals[namespace_name] = TerminalInfo(host_port=port, pid=managed.pid)
+    return terminals
 
 
 def load_active_state(workdir: Path) -> LabState:
@@ -535,8 +635,9 @@ def cmd_net_up(args: argparse.Namespace) -> int:
             )
 
     require_tools(["unshare", "nsenter", "ip", "sysctl", "ping"])
+    client_specs = parse_client_specs(args.client)
 
-    topology = netns.build_topology(str(workdir))
+    topology = netns.build_topology(str(workdir), client_specs=client_specs)
     try:
         netns.verify_connectivity(topology)
     except Exception:
@@ -591,13 +692,17 @@ def cmd_up(args: argparse.Namespace) -> int:
                 f"existing coordlab state is still active in {workdir}: alive entries={', '.join(alive)}"
             )
 
-    require_tools(["unshare", "nsenter", "ip", "sysctl", "ping", str(VENV_PYTHON)])
-    assert_host_ports_available()
+    client_specs = parse_client_specs(args.client)
+    ttyd_ports = allocate_ttyd_ports(client_specs.keys())
+    require_tools(["unshare", "nsenter", "ip", "sysctl", "ping", str(VENV_PYTHON), "ttyd"])
+    assert_host_ports_available(
+        extra_bindings=[(f"ttyd-{name}", "127.0.0.1", port) for name, port in sorted(ttyd_ports.items())]
+    )
     ensure_fbforward_binaries(args.skip_build)
     ensure_fbcoord_assets(args.skip_build)
 
     tokens = coordconfig.generate_tokens()
-    topology = netns.build_topology(str(workdir))
+    topology = netns.build_topology(str(workdir), client_specs=client_specs)
     manager = ProcessManager(logs_dir_for(workdir))
 
     try:
@@ -696,6 +801,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         readiness.wait_for_status(node2_url, tokens.control_token, predicate=coordination_connected)
         readiness.verify_fbcoord_api(fbcoord_url, tokens.coord_token, expected_pool="lab")
 
+        terminals = start_ttyd_terminals(manager, topology, ttyd_ports)
         state = build_state(
             workdir,
             topology,
@@ -703,6 +809,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             active=True,
             processes=manager.infos(),
             proxies=proxies,
+            terminals=terminals,
             tokens=tokens,
         )
         save_state(state_path, state)
@@ -836,6 +943,8 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+        if name == "net-up":
+            sub.add_argument("--client", action="append", default=[], metavar="NAME=IP")
         sub.set_defaults(handler=handler)
 
     for name, handler, help_text in (
@@ -847,6 +956,7 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
         if name == "up":
             sub.add_argument("--skip-build", action="store_true")
+            sub.add_argument("--client", action="append", default=[], metavar="NAME=IP")
         sub.set_defaults(handler=handler)
 
     web = subparsers.add_parser("web", help="start the Phase 5 coordlab dashboard")

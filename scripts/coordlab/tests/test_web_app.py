@@ -12,12 +12,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.state import (
+    ClientInfo,
     LabState,
     NamespaceInfo,
     ProcessInfo,
     ProxyInfo,
     ShapingInfo,
     ShapingTargetInfo,
+    TerminalInfo,
     TokenInfo,
     TopologyInfo,
     save_state,
@@ -90,7 +92,13 @@ def sample_state(workdir: Path) -> LabState:
         namespaces={
             "hub": NamespaceInfo(pid=99, parent=None, role="hub"),
             "hub-up": NamespaceInfo(pid=100, parent="hub", role="hub-up"),
+            "internet": NamespaceInfo(pid=109, parent="hub", role="internet"),
             "node-1": NamespaceInfo(pid=101, parent="hub", role="node"),
+            "node-2": NamespaceInfo(pid=102, parent="hub", role="node"),
+            "upstream-1": NamespaceInfo(pid=103, parent="hub-up", role="upstream"),
+            "upstream-2": NamespaceInfo(pid=104, parent="hub-up", role="upstream"),
+            "client-edge": NamespaceInfo(pid=105, parent="hub", role="client-edge"),
+            "client-1": NamespaceInfo(pid=106, parent="client-edge", role="client"),
         },
         processes={
             "fbcoord": ProcessInfo(pid=200, ns="fbcoord", log_path=str(workdir / "fbcoord.log"), order=1),
@@ -100,7 +108,15 @@ def sample_state(workdir: Path) -> LabState:
         proxies={
             "fbcoord": ProxyInfo("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
             "node-1": ProxyInfo("127.0.0.1", 18701, "node-1", "127.0.0.1", 8080),
-            "node-2": ProxyInfo("127.0.0.1", 18702, "node-2", "127.0.0.1", 8080),
+                "node-2": ProxyInfo("127.0.0.1", 18702, "node-2", "127.0.0.1", 8080),
+        },
+        clients={
+            "client-1": ClientInfo(identity_ip="198.51.100.10"),
+        },
+        terminals={
+            "client-1": TerminalInfo(host_port=18900, pid=301),
+            "upstream-1": TerminalInfo(host_port=18901, pid=302),
+            "upstream-2": TerminalInfo(host_port=18902, pid=303),
         },
         shaping=ShapingInfo(
             targets={
@@ -144,6 +160,8 @@ class WebAppTest(unittest.TestCase):
         payload = response.get_json()
         self.assertFalse(payload["active"])
         self.assertIn("error", payload)
+        self.assertEqual({}, payload["clients"])
+        self.assertEqual({}, payload["terminals"])
 
     def test_status_returns_active_summary_without_tokens(self) -> None:
         self.write_state(sample_state(self.workdir))
@@ -154,6 +172,10 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(payload["active"])
         self.assertNotIn("tokens", payload)
         self.assertIn("fbcoord", payload["service_links"])
+        self.assertNotIn("client-1", payload["service_links"])
+        self.assertEqual("198.51.100.10", payload["clients"]["client-1"]["identity_ip"])
+        self.assertEqual("http://127.0.0.1:18900", payload["terminals"]["client-1"]["url"])
+        self.assertTrue(payload["terminals"]["upstream-1"]["alive"])
         self.assertEqual("node-1", payload["shaping_targets"][0]["target"])
 
     def test_coordination_returns_partial_errors(self) -> None:

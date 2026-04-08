@@ -149,6 +149,10 @@ h1 {
   box-shadow: var(--shadow-hover);
 }
 
+.panel-section {
+  margin-top: 18px;
+}
+
 .panel-header {
   display: flex;
   justify-content: space-between;

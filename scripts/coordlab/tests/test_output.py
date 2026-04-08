@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.output import render_summary
-from lib.state import LabState, NamespaceInfo, ProcessInfo, ProxyInfo, TokenInfo, TopologyInfo
+from lib.state import ClientInfo, LabState, NamespaceInfo, ProcessInfo, ProxyInfo, TerminalInfo, TokenInfo, TopologyInfo
 
 
 class OutputSummaryTest(unittest.TestCase):
@@ -41,6 +41,13 @@ class OutputSummaryTest(unittest.TestCase):
                     target_port=8080,
                 ),
             },
+            clients={
+                "client-1": ClientInfo(identity_ip="198.51.100.10"),
+            },
+            terminals={
+                "client-1": TerminalInfo(host_port=18900, pid=401),
+                "upstream-1": TerminalInfo(host_port=18901, pid=402),
+            },
             tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
             topology=TopologyInfo(base_cidr="10.99.0.0/24"),
         )
@@ -52,6 +59,10 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:18701", summary)
         self.assertIn("/repo/.venv/bin/python", summary)
         self.assertIn("coordlab-proxy: alive", summary)
+        self.assertIn("client-1", summary)
+        self.assertIn("198.51.100.10", summary)
+        self.assertIn("http://127.0.0.1:18900", summary)
+        self.assertIn("http://127.0.0.1:18901", summary)
         self.assertIn(" web --workdir ", summary)
 
 

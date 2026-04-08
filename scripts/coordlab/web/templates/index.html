@@ -46,6 +46,10 @@
               <div id="process-list" class="list"></div>
             </div>
           </div>
+          <div class="panel-section">
+            <h3>Clients</h3>
+            <div id="client-list" class="list"></div>
+          </div>
         </article>
 
         <article class="panel">
@@ -63,7 +67,7 @@
         <article class="panel">
           <div class="panel-header">
             <h2>Network Topology</h2>
-            <span class="chip">fixed layout</span>
+            <span class="chip">fixed core + dynamic clients</span>
           </div>
           <svg class="topology" viewBox="0 0 960 360" role="img" aria-label="coordlab topology">
             <defs>
@@ -157,6 +161,11 @@
             <text x="662" y="286" class="caption-label">upstream-side netem on hub-up egress</text>
             <text x="496" y="324" class="caption-label">effective path = node-side(node) + upstream-side(upstream)</text>
           </svg>
+          <div class="panel-section">
+            <h3>Client Paths</h3>
+            <p class="subtle">Client namespaces extend the lab outside the fixed SVG. Their routed path is client -> client-edge -> internet -> hub.</p>
+            <div id="client-paths" class="list"></div>
+          </div>
         </article>
 
         <article class="panel">
@@ -188,6 +197,15 @@
           <div id="service-links" class="card-grid"></div>
         </article>
 
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Terminal Access</h2>
+          </div>
+          <div id="terminal-links" class="card-grid"></div>
+        </article>
+      </section>
+
+      <section class="grid">
         <article class="panel">
           <div class="panel-header">
             <h2>Log Viewer</h2>

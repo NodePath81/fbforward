@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.state import (
+    ClientInfo,
     LabState,
     LinkInfo,
     NamespaceInfo,
@@ -17,6 +18,7 @@ from lib.state import (
     ProxyInfo,
     ShapingInfo,
     ShapingTargetInfo,
+    TerminalInfo,
     TokenInfo,
     TopologyInfo,
     load_state,
@@ -46,6 +48,13 @@ class StateRoundTripTest(unittest.TestCase):
                     target_host="127.0.0.1",
                     target_port=8080,
                 ),
+            },
+            clients={
+                "client-1": ClientInfo(identity_ip="198.51.100.10"),
+            },
+            terminals={
+                "client-1": TerminalInfo(host_port=18900, pid=404),
+                "upstream-1": TerminalInfo(host_port=18901, pid=405),
             },
             shaping=ShapingInfo(
                 targets={
@@ -88,6 +97,8 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.namespaces["hub"].pid, loaded.namespaces["hub"].pid)
         self.assertEqual(state.processes["fbforward-node-1"].order, loaded.processes["fbforward-node-1"].order)
         self.assertEqual(state.proxies["node-1"].target_port, loaded.proxies["node-1"].target_port)
+        self.assertEqual(state.clients["client-1"].identity_ip, loaded.clients["client-1"].identity_ip)
+        self.assertEqual(state.terminals["client-1"].host_port, loaded.terminals["client-1"].host_port)
         self.assertEqual(state.shaping.targets["node-1"].router_ns, loaded.shaping.targets["node-1"].router_ns)
         self.assertEqual(state.shaping.targets["upstream-1"].device, loaded.shaping.targets["upstream-1"].device)
         self.assertEqual(state.tokens.coord_token, loaded.tokens.coord_token)

@@ -13,7 +13,9 @@ coordlab provides a reusable local lab that can:
 - start a local `fbcoord` instance with `wrangler dev`
 - start two real `fbforward` nodes against that coordinator
 - start two real `fbmeasure` upstreams
+- start zero or more client namespaces for manual end-to-end traffic generation
 - expose `fbcoord` and both node control planes back to the host
+- expose browser terminals for client and upstream namespaces
 - apply live delay and packet-loss shaping on both node-side and upstream-side links
 - disconnect and reconnect individual node-side and upstream-side links
 - expose a browser dashboard for lab status, coordination state, shaping, and log viewing
@@ -59,7 +61,9 @@ The main entrypoint is:
 coordlab stores runtime artifacts under a work directory, defaulting to `/tmp/coordlab`. A typical run uses a dedicated directory, for example:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5 \
+  --client client-1=198.51.100.10 \
+  --client client-2=203.0.113.20
 ```
 
 The work directory contains:
@@ -73,7 +77,7 @@ The work directory contains:
 
 ## 3. Topology and services
 
-coordlab builds a fixed namespace topology:
+coordlab builds a fixed service-side topology with an optional client-side extension:
 
 - `hub`
 - `hub-up`
@@ -83,8 +87,10 @@ coordlab builds a fixed namespace topology:
 - `node-2`
 - `upstream-1`
 - `upstream-2`
+- `client-edge` when any client is configured
+- one or more `client-*` namespaces when requested by CLI input
 
-The topology is a two-hub layout joined by an `internet` transit namespace. Node-side traffic stays on `hub`, upstream-side traffic stays on `hub-up`, node-side degradation is applied on `hub`'s node-facing veths, and upstream-side degradation is applied on `hub-up`'s upstream-facing veths.
+The topology is a two-hub layout joined by an `internet` transit namespace, with client namespaces attached through `client-edge` when enabled. Node-side traffic stays on `hub`, upstream-side traffic stays on `hub-up`, and client traffic enters through `client-edge` before crossing `internet` toward `hub`. Node-side degradation is applied on `hub`'s node-facing veths, and upstream-side degradation is applied on `hub-up`'s upstream-facing veths.
 
 ### Managed processes
 
@@ -103,6 +109,7 @@ Host-facing access points:
 - `http://127.0.0.1:18701` — node-1 control/UI/metrics
 - `http://127.0.0.1:18702` — node-2 control/UI/metrics
 - `http://127.0.0.1:18800` — coordlab dashboard when `web` is running
+- `http://127.0.0.1:18900+` — ttyd terminals for configured client namespaces and upstream namespaces
 
 ---
 
@@ -137,6 +144,8 @@ Host-facing access points:
 - namespace PIDs and roles
 - managed process PIDs and log paths
 - host proxy mappings
+- configured client namespaces and client identity IPs
+- terminal endpoints for client and upstream namespaces
 - shaping topology (target name, router namespace, and shaped device for both shaping axes)
 - generated coordination and control tokens
 - topology link metadata
@@ -176,6 +185,7 @@ The dashboard does not own any background state. It reads the current `state.jso
 - Network topology
 - Traffic shaping
 - Service links
+- Terminal access
 - Log viewer
 
 Disconnect is modeled separately from shaping:
@@ -184,7 +194,7 @@ Disconnect is modeled separately from shaping:
 - disconnect is a hard partition using interface admin down/up
 - shaping values remain visible while disconnected and are restored when the link is reconnected
 
-Terminal links are intentionally out of scope for Phase 5 and remain part of the planned Phase 6 ttyd work.
+After the lab has been started, the dashboard is the primary operator interface for normal manual testing. The CLI remains responsible for lifecycle commands such as `up`, `down`, and `web`.
 
 ---
 
@@ -193,14 +203,12 @@ Terminal links are intentionally out of scope for Phase 5 and remain part of the
 Typical manual smoke:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5 \
+  --client client-1=198.51.100.10 \
+  --client client-2=203.0.113.20
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # open http://127.0.0.1:18800
-.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target node-1 --delay-ms 200
-.venv/bin/python scripts/coordlab/coordlab.py disconnect --workdir /tmp/coordlab-phase5 --target upstream-1
-.venv/bin/python scripts/coordlab/coordlab.py reconnect --workdir /tmp/coordlab-phase5 --target upstream-1
-.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target upstream-1 --delay-ms 200
-.venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all --workdir /tmp/coordlab-phase5
+# use the dashboard for shaping, link-state control, service links, and terminal access
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
 
@@ -216,9 +224,9 @@ Developer-side validation:
 ## 7. Known limitations
 
 - coordlab is Linux-only and depends on unprivileged user namespaces being enabled.
-- The topology is fixed at two nodes and two upstreams.
+- The service-side topology remains fixed at two nodes and two upstreams; this phase adds only the client-side extension.
 - The shaping model provides two axes only: node-side on `hub` and upstream-side on `hub-up`. It does not provide a full independent `(node, upstream)` matrix.
 - Disconnect controls follow the same two-axis target model and preserve any shaping already configured on that target.
 - The dashboard is a local operator tool with no auth; it should remain bound to `127.0.0.1`.
-- Terminal integration is not implemented yet.
+- Client-side shaping is not implemented in this phase.
 - There is a known product issue in `fbforward`: induced packet loss can trigger a UDP measurement crash. For Phase 5 validation, use delay-based degradation as the primary smoke path.

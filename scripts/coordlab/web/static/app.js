@@ -140,6 +140,48 @@ function renderServiceLinks(serviceLinks) {
   `).join("");
 }
 
+function renderClients(clients) {
+  const entries = Object.entries(clients || {});
+  renderList("#client-list", entries, ([name, info]) => `
+    <div class="list-row">
+      <div>
+        <strong>${name}</strong>
+        <span class="subtle">client namespace</span>
+      </div>
+      <div class="subtle">${info.identity_ip}</div>
+    </div>
+  `);
+}
+
+function renderClientPaths(clients) {
+  const entries = Object.entries(clients || {});
+  renderList("#client-paths", entries, ([name, info]) => `
+    <div class="list-row">
+      <div>
+        <strong>${name}</strong>
+        <span class="subtle">${info.identity_ip}</span>
+      </div>
+      <div class="subtle">client-edge -> internet -> hub</div>
+    </div>
+  `);
+}
+
+function renderTerminalLinks(terminals) {
+  const container = document.querySelector("#terminal-links");
+  const entries = Object.entries(terminals || {});
+  if (!entries.length) {
+    container.innerHTML = `<p class="subtle">No interactive terminals available.</p>`;
+    return;
+  }
+  container.innerHTML = entries.map(([name, info]) => `
+    <a class="service-card" href="${info.url}" target="_blank" rel="noreferrer">
+      <span class="service-name">${name}</span>
+      <span class="service-url">${info.url}</span>
+      <span class="service-url">${info.alive ? "alive" : "dead"} • pid ${info.pid}</span>
+    </a>
+  `).join("");
+}
+
 function renderCoordination(payload) {
   const errors = document.querySelector("#coord-errors");
   const fbcoordCard = document.querySelector("#fbcoord-card");
@@ -280,7 +322,10 @@ async function loadStatus() {
       <div>${statusBadge(entry.alive)}</div>
     </div>
   `);
+  renderClients(payload.clients || {});
+  renderClientPaths(payload.clients || {});
   renderServiceLinks(payload.service_links || {});
+  renderTerminalLinks(payload.terminals || {});
   state.processes = payload.processes || [];
   syncLogProcessOptions(state.processes);
   return payload;

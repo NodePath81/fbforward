@@ -47,6 +47,11 @@ class TerminalInfo:
 
 
 @dataclass(slots=True)
+class ClientInfo:
+    identity_ip: str
+
+
+@dataclass(slots=True)
 class ShapingTargetInfo:
     router_ns: str
     tag: str
@@ -80,6 +85,7 @@ class LabState:
     namespaces: dict[str, NamespaceInfo] = field(default_factory=dict)
     processes: dict[str, ProcessInfo] = field(default_factory=dict)
     proxies: dict[str, ProxyInfo] = field(default_factory=dict)
+    clients: dict[str, ClientInfo] = field(default_factory=dict)
     terminals: dict[str, TerminalInfo] = field(default_factory=dict)
     shaping: ShapingInfo = field(default_factory=ShapingInfo)
     tokens: TokenInfo = field(default_factory=TokenInfo)
@@ -101,6 +107,10 @@ class LabState:
         proxies = {
             name: ProxyInfo(**info)
             for name, info in data.get("proxies", {}).items()
+        }
+        clients = {
+            name: ClientInfo(**info)
+            for name, info in data.get("clients", {}).items()
         }
         terminals = {
             name: TerminalInfo(**info)
@@ -127,6 +137,7 @@ class LabState:
             namespaces=namespaces,
             processes=processes,
             proxies=proxies,
+            clients=clients,
             terminals=terminals,
             shaping=shaping,
             tokens=tokens,

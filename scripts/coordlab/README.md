@@ -14,7 +14,9 @@ python3 -m venv .venv
 ## Phase 5 usage
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5 \
+  --client client-1=198.51.100.10 \
+  --client client-2=203.0.113.20
 .venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
@@ -29,6 +31,12 @@ Host proxy ports:
 Dashboard:
 
 - `127.0.0.1:18800` -> coordlab web control UI
+
+Terminal ports:
+
+- `127.0.0.1:18900+` -> ttyd browser terminals for configured clients and upstream namespaces
+
+After `up` and `web`, normal manual testing is expected to happen primarily from the web page. The CLI remains responsible for lifecycle commands, while the dashboard provides the routine test-session controls.
 
 Phase 1 network-only commands are still available:
 
@@ -59,10 +67,12 @@ Link-state commands:
 The web dashboard mirrors the same controls:
 
 - lab and process status
+- client namespace status and client identity IPs
 - live coordination state from `fbcoord` and both nodes
 - node-side and upstream-side delay/loss controls and presets
 - per-target disconnect/reconnect controls inside the same cards
 - direct links to the `fbcoord` admin UI and both node UIs
+- direct terminal links for configured clients and upstream namespaces
 - on-demand log tailing for any tracked process
 
 Control model:
