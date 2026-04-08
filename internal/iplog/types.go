@@ -5,9 +5,6 @@ import "time"
 const (
 	DefaultQueryLimit = 200
 	MaxQueryLimit     = 1000
-	DefaultBatchSize  = 100
-	DefaultFlushAfter = 5 * time.Second
-	DefaultPruneEvery = 1 * time.Hour
 )
 
 type CloseEvent struct {

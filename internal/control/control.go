@@ -881,6 +881,9 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"retention":        cfg.IPLog.Retention.Duration().String(),
 			"geo_queue_size":   cfg.IPLog.GeoQueueSize,
 			"write_queue_size": cfg.IPLog.WriteQueueSize,
+			"batch_size":       cfg.IPLog.BatchSize,
+			"flush_interval":   cfg.IPLog.FlushInterval.Duration().String(),
+			"prune_interval":   cfg.IPLog.PruneInterval.Duration().String(),
 		},
 		"firewall": map[string]interface{}{
 			"enabled": cfg.Firewall.Enabled,

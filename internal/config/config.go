@@ -72,6 +72,9 @@ const (
 	defaultGeoIPRefreshInterval  = 24 * time.Hour
 	defaultIPLogGeoQueueSize     = 4096
 	defaultIPLogWriteQueueSize   = 4096
+	defaultIPLogBatchSize        = 100
+	defaultIPLogFlushInterval    = 5 * time.Second
+	defaultIPLogPruneInterval    = 1 * time.Hour
 
 	defaultMeasurePort    = 9876
 	DefaultShapingIFB     = "ifb0"
@@ -356,6 +359,9 @@ type IPLogConfig struct {
 	Retention      Duration `yaml:"retention"`
 	GeoQueueSize   int      `yaml:"geo_queue_size"`
 	WriteQueueSize int      `yaml:"write_queue_size"`
+	BatchSize      int      `yaml:"batch_size"`
+	FlushInterval  Duration `yaml:"flush_interval"`
+	PruneInterval  Duration `yaml:"prune_interval"`
 }
 
 type FirewallConfig struct {
@@ -682,6 +688,15 @@ func (c *Config) setDefaults() {
 	}
 	if c.IPLog.WriteQueueSize == 0 {
 		c.IPLog.WriteQueueSize = defaultIPLogWriteQueueSize
+	}
+	if c.IPLog.BatchSize == 0 {
+		c.IPLog.BatchSize = defaultIPLogBatchSize
+	}
+	if c.IPLog.FlushInterval == 0 {
+		c.IPLog.FlushInterval = Duration(defaultIPLogFlushInterval)
+	}
+	if c.IPLog.PruneInterval == 0 {
+		c.IPLog.PruneInterval = Duration(defaultIPLogPruneInterval)
 	}
 	if c.Firewall.Default == "" {
 		c.Firewall.Default = "allow"
@@ -1014,8 +1029,17 @@ func (c *Config) validate() error {
 		if c.IPLog.WriteQueueSize <= 0 {
 			return errors.New("ip_log.write_queue_size must be > 0")
 		}
+		if c.IPLog.BatchSize <= 0 {
+			return errors.New("ip_log.batch_size must be > 0")
+		}
+		if c.IPLog.FlushInterval.Duration() <= 0 {
+			return errors.New("ip_log.flush_interval must be > 0")
+		}
 		if c.IPLog.Retention.Duration() < 0 {
 			return errors.New("ip_log.retention must be >= 0")
+		}
+		if c.IPLog.Retention.Duration() > 0 && c.IPLog.PruneInterval.Duration() <= 0 {
+			return errors.New("ip_log.prune_interval must be > 0 when retention is enabled")
 		}
 	}
 

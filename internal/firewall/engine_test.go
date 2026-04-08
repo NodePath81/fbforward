@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/NodePath81/fbforward/internal/config"
@@ -105,5 +106,64 @@ func TestCountryRuleMatches(t *testing.T) {
 	}
 	if !engine.Check(net.ParseIP("8.8.8.8")) {
 		t.Fatalf("expected country rule match")
+	}
+}
+
+func TestCountryRuleSkippedWhenDBUnavailable(t *testing.T) {
+	engine, err := NewEngine(config.FirewallConfig{
+		Enabled: true,
+		Default: "allow",
+		Rules: []config.FirewallRule{{
+			Action:  "deny",
+			Country: "US",
+		}},
+	}, fakeLookupProvider{
+		result:       geoip.LookupResult{Country: "US"},
+		availability: geoip.Availability{CountryAvailable: false},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	if !engine.Check(net.ParseIP("8.8.8.8")) {
+		t.Fatalf("expected country rule to fail open when DB unavailable")
+	}
+}
+
+func TestIPv6CIDRRuleMatches(t *testing.T) {
+	engine, err := NewEngine(config.FirewallConfig{
+		Enabled: true,
+		Default: "allow",
+		Rules: []config.FirewallRule{{
+			Action: "deny",
+			CIDR:   "2001:db8::/32",
+		}},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	if engine.Check(net.ParseIP("2001:db8::1")) {
+		t.Fatalf("expected IPv6 CIDR deny")
+	}
+}
+
+func TestDenyMetricUsesRuleLabels(t *testing.T) {
+	m := metrics.NewMetrics(nil)
+	engine, err := NewEngine(config.FirewallConfig{
+		Enabled: true,
+		Default: "allow",
+		Rules: []config.FirewallRule{{
+			Action: "deny",
+			CIDR:   "10.0.0.0/8",
+		}},
+	}, nil, m, nil)
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+	if engine.Check(net.ParseIP("10.1.2.3")) {
+		t.Fatalf("expected deny")
+	}
+	rendered := m.Render()
+	if !strings.Contains(rendered, `fbforward_firewall_denied_total{rule_type="cidr",rule_value="10.0.0.0/8"} 1`) {
+		t.Fatalf("expected labeled firewall deny metric, got:\n%s", rendered)
 	}
 }

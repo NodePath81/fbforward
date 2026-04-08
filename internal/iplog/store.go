@@ -128,12 +128,15 @@ func (s *Store) Prune(olderThan time.Time) (int64, error) {
 	return result.RowsAffected()
 }
 
-func (s *Store) StartRetention(ctx context.Context, retention time.Duration) {
+func (s *Store) StartRetention(ctx context.Context, retention, pruneEvery time.Duration) {
 	if s == nil || retention <= 0 {
 		return
 	}
+	if pruneEvery <= 0 {
+		pruneEvery = time.Hour
+	}
 	_, _ = s.Prune(time.Now().Add(-retention))
-	ticker := time.NewTicker(DefaultPruneEvery)
+	ticker := time.NewTicker(pruneEvery)
 	go func() {
 		defer ticker.Stop()
 		for {

@@ -33,6 +33,14 @@ type Pipeline struct {
 }
 
 func NewPipeline(cfg config.IPLogConfig, lookup geoip.LookupProvider, store batchWriter, metrics *metrics.Metrics, logger util.Logger) *Pipeline {
+	batchSize := cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	flushInterval := cfg.FlushInterval.Duration()
+	if flushInterval <= 0 {
+		flushInterval = 5 * time.Second
+	}
 	return &Pipeline{
 		geoCh:         make(chan CloseEvent, cfg.GeoQueueSize),
 		writeCh:       make(chan EnrichedRecord, cfg.WriteQueueSize),
@@ -40,8 +48,8 @@ func NewPipeline(cfg config.IPLogConfig, lookup geoip.LookupProvider, store batc
 		store:         store,
 		metrics:       metrics,
 		logger:        util.ComponentLogger(logger, util.CompIPLog),
-		batchSize:     DefaultBatchSize,
-		flushInterval: DefaultFlushAfter,
+		batchSize:     batchSize,
+		flushInterval: flushInterval,
 	}
 }
 

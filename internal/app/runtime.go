@@ -105,7 +105,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 			return nil, err
 		}
 		rt.iplogStore = store
-		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration())
+		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration(), cfg.IPLog.PruneInterval.Duration())
 		rt.iplogPipeline = iplog.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metrics, logger)
 	}
 	if cfg.Firewall.Enabled {

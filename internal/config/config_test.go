@@ -112,6 +112,77 @@ func TestIPLogConfigDefaultsQueueSizes(t *testing.T) {
 	if cfg.IPLog.WriteQueueSize != defaultIPLogWriteQueueSize {
 		t.Fatalf("expected default write queue size %d, got %d", defaultIPLogWriteQueueSize, cfg.IPLog.WriteQueueSize)
 	}
+	if cfg.IPLog.BatchSize != defaultIPLogBatchSize {
+		t.Fatalf("expected default batch size %d, got %d", defaultIPLogBatchSize, cfg.IPLog.BatchSize)
+	}
+	if got := cfg.IPLog.FlushInterval.Duration(); got != defaultIPLogFlushInterval {
+		t.Fatalf("expected default flush interval %s, got %s", defaultIPLogFlushInterval, got)
+	}
+	if got := cfg.IPLog.PruneInterval.Duration(); got != defaultIPLogPruneInterval {
+		t.Fatalf("expected default prune interval %s, got %s", defaultIPLogPruneInterval, got)
+	}
+}
+
+func TestIPLogConfigRejectsInvalidTuning(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{
+			name: "batch size",
+			mut: func(cfg *Config) {
+				cfg.IPLog.BatchSize = -1
+			},
+			want: "ip_log.batch_size must be > 0",
+		},
+		{
+			name: "flush interval",
+			mut: func(cfg *Config) {
+				cfg.IPLog.FlushInterval = Duration(-time.Second)
+			},
+			want: "ip_log.flush_interval must be > 0",
+		},
+		{
+			name: "prune interval",
+			mut: func(cfg *Config) {
+				cfg.IPLog.Retention = Duration(24 * time.Hour)
+				cfg.IPLog.PruneInterval = Duration(0)
+			},
+			want: "ip_log.prune_interval must be > 0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.IPLog.Enabled = true
+			cfg.IPLog.DBPath = "/tmp/iplog.sqlite"
+			cfg.setDefaults()
+			tc.mut(&cfg)
+			err := cfg.validate()
+			if err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q in error, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestGeoIPConfigRejectsPathWithoutURL(t *testing.T) {
+	cfg := testConfig()
+	cfg.GeoIP.Enabled = true
+	cfg.GeoIP.CountryDBPath = "/tmp/Country-without-asn.mmdb"
+	cfg.setDefaults()
+	err := cfg.validate()
+	if err == nil {
+		t.Fatalf("expected incomplete geoip pair to fail")
+	}
+	if !strings.Contains(err.Error(), "geoip.country_db requires both url and path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestFirewallRuleRequiresExactlyOneMatcher(t *testing.T) {
@@ -145,6 +216,28 @@ func TestFirewallCountryNormalizedToUppercase(t *testing.T) {
 	}
 	if got := cfg.Firewall.Rules[0].Country; got != "US" {
 		t.Fatalf("expected country to normalize to US, got %q", got)
+	}
+}
+
+func TestFirewallRejectsInvalidDefaultAndAction(t *testing.T) {
+	cfg := testConfig()
+	cfg.Firewall.Enabled = true
+	cfg.Firewall.Default = "maybe"
+	cfg.Firewall.Rules = []FirewallRule{{Action: "block", CIDR: "10.0.0.0/8"}}
+	cfg.setDefaults()
+
+	err := cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), "firewall.default must be allow or deny") {
+		t.Fatalf("expected invalid firewall default error, got %v", err)
+	}
+
+	cfg = testConfig()
+	cfg.Firewall.Enabled = true
+	cfg.Firewall.Rules = []FirewallRule{{Action: "block", CIDR: "10.0.0.0/8"}}
+	cfg.setDefaults()
+	err = cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), "firewall.rules[0].action must be allow or deny") {
+		t.Fatalf("expected invalid firewall action error, got %v", err)
 	}
 }
 

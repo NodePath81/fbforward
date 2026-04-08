@@ -183,12 +183,23 @@ control:
   webui: {...}                      # Web UI settings
   metrics: {...}                    # Prometheus metrics settings
 
+geoip:
+  enabled: false                    # Optional GeoIP database management
+
+ip_log:
+  enabled: false                    # Optional SQLite-backed IP log
+
+firewall:
+  enabled: false                    # Optional CIDR / ASN / country firewall
+
 shaping:
   enabled: false                    # Enable Linux tc traffic shaping
   interface: "eth0"                 # Physical interface
   ifb_device: "ifb0"                # IFB device for ingress
   aggregate_limit: "1g"             # Total bandwidth cap
 ```
+
+When `ip_log.enabled` is turned on, `fbforward` uses the CGO-backed `github.com/mattn/go-sqlite3` driver. Builds that include IP logging therefore require a working C toolchain on the target build host.
 
 See [Section 4](configuration-reference.md) for complete field documentation.
 

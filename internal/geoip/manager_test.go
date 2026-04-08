@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,5 +107,141 @@ func TestRefreshSuccessSwapsReader(t *testing.T) {
 	}
 	if !old.closed {
 		t.Fatalf("expected old reader to be closed")
+	}
+}
+
+func TestRefreshCanPartiallySucceed(t *testing.T) {
+	cfg := config.GeoIPConfig{
+		Enabled:         true,
+		ASNDBURL:        "https://example.test/GeoLite2-ASN.mmdb",
+		ASNDBPath:       filepath.Join(t.TempDir(), "GeoLite2-ASN.mmdb"),
+		CountryDBURL:    "https://example.test/Country.mmdb",
+		CountryDBPath:   filepath.Join(t.TempDir(), "Country.mmdb"),
+		RefreshInterval: config.Duration(24 * time.Hour),
+	}
+	mgr, err := NewManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+	oldASN := &fakeASNReader{asn: 1, asOrg: "old-asn"}
+	oldCountry := &fakeCountryReader{country: "CA"}
+	newCountry := &fakeCountryReader{country: "US"}
+	mgr.readers.Store(&readerSet{asn: oldASN, country: oldCountry})
+	mgr.download = func(_ context.Context, url, _ string) error {
+		if url == cfg.ASNDBURL {
+			return errors.New("asn download failed")
+		}
+		return nil
+	}
+	mgr.openCountry = func(string) (countryReader, error) { return newCountry, nil }
+
+	mgr.refreshConfigured(context.Background())
+
+	result := mgr.Lookup(net.ParseIP("1.1.1.1"))
+	if result.ASN != 1 || result.Country != "US" {
+		t.Fatalf("expected mixed old/new readers after partial success, got %+v", result)
+	}
+	if !oldCountry.closed {
+		t.Fatalf("expected old country reader to be closed after swap")
+	}
+	if oldASN.closed {
+		t.Fatalf("did not expect old ASN reader to be closed when refresh failed")
+	}
+}
+
+func TestLookupDuringRefreshSeesConsistentValues(t *testing.T) {
+	cfg := config.GeoIPConfig{
+		Enabled:         true,
+		ASNDBURL:        "https://example.test/GeoLite2-ASN.mmdb",
+		ASNDBPath:       filepath.Join(t.TempDir(), "GeoLite2-ASN.mmdb"),
+		RefreshInterval: config.Duration(24 * time.Hour),
+	}
+	mgr, err := NewManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+	old := &fakeASNReader{asn: 1, asOrg: "old"}
+	newReader := &fakeASNReader{asn: 2, asOrg: "new"}
+	mgr.readers.Store(&readerSet{asn: old})
+	mgr.download = func(context.Context, string, string) error { return nil }
+	mgr.openASN = func(string) (asnReader, error) {
+		time.Sleep(10 * time.Millisecond)
+		return newReader, nil
+	}
+
+	results := make(chan int, 64)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				asn := mgr.Lookup(net.ParseIP("1.1.1.1")).ASN
+				select {
+				case results <- asn:
+				default:
+				}
+			}
+		}
+	}()
+
+	mgr.refreshConfigured(context.Background())
+	close(done)
+	wg.Wait()
+	close(results)
+
+	for asn := range results {
+		if asn != 1 && asn != 2 {
+			t.Fatalf("lookup observed inconsistent ASN value %d", asn)
+		}
+	}
+}
+
+func TestCloseIsIdempotent(t *testing.T) {
+	mgr, err := NewManager(config.GeoIPConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+	oldASN := &fakeASNReader{asn: 1}
+	oldCountry := &fakeCountryReader{country: "US"}
+	mgr.readers.Store(&readerSet{asn: oldASN, country: oldCountry})
+
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("first Close error: %v", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("second Close error: %v", err)
+	}
+	if !oldASN.closed || !oldCountry.closed {
+		t.Fatalf("expected readers to be closed on Close")
+	}
+}
+
+func TestLoadLocalReadersWithSingleConfiguredDB(t *testing.T) {
+	mgr, err := NewManager(config.GeoIPConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "Country.mmdb")
+	if err := os.WriteFile(path, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+	mgr.cfg.CountryDBPath = path
+	mgr.openCountry = func(string) (countryReader, error) {
+		return &fakeCountryReader{country: "US"}, nil
+	}
+
+	mgr.loadLocalReaders()
+
+	availability := mgr.Availability()
+	if availability.ASNDBAvailable {
+		t.Fatalf("did not expect ASN DB availability")
+	}
+	if !availability.CountryAvailable {
+		t.Fatalf("expected country DB availability")
 	}
 }

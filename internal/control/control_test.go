@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/iplog"
@@ -135,5 +136,60 @@ func TestQueryIPLogReturnsResult(t *testing.T) {
 	}
 	if got := int(resultMap["total"].(float64)); got != 1 {
 		t.Fatalf("expected total=1, got %d", got)
+	}
+}
+
+func TestQueryIPLogRejectsMalformedAndInvalidPaging(t *testing.T) {
+	server := newTestControlServer(t)
+	store, err := iplog.NewStore(filepath.Join(t.TempDir(), "iplog.sqlite"))
+	if err != nil {
+		t.Fatalf("NewStore error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	server.SetIPLogStore(store)
+
+	malformed := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewBufferString(`{"method":"QueryIPLog","params":{"limit":"bad"}}`))
+	malformed.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	malformedRec := httptest.NewRecorder()
+	server.handleRPC(malformedRec, malformed)
+	if malformedRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed params, got %d", malformedRec.Code)
+	}
+
+	invalidPaging := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "QueryIPLog", map[string]any{
+		"limit":  1001,
+		"offset": -1,
+	})))
+	invalidPaging.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	invalidRec := httptest.NewRecorder()
+	server.handleRPC(invalidRec, invalidPaging)
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid paging, got %d", invalidRec.Code)
+	}
+}
+
+func TestRuntimeConfigIncludesIPLogTuning(t *testing.T) {
+	server := newTestControlServer(t)
+	server.fullCfg.IPLog = config.IPLogConfig{
+		Enabled:        true,
+		DBPath:         "/tmp/iplog.sqlite",
+		Retention:      config.Duration(24 * time.Hour),
+		GeoQueueSize:   64,
+		WriteQueueSize: 32,
+		BatchSize:      50,
+		FlushInterval:  config.Duration(7 * time.Second),
+		PruneInterval:  config.Duration(2 * time.Hour),
+	}
+
+	cfg := server.getRuntimeConfig()
+	iplogCfg := cfg["ip_log"].(map[string]interface{})
+	if got := iplogCfg["batch_size"]; got != 50 {
+		t.Fatalf("expected batch_size in runtime config, got %#v", got)
+	}
+	if got := iplogCfg["flush_interval"]; got != "7s" {
+		t.Fatalf("expected flush_interval in runtime config, got %#v", got)
+	}
+	if got := iplogCfg["prune_interval"]; got != "2h0m0s" {
+		t.Fatalf("expected prune_interval in runtime config, got %#v", got)
 	}
 }
