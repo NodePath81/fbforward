@@ -48,7 +48,7 @@ FBFORWARD_BIN = REPO_ROOT / "build/bin/fbforward"
 FBMEASURE_BIN = REPO_ROOT / "build/bin/fbmeasure"
 FBCOORD_BUILD_SENTINEL = REPO_ROOT / "fbcoord/ui/dist/index.html"
 VENV_PYTHON = REPO_ROOT / ".venv/bin/python"
-REQUIREMENTS_FILE = REPO_ROOT / "scripts/coordlab/requirements.txt"
+REQUIREMENTS_FILE = REPO_ROOT / "test/coordlab/requirements.txt"
 CONFIGS_DIRNAME = "configs"
 LOGS_DIRNAME = "logs"
 RUNTIME_DIRNAME = coordconfig.FBCOORD_RUNTIME_DIR
@@ -118,7 +118,7 @@ def require_runtime_environment() -> None:
             f"actual:   {actual}\n"
             "bootstrap:\n"
             "  python3 -m venv .venv\n"
-            "  .venv/bin/pip install -r scripts/coordlab/requirements.txt"
+            "  .venv/bin/pip install -r test/coordlab/requirements.txt"
         )
 
 
@@ -128,14 +128,14 @@ def require_flask_environment() -> None:
             "coordlab web requires flask in the repo venv.\n"
             "bootstrap:\n"
             "  python3 -m venv .venv\n"
-            "  .venv/bin/pip install -r scripts/coordlab/requirements.txt"
+            "  .venv/bin/pip install -r test/coordlab/requirements.txt"
         )
     if importlib.util.find_spec("httpx") is None:
         raise RuntimeError(
             "coordlab requires httpx in the repo venv.\n"
             "bootstrap:\n"
             "  python3 -m venv .venv\n"
-            "  .venv/bin/pip install -r scripts/coordlab/requirements.txt"
+            "  .venv/bin/pip install -r test/coordlab/requirements.txt"
         )
 
 

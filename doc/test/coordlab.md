@@ -1,8 +1,8 @@
 # coordlab manual test framework
 
-This document describes `coordlab`, the Python-based manual testing environment for `fbcoord` and coordinated `fbforward` nodes.
+This document describes `coordlab`, the retained Python-based manual testing environment for `fbcoord` and coordinated `fbforward` nodes.
 
-coordlab is separate from the Go scenario harness in `test/harness/`. It is intended for interactive operator and developer testing on one Linux host, with a browser-accessible dashboard and explicit control over node-side and upstream-side degradation.
+coordlab is intended for interactive operator and developer testing on one Linux host, with a browser-accessible dashboard and explicit control over node-side and upstream-side degradation.
 
 ---
 
@@ -30,20 +30,20 @@ coordlab runs entirely from the repo-root Python venv:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r scripts/coordlab/requirements.txt
+.venv/bin/pip install -r test/coordlab/requirements.txt
 ```
 
 The main entrypoint is:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py
+.venv/bin/python test/coordlab/coordlab.py
 ```
 
 ### Host prerequisites
 
 coordlab is intended for one Linux development host and expects the same baseline environment as the implementation:
 
-- repo-root Python venv created from `scripts/coordlab/requirements.txt`
+- repo-root Python venv created from `test/coordlab/requirements.txt`
 - unprivileged user namespaces enabled
 - `unshare`, `nsenter`, `ip`, `sysctl`, and `ping` for namespace setup
 - `ttyd` for browser terminals
@@ -58,7 +58,7 @@ If `up` is run without `--skip-build`, coordlab rebuilds `fbforward`, `fbmeasure
 All operator-facing commands use the same form:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py <subcommand> [options]
+.venv/bin/python test/coordlab/coordlab.py <subcommand> [options]
 ```
 
 Common behavior:
@@ -105,7 +105,7 @@ Both `up` and `net-up` accept repeatable `--client NAME=IP` arguments. Each clie
 Example:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up \
+.venv/bin/python test/coordlab/coordlab.py up \
   --workdir /tmp/coordlab-phase5 \
   --client client-1=198.51.100.10 \
   --client client-2=203.0.113.20
@@ -118,7 +118,7 @@ Example:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up [--workdir PATH] [--skip-build] [--client NAME=IP ...]
+.venv/bin/python test/coordlab/coordlab.py up [--workdir PATH] [--skip-build] [--client NAME=IP ...]
 ```
 
 What `up` does:
@@ -143,8 +143,8 @@ Important notes:
 Typical usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5 --skip-build
+.venv/bin/python test/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5 --skip-build
 ```
 
 #### `down`
@@ -152,7 +152,7 @@ Typical usage:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py down [--workdir PATH]
+.venv/bin/python test/coordlab/coordlab.py down [--workdir PATH]
 ```
 
 `down` stops the proxy daemon, ttyd, `fbcoord`, `fbforward`, `fbmeasure`, and finally the namespace tree. It then marks the saved state inactive.
@@ -162,7 +162,7 @@ Usage:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py status [--workdir PATH] [--json]
+.venv/bin/python test/coordlab/coordlab.py status [--workdir PATH] [--json]
 ```
 
 `status` renders the saved Phase 5 view of the lab:
@@ -183,7 +183,7 @@ With `--json`, `status` emits the same derived payload shape used by `GET /api/s
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py add-client [--workdir PATH] --client NAME=IP [--json]
+.venv/bin/python test/coordlab/coordlab.py add-client [--workdir PATH] --client NAME=IP [--json]
 ```
 
 `add-client` uses the same validation and runtime path as the web dashboard:
@@ -198,7 +198,7 @@ By default it prints the updated human-readable status. With `--json`, it emits 
 Example:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py add-client \
+.venv/bin/python test/coordlab/coordlab.py add-client \
   --workdir /tmp/coordlab-phase5 \
   --client client-3=203.0.113.30
 ```
@@ -208,7 +208,7 @@ Example:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py remove-client [--workdir PATH] --name NAME [--json]
+.venv/bin/python test/coordlab/coordlab.py remove-client [--workdir PATH] --name NAME [--json]
 ```
 
 `remove-client` removes one live client namespace, stops its ttyd terminal, and updates the saved state. It also uses the shared workdir mutation lock, so concurrent CLI or web client mutations fail fast instead of waiting.
@@ -218,7 +218,7 @@ By default it prints the updated human-readable status. With `--json`, it emits 
 Example:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
+.venv/bin/python test/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
 ```
 
 #### `web`
@@ -226,7 +226,7 @@ Example:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py web [--workdir PATH] [--host HOST] [--port PORT]
+.venv/bin/python test/coordlab/coordlab.py web [--workdir PATH] [--host HOST] [--port PORT]
 ```
 
 Default host/port are `127.0.0.1:18800`. `web` does not start the lab by itself; it serves the dashboard for the state and live services already associated with the selected `--workdir`.
@@ -234,8 +234,8 @@ Default host/port are `127.0.0.1:18800`. `web` does not start the lab by itself;
 Examples:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5 --host 127.0.0.1 --port 18880
+.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5 --host 127.0.0.1 --port 18880
 ```
 
 #### `exec`
@@ -243,7 +243,7 @@ Examples:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py exec [--workdir PATH] --ns NAMESPACE [--json] -- COMMAND [ARGS...]
+.venv/bin/python test/coordlab/coordlab.py exec [--workdir PATH] --ns NAMESPACE [--json] -- COMMAND [ARGS...]
 ```
 
 `exec` runs one command inside a saved namespace using `nsenter --preserve-credentials --keep-caps -t PID -U -n -- ...`.
@@ -263,8 +263,8 @@ Default behavior:
 Examples:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ping -c 1 10.0.0.2
-.venv/bin/python scripts/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns node-1 --json -- ss -ltnp
+.venv/bin/python test/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ping -c 1 10.0.0.2
+.venv/bin/python test/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns node-1 --json -- ss -ltnp
 ```
 
 #### Shaping commands
@@ -272,10 +272,10 @@ Examples:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py shaping-status [--workdir PATH]
-.venv/bin/python scripts/coordlab/coordlab.py shaping-set [--workdir PATH] --target TARGET [--delay-ms N] [--loss-pct P]
-.venv/bin/python scripts/coordlab/coordlab.py shaping-clear [--workdir PATH] --target TARGET
-.venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all [--workdir PATH]
+.venv/bin/python test/coordlab/coordlab.py shaping-status [--workdir PATH]
+.venv/bin/python test/coordlab/coordlab.py shaping-set [--workdir PATH] --target TARGET [--delay-ms N] [--loss-pct P]
+.venv/bin/python test/coordlab/coordlab.py shaping-clear [--workdir PATH] --target TARGET
+.venv/bin/python test/coordlab/coordlab.py shaping-clear-all [--workdir PATH]
 ```
 
 Allowed targets are:
@@ -295,9 +295,9 @@ Behavior:
 Examples:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target node-1 --delay-ms 200
-.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target upstream-2 --loss-pct 30
-.venv/bin/python scripts/coordlab/coordlab.py shaping-clear --workdir /tmp/coordlab-phase5 --target upstream-1
+.venv/bin/python test/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target node-1 --delay-ms 200
+.venv/bin/python test/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target upstream-2 --loss-pct 30
+.venv/bin/python test/coordlab/coordlab.py shaping-clear --workdir /tmp/coordlab-phase5 --target upstream-1
 ```
 
 #### Link-state commands
@@ -305,9 +305,9 @@ Examples:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py link-status [--workdir PATH]
-.venv/bin/python scripts/coordlab/coordlab.py disconnect [--workdir PATH] --target TARGET
-.venv/bin/python scripts/coordlab/coordlab.py reconnect [--workdir PATH] --target TARGET
+.venv/bin/python test/coordlab/coordlab.py link-status [--workdir PATH]
+.venv/bin/python test/coordlab/coordlab.py disconnect [--workdir PATH] --target TARGET
+.venv/bin/python test/coordlab/coordlab.py reconnect [--workdir PATH] --target TARGET
 ```
 
 The same four targets are supported. These commands operate on interface admin state, not `tc`, so they model hard partitions rather than soft impairments.
@@ -315,8 +315,8 @@ The same four targets are supported. These commands operate on interface admin s
 Examples:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py disconnect --workdir /tmp/coordlab-phase5 --target node-1
-.venv/bin/python scripts/coordlab/coordlab.py reconnect --workdir /tmp/coordlab-phase5 --target upstream-1
+.venv/bin/python test/coordlab/coordlab.py disconnect --workdir /tmp/coordlab-phase5 --target node-1
+.venv/bin/python test/coordlab/coordlab.py reconnect --workdir /tmp/coordlab-phase5 --target upstream-1
 ```
 
 #### Topology-only commands
@@ -324,9 +324,9 @@ Examples:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py net-up [--workdir PATH] [--client NAME=IP ...]
-.venv/bin/python scripts/coordlab/coordlab.py net-status [--workdir PATH] [--json]
-.venv/bin/python scripts/coordlab/coordlab.py net-down [--workdir PATH]
+.venv/bin/python test/coordlab/coordlab.py net-up [--workdir PATH] [--client NAME=IP ...]
+.venv/bin/python test/coordlab/coordlab.py net-status [--workdir PATH] [--json]
+.venv/bin/python test/coordlab/coordlab.py net-down [--workdir PATH]
 ```
 
 `net-up` creates only the namespace topology and routing. It does not:
@@ -348,7 +348,7 @@ With `--json`, `net-status` emits the same derived status contract family as `st
 coordlab stores runtime artifacts under a work directory, defaulting to `/tmp/coordlab`. A typical run uses a dedicated directory, for example:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5 \
+.venv/bin/python test/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5 \
   --client client-1=198.51.100.10 \
   --client client-2=203.0.113.20
 ```
@@ -370,40 +370,40 @@ The work directory contains:
 Minimal full lab:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
 
 Topology-only debugging:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py net-up --workdir /tmp/coordlab-net --client client-1=203.0.113.20
-.venv/bin/python scripts/coordlab/coordlab.py net-status --workdir /tmp/coordlab-net
-.venv/bin/python scripts/coordlab/coordlab.py net-down --workdir /tmp/coordlab-net
+.venv/bin/python test/coordlab/coordlab.py net-up --workdir /tmp/coordlab-net --client client-1=203.0.113.20
+.venv/bin/python test/coordlab/coordlab.py net-status --workdir /tmp/coordlab-net
+.venv/bin/python test/coordlab/coordlab.py net-down --workdir /tmp/coordlab-net
 ```
 
 Operational inspection from CLI after startup:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5 --json
-.venv/bin/python scripts/coordlab/coordlab.py shaping-status --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py link-status --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5 --json
+.venv/bin/python test/coordlab/coordlab.py shaping-status --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py link-status --workdir /tmp/coordlab-phase5
 ```
 
 Live client changes from CLI:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py add-client --workdir /tmp/coordlab-phase5 --client client-3=203.0.113.30
-.venv/bin/python scripts/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
+.venv/bin/python test/coordlab/coordlab.py add-client --workdir /tmp/coordlab-phase5 --client client-3=203.0.113.30
+.venv/bin/python test/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
 ```
 
 Run a one-off command in a saved namespace:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ip route
+.venv/bin/python test/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ip route
 ```
 
 ---
@@ -468,7 +468,7 @@ The generated firewall defaults are intentionally simple and testable:
 
 ## 4. Code layout
 
-`scripts/coordlab/` is organized by subsystem:
+`test/coordlab/` is organized by subsystem:
 
 | Path | Responsibility |
 |------|----------------|
@@ -515,7 +515,7 @@ Live link state is not stored in state; it is always read from `ip link show`.
 The Phase 5 dashboard is started separately:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 ```
 
 It serves:
@@ -586,12 +586,12 @@ curl -s \
 Typical manual smoke:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # open http://127.0.0.1:18800
 # add clients from the dashboard, then use the page for shaping, link-state control, service links, terminal access, and log viewing
 # open the node UI / RPC through the existing service links for GeoIP, IP log, and firewall verification
-.venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
 
 Phase 3 feature smoke:
@@ -608,17 +608,17 @@ Phase 3 feature smoke:
 Concrete CLI-based firewall verification:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py exec \
+.venv/bin/python test/coordlab/coordlab.py exec \
   --workdir /tmp/coordlab-phase5 \
   --ns upstream-1 -- \
   python3 -m http.server 9000 --bind 0.0.0.0
 
-.venv/bin/python scripts/coordlab/coordlab.py exec \
+.venv/bin/python test/coordlab/coordlab.py exec \
   --workdir /tmp/coordlab-phase5 \
   --ns client-allow -- \
   curl -sS --max-time 5 http://10.0.0.2:9000/
 
-.venv/bin/python scripts/coordlab/coordlab.py exec \
+.venv/bin/python test/coordlab/coordlab.py exec \
   --workdir /tmp/coordlab-phase5 \
   --ns client-deny-cidr -- \
   curl -sS --max-time 5 http://10.0.0.2:9000/
@@ -634,8 +634,8 @@ Interpretation:
 Developer-side validation:
 
 ```bash
-.venv/bin/python -m py_compile scripts/coordlab/coordlab.py scripts/coordlab/lib/*.py scripts/coordlab/web/*.py scripts/coordlab/tests/*.py
-.venv/bin/python -m unittest discover -s scripts/coordlab/tests -p 'test_*.py'
+.venv/bin/python -m py_compile test/coordlab/coordlab.py test/coordlab/lib/*.py test/coordlab/web/*.py test/coordlab/tests/*.py
+.venv/bin/python -m unittest discover -s test/coordlab/tests -p 'test_*.py'
 ```
 
 ---

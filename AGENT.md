@@ -15,7 +15,7 @@ This repository contains three production codebases plus a local manual test fra
 The runtime mix is:
 - Go binaries for `bwprobe`, `fbforward`, and `fbmeasure`
 - TypeScript/Cloudflare Workers code for `fbcoord`
-- Python tooling for `scripts/coordlab`
+- Python tooling for `test/coordlab`
 
 **fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using fbmeasure targeted probes (RTT, jitter, TCP retransmission rate, UDP loss rate), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. Optional subsystems include GeoIP database management, persisted IP connection logging (SQLite), and CIDR/ASN/country firewalling. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI with dashboard operational status and a dedicated IP Log query page.
 
@@ -243,9 +243,9 @@ Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algor
 - `fbcoord/wrangler.toml`: Worker bindings, migrations, KV namespace config
 
 **coordlab:**
-- `scripts/coordlab/coordlab.py`: CLI entrypoint and orchestration
-- `scripts/coordlab/lib/`: topology, process, shaping, link-state, proxy, readiness, and state helpers
-- `scripts/coordlab/web/`: Flask dashboard and API for manual lab control
+- `test/coordlab/coordlab.py`: CLI entrypoint and orchestration
+- `test/coordlab/lib/`: topology, process, shaping, link-state, proxy, readiness, and state helpers
+- `test/coordlab/web/`: Flask dashboard and API for manual lab control
 
 **Config and docs:**
 - `internal/config/config.go`: YAML config schema, defaults, validation
@@ -341,9 +341,9 @@ nc -zv <upstream-host> 9876
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r scripts/coordlab/requirements.txt
-.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
-.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/pip install -r test/coordlab/requirements.txt
+.venv/bin/python test/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 ```
 
 ## Control plane
@@ -441,9 +441,9 @@ When extending functionality:
 
 When extending local manual-test tooling:
 
-1. **Topology/process lifecycle**: Change `scripts/coordlab/coordlab.py` and `scripts/coordlab/lib/netns.py` / `process.py`
+1. **Topology/process lifecycle**: Change `test/coordlab/coordlab.py` and `test/coordlab/lib/netns.py` / `process.py`
 2. **Lab controls**: Keep CLI, Flask API, and dashboard behavior aligned across `lib/`, `web/app.py`, and `web/static/`
-3. **State model**: Treat `state.json` as the dashboard/CLI contract and update `scripts/coordlab/lib/state.py` deliberately
+3. **State model**: Treat `state.json` as the dashboard/CLI contract and update `test/coordlab/lib/state.py` deliberately
 
 ## Implementation principles
 
@@ -490,7 +490,7 @@ Automated test coverage exists across Go, `fbcoord`, and `coordlab`:
 
 - Go code: `go test ./...`
 - `fbcoord`: `npm --prefix fbcoord test`
-- `coordlab`: `.venv/bin/python -m unittest discover -s scripts/coordlab/tests -p 'test_*.py'`
+- `coordlab`: `.venv/bin/python -m unittest discover -s test/coordlab/tests -p 'test_*.py'`
 
 Common validation commands:
 
@@ -498,8 +498,8 @@ Common validation commands:
 go test ./...
 npm --prefix fbcoord test
 npm --prefix fbcoord run build
-.venv/bin/python -m py_compile scripts/coordlab/coordlab.py scripts/coordlab/lib/*.py scripts/coordlab/web/*.py scripts/coordlab/tests/*.py
-.venv/bin/python -m unittest discover -s scripts/coordlab/tests -p 'test_*.py'
+.venv/bin/python -m py_compile test/coordlab/coordlab.py test/coordlab/lib/*.py test/coordlab/web/*.py test/coordlab/tests/*.py
+.venv/bin/python -m unittest discover -s test/coordlab/tests -p 'test_*.py'
 ```
 
 For manual coordination testing, use `coordlab` instead of assuming only ad-hoc local configs exist.

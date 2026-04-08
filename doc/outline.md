@@ -1077,16 +1077,15 @@ This outline defines the complete documentation structure for the fbforward mono
 | Field | Value |
 |-------|-------|
 | **ID** | 8.1 |
-| **Purpose** | Document unit and integration testing infrastructure |
-| **Source artifacts** | test/harness/, test/scenarios/, *_test.go (including internal/geoip/, internal/iplog/, internal/firewall/, internal/config/, internal/control/) |
+| **Purpose** | Document automated package testing and retained manual testing workflow |
+| **Source artifacts** | *_test.go (including internal/geoip/, internal/iplog/, internal/firewall/, internal/config/, internal/control/), doc/test/testing-guide.md, test/coordlab/ |
 | **Dependencies** | 7.1 (architecture), 2.1 (prerequisites) |
 | **Audience** | Developers, contributors |
 | **Depth** | Reference |
 
 **Content:**
 - Unit test coverage (bwprobe algorithms, scoring logic, config validation, control-plane RPC, GeoIP management, IP-log store/pipeline, firewall rule evaluation, forwarding, runtime, metrics)
-- Integration test architecture (rootless namespaces, harness)
-- Scenario YAML format
+- coordlab-based manual testing workflow
 - Frontend verification (`npm run build` in `web/`)
 - Running tests and troubleshooting
 
@@ -1098,7 +1097,7 @@ See [test/testing-guide.md](test/testing-guide.md)
 |-------|-------|
 | **ID** | 8.2 |
 | **Purpose** | Document the Python-based manual coordination lab and dashboard |
-| **Source artifacts** | scripts/coordlab/, fbcoord/, internal/coordination/ |
+| **Source artifacts** | test/coordlab/, fbcoord/, internal/coordination/ |
 | **Dependencies** | 8.1, 2.1 |
 | **Audience** | Developers, operators |
 | **Depth** | Reference |

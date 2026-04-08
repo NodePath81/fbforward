@@ -742,27 +742,19 @@ func TestFunctionName(t *testing.T) {
 }
 ```
 
-**Integration tests (Linux only):**
+**Manual coordination testing (Linux only):**
 
-fbforward includes integration tests using rootless network namespaces to validate switching behaviors end-to-end. These require Linux with unprivileged user namespace support.
+The retained manual test framework is `coordlab`. It requires Linux with unprivileged user namespaces enabled and runs from the repo-root Python venv.
 
 ```bash
-# Setup and build (first time)
-./scripts/setup-test-env.sh
-
-# Run all integration scenarios
-./scripts/run-scenario.sh
-
-# Run a single scenario
-build/bin/fbforward-testharness run test/scenarios/score-ordering.yaml
-
-# Validate scenario YAML without running
-build/bin/fbforward-testharness validate test/scenarios/score-ordering.yaml
+python3 -m venv .venv
+.venv/bin/pip install -r test/coordlab/requirements.txt
+.venv/bin/python test/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/python test/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
 
-Prerequisites: Linux kernel 3.8+ with unprivileged user namespaces enabled (`kernel.unprivileged_userns_clone=1`), iproute2 v4.9+, iperf3.
-
-See [Testing guide](test/testing-guide.md) for scenario format, harness architecture, and troubleshooting.
+See [Testing guide](test/testing-guide.md) and [coordlab guide](test/coordlab.md) for the retained manual-testing workflow and validation commands.
 
 ### Code style guidelines
 
