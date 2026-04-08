@@ -52,6 +52,50 @@ class ClientInfo:
 
 
 @dataclass(slots=True)
+class GeoIPFeatureInfo:
+    enabled: bool = False
+    asn_db_url: str = ""
+    asn_db_path: str = ""
+    country_db_url: str = ""
+    country_db_path: str = ""
+    refresh_interval: str = ""
+
+
+@dataclass(slots=True)
+class IPLogFeatureInfo:
+    enabled: bool = False
+    db_path: str = ""
+    retention: str = ""
+    geo_queue_size: int = 0
+    write_queue_size: int = 0
+    batch_size: int = 0
+    flush_interval: str = ""
+    prune_interval: str = ""
+
+
+@dataclass(slots=True)
+class FirewallRuleInfo:
+    action: str
+    cidr: str | None = None
+    asn: int | None = None
+    country: str | None = None
+
+
+@dataclass(slots=True)
+class FirewallFeatureInfo:
+    enabled: bool = False
+    default_policy: str = ""
+    rules: list[FirewallRuleInfo] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class NodeFeatureInfo:
+    geoip: GeoIPFeatureInfo = field(default_factory=GeoIPFeatureInfo)
+    ip_log: IPLogFeatureInfo = field(default_factory=IPLogFeatureInfo)
+    firewall: FirewallFeatureInfo = field(default_factory=FirewallFeatureInfo)
+
+
+@dataclass(slots=True)
 class ShapingTargetInfo:
     router_ns: str
     tag: str
@@ -88,6 +132,7 @@ class LabState:
     proxies: dict[str, ProxyInfo] = field(default_factory=dict)
     clients: dict[str, ClientInfo] = field(default_factory=dict)
     terminals: dict[str, TerminalInfo] = field(default_factory=dict)
+    node_features: dict[str, NodeFeatureInfo] = field(default_factory=dict)
     shaping: ShapingInfo = field(default_factory=ShapingInfo)
     tokens: TokenInfo = field(default_factory=TokenInfo)
     topology: TopologyInfo = field(default_factory=lambda: TopologyInfo(base_cidr=""))
@@ -117,6 +162,21 @@ class LabState:
             name: TerminalInfo(**info)
             for name, info in data.get("terminals", {}).items()
         }
+        node_features = {
+            name: NodeFeatureInfo(
+                geoip=GeoIPFeatureInfo(**info.get("geoip", {})),
+                ip_log=IPLogFeatureInfo(**info.get("ip_log", {})),
+                firewall=FirewallFeatureInfo(
+                    enabled=bool(info.get("firewall", {}).get("enabled", False)),
+                    default_policy=str(info.get("firewall", {}).get("default_policy", "")),
+                    rules=[
+                        FirewallRuleInfo(**rule)
+                        for rule in info.get("firewall", {}).get("rules", [])
+                    ],
+                ),
+            )
+            for name, info in data.get("node_features", {}).items()
+        }
         shaping_raw = data.get("shaping", {})
         shaping = ShapingInfo(
             targets={
@@ -141,6 +201,7 @@ class LabState:
             proxies=proxies,
             clients=clients,
             terminals=terminals,
+            node_features=node_features,
             shaping=shaping,
             tokens=tokens,
             topology=topology,

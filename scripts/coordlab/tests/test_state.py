@@ -11,9 +11,14 @@ if str(ROOT) not in sys.path:
 
 from lib.state import (
     ClientInfo,
+    FirewallFeatureInfo,
+    FirewallRuleInfo,
+    GeoIPFeatureInfo,
+    IPLogFeatureInfo,
     LabState,
     LinkInfo,
     NamespaceInfo,
+    NodeFeatureInfo,
     ProcessInfo,
     ProxyInfo,
     ShapingInfo,
@@ -55,6 +60,33 @@ class StateRoundTripTest(unittest.TestCase):
             terminals={
                 "client-1": TerminalInfo(host_port=18900, pid=404),
                 "upstream-1": TerminalInfo(host_port=18901, pid=405),
+            },
+            node_features={
+                "node-1": NodeFeatureInfo(
+                    geoip=GeoIPFeatureInfo(
+                        enabled=True,
+                        asn_db_url="https://example.test/asn.mmdb",
+                        asn_db_path="/tmp/coordlab-test/mmdb/GeoLite2-ASN.mmdb",
+                        country_db_url="https://example.test/country.mmdb",
+                        country_db_path="/tmp/coordlab-test/mmdb/Country.mmdb",
+                        refresh_interval="24h",
+                    ),
+                    ip_log=IPLogFeatureInfo(
+                        enabled=True,
+                        db_path="/tmp/coordlab-test/data/node-1-iplog.sqlite",
+                        retention="24h",
+                        geo_queue_size=128,
+                        write_queue_size=128,
+                        batch_size=10,
+                        flush_interval="2s",
+                        prune_interval="1h",
+                    ),
+                    firewall=FirewallFeatureInfo(
+                        enabled=True,
+                        default_policy="allow",
+                        rules=[FirewallRuleInfo(action="deny", cidr="198.51.100.0/24")],
+                    ),
+                ),
             },
             shaping=ShapingInfo(
                 targets={
@@ -105,6 +137,9 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.tokens.coord_token, loaded.tokens.coord_token)
         self.assertEqual(state.topology.links[0].right_if, loaded.topology.links[0].right_if)
         self.assertEqual(state.topology.next_subnet_index, loaded.topology.next_subnet_index)
+        self.assertEqual(state.node_features["node-1"].geoip.asn_db_path, loaded.node_features["node-1"].geoip.asn_db_path)
+        self.assertEqual(state.node_features["node-1"].ip_log.db_path, loaded.node_features["node-1"].ip_log.db_path)
+        self.assertEqual(state.node_features["node-1"].firewall.default_policy, loaded.node_features["node-1"].firewall.default_policy)
 
 
 if __name__ == "__main__":

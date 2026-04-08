@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
+import io
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +20,27 @@ from coordlab import (
     allocate_ttyd_ports,
     assert_host_ports_available,
     build_ttyd_command,
+    cmd_net_up,
+    ensure_geoip_mmdbs,
     ensure_fbforward_binaries,
     fixed_proxy_bindings,
+    print_basic_status,
     parse_client_specs,
 )
-from lib.state import TerminalInfo
+from lib.state import FirewallFeatureInfo, GeoIPFeatureInfo, IPLogFeatureInfo, LabState, NamespaceInfo, NodeFeatureInfo, TerminalInfo
+
+
+class FakeHTTPResponse(io.BytesIO):
+    def __init__(self, payload: bytes, *, status: int = 200) -> None:
+        super().__init__(payload)
+        self.status = status
+
+    def __enter__(self) -> "FakeHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
 
 
 class CoordlabHelpersTest(unittest.TestCase):
@@ -93,6 +113,129 @@ class CoordlabHelpersTest(unittest.TestCase):
         assert_bindings_available.assert_called_once()
         bindings = assert_bindings_available.call_args.args[0]
         self.assertEqual([*fixed_proxy_bindings(), *extra], bindings)
+
+    def test_ensure_geoip_mmdbs_downloads_missing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch(
+                "coordlab.urllib.request.urlopen",
+                side_effect=[FakeHTTPResponse(b"asn"), FakeHTTPResponse(b"country")],
+            ) as urlopen:
+                paths = ensure_geoip_mmdbs(Path(tmpdir))
+
+            self.assertEqual(2, urlopen.call_count)
+            self.assertEqual(b"asn", paths["asn"].read_bytes())
+            self.assertEqual(b"country", paths["country"].read_bytes())
+
+    def test_ensure_geoip_mmdbs_reuses_cached_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            mmdb_dir = workdir / "mmdb"
+            mmdb_dir.mkdir()
+            (mmdb_dir / "GeoLite2-ASN.mmdb").write_bytes(b"cached-asn")
+            (mmdb_dir / "Country-without-asn.mmdb").write_bytes(b"cached-country")
+
+            with mock.patch("coordlab.urllib.request.urlopen") as urlopen:
+                paths = ensure_geoip_mmdbs(workdir)
+
+            urlopen.assert_not_called()
+            self.assertEqual(b"cached-asn", paths["asn"].read_bytes())
+            self.assertEqual(b"cached-country", paths["country"].read_bytes())
+
+    def test_ensure_geoip_mmdbs_downloads_only_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            mmdb_dir = workdir / "mmdb"
+            mmdb_dir.mkdir()
+            (mmdb_dir / "GeoLite2-ASN.mmdb").write_bytes(b"cached-asn")
+
+            with mock.patch(
+                "coordlab.urllib.request.urlopen",
+                return_value=FakeHTTPResponse(b"country"),
+            ) as urlopen:
+                paths = ensure_geoip_mmdbs(workdir)
+
+            urlopen.assert_called_once()
+            self.assertEqual(b"cached-asn", paths["asn"].read_bytes())
+            self.assertEqual(b"country", paths["country"].read_bytes())
+
+    def test_ensure_geoip_mmdbs_fails_on_non_200_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch(
+                "coordlab.urllib.request.urlopen",
+                return_value=FakeHTTPResponse(b"", status=503),
+            ):
+                with self.assertRaises(RuntimeError):
+                    ensure_geoip_mmdbs(Path(tmpdir))
+
+    def test_cmd_net_up_does_not_download_mmdbs(self) -> None:
+        args = argparse.Namespace(workdir="/tmp/coordlab-test", client=[])
+        state = LabState(
+            phase=1,
+            active=True,
+            created_at="2026-04-08T00:00:00+00:00",
+            work_dir="/tmp/coordlab-test",
+            namespaces={"hub": NamespaceInfo(pid=1, parent=None, role="hub")},
+        )
+        with (
+            mock.patch("coordlab.load_state", return_value=None),
+            mock.patch("coordlab.require_tools"),
+            mock.patch("coordlab.parse_client_specs", return_value={}),
+            mock.patch("coordlab.netns.build_topology", return_value=mock.Mock()),
+            mock.patch("coordlab.netns.verify_connectivity"),
+            mock.patch("coordlab.build_state", return_value=state),
+            mock.patch("coordlab.save_state"),
+            mock.patch("coordlab.print_basic_status"),
+            mock.patch("coordlab.ensure_geoip_mmdbs") as ensure_geoip_mmdbs_mock,
+        ):
+            self.assertEqual(0, cmd_net_up(args))
+
+        ensure_geoip_mmdbs_mock.assert_not_called()
+
+    def test_print_basic_status_includes_node_features_and_artifact_dirs(self) -> None:
+        state = LabState(
+            phase=5,
+            active=True,
+            created_at="2026-04-08T00:00:00+00:00",
+            work_dir="/tmp/coordlab-phase3",
+            namespaces={"node-1": NamespaceInfo(pid=101, parent="hub", role="node")},
+            node_features={
+                "node-1": NodeFeatureInfo(
+                    geoip=GeoIPFeatureInfo(
+                        enabled=True,
+                        asn_db_url="https://example.test/asn.mmdb",
+                        asn_db_path="/tmp/coordlab-phase3/mmdb/GeoLite2-ASN.mmdb",
+                        country_db_url="https://example.test/country.mmdb",
+                        country_db_path="/tmp/coordlab-phase3/mmdb/Country-without-asn.mmdb",
+                        refresh_interval="24h",
+                    ),
+                    ip_log=IPLogFeatureInfo(
+                        enabled=True,
+                        db_path="/tmp/coordlab-phase3/data/node-1-iplog.sqlite",
+                        retention="24h",
+                        geo_queue_size=128,
+                        write_queue_size=128,
+                        batch_size=10,
+                        flush_interval="2s",
+                        prune_interval="1h",
+                    ),
+                    firewall=FirewallFeatureInfo(enabled=True, default_policy="allow"),
+                ),
+            },
+        )
+
+        with (
+            mock.patch("coordlab.is_alive", return_value=True),
+            io.StringIO() as buffer,
+            redirect_stdout(buffer),
+        ):
+            print_basic_status(state)
+            output = buffer.getvalue()
+
+        self.assertIn("geoip: enabled", output)
+        self.assertIn("ip_log: enabled", output)
+        self.assertIn("firewall: enabled default=allow", output)
+        self.assertIn("mmdb=/tmp/coordlab-phase3/mmdb", output)
+        self.assertIn("data=/tmp/coordlab-phase3/data", output)
 
 
 if __name__ == "__main__":

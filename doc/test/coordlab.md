@@ -67,12 +67,15 @@ coordlab stores runtime artifacts under a work directory, defaulting to `/tmp/co
 ```
 
 `up` always rebuilds `fbforward`, `fbmeasure`, and the `fbcoord` UI unless `--skip-build` is explicitly provided.
+It also ensures the GeoIP MMDB cache is present under the work directory before node startup.
 
 The work directory contains:
 
 - `state.json` — persisted lab state
 - `logs/` — one log file per managed process
 - `configs/` — generated `fbforward` configs
+- `mmdb/` — cached GeoIP MMDB files used by both nodes
+- `data/` — SQLite parent directory for per-node IP log databases
 - `fbcoord-runtime/` — isolated runtime copy used by `wrangler dev`
 
 ---
@@ -115,6 +118,21 @@ Host-facing access points:
 
 Each ttyd terminal launches `/bin/bash --noprofile --norc -i` with `PS1` set to `<namespace>@\w$ ` so the namespace identity is always visible in the prompt.
 
+### Node feature defaults
+
+coordlab now generates both node configs with the following features enabled by default:
+
+- `geoip`
+- `ip_log`
+- `firewall`
+
+The generated firewall defaults are intentionally simple and testable:
+
+- deny CIDR `198.51.100.0/24`
+- deny ASN `15169`
+- deny country `AU`
+- allow all other traffic by default
+
 ---
 
 ## 4. Code layout
@@ -152,6 +170,7 @@ Each ttyd terminal launches `/bin/bash --noprofile --norc -i` with `PS1` set to 
 - terminal endpoints for client and upstream namespaces
 - shaping topology (target name, router namespace, and shaped device for both shaping axes)
 - generated coordination and control tokens
+- persisted per-node feature summaries for GeoIP, IP log, and firewall
 - topology link metadata
 - the next `/30` transport allocation index used for live client additions
 
@@ -204,6 +223,12 @@ Disconnect is modeled separately from shaping:
 
 After the lab has been started, the dashboard is the primary operator interface for normal manual testing. The CLI remains responsible for lifecycle commands such as `up`, `down`, and `web`; the web UI handles routine client add/remove, service access, shaping, link-state, and log viewing.
 
+Phase 3 does not add dedicated dashboard panels for GeoIP, IP log, or firewall. Operators should use the existing node service links to reach each node's native UI and RPC surface for:
+
+- GeoIP database status and refresh
+- IP log inspection and queries
+- firewall inspection and manual rule changes
+
 ---
 
 ## 6. Verification flow
@@ -215,8 +240,20 @@ Typical manual smoke:
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # open http://127.0.0.1:18800
 # add clients from the dashboard, then use the page for shaping, link-state control, service links, terminal access, and log viewing
+# open the node UI / RPC through the existing service links for GeoIP, IP log, and firewall verification
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
+
+Phase 3 feature smoke:
+
+- confirm `mmdb/GeoLite2-ASN.mmdb` and `mmdb/Country-without-asn.mmdb` exist under the work directory after `up`
+- use the node UI or `GetGeoIPStatus` RPC to confirm both MMDBs are configured and available
+- generate traffic from an allowed client identity and confirm `QueryIPLog` returns geo-enriched records
+- verify firewall denies for:
+  - `198.51.100.10` via CIDR rule
+  - `8.8.8.8` via ASN rule
+  - `1.1.1.1` via country rule
+- verify `203.0.113.20` is allowed by default
 
 Developer-side validation:
 

@@ -23,6 +23,7 @@ python3 -m venv .venv
 ```
 
 `up` rebuilds the Go binaries and the `fbcoord` UI by default. Use `--skip-build` only when you explicitly want to reuse existing build artifacts.
+It also downloads the GeoIP MMDB cache into the work directory when files are missing.
 
 Host proxy ports:
 
@@ -40,6 +41,28 @@ Terminal ports:
 - terminals open with `/bin/bash --noprofile --norc -i` and prompt as `<namespace>@<cwd>$`
 
 After `up` and `web`, normal manual testing is expected to happen primarily from the web page. The CLI remains responsible for lifecycle commands, while the dashboard provides the routine test-session controls, including live client add/remove.
+
+Generated node configs now enable:
+
+- `geoip`
+- `ip_log`
+- `firewall`
+
+Phase 3 keeps GeoIP, IP log, and firewall inspection in the native node UI / RPC surface reached through the existing service links. The coordlab dashboard still focuses on lab operations rather than feature-specific controls.
+
+Workdir artifacts now include:
+
+- `mmdb/GeoLite2-ASN.mmdb`
+- `mmdb/Country-without-asn.mmdb`
+- `data/node-1-iplog.sqlite`
+- `data/node-2-iplog.sqlite`
+
+Suggested manual firewall checks:
+
+- `198.51.100.10` should be denied by CIDR
+- `8.8.8.8` should be denied by ASN `15169`
+- `1.1.1.1` should be denied by country `AU`
+- `203.0.113.20` should be allowed by default
 
 Phase 1 network-only commands are still available:
 

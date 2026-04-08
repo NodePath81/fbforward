@@ -9,8 +9,10 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +24,7 @@ from lib.process import ProcessManager, is_alive, terminate_pid, terminate_proce
 from lib.proxy import run_proxy_daemon
 from lib.state import (
     ClientInfo,
+    NodeFeatureInfo,
     LabState,
     LinkInfo,
     NamespaceInfo,
@@ -97,6 +100,14 @@ def runtime_dir_for(workdir: Path) -> Path:
     return workdir / RUNTIME_DIRNAME
 
 
+def mmdb_dir_for(workdir: Path) -> Path:
+    return coordconfig.mmdb_dir_for(workdir)
+
+
+def data_dir_for(workdir: Path) -> Path:
+    return coordconfig.data_dir_for(workdir)
+
+
 def require_runtime_environment() -> None:
     actual = Path(sys.executable).resolve()
     if actual != VENV_PYTHON.resolve():
@@ -137,6 +148,7 @@ def build_state(
     proxies: dict[str, ProxyInfo] | None = None,
     clients: dict[str, ClientInfo] | None = None,
     terminals: dict[str, TerminalInfo] | None = None,
+    node_features: dict[str, NodeFeatureInfo] | None = None,
     shaping: ShapingInfo | None = None,
     tokens: TokenInfo | None = None,
 ) -> LabState:
@@ -170,6 +182,7 @@ def build_state(
         proxies=proxies or {},
         clients=client_infos,
         terminals=terminals or {},
+        node_features=node_features or {},
         shaping=shaping or build_shaping_info(topology),
         tokens=tokens or TokenInfo(),
         topology=TopologyInfo(
@@ -263,6 +276,19 @@ def print_basic_status(state: LabState) -> None:
         for name, info in sorted(state.terminals.items()):
             status = "alive" if is_alive(info.pid) else "dead"
             print(f"  {name}: http://127.0.0.1:{info.host_port} pid={info.pid} status={status}")
+    if state.node_features:
+        print("node_features:")
+        for name, features in sorted(state.node_features.items()):
+            geoip_status = "enabled" if features.geoip.enabled else "disabled"
+            ip_log_status = "enabled" if features.ip_log.enabled else "disabled"
+            firewall_status = "enabled" if features.firewall.enabled else "disabled"
+            print(f"  {name}:")
+            print(
+                f"    geoip: {geoip_status} "
+                f"asn_db={features.geoip.asn_db_path} country_db={features.geoip.country_db_path}"
+            )
+            print(f"    ip_log: {ip_log_status} db={features.ip_log.db_path}")
+            print(f"    firewall: {firewall_status} default={features.firewall.default_policy}")
     if state.tokens.coord_token or state.tokens.control_token:
         print("tokens:")
         if state.tokens.coord_token:
@@ -271,7 +297,9 @@ def print_basic_status(state: LabState) -> None:
             print(f"  control_token={state.tokens.control_token}")
     print("artifacts:")
     print(f"  configs={configs_dir_for(workdir)}")
+    print(f"  data={data_dir_for(workdir)}")
     print(f"  logs={logs_dir_for(workdir)}")
+    print(f"  mmdb={mmdb_dir_for(workdir)}")
     print(f"  fbcoord_runtime={runtime_dir_for(workdir)}")
     print(f"  state={state_path_for(workdir)}")
 
@@ -415,6 +443,49 @@ def ensure_fbcoord_assets(skip_build: bool) -> None:
         return
     require_tools(["npm"])
     run_host(["npm", "--prefix", "fbcoord", "run", "build"], cwd=REPO_ROOT)
+
+
+def download_geoip_mmdb(url: str, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise RuntimeError(f"failed to download {url}: HTTP {status}")
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f"{target.name}.", suffix=".tmp", delete=False) as tmp_file:
+                shutil.copyfileobj(response, tmp_file)
+                temp_path = Path(tmp_file.name)
+        if temp_path is None:
+            raise RuntimeError(f"failed to download {url}: temporary file was not created")
+        temp_path.replace(target)
+        return target
+    except Exception as exc:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"failed to download {url}: {exc}") from exc
+
+
+def ensure_geoip_mmdbs(workdir: Path) -> dict[str, Path]:
+    mmdb_dir = mmdb_dir_for(workdir)
+    mmdb_dir.mkdir(parents=True, exist_ok=True)
+    targets = {
+        "asn": (coordconfig.GEOIP_ASN_DB_URL, mmdb_dir / coordconfig.GEOIP_ASN_DB_FILENAME),
+        "country": (coordconfig.GEOIP_COUNTRY_DB_URL, mmdb_dir / coordconfig.GEOIP_COUNTRY_DB_FILENAME),
+    }
+    paths: dict[str, Path] = {}
+    for key, (url, target) in targets.items():
+        paths[key] = target if target.exists() else download_geoip_mmdb(url, target)
+    return paths
+
+
+def build_node_feature_summary(workdir: Path) -> dict[str, NodeFeatureInfo]:
+    return {
+        node_name: coordconfig.build_node_feature_info(node_name, workdir)
+        for node_name in ("node-1", "node-2")
+    }
 
 
 def wrangler_command() -> list[str]:
@@ -936,8 +1007,11 @@ def cmd_up(args: argparse.Namespace) -> int:
     )
     ensure_fbforward_binaries(args.skip_build)
     ensure_fbcoord_assets(args.skip_build)
+    ensure_geoip_mmdbs(workdir)
+    data_dir_for(workdir).mkdir(parents=True, exist_ok=True)
 
     tokens = coordconfig.generate_tokens()
+    node_features = build_node_feature_summary(workdir)
     topology = netns.build_topology(str(workdir), client_specs=client_specs)
     manager = ProcessManager(logs_dir_for(workdir))
 
@@ -997,6 +1071,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             active=True,
             processes=manager.infos(),
             proxies=proxies,
+            node_features=node_features,
             tokens=tokens,
         )
         save_state(state_path, state)
@@ -1014,6 +1089,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             active=True,
             processes=manager.infos(),
             proxies=proxies,
+            node_features=node_features,
             tokens=tokens,
         )
         save_state(state_path, state)
@@ -1046,6 +1122,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             processes=manager.infos(),
             proxies=proxies,
             terminals=terminals,
+            node_features=node_features,
             tokens=tokens,
         )
         save_state(state_path, state)

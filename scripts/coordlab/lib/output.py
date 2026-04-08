@@ -68,6 +68,21 @@ def render_summary(state: LabState, python_executable: str) -> str:
             lines.append(f"    {name}: {terminal_url(info.host_port)} ({status})")
         lines.append("")
 
+    if state.node_features:
+        lines.append("  node features:")
+        for name, features in sorted(state.node_features.items()):
+            geoip_status = "enabled" if features.geoip.enabled else "disabled"
+            ip_log_status = "enabled" if features.ip_log.enabled else "disabled"
+            firewall_status = "enabled" if features.firewall.enabled else "disabled"
+            lines.append(f"    {name}:")
+            lines.append(
+                f"      geoip: {geoip_status} "
+                f"asn_db={features.geoip.asn_db_path} country_db={features.geoip.country_db_path}"
+            )
+            lines.append(f"      ip_log: {ip_log_status} db={features.ip_log.db_path}")
+            lines.append(f"      firewall: {firewall_status} default={features.firewall.default_policy}")
+        lines.append("")
+
     if state.tokens.coord_token or state.tokens.control_token:
         lines.append("  tokens:")
         if state.tokens.coord_token:
@@ -77,7 +92,9 @@ def render_summary(state: LabState, python_executable: str) -> str:
         lines.append("")
 
     lines.append("  artifacts:")
+    lines.append(f"    data:     {workdir / 'data'}")
     lines.append(f"    logs:     {workdir / 'logs'}")
+    lines.append(f"    mmdb:     {workdir / 'mmdb'}")
     lines.append(f"    configs:  {workdir / 'configs'}")
     lines.append(f"    state:    {workdir / 'state.json'}")
     lines.append("")

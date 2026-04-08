@@ -10,7 +10,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.output import render_summary
-from lib.state import ClientInfo, LabState, NamespaceInfo, ProcessInfo, ProxyInfo, TerminalInfo, TokenInfo, TopologyInfo
+from lib.state import (
+    ClientInfo,
+    FirewallFeatureInfo,
+    FirewallRuleInfo,
+    GeoIPFeatureInfo,
+    IPLogFeatureInfo,
+    LabState,
+    NamespaceInfo,
+    NodeFeatureInfo,
+    ProcessInfo,
+    ProxyInfo,
+    TerminalInfo,
+    TokenInfo,
+    TopologyInfo,
+)
 
 
 class OutputSummaryTest(unittest.TestCase):
@@ -48,6 +62,36 @@ class OutputSummaryTest(unittest.TestCase):
                 "client-1": TerminalInfo(host_port=18900, pid=401),
                 "upstream-1": TerminalInfo(host_port=18901, pid=402),
             },
+            node_features={
+                "node-1": NodeFeatureInfo(
+                    geoip=GeoIPFeatureInfo(
+                        enabled=True,
+                        asn_db_url="https://example.test/asn.mmdb",
+                        asn_db_path="/tmp/coordlab-phase3/mmdb/GeoLite2-ASN.mmdb",
+                        country_db_url="https://example.test/country.mmdb",
+                        country_db_path="/tmp/coordlab-phase3/mmdb/Country-without-asn.mmdb",
+                        refresh_interval="24h",
+                    ),
+                    ip_log=IPLogFeatureInfo(
+                        enabled=True,
+                        db_path="/tmp/coordlab-phase3/data/node-1-iplog.sqlite",
+                        retention="24h",
+                        geo_queue_size=128,
+                        write_queue_size=128,
+                        batch_size=10,
+                        flush_interval="2s",
+                        prune_interval="1h",
+                    ),
+                    firewall=FirewallFeatureInfo(
+                        enabled=True,
+                        default_policy="allow",
+                        rules=[
+                            FirewallRuleInfo(action="deny", cidr="198.51.100.0/24"),
+                            FirewallRuleInfo(action="deny", asn=15169),
+                        ],
+                    ),
+                ),
+            },
             tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
             topology=TopologyInfo(base_cidr="10.99.0.0/24"),
         )
@@ -63,6 +107,13 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertIn("198.51.100.10", summary)
         self.assertIn("http://127.0.0.1:18900", summary)
         self.assertIn("http://127.0.0.1:18901", summary)
+        self.assertIn("geoip: enabled", summary)
+        self.assertIn("/tmp/coordlab-phase3/mmdb/GeoLite2-ASN.mmdb", summary)
+        self.assertIn("ip_log: enabled", summary)
+        self.assertIn("/tmp/coordlab-phase3/data/node-1-iplog.sqlite", summary)
+        self.assertIn("firewall: enabled default=allow", summary)
+        self.assertIn("/tmp/coordlab-phase3/mmdb", summary)
+        self.assertIn("/tmp/coordlab-phase3/data", summary)
         self.assertIn(" web --workdir ", summary)
 
 

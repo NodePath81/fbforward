@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 from lib import config as coordconfig
 from lib.netns import Namespace, Topology, default_links
+from lib.state import FirewallRuleInfo
 
 
 def fake_topology(tmpdir: str) -> Topology:
@@ -41,6 +42,7 @@ class ConfigHelpersTest(unittest.TestCase):
             topology = fake_topology(tmpdir)
             config_path = coordconfig.generate_fbforward_config("node-1", topology, tokens, tmpdir)
             rendered = config_path.read_text(encoding="utf-8")
+            self.assertTrue((Path(tmpdir) / coordconfig.DATA_DIRNAME).exists())
 
         self.assertIn("hostname: node-1", rendered)
         self.assertIn('auth_token: "', rendered)
@@ -49,6 +51,49 @@ class ConfigHelpersTest(unittest.TestCase):
         self.assertIn("host: 10.99.0.26", rendered)
         self.assertIn("pool: lab", rendered)
         self.assertIn("heartbeat_interval: 10s", rendered)
+        self.assertIn("geoip:", rendered)
+        self.assertIn(f'asn_db_url: "{coordconfig.GEOIP_ASN_DB_URL}"', rendered)
+        self.assertIn(f'country_db_url: "{coordconfig.GEOIP_COUNTRY_DB_URL}"', rendered)
+        self.assertIn(f'asn_db_path: "{Path(tmpdir) / coordconfig.MMDB_DIRNAME / coordconfig.GEOIP_ASN_DB_FILENAME}"', rendered)
+        self.assertIn(
+            f'country_db_path: "{Path(tmpdir) / coordconfig.MMDB_DIRNAME / coordconfig.GEOIP_COUNTRY_DB_FILENAME}"',
+            rendered,
+        )
+        self.assertIn("refresh_interval: 24h", rendered)
+        self.assertIn("ip_log:", rendered)
+        self.assertIn(f'db_path: "{Path(tmpdir) / coordconfig.DATA_DIRNAME / "node-1-iplog.sqlite"}"', rendered)
+        self.assertIn("retention: 24h", rendered)
+        self.assertIn("geo_queue_size: 128", rendered)
+        self.assertIn("write_queue_size: 128", rendered)
+        self.assertIn("batch_size: 10", rendered)
+        self.assertIn("flush_interval: 2s", rendered)
+        self.assertIn("prune_interval: 1h", rendered)
+        self.assertIn("firewall:", rendered)
+        self.assertIn("default: allow", rendered)
+        self.assertIn("cidr: 198.51.100.0/24", rendered)
+        self.assertIn("asn: 15169", rendered)
+        self.assertIn("country: AU", rendered)
+
+    def test_build_node_feature_info_uses_per_node_db_path_and_curated_firewall_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node1 = coordconfig.build_node_feature_info("node-1", tmpdir)
+            node2 = coordconfig.build_node_feature_info("node-2", tmpdir)
+
+        self.assertTrue(node1.geoip.enabled)
+        self.assertEqual(coordconfig.GEOIP_ASN_DB_URL, node1.geoip.asn_db_url)
+        self.assertEqual(coordconfig.GEOIP_COUNTRY_DB_URL, node1.geoip.country_db_url)
+        self.assertTrue(node1.ip_log.enabled)
+        self.assertEqual(str(Path(tmpdir) / coordconfig.DATA_DIRNAME / "node-1-iplog.sqlite"), node1.ip_log.db_path)
+        self.assertNotEqual(node1.ip_log.db_path, node2.ip_log.db_path)
+        self.assertEqual("allow", node1.firewall.default_policy)
+        self.assertEqual(
+            [
+                FirewallRuleInfo(action="deny", cidr="198.51.100.0/24"),
+                FirewallRuleInfo(action="deny", asn=15169),
+                FirewallRuleInfo(action="deny", country="AU"),
+            ],
+            node1.firewall.rules,
+        )
 
     def test_prepare_fbcoord_runtime_writes_dev_vars_and_links_node_modules(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
