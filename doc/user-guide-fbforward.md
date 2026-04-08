@@ -349,9 +349,20 @@ The UI displays:
 - Active UDP mappings
 - Total flows created
 
+**Operational status**:
+- GeoIP ASN database availability
+- GeoIP country database availability
+- IP-log database record count and file size
+- Manual `Refresh GeoIP` action from the dashboard status card
+
 **Score history**:
 - Time-series chart of upstream scores
 - Switching events marked on chart
+
+**IP log page**:
+- A dedicated `IP Log` page for querying persisted IP-log records
+- Filter by time bounds, CIDR, ASN, and country
+- Server-side sort and pagination over persisted records
 
 **Measurement status**:
 - Last measurement time per upstream

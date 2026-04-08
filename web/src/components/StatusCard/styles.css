@@ -9,3 +9,20 @@
   letter-spacing: var(--tracking-wide);
   color: var(--color-muted);
 }
+
+.status-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--space-1) 0;
+}
+
+.status-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-1);
+}
+
+.status-action-button {
+  padding: 8px 14px;
+  font-size: var(--text-sm);
+}

@@ -1,6 +1,16 @@
 import { createEl, clearChildren } from '../../utils/dom';
 import { formatBytes } from '../../utils/format';
-import type { CoordinationStatus, Mode } from '../../types';
+import type {
+  CoordinationStatus,
+  GeoIPDBStatus,
+  GeoIPStatusResponse,
+  IPLogStatusResponse,
+  Mode
+} from '../../types';
+
+interface StatusCardOptions {
+  onRefreshGeoIP?: () => void;
+}
 
 interface StatusData {
   mode: Mode;
@@ -10,9 +20,17 @@ interface StatusData {
   udp: number;
   memoryBytes: number;
   goroutines: number;
+  geoipStatus: GeoIPStatusResponse | null;
+  ipLogStatus: IPLogStatusResponse | null;
+  geoipError: string | null;
+  ipLogError: string | null;
+  refreshGeoIPInFlight: boolean;
 }
 
-export function renderStatusCard(container: HTMLElement): (data: StatusData) => void {
+export function renderStatusCard(
+  container: HTMLElement,
+  options: StatusCardOptions = {}
+): (data: StatusData) => void {
   clearChildren(container);
   const title = createEl('div', 'status-title', 'Live status');
   const rows = {
@@ -24,8 +42,19 @@ export function renderStatusCard(container: HTMLElement): (data: StatusData) => 
     tcp: createRow('TCP conns'),
     udp: createRow('UDP mappings'),
     memory: createRow('Memory (alloc)'),
-    goroutines: createRow('Goroutines')
+    goroutines: createRow('Goroutines'),
+    ipLog: createRow('IP log DB'),
+    geoipASN: createRow('GeoIP ASN'),
+    geoipCountry: createRow('GeoIP Country')
   };
+  const divider = createEl('div', 'status-divider');
+  const actions = createEl('div', 'status-actions');
+  const refreshButton = createEl('button', 'secondary status-action-button', 'Refresh GeoIP') as HTMLButtonElement;
+  refreshButton.type = 'button';
+  refreshButton.addEventListener('click', () => {
+    options.onRefreshGeoIP?.();
+  });
+  actions.appendChild(refreshButton);
 
   container.appendChild(title);
   container.appendChild(rows.mode.row);
@@ -37,6 +66,11 @@ export function renderStatusCard(container: HTMLElement): (data: StatusData) => 
   container.appendChild(rows.udp.row);
   container.appendChild(rows.memory.row);
   container.appendChild(rows.goroutines.row);
+  container.appendChild(divider);
+  container.appendChild(rows.ipLog.row);
+  container.appendChild(rows.geoipASN.row);
+  container.appendChild(rows.geoipCountry.row);
+  container.appendChild(actions);
 
   return (data: StatusData) => {
     rows.mode.value.textContent = data.mode;
@@ -54,6 +88,14 @@ export function renderStatusCard(container: HTMLElement): (data: StatusData) => 
     rows.goroutines.value.textContent = Number.isFinite(data.goroutines)
       ? Math.round(data.goroutines).toString()
       : '-';
+    rows.ipLog.value.textContent = formatIPLogStatus(data.ipLogStatus, data.ipLogError);
+    rows.geoipASN.value.textContent = formatGeoIPStatus(data.geoipStatus?.asn_db || null, data.geoipError);
+    rows.geoipCountry.value.textContent = formatGeoIPStatus(
+      data.geoipStatus?.country_db || null,
+      data.geoipError
+    );
+    refreshButton.disabled = data.refreshGeoIPInFlight;
+    refreshButton.textContent = data.refreshGeoIPInFlight ? 'Refreshing...' : 'Refresh GeoIP';
   };
 }
 
@@ -87,4 +129,33 @@ function createRow(label: string) {
   row.appendChild(name);
   row.appendChild(value);
   return { row, value };
+}
+
+function formatGeoIPStatus(status: GeoIPDBStatus | null, error: string | null): string {
+  if (error) {
+    return 'unavailable';
+  }
+  if (!status) {
+    return '-';
+  }
+  if (!status.configured) {
+    return 'not configured';
+  }
+  if (!status.available) {
+    return 'inactive';
+  }
+  if (status.file_size > 0) {
+    return `available · ${formatBytes(status.file_size)}`;
+  }
+  return 'available';
+}
+
+function formatIPLogStatus(status: IPLogStatusResponse | null, error: string | null): string {
+  if (error) {
+    return 'unavailable';
+  }
+  if (!status) {
+    return '-';
+  }
+  return `${status.record_count.toLocaleString()} · ${formatBytes(status.file_size)}`;
 }

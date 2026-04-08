@@ -1,4 +1,5 @@
 import { callRPC, getRuntimeConfig } from './api/rpc';
+import { getGeoIPStatus, getIPLogStatus, refreshGeoIP } from './api/iplog';
 import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
 import { createChart, type ChartHandle, type ChartSeries } from './components/Chart';
@@ -6,6 +7,7 @@ import { createConnectionTable } from './components/ConnectionTable';
 import { createUpstreamCard } from './components/UpstreamCard';
 import { renderStatusCard } from './components/StatusCard';
 import { createToastManager } from './components/Toast';
+import { createIPLogPage } from './pages/iplog';
 import { historyStore, type SessionHistoryEntry } from './state/history';
 import { createInitialState, Store } from './state/store';
 import { timeSeriesStore } from './state/timeseries';
@@ -29,7 +31,7 @@ if (!storedToken) {
   startApp(storedToken);
 }
 
-type Page = 'dashboard' | 'graph' | 'history' | 'config';
+type Page = 'dashboard' | 'graph' | 'history' | 'iplog' | 'config';
 type ConnectionSortKey = 'protocol' | 'client' | 'upstream' | 'up' | 'down' | 'last' | 'age';
 type SessionSortKey = 'id' | 'protocol' | 'client' | 'upstream' | 'start' | 'end' | 'up' | 'down';
 type SortDirection = 'asc' | 'desc';
@@ -58,7 +60,11 @@ interface ParsedClient {
 function startApp(token: string) {
   const store = new Store(createInitialState(token));
 
-  const statusCard = renderStatusCard(qs<HTMLElement>(document, '#statusCard'));
+  const statusCard = renderStatusCard(qs<HTMLElement>(document, '#statusCard'), {
+    onRefreshGeoIP: () => {
+      void refreshGeoIPNow();
+    }
+  });
   const upstreamGrid = qs<HTMLElement>(document, '#upstreamGrid');
   const upstreamSummary = qs<HTMLElement>(document, '#upstreamSummary');
   const connectionsSummary = qs<HTMLElement>(document, '#connectionsSummary');
@@ -85,6 +91,7 @@ function startApp(token: string) {
   const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
   const sessionHistoryTable = qs<HTMLTableSectionElement>(document, '#sessionHistoryTable');
   const configTree = qs<HTMLElement>(document, '#configTree');
+  const ipLogPage = qs<HTMLElement>(document, '#page-iplog');
   const upstreamDetailsModal = qs<HTMLElement>(document, '#upstreamDetailsModal');
   const rttChartContainer = qs<HTMLElement>(document, '#rttChartContainer');
   const scoreChartContainer = qs<HTMLElement>(document, '#scoreChartContainer');
@@ -118,6 +125,8 @@ function startApp(token: string) {
     '#7f8c8d'
   ];
   const tagColors = new Map<string, string>();
+
+  createIPLogPage(ipLogPage, { token, toast });
 
   restartButton.addEventListener('click', async () => {
     restartButton.disabled = true;
@@ -229,6 +238,9 @@ function startApp(token: string) {
     if (hash === 'history') {
       return 'history';
     }
+    if (hash === 'iplog') {
+      return 'iplog';
+    }
     if (hash === 'config') {
       return 'config';
     }
@@ -264,7 +276,12 @@ function startApp(token: string) {
       tcp: state.connections.tcp.size,
       udp: state.connections.udp.size,
       memoryBytes: state.memoryBytes,
-      goroutines: state.goroutines
+      goroutines: state.goroutines,
+      geoipStatus: state.geoipStatus,
+      ipLogStatus: state.ipLogStatus,
+      geoipError: state.pollErrors.geoip,
+      ipLogError: state.pollErrors.ipLog,
+      refreshGeoIPInFlight: state.refreshGeoIPInFlight
     });
     updateHeaderStats();
     updatePollStatus();
@@ -521,6 +538,77 @@ function startApp(token: string) {
       return;
     }
     configTree.textContent = formatYaml(resp.result);
+  }
+
+  async function loadOperationalStatus(): Promise<void> {
+    const [geoipResp, ipLogResp] = await Promise.all([
+      getGeoIPStatus(token),
+      getIPLogStatus(token)
+    ]);
+
+    if (geoipResp.ok && geoipResp.result) {
+      store.setState({
+        geoipStatus: geoipResp.result,
+        pollErrors: {
+          ...store.getState().pollErrors,
+          geoip: null
+        }
+      });
+    } else {
+      store.setState({
+        pollErrors: {
+          ...store.getState().pollErrors,
+          geoip: geoipResp.error || 'Unable to load GeoIP status'
+        }
+      });
+    }
+
+    if (ipLogResp.ok && ipLogResp.result) {
+      store.setState({
+        ipLogStatus: ipLogResp.result,
+        pollErrors: {
+          ...store.getState().pollErrors,
+          ipLog: null
+        }
+      });
+    } else {
+      store.setState({
+        pollErrors: {
+          ...store.getState().pollErrors,
+          ipLog: ipLogResp.error || 'Unable to load IP log status'
+        }
+      });
+    }
+
+    updateStatusCard();
+  }
+
+  async function refreshGeoIPNow(): Promise<void> {
+    if (store.getState().refreshGeoIPInFlight) {
+      return;
+    }
+
+    store.setState({ refreshGeoIPInFlight: true });
+    updateStatusCard();
+
+    try {
+      const resp = await refreshGeoIP(token);
+      if (!resp.ok || !resp.result) {
+        toast.show(resp.error || 'Unable to refresh GeoIP.', 'error');
+        return;
+      }
+
+      const dbErrors = [resp.result.asn_db.error, resp.result.country_db.error].filter(Boolean);
+      if (dbErrors.length > 0) {
+        toast.show(dbErrors[0] || 'GeoIP refresh completed with errors.', 'error');
+      } else {
+        toast.show('GeoIP refresh completed.', 'success');
+      }
+      await loadOperationalStatus();
+    } finally {
+      store.setState({ refreshGeoIPInFlight: false });
+      updateStatusCard();
+    }
   }
 
   function renderSessionHistory(): void {
@@ -876,6 +964,7 @@ function startApp(token: string) {
 
   void loadStatus();
   void loadIdentity();
+  void loadOperationalStatus();
   setActivePage(resolvePageFromHash());
 
   function startPolling(): void {
@@ -893,7 +982,7 @@ function startApp(token: string) {
     }
     pollInProgress = true;
     try {
-      await pollMetrics();
+      await Promise.allSettled([pollMetrics(), loadOperationalStatus()]);
     } finally {
       pollInProgress = false;
     }

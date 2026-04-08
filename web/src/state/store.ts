@@ -2,6 +2,8 @@ import type {
   ControlState,
   ConnectionEntry,
   CoordinationStatus,
+  GeoIPStatusResponse,
+  IPLogStatusResponse,
   Mode,
   UpstreamMetrics,
   UpstreamSnapshot
@@ -31,8 +33,13 @@ export interface AppState {
   mode: Mode;
   activeUpstream: string;
   coordination: CoordinationStatus;
+  geoipStatus: GeoIPStatusResponse | null;
+  ipLogStatus: IPLogStatusResponse | null;
+  refreshGeoIPInFlight: boolean;
   pollErrors: {
     metrics: string | null;
+    geoip: string | null;
+    ipLog: string | null;
   };
 }
 
@@ -119,8 +126,13 @@ export function createInitialState(token: string): AppState {
       version: 0,
       fallback_active: false
     },
+    geoipStatus: null,
+    ipLogStatus: null,
+    refreshGeoIPInFlight: false,
     pollErrors: {
-      metrics: null
+      metrics: null,
+      geoip: null,
+      ipLog: null
     }
   };
 }

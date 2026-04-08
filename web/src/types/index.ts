@@ -87,7 +87,11 @@ export type RPCMethod =
   | 'ListUpstreams'
   | 'GetMeasurementConfig'
   | 'GetRuntimeConfig'
-  | 'GetScheduleStatus';
+  | 'GetScheduleStatus'
+  | 'GetGeoIPStatus'
+  | 'RefreshGeoIP'
+  | 'GetIPLogStatus'
+  | 'QueryIPLog';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;
@@ -106,6 +110,85 @@ export interface IdentityResponse {
   hostname: string;
   ips: string[];
   version?: string;
+}
+
+export interface GeoIPDBStatus {
+  configured: boolean;
+  available: boolean;
+  path: string;
+  file_mod_time: number;
+  file_size: number;
+}
+
+export interface GeoIPStatusResponse {
+  asn_db: GeoIPDBStatus;
+  country_db: GeoIPDBStatus;
+  refresh_interval: string;
+}
+
+export interface GeoIPRefreshDBResult {
+  configured: boolean;
+  attempted: boolean;
+  refreshed: boolean;
+  previous_mod_time: number;
+  current_mod_time: number;
+  error: string;
+}
+
+export interface RefreshGeoIPResponse {
+  asn_db: GeoIPRefreshDBResult;
+  country_db: GeoIPRefreshDBResult;
+}
+
+export interface IPLogStatusResponse {
+  db_path: string;
+  file_size: number;
+  record_count: number;
+  oldest_record_at: number;
+  newest_record_at: number;
+  retention: string;
+  prune_interval: string;
+}
+
+export type IPLogSortBy =
+  | 'recorded_at'
+  | 'bytes_up'
+  | 'bytes_down'
+  | 'bytes_total'
+  | 'duration_ms';
+
+export type IPLogSortOrder = 'asc' | 'desc';
+
+export interface IPLogQueryParams {
+  start_time?: number;
+  end_time?: number;
+  cidr?: string;
+  asn?: number;
+  country?: string;
+  sort_by?: IPLogSortBy;
+  sort_order?: IPLogSortOrder;
+  limit?: number;
+  offset?: number;
+}
+
+export interface IPLogRecord {
+  id: number;
+  ip: string;
+  asn: number;
+  as_org: string;
+  country: string;
+  protocol: string;
+  upstream: string;
+  port: number;
+  bytes_up: number;
+  bytes_down: number;
+  duration_ms: number;
+  recorded_at: number;
+}
+
+export interface IPLogQueryResult {
+  total: number;
+  records: IPLogRecord[];
 }
 
 export type WSMessageType =
