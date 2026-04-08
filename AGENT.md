@@ -4,23 +4,34 @@ Primary entry document for LLM agents working with this codebase.
 
 ## Repository overview
 
-This repository contains two independent Linux-only networking tools plus a measurement server binary:
+This repository contains three production codebases plus a local manual test framework:
 
 1. **bwprobe** - Network quality measurement tool that tests at a user-specified bandwidth cap
 2. **fbforward** - TCP/UDP port forwarder with fbmeasure-based upstream selection
 3. **fbmeasure** - Measurement server used by fbforward for TCP/UDP link metrics
+4. **fbcoord** - Cloudflare Worker coordination service for multi-node fbforward deployments
+5. **coordlab** - Python-based local lab for manual fbcoord/fbforward testing
 
-Both projects are production-grade Go implementations focused on network quality measurement and management.
+The runtime mix is:
+- Go binaries for `bwprobe`, `fbforward`, and `fbmeasure`
+- TypeScript/Cloudflare Workers code for `fbcoord`
+- Python tooling for `scripts/coordlab`
 
 **fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using fbmeasure targeted probes (RTT, jitter, TCP retransmission rate, UDP loss rate), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI.
 
+**fbcoord summary**: Cloudflare Worker backed by Durable Objects. It coordinates a shared upstream pick across multiple fbforward nodes in the same pool, serves an operator UI/API, enforces auth bans through an auth-guard DO plus Cloudflare KV, and persists the shared coordination token in a token DO.
+
 ## Platform requirements
 
-Both projects require:
+Go data-plane components require:
 - Linux only - uses SO_MAX_PACING_RATE, TCP_INFO, raw ICMP sockets
 - Go 1.25.5+
 - CAP_NET_RAW capability for ICMP operations
 - CAP_NET_ADMIN capability for fbforward traffic shaping (optional)
+
+Additional tooling:
+- `fbcoord`: Node.js/npm, `wrangler`, Cloudflare Workers/Durable Objects/KV
+- `coordlab`: Linux host with unprivileged user namespaces enabled, Python venv at `.venv/`
 
 ## Documentation structure
 
@@ -28,6 +39,7 @@ The [doc/](doc/) directory contains structured project documentation:
 
 - [doc/outline.md](doc/outline.md): Complete documentation outline with 8 major sections
 - [doc/user-guide-fbforward.md](doc/user-guide-fbforward.md): fbforward operation guide
+- [doc/user-guide-fbcoord.md](doc/user-guide-fbcoord.md): fbcoord deployment, operation, and security guidance
 - [doc/user-guide-bwprobe.md](doc/user-guide-bwprobe.md): bwprobe operation guide
 - [doc/configuration-reference.md](doc/configuration-reference.md): Complete config schema
 - [doc/api-reference.md](doc/api-reference.md): bwprobe API and control plane API
@@ -36,6 +48,8 @@ The [doc/](doc/) directory contains structured project documentation:
 - [doc/diagrams.md](doc/diagrams.md): Diagram inventory with Mermaid templates
 - [doc/style-guide.md](doc/style-guide.md): Writing conventions for documentation
 - [doc/logging-guidelines.md](doc/logging-guidelines.md): Structured logging requirements, event naming, OTel alignment, privacy/redaction, and review checks
+- [doc/test/testing-guide.md](doc/test/testing-guide.md): Manual and automated test workflows
+- [doc/test/coordlab.md](doc/test/coordlab.md): coordlab architecture and operator guide
 
 Legacy documentation has been archived to [doc/archive/2025-01-26-legacy/](doc/archive/2025-01-26-legacy/).
 
@@ -88,6 +102,37 @@ Logic: [bwprobe/internal/engine/samples.go](bwprobe/internal/engine/samples.go)
 - [bwprobe/internal/network/](bwprobe/internal/network/): TCP/UDP senders with pacing
 - [bwprobe/internal/metrics/](bwprobe/internal/metrics/): RTT sampler, TCP_INFO reader, UDP loss tracking
 - [bwprobe/internal/protocol/](bwprobe/internal/protocol/): Data frame headers and constants
+
+## fbcoord architecture
+
+### Worker + Durable Object design
+
+fbcoord is a Cloudflare Worker with four Durable Object bindings:
+
+- `PoolDurableObject`: live node connections, preferences, and coordinated picks per pool
+- `RegistryDurableObject`: active pool registry
+- `TokenDurableObject`: shared coordination token record and session signing secret
+- `AuthGuardDurableObject`: authoritative auth failure counters and active bans
+
+Cloudflare KV (`FBCOORD_AUTH_KV`) is used as a fast replicated ban cache and manual denylist layer, but the auth-guard DO remains the source of truth for short-window enforcement.
+
+### Security model
+
+- Operator login and node auth both use the shared coordination token, but rate limiting is split by scope: `login` vs `node-auth`
+- Token verification uses PBKDF2-HMAC-SHA256 with per-record salt plus a Worker-side pepper secret
+- Token rotation requires both an authenticated operator session and `current_token`
+- Mutating admin endpoints enforce `Origin` when present
+- Pool and node WebSocket traffic is validated at runtime and rate-limited per connection
+
+### Public routes
+
+- `/healthz`: worker health check
+- `/ws/node?pool=<pool>`: node coordination socket
+- `/api/auth/login`, `/api/auth/check`, `/api/auth/logout`
+- `/api/pools`, `/api/pools/:pool`
+- `/api/token/info`, `/api/token/rotate`
+
+The `fbcoord` admin UI is a separate TypeScript app under `fbcoord/ui/`.
 
 ## fbforward architecture
 
@@ -176,7 +221,21 @@ Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algor
 **Web UI:**
 - `web/handler.go`: embedded UI asset handler
 - `web/src/main.ts`: UI application logic
+- `web/src/auth.ts`: browser-side token entry and persistence
 - `web/index.html`: SPA template
+
+**fbcoord:**
+- `fbcoord/src/worker.ts`: Worker entrypoint, routing, admin API, auth guard integration
+- `fbcoord/src/durable-objects/pool.ts`: node socket lifecycle and coordinated pick logic
+- `fbcoord/src/durable-objects/token.ts`: shared token persistence and verification
+- `fbcoord/src/durable-objects/auth-guard.ts`: auth failure counters, bans, KV cache integration
+- `fbcoord/ui/`: admin UI source
+- `fbcoord/wrangler.toml`: Worker bindings, migrations, KV namespace config
+
+**coordlab:**
+- `scripts/coordlab/coordlab.py`: CLI entrypoint and orchestration
+- `scripts/coordlab/lib/`: topology, process, shaping, link-state, proxy, readiness, and state helpers
+- `scripts/coordlab/web/`: Flask dashboard and API for manual lab control
 
 **Config and docs:**
 - `internal/config/config.go`: YAML config schema, defaults, validation
@@ -238,6 +297,20 @@ sudo setcap cap_net_raw+ep ./build/bin/fbforward
 sudo setcap cap_net_raw,cap_net_admin+ep ./build/bin/fbforward
 ```
 
+### fbcoord
+
+```bash
+cd fbcoord
+npm install
+npm run build
+npx wrangler deploy
+```
+
+Deployment notes:
+- `fbcoord/wrangler.toml` uses `new_sqlite_classes` migrations for free-plan Durable Objects
+- `FBCOORD_AUTH_KV` must point at a real Cloudflare KV namespace ID
+- required secrets include `FBCOORD_TOKEN` and `FBCOORD_TOKEN_PEPPER`
+
 ### fbmeasure
 
 ```bash
@@ -251,6 +324,15 @@ make build-fbmeasure
 nc -zv <upstream-host> 9876
 ```
 
+### coordlab
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r scripts/coordlab/requirements.txt
+.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+```
+
 ## Control plane
 
 **Authentication:**
@@ -258,6 +340,8 @@ nc -zv <upstream-host> 9876
 - WebSocket `/status` uses subprotocol authentication:
   - `fbforward`
   - `fbforward-token.<base64url(token)>`
+- The `fbforward` browser UI stores the raw control token in browser `localStorage` as `fbforward_token`
+- `Logout` clears that browser-side token; there is no cookie-backed server session in `fbforward`
 
 **Data source responsibilities:**
 - **WebSocket** (`/status`): connection/queue telemetry via subscription (1s/2s/5s intervals), test history events, session events
@@ -331,6 +415,23 @@ When extending functionality:
 5. **Scoring algorithm**: Modify normalization or weights in [internal/upstream/upstream.go](internal/upstream/upstream.go),
    update config schema in [internal/config/config.go](internal/config/config.go)
 
+### fbcoord
+
+When extending functionality:
+
+1. **Admin/API auth**: Update route handling in `fbcoord/src/worker.ts` and keep auth-guard + KV behavior aligned
+2. **Pool coordination behavior**: Change node socket or pick logic in `fbcoord/src/durable-objects/pool.ts`
+3. **Token/session behavior**: Update `fbcoord/src/durable-objects/token.ts` and related admin UI flows together
+4. **Deploy config**: Keep `fbcoord/wrangler.toml` bindings, KV IDs, and DO migrations consistent with Worker code
+
+### coordlab
+
+When extending local manual-test tooling:
+
+1. **Topology/process lifecycle**: Change `scripts/coordlab/coordlab.py` and `scripts/coordlab/lib/netns.py` / `process.py`
+2. **Lab controls**: Keep CLI, Flask API, and dashboard behavior aligned across `lib/`, `web/app.py`, and `web/static/`
+3. **State model**: Treat `state.json` as the dashboard/CLI contract and update `scripts/coordlab/lib/state.py` deliberately
+
 ## Implementation principles
 
 ### bwprobe
@@ -372,4 +473,20 @@ Acceptance checks for agent changes:
 
 ## Testing
 
-No automated tests yet. Prefer `go test ./...` and a quick manual run with a local config.
+Automated test coverage exists across Go, `fbcoord`, and `coordlab`:
+
+- Go code: `go test ./...`
+- `fbcoord`: `npm --prefix fbcoord test`
+- `coordlab`: `.venv/bin/python -m unittest discover -s scripts/coordlab/tests -p 'test_*.py'`
+
+Common validation commands:
+
+```bash
+go test ./...
+npm --prefix fbcoord test
+npm --prefix fbcoord run build
+.venv/bin/python -m py_compile scripts/coordlab/coordlab.py scripts/coordlab/lib/*.py scripts/coordlab/web/*.py scripts/coordlab/tests/*.py
+.venv/bin/python -m unittest discover -s scripts/coordlab/tests -p 'test_*.py'
+```
+
+For manual coordination testing, use `coordlab` instead of assuming only ad-hoc local configs exist.

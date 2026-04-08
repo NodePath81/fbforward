@@ -66,21 +66,21 @@ reachability:
 measurement:
   # Measurement startup delay and staleness behavior.
   startup_delay: 10s
-  stale_threshold: 60m
+  stale_threshold: 60s
   fallback_to_icmp_on_stale: true
 
   # Scheduling.
   schedule:
     interval:
-      min: 15m
-      max: 45m
+      min: 15s
+      max: 45s
     upstream_gap: 5s
 
   # Fast start + warmup.
   fast_start:
     enabled: true
     timeout: 500ms
-    warmup_duration: 15s
+    warmup_duration: 5s
 
   # Optional transport security for fbmeasure.
   security:
