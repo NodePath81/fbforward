@@ -2,6 +2,8 @@
 
 Coordlab is the manual coordination lab for `fbcoord` and multi-node `fbforward`.
 
+The full operator and CLI reference lives in [doc/test/coordlab.md](../../doc/test/coordlab.md).
+
 ## Python environment
 
 Coordlab must be run from the repo-root venv:

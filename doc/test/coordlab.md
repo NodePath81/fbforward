@@ -39,22 +39,230 @@ The main entrypoint is:
 .venv/bin/python scripts/coordlab/coordlab.py
 ```
 
-### Commands
+### Host prerequisites
 
-| Command | Purpose |
-|--------|---------|
-| `up` | Build the lab topology, start services, start host proxies, switch nodes to `coordination`, and verify readiness |
-| `down` | Stop proxies and services, tear down namespaces, and mark the lab inactive |
-| `status` | Print host URLs, process state, namespace state, and artifact paths |
-| `web` | Start the Flask dashboard on the host |
-| `shaping-status` | Show current live shaping on all node-side and upstream-side targets |
-| `shaping-set` | Apply delay and/or loss to one shaping target |
-| `shaping-clear` | Remove shaping from one target |
-| `shaping-clear-all` | Remove shaping from all targets |
-| `link-status` | Show current live link state for all targets |
-| `disconnect` | Bring one target link down |
-| `reconnect` | Bring one target link back up |
-| `net-up` / `net-status` / `net-down` | Phase 1 topology-only debugging commands |
+coordlab is intended for one Linux development host and expects the same baseline environment as the implementation:
+
+- repo-root Python venv created from `scripts/coordlab/requirements.txt`
+- unprivileged user namespaces enabled
+- `unshare`, `nsenter`, `ip`, `sysctl`, and `ping` for namespace setup
+- `ttyd` for browser terminals
+- `make` for default `up` builds
+- `npm` plus `fbcoord/node_modules` for the `fbcoord` UI build
+- `tc` only when using shaping commands
+
+If `up` is run without `--skip-build`, coordlab rebuilds `fbforward`, `fbmeasure`, and the `fbcoord` UI before lab startup. If `--skip-build` is used, the existing binaries and built `fbcoord` assets must already exist.
+
+### CLI conventions
+
+All operator-facing commands use the same form:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py <subcommand> [options]
+```
+
+Common behavior:
+
+- `--workdir` defaults to `/tmp/coordlab` for every user-facing subcommand
+- the same `--workdir` should be reused across `up`, `status`, `web`, and `down`
+- runtime errors print `error: ...` to stderr and exit non-zero
+- `status` and `net-status` inspect saved state; they do not start or repair the lab
+- `down` and `net-down` are safe to run when no state file exists; they return success after printing a notice
+- `proxy-daemon` is an internal helper started by `up`; it is not part of the operator workflow
+
+### Command matrix
+
+| Command | Purpose | Key options |
+|--------|---------|-------------|
+| `up` | Build the full Phase 5 lab, start services, proxies, and terminals, switch both nodes to `coordination`, and verify readiness | `--workdir`, `--skip-build`, repeatable `--client NAME=IP` |
+| `down` | Stop Phase 5 services and tear down namespaces | `--workdir` |
+| `status` | Print the saved Phase 5 state, including live/dead process and namespace status, node features, and artifact paths | `--workdir` |
+| `web` | Start the Flask dashboard for an existing workdir | `--workdir`, `--host`, `--port` |
+| `shaping-status` | Show current live shaping for all targets | `--workdir` |
+| `shaping-set` | Apply delay and/or loss to one target | `--workdir`, `--target`, `--delay-ms`, `--loss-pct` |
+| `shaping-clear` | Remove shaping from one target | `--workdir`, `--target` |
+| `shaping-clear-all` | Remove shaping from every target | `--workdir` |
+| `link-status` | Show current live connected/disconnected state for all targets | `--workdir` |
+| `disconnect` | Bring one node-side or upstream-side link down | `--workdir`, `--target` |
+| `reconnect` | Bring one node-side or upstream-side link back up | `--workdir`, `--target` |
+| `net-up` | Build the namespace topology only, without starting services, proxies, or ttyd | `--workdir`, repeatable `--client NAME=IP` |
+| `net-status` | Print the saved Phase 1 topology-only state | `--workdir` |
+| `net-down` | Tear down the Phase 1 topology-only lab | `--workdir` |
+
+### Client specification rules
+
+Both `up` and `net-up` accept repeatable `--client NAME=IP` arguments. Each client spec is validated before topology creation:
+
+- `NAME` must start with `client-`
+- `IP` must be a valid IPv4 address
+- duplicate client names are rejected
+- duplicate client identity IPs are rejected
+- client identity IPs must not overlap the transport `base_cidr`
+
+Example:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py up \
+  --workdir /tmp/coordlab-phase5 \
+  --client client-1=198.51.100.10 \
+  --client client-2=203.0.113.20
+```
+
+### Command reference
+
+#### `up`
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py up [--workdir PATH] [--skip-build] [--client NAME=IP ...]
+```
+
+What `up` does:
+
+- validates all requested client specs
+- checks the fixed proxy ports (`18700`-`18702`) and the ttyd port set starting at `18900`
+- rebuilds binaries and `fbcoord` UI unless `--skip-build` is set
+- downloads missing MMDB files into `mmdb/`
+- creates the namespace topology
+- generates node configs into `configs/`
+- starts `fbmeasure`, `fbcoord`, `fbforward`, the host proxy daemon, and ttyd terminals
+- switches both nodes to coordination mode and verifies readiness
+- writes the final state to `state.json`
+
+Important notes:
+
+- `up` fails if an earlier lab in the same `--workdir` still has live namespaces or processes
+- `up` starts ttyd terminals for all configured clients plus `upstream-1` and `upstream-2`
+- ttyd ports are deterministic at startup: sorted clients first, then sorted upstream namespaces
+- GeoIP MMDB downloads are cached per file; existing files are reused
+
+Typical usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5 --skip-build
+```
+
+#### `down`
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py down [--workdir PATH]
+```
+
+`down` stops the proxy daemon, ttyd, `fbcoord`, `fbforward`, `fbmeasure`, and finally the namespace tree. It then marks the saved state inactive.
+
+#### `status`
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py status [--workdir PATH]
+```
+
+`status` renders the saved Phase 5 view of the lab:
+
+- host-facing service URLs
+- process and namespace liveness
+- proxy mappings
+- configured clients and terminal URLs
+- persisted node feature summaries
+- artifact directories and command reminders
+
+This command is useful both while the lab is active and after teardown, because it shows the saved state along with current liveness.
+
+#### `web`
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py web [--workdir PATH] [--host HOST] [--port PORT]
+```
+
+Default host/port are `127.0.0.1:18800`. `web` does not start the lab by itself; it serves the dashboard for the state and live services already associated with the selected `--workdir`.
+
+Examples:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5 --host 127.0.0.1 --port 18880
+```
+
+#### Shaping commands
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py shaping-status [--workdir PATH]
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set [--workdir PATH] --target TARGET [--delay-ms N] [--loss-pct P]
+.venv/bin/python scripts/coordlab/coordlab.py shaping-clear [--workdir PATH] --target TARGET
+.venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all [--workdir PATH]
+```
+
+Allowed targets are:
+
+- `node-1`
+- `node-2`
+- `upstream-1`
+- `upstream-2`
+
+Behavior:
+
+- `shaping-status` reads the live `tc` state
+- `shaping-set` can apply delay only, loss only, or both in one command
+- `shaping-clear` removes shaping from one target
+- `shaping-clear-all` clears every target in the shaping model
+
+Examples:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target node-1 --delay-ms 200
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target upstream-2 --loss-pct 30
+.venv/bin/python scripts/coordlab/coordlab.py shaping-clear --workdir /tmp/coordlab-phase5 --target upstream-1
+```
+
+#### Link-state commands
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py link-status [--workdir PATH]
+.venv/bin/python scripts/coordlab/coordlab.py disconnect [--workdir PATH] --target TARGET
+.venv/bin/python scripts/coordlab/coordlab.py reconnect [--workdir PATH] --target TARGET
+```
+
+The same four targets are supported. These commands operate on interface admin state, not `tc`, so they model hard partitions rather than soft impairments.
+
+Examples:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py disconnect --workdir /tmp/coordlab-phase5 --target node-1
+.venv/bin/python scripts/coordlab/coordlab.py reconnect --workdir /tmp/coordlab-phase5 --target upstream-1
+```
+
+#### Topology-only commands
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py net-up [--workdir PATH] [--client NAME=IP ...]
+.venv/bin/python scripts/coordlab/coordlab.py net-status [--workdir PATH]
+.venv/bin/python scripts/coordlab/coordlab.py net-down [--workdir PATH]
+```
+
+`net-up` creates only the namespace topology and routing. It does not:
+
+- build binaries
+- download MMDB files
+- start `fbcoord`
+- start `fbforward`
+- start `fbmeasure`
+- start host proxies
+- start ttyd terminals
+
+Use these commands when debugging namespace wiring, addresses, routing, or connectivity in isolation from the service processes.
 
 ### Work directory
 
@@ -77,6 +285,33 @@ The work directory contains:
 - `mmdb/` — cached GeoIP MMDB files used by both nodes
 - `data/` — SQLite parent directory for per-node IP log databases
 - `fbcoord-runtime/` — isolated runtime copy used by `wrangler dev`
+
+### Common CLI workflows
+
+Minimal full lab:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
+```
+
+Topology-only debugging:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py net-up --workdir /tmp/coordlab-net --client client-1=203.0.113.20
+.venv/bin/python scripts/coordlab/coordlab.py net-status --workdir /tmp/coordlab-net
+.venv/bin/python scripts/coordlab/coordlab.py net-down --workdir /tmp/coordlab-net
+```
+
+Operational inspection from CLI after startup:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py shaping-status --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py link-status --workdir /tmp/coordlab-phase5
+```
 
 ---
 
