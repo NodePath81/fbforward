@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lib.netns import DEFAULT_BASE_CIDR, allocate_subnets, default_links
+from lib.netns import DEFAULT_BASE_CIDR, allocate_next_subnet, allocate_subnets, default_links
 from lib.netns import compute_link_order, compute_namespace_order
 
 
@@ -58,6 +58,13 @@ class NetnsHelpersTest(unittest.TestCase):
             ],
             pairs,
         )
+
+    def test_allocate_next_subnet_advances_cursor_without_reuse(self) -> None:
+        first, cursor = allocate_next_subnet(DEFAULT_BASE_CIDR, 7)
+        second, cursor = allocate_next_subnet(DEFAULT_BASE_CIDR, cursor)
+        self.assertEqual("10.99.0.28/30", str(first))
+        self.assertEqual("10.99.0.32/30", str(second))
+        self.assertEqual(9, cursor)
 
 
 if __name__ == "__main__":

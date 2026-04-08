@@ -21,6 +21,8 @@ const TOPOLOGY_LINE_IDS = {
 const state = {
   refreshMs: 5000,
   timer: null,
+  clientMutationInFlight: false,
+  clients: {},
   processes: [],
   shapingTargets: [],
   linkTargets: {},
@@ -140,15 +142,26 @@ function renderServiceLinks(serviceLinks) {
   `).join("");
 }
 
-function renderClients(clients) {
+function renderClientManagement(clients) {
   const entries = Object.entries(clients || {});
-  renderList("#client-list", entries, ([name, info]) => `
+  renderList("#client-management-list", entries, ([name, info]) => `
     <div class="list-row">
       <div>
         <strong>${name}</strong>
         <span class="subtle">client namespace</span>
       </div>
-      <div class="subtle">${info.identity_ip}</div>
+      <div class="list-actions">
+        <span class="subtle">${info.identity_ip}</span>
+        <button
+          type="button"
+          class="ghost warn-button"
+          data-client-action="remove"
+          data-client-name="${name}"
+          ${state.clientMutationInFlight ? "disabled" : ""}
+        >
+          Remove
+        </button>
+      </div>
     </div>
   `);
 }
@@ -180,6 +193,34 @@ function renderTerminalLinks(terminals) {
       <span class="service-url">${info.alive ? "alive" : "dead"} • pid ${info.pid}</span>
     </a>
   `).join("");
+}
+
+function renderClientMutationMessage(message, kind = "info") {
+  const element = document.querySelector("#client-mutation-message");
+  if (!message) {
+    element.classList.add("hidden");
+    element.classList.remove("error-list");
+    element.classList.remove("success-note");
+    element.textContent = "";
+    return;
+  }
+  element.textContent = message;
+  element.classList.remove("hidden");
+  element.classList.toggle("error-list", kind === "error");
+  element.classList.toggle("success-note", kind === "success");
+}
+
+function setClientControlsDisabled(disabled) {
+  state.clientMutationInFlight = disabled;
+  for (const selector of ["#client-name", "#client-identity-ip", "#client-add"]) {
+    const element = document.querySelector(selector);
+    if (element) {
+      element.disabled = disabled;
+    }
+  }
+  for (const button of document.querySelectorAll("[data-client-action='remove']")) {
+    button.disabled = disabled;
+  }
 }
 
 function renderCoordination(payload) {
@@ -296,8 +337,7 @@ function renderShaping(payload) {
   renderShapingView();
 }
 
-async function loadStatus() {
-  const payload = await requestJson("/api/status");
+function applyStatusPayload(payload) {
   document.querySelector("#lab-phase").textContent = payload.phase ? `phase ${payload.phase}` : "inactive";
   document.querySelector("#lab-meta").innerHTML = payload.active
     ? `<p><strong>Workdir:</strong> ${payload.work_dir}</p><p><strong>State:</strong> ${payload.state_path}</p>`
@@ -322,12 +362,18 @@ async function loadStatus() {
       <div>${statusBadge(entry.alive)}</div>
     </div>
   `);
-  renderClients(payload.clients || {});
-  renderClientPaths(payload.clients || {});
+  state.clients = payload.clients || {};
+  renderClientManagement(state.clients);
+  renderClientPaths(state.clients);
   renderServiceLinks(payload.service_links || {});
   renderTerminalLinks(payload.terminals || {});
   state.processes = payload.processes || [];
   syncLogProcessOptions(state.processes);
+}
+
+async function loadStatus() {
+  const payload = await requestJson("/api/status");
+  applyStatusPayload(payload);
   return payload;
 }
 
@@ -423,6 +469,55 @@ async function setLinkConnected(target, connected) {
   }
 }
 
+async function mutateClient(url, options, successMessage) {
+  setClientControlsDisabled(true);
+  renderClientMutationMessage("");
+  try {
+    const payload = await requestJson(url, options);
+    applyStatusPayload(payload);
+    renderClientMutationMessage(successMessage, "success");
+    await loadCoordination();
+    await loadShaping();
+    await loadLinkState();
+    return true;
+  } catch (error) {
+    renderClientMutationMessage(error.message, "error");
+    return false;
+  } finally {
+    setClientControlsDisabled(false);
+    renderClientManagement(state.clients);
+  }
+}
+
+async function addClient(event) {
+  event.preventDefault();
+  const name = document.querySelector("#client-name").value.trim();
+  const identityIp = document.querySelector("#client-identity-ip").value.trim();
+  if (!name || !identityIp) {
+    renderClientMutationMessage("name and identity_ip are required", "error");
+    return;
+  }
+  const ok = await mutateClient(
+    "/api/clients",
+    {
+      method: "POST",
+      body: JSON.stringify({ name, identity_ip: identityIp }),
+    },
+    `Added ${name}`,
+  );
+  if (ok) {
+    document.querySelector("#client-form").reset();
+  }
+}
+
+async function removeClient(name) {
+  await mutateClient(
+    `/api/clients/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+    `Removed ${name}`,
+  );
+}
+
 async function applyPreset() {
   const value = document.querySelector("#preset-select").value;
   if (!value) {
@@ -466,9 +561,17 @@ function bindEvents() {
   document.querySelector("#refresh-logs").addEventListener("click", () => void loadLogs());
   document.querySelector("#clear-all").addEventListener("click", () => void clearAllShaping());
   document.querySelector("#apply-preset").addEventListener("click", () => void applyPreset());
+  document.querySelector("#client-form").addEventListener("submit", (event) => void addClient(event));
   document.querySelector("#refresh-interval").addEventListener("change", (event) => {
     state.refreshMs = Number(event.target.value);
     schedulePolling();
+  });
+  document.querySelector("#client-management-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-client-action='remove']");
+    if (!button) {
+      return;
+    }
+    void removeClient(button.dataset.clientName);
   });
   document.querySelector("#shaping-list").addEventListener("click", (event) => {
     const button = event.target.closest("button");

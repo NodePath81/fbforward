@@ -74,6 +74,7 @@ class TokenInfo:
 class TopologyInfo:
     base_cidr: str
     links: list[LinkInfo] = field(default_factory=list)
+    next_subnet_index: int = 0
 
 
 @dataclass(slots=True)
@@ -128,6 +129,7 @@ class LabState:
         topology = TopologyInfo(
             base_cidr=topology_raw.get("base_cidr", ""),
             links=[LinkInfo(**info) for info in topology_raw.get("links", [])],
+            next_subnet_index=int(topology_raw.get("next_subnet_index", len(topology_raw.get("links", [])))),
         )
         return cls(
             phase=int(data.get("phase", 1)),

@@ -104,6 +104,9 @@ def sample_state(workdir: Path) -> LabState:
             "fbcoord": ProcessInfo(pid=200, ns="fbcoord", log_path=str(workdir / "fbcoord.log"), order=1),
             "fbforward-node-1": ProcessInfo(pid=201, ns="node-1", log_path=str(workdir / "node1.log"), order=2),
             "fbforward-node-2": ProcessInfo(pid=202, ns="node-2", log_path=str(workdir / "node2.log"), order=3),
+            "ttyd-client-1": ProcessInfo(pid=301, ns="host", log_path=str(workdir / "ttyd-client-1.log"), order=4),
+            "ttyd-upstream-1": ProcessInfo(pid=302, ns="host", log_path=str(workdir / "ttyd-upstream-1.log"), order=5),
+            "ttyd-upstream-2": ProcessInfo(pid=303, ns="host", log_path=str(workdir / "ttyd-upstream-2.log"), order=6),
         },
         proxies={
             "fbcoord": ProxyInfo("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
@@ -137,7 +140,7 @@ def sample_state(workdir: Path) -> LabState:
             },
         ),
         tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
-        topology=TopologyInfo(base_cidr="10.99.0.0/24"),
+        topology=TopologyInfo(base_cidr="10.99.0.0/24", next_subnet_index=10),
     )
 
 
@@ -305,6 +308,70 @@ class WebAppTest(unittest.TestCase):
 
         missing = self.client.get("/api/logs/missing")
         self.assertEqual(404, missing.status_code)
+
+    def test_add_client_route_returns_updated_status_payload(self) -> None:
+        updated = sample_state(self.workdir)
+        updated.clients["client-2"] = ClientInfo(identity_ip="203.0.113.20")
+        with (
+            mock.patch("web.app.is_alive", return_value=True),
+            mock.patch("web.app.add_client", return_value=updated) as add_client,
+        ):
+            self.write_state(sample_state(self.workdir))
+            response = self.client.post(
+                "/api/clients",
+                data=json.dumps({"name": "client-2", "identity_ip": "203.0.113.20"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual("203.0.113.20", payload["clients"]["client-2"]["identity_ip"])
+        add_client.assert_called_once()
+
+    def test_add_client_route_rejects_invalid_body(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        response = self.client.post(
+            "/api/clients",
+            data=json.dumps({"name": "bad", "identity_ip": "not-an-ip"}),
+            content_type="application/json",
+        )
+        self.assertEqual(400, response.status_code)
+
+    def test_delete_client_route_returns_404_for_unknown_client(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        response = self.client.delete("/api/clients/client-9")
+        self.assertEqual(404, response.status_code)
+
+    def test_client_mutation_routes_return_409_when_busy(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        lock = self.app.config["client_mutation_lock"]
+        self.assertTrue(lock.acquire(blocking=False))
+        try:
+            response = self.client.post(
+                "/api/clients",
+                data=json.dumps({"name": "client-2", "identity_ip": "203.0.113.20"}),
+                content_type="application/json",
+            )
+        finally:
+            lock.release()
+        self.assertEqual(409, response.status_code)
+
+    def test_add_client_route_port_conflict_mentions_only_ttyd_binding(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        with mock.patch(
+            "web.app.add_client",
+            side_effect=RuntimeError("coordlab ttyd ports are already in use: ttyd-client-2:127.0.0.1:18900"),
+        ):
+            response = self.client.post(
+                "/api/clients",
+                data=json.dumps({"name": "client-2", "identity_ip": "203.0.113.20"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(409, response.status_code)
+        payload = response.get_json()
+        self.assertIn("ttyd-client-2:127.0.0.1:18900", payload["error"])
+        self.assertNotIn("fbcoord", payload["error"])
 
 
 if __name__ == "__main__":

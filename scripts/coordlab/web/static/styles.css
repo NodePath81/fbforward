@@ -296,10 +296,45 @@ h1 {
 
 .shape-values label,
 .controls label,
-.inline-actions label {
+.inline-actions label,
+.form-grid label {
   display: grid;
   gap: 6px;
   font-size: 0.9rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: end;
+}
+
+.list-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.status-note {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(21, 50, 60, 0.12);
+}
+
+.status-note.error-list {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: rgba(143, 63, 47, 0.18);
+}
+
+.status-note.success-note {
+  background: rgba(31, 95, 82, 0.1);
+  color: var(--accent);
+  border-color: rgba(31, 95, 82, 0.2);
 }
 
 select,

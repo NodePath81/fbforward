@@ -70,6 +70,7 @@ class StateRoundTripTest(unittest.TestCase):
             tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
             topology=TopologyInfo(
                 base_cidr="10.99.0.0/24",
+                next_subnet_index=8,
                 links=[
                     LinkInfo(
                         left_ns="hub",
@@ -103,6 +104,7 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.shaping.targets["upstream-1"].device, loaded.shaping.targets["upstream-1"].device)
         self.assertEqual(state.tokens.coord_token, loaded.tokens.coord_token)
         self.assertEqual(state.topology.links[0].right_if, loaded.topology.links[0].right_if)
+        self.assertEqual(state.topology.next_subnet_index, loaded.topology.next_subnet_index)
 
 
 if __name__ == "__main__":

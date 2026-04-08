@@ -172,7 +172,11 @@ def build_state(
         terminals=terminals or {},
         shaping=shaping or build_shaping_info(topology),
         tokens=tokens or TokenInfo(),
-        topology=TopologyInfo(base_cidr=topology.base_cidr, links=links),
+        topology=TopologyInfo(
+            base_cidr=topology.base_cidr,
+            links=links,
+            next_subnet_index=topology.next_subnet_index or len(links),
+        ),
     )
 
 
@@ -278,32 +282,52 @@ def require_tools(tools: Iterable[str]) -> None:
         raise RuntimeError(f"missing required tools: {', '.join(missing)}")
 
 
+def validate_client_spec(
+    name: str,
+    raw_ip: str,
+    *,
+    base_cidr: str = netns.DEFAULT_BASE_CIDR,
+    existing_names: Iterable[str] = (),
+    existing_ips: Iterable[str] = (),
+) -> str:
+    base_network = ipaddress.ip_network(base_cidr)
+    if not name.startswith("client-"):
+        raise ValueError(f"invalid client name {name!r}; expected prefix 'client-'")
+    if name in set(existing_names):
+        raise ValueError(f"duplicate client name: {name}")
+    try:
+        ip = ipaddress.ip_address(raw_ip)
+    except ValueError as exc:
+        raise ValueError(f"invalid client IP {raw_ip!r} for {name}") from exc
+    if not isinstance(ip, ipaddress.IPv4Address):
+        raise ValueError(f"client IP must be IPv4: {raw_ip}")
+    if str(ip) in set(existing_ips):
+        raise ValueError(f"duplicate client IP: {ip}")
+    if ip in base_network:
+        raise ValueError(f"client IP {ip} overlaps transport base CIDR {base_cidr}")
+    return str(ip)
+
+
 def parse_client_specs(raw_specs: list[str], *, base_cidr: str = netns.DEFAULT_BASE_CIDR) -> dict[str, str]:
     if not raw_specs:
         return {}
-    base_network = ipaddress.ip_network(base_cidr)
     parsed: dict[str, str] = {}
     seen_ips: set[str] = set()
     for raw in raw_specs:
         name, separator, raw_ip = raw.partition("=")
         if separator != "=" or not name or not raw_ip:
             raise RuntimeError(f"invalid client spec {raw!r}; expected NAME=IP")
-        if not name.startswith("client-"):
-            raise RuntimeError(f"invalid client name {name!r}; expected prefix 'client-'")
-        if name in parsed:
-            raise RuntimeError(f"duplicate client name: {name}")
         try:
-            ip = ipaddress.ip_address(raw_ip)
+            parsed[name] = validate_client_spec(
+                name,
+                raw_ip,
+                base_cidr=base_cidr,
+                existing_names=parsed,
+                existing_ips=seen_ips,
+            )
         except ValueError as exc:
-            raise RuntimeError(f"invalid client IP {raw_ip!r} for {name}") from exc
-        if not isinstance(ip, ipaddress.IPv4Address):
-            raise RuntimeError(f"client IP must be IPv4: {raw_ip}")
-        if raw_ip in seen_ips:
-            raise RuntimeError(f"duplicate client IP: {raw_ip}")
-        if ip in base_network:
-            raise RuntimeError(f"client IP {raw_ip} overlaps transport base CIDR {base_cidr}")
-        parsed[name] = raw_ip
-        seen_ips.add(raw_ip)
+            raise RuntimeError(str(exc)) from exc
+        seen_ips.add(parsed[name])
     return parsed
 
 
@@ -319,7 +343,15 @@ def allocate_ttyd_ports(
     return ports
 
 
-def build_ttyd_command(*, ns_pid: int, port: int) -> list[str]:
+def allocate_live_ttyd_port(terminals: dict[str, TerminalInfo]) -> int:
+    used = {info.host_port for info in terminals.values()}
+    port = TTYD_BASE_PORT
+    while port in used:
+        port += 1
+    return port
+
+
+def build_ttyd_command(*, ns_pid: int, port: int, namespace_name: str) -> list[str]:
     return [
         "ttyd",
         "--interface",
@@ -335,8 +367,12 @@ def build_ttyd_command(*, ns_pid: int, port: int) -> list[str]:
         "-U",
         "-n",
         "--",
+        "env",
+        f"PS1={namespace_name}@\\w$ ",
         "/bin/bash",
-        "-l",
+        "--noprofile",
+        "--norc",
+        "-i",
     ]
 
 
@@ -361,10 +397,10 @@ def existing_lab_is_alive(state: LabState) -> list[str]:
 
 
 def ensure_fbforward_binaries(skip_build: bool) -> None:
-    missing = [str(path) for path in (FBFORWARD_BIN, FBMEASURE_BIN) if not path.exists()]
-    if not missing:
-        return
     if skip_build:
+        missing = [str(path) for path in (FBFORWARD_BIN, FBMEASURE_BIN) if not path.exists()]
+        if not missing:
+            return
         raise RuntimeError(f"missing required binaries with --skip-build: {', '.join(missing)}")
     require_tools(["make"])
     run_host(["make", "build"], cwd=REPO_ROOT)
@@ -503,10 +539,19 @@ def verify_fbforward_rpc_in_namespace(topology: netns.Topology, manager: Process
     wait_for_condition(READINESS_TIMEOUT_SEC, check, f"{process_name} RPC did not become ready")
 
 
-def assert_host_ports_available(extra_bindings: Iterable[tuple[str, str, int]] | None = None) -> None:
+def fixed_proxy_bindings() -> list[tuple[str, str, int]]:
+    return [
+        (name, listen_host, host_port)
+        for name, (listen_host, host_port, _, _, _) in PROXY_SPECS.items()
+    ]
+
+
+def assert_bindings_available(
+    bindings: Iterable[tuple[str, str, int]],
+    *,
+    error_prefix: str = "coordlab host ports are already in use",
+) -> None:
     busy: list[str] = []
-    bindings = [(name, listen_host, host_port) for name, (listen_host, host_port, _, _, _) in PROXY_SPECS.items()]
-    bindings.extend(list(extra_bindings or ()))
     for name, listen_host, host_port in bindings:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -515,7 +560,14 @@ def assert_host_ports_available(extra_bindings: Iterable[tuple[str, str, int]] |
             except OSError:
                 busy.append(f"{name}:{listen_host}:{host_port}")
     if busy:
-        raise RuntimeError(f"coordlab proxy ports are already in use: {', '.join(busy)}")
+        raise RuntimeError(f"{error_prefix}: {', '.join(busy)}")
+
+
+def assert_host_ports_available(extra_bindings: Iterable[tuple[str, str, int]] | None = None) -> None:
+    assert_bindings_available(
+        [*fixed_proxy_bindings(), *list(extra_bindings or ())],
+        error_prefix="coordlab proxy ports are already in use",
+    )
 
 
 def apply_coordination_mode(node_url: str, control_token: str, *, skip_build: bool) -> None:
@@ -545,6 +597,186 @@ def build_proxy_infos() -> dict[str, ProxyInfo]:
     }
 
 
+def ttyd_process_name(namespace_name: str) -> str:
+    return f"ttyd-{namespace_name}"
+
+
+def next_process_order(processes: dict[str, ProcessInfo]) -> int:
+    return max((info.order for info in processes.values()), default=-1) + 1
+
+
+def topology_from_state(state: LabState) -> netns.Topology:
+    return netns.Topology(
+        work_dir=state.work_dir,
+        namespaces={
+            name: netns.Namespace(name=name, pid=info.pid, parent=info.parent, role=info.role)
+            for name, info in state.namespaces.items()
+        },
+        links=[
+            netns.Link(
+                left_ns=link.left_ns,
+                right_ns=link.right_ns,
+                left_if=link.left_if,
+                right_if=link.right_if,
+                subnet=link.subnet,
+                left_ip=link.left_ip,
+                right_ip=link.right_ip,
+            )
+            for link in state.topology.links
+        ],
+        base_cidr=state.topology.base_cidr,
+        clients={name: info.identity_ip for name, info in state.clients.items()},
+        next_subnet_index=state.topology.next_subnet_index or len(state.topology.links),
+    )
+
+
+def sync_state_topology(state: LabState, topology: netns.Topology) -> None:
+    state.namespaces = {
+        name: NamespaceInfo(pid=ns.pid, parent=ns.parent, role=ns.role)
+        for name, ns in topology.namespaces.items()
+    }
+    state.clients = {
+        name: ClientInfo(identity_ip=identity_ip)
+        for name, identity_ip in sorted(topology.clients.items())
+    }
+    state.topology = TopologyInfo(
+        base_cidr=topology.base_cidr,
+        links=[
+            LinkInfo(
+                left_ns=link.left_ns,
+                right_ns=link.right_ns,
+                left_if=link.left_if,
+                right_if=link.right_if,
+                subnet=link.subnet,
+                left_ip=link.left_ip,
+                right_ip=link.right_ip,
+            )
+            for link in topology.links
+        ],
+        next_subnet_index=topology.next_subnet_index,
+    )
+
+
+def save_current_state(state: LabState) -> None:
+    save_state(state_path_for(Path(state.work_dir)), state)
+
+
+def start_terminal_process(workdir: Path, namespace_name: str, ns_pid: int, host_port: int) -> tuple[int, str]:
+    logs_dir = logs_dir_for(workdir)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"{ttyd_process_name(namespace_name)}.log"
+    log_handle = log_path.open("wb")
+    try:
+        process = subprocess.Popen(
+            build_ttyd_command(ns_pid=ns_pid, port=host_port, namespace_name=namespace_name),
+            cwd=str(REPO_ROOT),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    finally:
+        log_handle.close()
+    return process.pid, str(log_path)
+
+
+def ensure_client_edge(state: LabState) -> LabState:
+    topology = topology_from_state(state)
+    if "client-edge" in topology.namespaces:
+        return state
+    namespace, link, next_subnet_index = netns.create_client_edge(topology)
+    topology.namespaces.setdefault("client-edge", namespace)
+    if not any(existing.left_ns == "internet" and existing.right_ns == "client-edge" for existing in topology.links):
+        topology.links.append(link)
+    topology.next_subnet_index = max(topology.next_subnet_index, next_subnet_index)
+    sync_state_topology(state, topology)
+    save_current_state(state)
+    return state
+
+
+def add_client(state: LabState, name: str, identity_ip: str) -> LabState:
+    if not state.active:
+        raise RuntimeError("coordlab state is not active")
+    normalized_ip = validate_client_spec(
+        name,
+        identity_ip,
+        base_cidr=state.topology.base_cidr,
+        existing_names=state.clients,
+        existing_ips=(info.identity_ip for info in state.clients.values()),
+    )
+    workdir = Path(state.work_dir)
+    host_port = allocate_live_ttyd_port(state.terminals)
+    assert_bindings_available(
+        [(ttyd_process_name(name), "127.0.0.1", host_port)],
+        error_prefix="coordlab ttyd ports are already in use",
+    )
+
+    topology = topology_from_state(state)
+    created_client_edge = "client-edge" not in topology.namespaces
+    terminal_pid: int | None = None
+    try:
+        if created_client_edge:
+            edge_namespace, edge_link, edge_cursor = netns.create_client_edge(topology)
+            topology.namespaces.setdefault("client-edge", edge_namespace)
+            if not any(existing.left_ns == "internet" and existing.right_ns == "client-edge" for existing in topology.links):
+                topology.links.append(edge_link)
+            topology.next_subnet_index = max(topology.next_subnet_index, edge_cursor)
+        namespace, client_link, next_subnet_index = netns.create_client_namespace(topology, name, normalized_ip)
+        topology.namespaces.setdefault(name, namespace)
+        if not any(existing.left_ns == "client-edge" and existing.right_ns == name for existing in topology.links):
+            topology.links.append(client_link)
+        topology.clients.setdefault(name, normalized_ip)
+        topology.next_subnet_index = max(topology.next_subnet_index, next_subnet_index)
+        netns.verify_connectivity(topology)
+        terminal_pid, log_path = start_terminal_process(workdir, name, namespace.pid, host_port)
+    except Exception:
+        if terminal_pid is not None:
+            terminate_process_group(terminal_pid, timeout_sec=5)
+        try:
+            if name in topology.namespaces:
+                netns.remove_client_namespace(topology, name)
+        except Exception:
+            pass
+        if created_client_edge:
+            try:
+                netns.remove_client_edge(topology)
+            except Exception:
+                pass
+        raise
+
+    sync_state_topology(state, topology)
+    state.terminals[name] = TerminalInfo(host_port=host_port, pid=terminal_pid)
+    state.processes[ttyd_process_name(name)] = ProcessInfo(
+        pid=terminal_pid,
+        ns="host",
+        log_path=log_path,
+        order=next_process_order(state.processes),
+    )
+    save_current_state(state)
+    return state
+
+
+def remove_client(state: LabState, name: str) -> LabState:
+    if name not in state.clients:
+        raise KeyError(f"unknown client namespace: {name}")
+    topology = topology_from_state(state)
+    terminal = state.terminals.get(name)
+    if terminal is not None:
+        terminate_process_group(terminal.pid, timeout_sec=5)
+    netns.remove_client_namespace(topology, name)
+    topology.namespaces.pop(name, None)
+    topology.clients.pop(name, None)
+    topology.links = [
+        link
+        for link in topology.links
+        if not (link.left_ns == "client-edge" and link.right_ns == name)
+    ]
+    sync_state_topology(state, topology)
+    state.terminals.pop(name, None)
+    state.processes.pop(ttyd_process_name(name), None)
+    save_current_state(state)
+    return state
+
+
 def start_ttyd_terminals(
     manager: ProcessManager,
     topology: netns.Topology,
@@ -553,7 +785,11 @@ def start_ttyd_terminals(
     terminals: dict[str, TerminalInfo] = {}
     for namespace_name, port in sorted(ttyd_ports.items(), key=lambda item: item[1]):
         managed = manager.start_host(
-            build_ttyd_command(ns_pid=topology.namespaces[namespace_name].pid, port=port),
+            build_ttyd_command(
+                ns_pid=topology.namespaces[namespace_name].pid,
+                port=port,
+                namespace_name=namespace_name,
+            ),
             f"ttyd-{namespace_name}",
         )
         terminals[namespace_name] = TerminalInfo(host_port=port, pid=managed.pid)

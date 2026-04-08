@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from threading import Lock
 
 import httpx
 from flask import Flask, jsonify, render_template, request
 
+from coordlab import add_client, remove_client
 from lib.output import proxy_url, terminal_url
 from lib.process import is_alive
 from lib.rpc import get_status
@@ -343,6 +345,18 @@ def parse_shaping_body(body: Mapping[str, object] | None) -> tuple[int, float]:
     return delay_ms, loss_pct
 
 
+def parse_client_body(body: Mapping[str, object] | None) -> tuple[str, str]:
+    if body is None or not isinstance(body, Mapping):
+        raise ValueError("expected json body")
+    name = body.get("name")
+    identity_ip = body.get("identity_ip")
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty string")
+    if not isinstance(identity_ip, str) or not identity_ip:
+        raise ValueError("identity_ip must be a non-empty string")
+    return name, identity_ip
+
+
 def create_app(workdir: Path | str) -> Flask:
     workdir = Path(workdir).expanduser().resolve()
     app_root = Path(__file__).resolve().parent
@@ -351,6 +365,7 @@ def create_app(workdir: Path | str) -> Flask:
         template_folder=str(app_root / "templates"),
         static_folder=str(app_root / "static"),
     )
+    app.config["client_mutation_lock"] = Lock()
 
     @app.get("/")
     def index():
@@ -389,6 +404,52 @@ def create_app(workdir: Path | str) -> Flask:
             return jsonify(link_state_payload(state))
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
+
+    @app.post("/api/clients")
+    def api_clients_add():
+        state, error = load_active_state_or_error(workdir)
+        if error is not None:
+            payload, status = error
+            return jsonify(payload), status
+        try:
+            name, identity_ip = parse_client_body(request.get_json(silent=True))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        mutation_lock = app.config["client_mutation_lock"]
+        if not mutation_lock.acquire(blocking=False):
+            return jsonify({"error": "client mutation already in progress"}), 409
+        try:
+            updated = add_client(state, name, identity_ip)
+            return jsonify(status_payload(updated, workdir))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        finally:
+            mutation_lock.release()
+
+    @app.delete("/api/clients/<name>")
+    def api_clients_delete(name: str):
+        state, error = load_active_state_or_error(workdir)
+        if error is not None:
+            payload, status = error
+            return jsonify(payload), status
+        if name not in state.clients:
+            return jsonify({"error": f"unknown client namespace: {name}"}), 404
+
+        mutation_lock = app.config["client_mutation_lock"]
+        if not mutation_lock.acquire(blocking=False):
+            return jsonify({"error": "client mutation already in progress"}), 409
+        try:
+            updated = remove_client(state, name)
+            return jsonify(status_payload(updated, workdir))
+        except KeyError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        finally:
+            mutation_lock.release()
 
     @app.put("/api/shaping/<target>")
     def api_shaping_set(target: str):

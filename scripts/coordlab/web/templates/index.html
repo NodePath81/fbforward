@@ -46,10 +46,6 @@
               <div id="process-list" class="list"></div>
             </div>
           </div>
-          <div class="panel-section">
-            <h3>Clients</h3>
-            <div id="client-list" class="list"></div>
-          </div>
         </article>
 
         <article class="panel">
@@ -60,6 +56,32 @@
           <div id="coord-errors" class="error-list"></div>
           <div id="fbcoord-card" class="coord-card"></div>
           <div id="node-cards" class="card-grid"></div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Client Management</h2>
+            <span class="chip">live web add/remove</span>
+          </div>
+          <p class="subtle">After the lab is up, client namespaces can be added or removed here without restarting coordlab. The first web-added client creates <code>client-edge</code> on demand.</p>
+          <form id="client-form" class="form-grid">
+            <label>
+              Client Name
+              <input id="client-name" name="name" type="text" placeholder="client-3" autocomplete="off">
+            </label>
+            <label>
+              Identity IP
+              <input id="client-identity-ip" name="identity_ip" type="text" placeholder="198.51.100.30" autocomplete="off">
+            </label>
+            <button id="client-add" type="submit">Add Client</button>
+          </form>
+          <div id="client-mutation-message" class="status-note hidden"></div>
+          <div class="panel-section">
+            <h3>Active Clients</h3>
+            <div id="client-management-list" class="list"></div>
+          </div>
         </article>
       </section>
 

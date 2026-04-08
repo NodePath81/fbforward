@@ -61,10 +61,12 @@ The main entrypoint is:
 coordlab stores runtime artifacts under a work directory, defaulting to `/tmp/coordlab`. A typical run uses a dedicated directory, for example:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5 \
+.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5 \
   --client client-1=198.51.100.10 \
   --client client-2=203.0.113.20
 ```
+
+`up` always rebuilds `fbforward`, `fbmeasure`, and the `fbcoord` UI unless `--skip-build` is explicitly provided.
 
 The work directory contains:
 
@@ -87,7 +89,7 @@ coordlab builds a fixed service-side topology with an optional client-side exten
 - `node-2`
 - `upstream-1`
 - `upstream-2`
-- `client-edge` when any client is configured
+- `client-edge` when any client is configured, including on-demand creation from the web dashboard
 - one or more `client-*` namespaces when requested by CLI input
 
 The topology is a two-hub layout joined by an `internet` transit namespace, with client namespaces attached through `client-edge` when enabled. Node-side traffic stays on `hub`, upstream-side traffic stays on `hub-up`, and client traffic enters through `client-edge` before crossing `internet` toward `hub`. Node-side degradation is applied on `hub`'s node-facing veths, and upstream-side degradation is applied on `hub-up`'s upstream-facing veths.
@@ -110,6 +112,8 @@ Host-facing access points:
 - `http://127.0.0.1:18702` — node-2 control/UI/metrics
 - `http://127.0.0.1:18800` — coordlab dashboard when `web` is running
 - `http://127.0.0.1:18900+` — ttyd terminals for configured client namespaces and upstream namespaces
+
+Each ttyd terminal launches `/bin/bash --noprofile --norc -i` with `PS1` set to `<namespace>@\w$ ` so the namespace identity is always visible in the prompt.
 
 ---
 
@@ -149,6 +153,7 @@ Host-facing access points:
 - shaping topology (target name, router namespace, and shaped device for both shaping axes)
 - generated coordination and control tokens
 - topology link metadata
+- the next `/30` transport allocation index used for live client additions
 
 Live shaping values are not stored in state; they are always read from `tc`.
 Live link state is not stored in state; it is always read from `ip link show`.
@@ -168,6 +173,8 @@ It serves:
 - `GET /` — single-page dashboard
 - `GET /api/status`
 - `GET /api/coordination`
+- `POST /api/clients`
+- `DELETE /api/clients/<name>`
 - `GET /api/shaping`
 - `PUT /api/shaping/<target>`
 - `DELETE /api/shaping/<target>`
@@ -181,6 +188,7 @@ The dashboard does not own any background state. It reads the current `state.jso
 ### Dashboard sections
 
 - Lab status
+- Client management
 - Coordination state
 - Network topology
 - Traffic shaping
@@ -194,7 +202,7 @@ Disconnect is modeled separately from shaping:
 - disconnect is a hard partition using interface admin down/up
 - shaping values remain visible while disconnected and are restored when the link is reconnected
 
-After the lab has been started, the dashboard is the primary operator interface for normal manual testing. The CLI remains responsible for lifecycle commands such as `up`, `down`, and `web`.
+After the lab has been started, the dashboard is the primary operator interface for normal manual testing. The CLI remains responsible for lifecycle commands such as `up`, `down`, and `web`; the web UI handles routine client add/remove, service access, shaping, link-state, and log viewing.
 
 ---
 
@@ -203,12 +211,10 @@ After the lab has been started, the dashboard is the primary operator interface 
 Typical manual smoke:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5 \
-  --client client-1=198.51.100.10 \
-  --client client-2=203.0.113.20
+.venv/bin/python scripts/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # open http://127.0.0.1:18800
-# use the dashboard for shaping, link-state control, service links, and terminal access
+# add clients from the dashboard, then use the page for shaping, link-state control, service links, terminal access, and log viewing
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
 
@@ -230,3 +236,4 @@ Developer-side validation:
 - The dashboard is a local operator tool with no auth; it should remain bound to `127.0.0.1`.
 - Client-side shaping is not implemented in this phase.
 - There is a known product issue in `fbforward`: induced packet loss can trigger a UDP measurement crash. For Phase 5 validation, use delay-based degradation as the primary smoke path.
+- Concurrent web client add/remove requests are rejected with HTTP `409`; they are not queued.
