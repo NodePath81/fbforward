@@ -25,6 +25,9 @@ const (
 	CompDNS        = "dns"
 	CompShaping    = "shaping"
 	CompUpstream   = "upstream"
+	CompGeoIP      = "geoip"
+	CompIPLog      = "iplog"
+	CompFirewall   = "firewall"
 )
 
 func NewLogger(level, format string) *slog.Logger {

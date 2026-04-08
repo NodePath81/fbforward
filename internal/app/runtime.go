@@ -10,10 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
+	"github.com/NodePath81/fbforward/internal/coordination"
+	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/forwarding"
+	"github.com/NodePath81/fbforward/internal/geoip"
+	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/probe"
@@ -26,21 +29,25 @@ import (
 const dnsRefreshInterval = 30 * time.Second
 
 type Runtime struct {
-	cfg       config.Config
-	ctx       context.Context
-	cancel    context.CancelFunc
-	logger    util.Logger
-	resolver  *resolver.Resolver
-	manager   *upstream.UpstreamManager
-	metrics   *metrics.Metrics
-	status    *control.StatusStore
-	control   *control.ControlServer
-	coord     *coordination.Controller
-	shaper    *shaping.TrafficShaper
-	upstreams []*upstream.Upstream
-	listeners []closer
-	collector *measure.Collector
-	wg        sync.WaitGroup
+	cfg           config.Config
+	ctx           context.Context
+	cancel        context.CancelFunc
+	logger        util.Logger
+	resolver      *resolver.Resolver
+	manager       *upstream.UpstreamManager
+	metrics       *metrics.Metrics
+	status        *control.StatusStore
+	control       *control.ControlServer
+	coord         *coordination.Controller
+	shaper        *shaping.TrafficShaper
+	geoipMgr      *geoip.Manager
+	iplogStore    *iplog.Store
+	iplogPipeline *iplog.Pipeline
+	firewall      *firewall.Engine
+	upstreams     []*upstream.Upstream
+	listeners     []closer
+	collector     *measure.Collector
+	wg            sync.WaitGroup
 }
 
 type closer interface {
@@ -83,6 +90,35 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		status:    status,
 		upstreams: upstreams,
 	}
+	if cfg.GeoIP.Enabled {
+		geoMgr, err := geoip.NewManager(cfg.GeoIP, logger)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		rt.geoipMgr = geoMgr
+	}
+	if cfg.IPLog.Enabled {
+		store, err := iplog.NewStore(cfg.IPLog.DBPath)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		rt.iplogStore = store
+		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration())
+		rt.iplogPipeline = iplog.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metrics, logger)
+	}
+	if cfg.Firewall.Enabled {
+		fw, err := firewall.NewEngine(cfg.Firewall, rt.geoipMgr, metrics, logger)
+		if err != nil {
+			cancel()
+			if rt.iplogStore != nil {
+				_ = rt.iplogStore.Close()
+			}
+			return nil, err
+		}
+		rt.firewall = fw
+	}
 	if cfg.Shaping.Enabled {
 		// Build upstream shaping entries with resolved IPs
 		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
@@ -109,6 +145,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		coordCtrl = coordination.NewController(ctx, cfg.Coordination, manager, metrics, util.ComponentLogger(logger, util.CompCoord))
 	}
 	ctrl := control.NewControlServer(cfg, manager, metrics, status, coordCtrl, restartFn, logger)
+	if rt.iplogStore != nil {
+		ctrl.SetIPLogStore(rt.iplogStore)
+	}
 	rt.control = ctrl
 	rt.coord = coordCtrl
 
@@ -125,6 +164,12 @@ func (r *Runtime) Start() error {
 			r.Stop()
 			return err
 		}
+	}
+	if r.geoipMgr != nil {
+		r.geoipMgr.Start(r.ctx)
+	}
+	if r.iplogPipeline != nil {
+		r.iplogPipeline.Start()
 	}
 
 	r.runFastStart()
@@ -146,6 +191,23 @@ func (r *Runtime) Stop() {
 	}
 	for _, ln := range r.listeners {
 		_ = ln.Close()
+	}
+	if r.iplogPipeline != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.iplogPipeline.Shutdown(ctx); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "iplog.shutdown_failed", "error", err)
+		}
+		cancel()
+	}
+	if r.geoipMgr != nil {
+		if err := r.geoipMgr.Close(); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "geoip.close_failed", "error", err)
+		}
+	}
+	if r.iplogStore != nil {
+		if err := r.iplogStore.Close(); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "iplog.store_close_failed", "error", err)
+		}
 	}
 	if r.shaper != nil {
 		if err := r.shaper.Cleanup(); err != nil {
@@ -284,13 +346,13 @@ func (r *Runtime) startListeners() error {
 	for _, ln := range r.cfg.Forwarding.Listeners {
 		switch ln.Protocol {
 		case "tcp":
-			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.manager, r.metrics, r.status, r.logger)
+			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.manager, r.metrics, r.status, r.firewall, r.iplogPipeline, r.logger)
 			if err := tcpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
 			r.listeners = append(r.listeners, tcpListener)
 		case "udp":
-			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.manager, r.metrics, r.status, r.logger)
+			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.manager, r.metrics, r.status, r.firewall, r.iplogPipeline, r.logger)
 			if err := udpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}

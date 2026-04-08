@@ -173,6 +173,33 @@ control:
 #   token: "replace-with-the-same-fbcoord-token"
 #   heartbeat_interval: 10s
 
+geoip:
+  enabled: false
+  # Local MMDB files plus refresh URLs from Loyalsoldier/geoip.
+  asn_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/GeoLite2-ASN.mmdb"
+  asn_db_path: "/var/lib/fbforward/GeoLite2-ASN.mmdb"
+  country_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/Country-without-asn.mmdb"
+  country_db_path: "/var/lib/fbforward/Country-without-asn.mmdb"
+  refresh_interval: 24h
+
+ip_log:
+  enabled: false
+  db_path: "/var/lib/fbforward/iplog.sqlite"
+  retention: 720h
+  geo_queue_size: 4096
+  write_queue_size: 4096
+
+firewall:
+  enabled: false
+  default: allow
+  rules:
+    - action: deny
+      cidr: 10.0.0.0/8
+    - action: deny
+      asn: 4134
+    - action: allow
+      country: US
+
 shaping:
   # Linux tc shaping via netlink (requires CAP_NET_ADMIN).
   enabled: false

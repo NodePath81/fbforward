@@ -17,8 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/coordination"
+	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
@@ -57,6 +58,8 @@ type ControlServer struct {
 	scheduler   *measure.Scheduler
 	collectorMu sync.RWMutex
 	collector   *measure.Collector
+	iplogMu     sync.RWMutex
+	iplogStore  *iplog.Store
 	nextReqID   uint64
 	nextWSID    uint64
 }
@@ -127,6 +130,12 @@ func (c *ControlServer) SetCollector(collector *measure.Collector) {
 	c.collector = collector
 }
 
+func (c *ControlServer) SetIPLogStore(store *iplog.Store) {
+	c.iplogMu.Lock()
+	defer c.iplogMu.Unlock()
+	c.iplogStore = store
+}
+
 type rpcRequest struct {
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
@@ -146,6 +155,16 @@ type setUpstreamParams struct {
 type runMeasurementParams struct {
 	Tag      string `json:"tag"`
 	Protocol string `json:"protocol"`
+}
+
+type queryIPLogParams struct {
+	StartTime *int64 `json:"start_time,omitempty"`
+	EndTime   *int64 `json:"end_time,omitempty"`
+	CIDR      string `json:"cidr,omitempty"`
+	ASN       *int   `json:"asn,omitempty"`
+	Country   string `json:"country,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
 }
 
 type statusResponse struct {
@@ -543,6 +562,38 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.getRuntimeConfig()})
 	case "GetScheduleStatus":
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
+	case "QueryIPLog":
+		c.iplogMu.RLock()
+		store := c.iplogStore
+		c.iplogMu.RUnlock()
+		if store == nil {
+			completionErr = "ip log store not available"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		var params queryIPLogParams
+		if len(req.Params) > 0 && string(req.Params) != "null" {
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				completionErr = "invalid params"
+				writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
+				return
+			}
+		}
+		result, err := store.Query(iplog.QueryParams{
+			StartTime: params.StartTime,
+			EndTime:   params.EndTime,
+			CIDR:      params.CIDR,
+			ASN:       params.ASN,
+			Country:   params.Country,
+			Limit:     params.Limit,
+			Offset:    params.Offset,
+		})
+		if err != nil {
+			completionErr = err.Error()
+			writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: result})
 	case "ListUpstreams":
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
 	case "RunMeasurement":
@@ -815,6 +866,26 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"pool":               cfg.Coordination.Pool,
 			"node_id":            cfg.Coordination.NodeID,
 			"heartbeat_interval": cfg.Coordination.HeartbeatInterval.Duration().String(),
+		},
+		"geoip": map[string]interface{}{
+			"enabled":          cfg.GeoIP.Enabled,
+			"asn_db_url":       cfg.GeoIP.ASNDBURL,
+			"asn_db_path":      cfg.GeoIP.ASNDBPath,
+			"country_db_url":   cfg.GeoIP.CountryDBURL,
+			"country_db_path":  cfg.GeoIP.CountryDBPath,
+			"refresh_interval": cfg.GeoIP.RefreshInterval.Duration().String(),
+		},
+		"ip_log": map[string]interface{}{
+			"enabled":          cfg.IPLog.Enabled,
+			"db_path":          cfg.IPLog.DBPath,
+			"retention":        cfg.IPLog.Retention.Duration().String(),
+			"geo_queue_size":   cfg.IPLog.GeoQueueSize,
+			"write_queue_size": cfg.IPLog.WriteQueueSize,
+		},
+		"firewall": map[string]interface{}{
+			"enabled": cfg.Firewall.Enabled,
+			"default": cfg.Firewall.Default,
+			"rules":   cfg.Firewall.Rules,
 		},
 		"shaping": map[string]interface{}{
 			"enabled":         cfg.Shaping.Enabled,

@@ -69,6 +69,9 @@ const (
 	defaultCoordinationHeartbeat = 10 * time.Second
 	defaultLoggingLevel          = "info"
 	defaultLoggingFormat         = "text"
+	defaultGeoIPRefreshInterval  = 24 * time.Hour
+	defaultIPLogGeoQueueSize     = 4096
+	defaultIPLogWriteQueueSize   = 4096
 
 	defaultMeasurePort    = 9876
 	DefaultShapingIFB     = "ifb0"
@@ -128,6 +131,9 @@ type Config struct {
 	Coordination CoordinationConfig `yaml:"coordination"`
 	Logging      LoggingConfig      `yaml:"logging"`
 	Shaping      ShapingConfig      `yaml:"shaping"`
+	GeoIP        GeoIPConfig        `yaml:"geoip"`
+	IPLog        IPLogConfig        `yaml:"ip_log"`
+	Firewall     FirewallConfig     `yaml:"firewall"`
 }
 
 type LoggingConfig struct {
@@ -333,6 +339,36 @@ type CoordinationConfig struct {
 	NodeID            string   `yaml:"node_id"`
 	Token             string   `yaml:"token"`
 	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
+}
+
+type GeoIPConfig struct {
+	Enabled         bool     `yaml:"enabled"`
+	ASNDBURL        string   `yaml:"asn_db_url"`
+	ASNDBPath       string   `yaml:"asn_db_path"`
+	CountryDBURL    string   `yaml:"country_db_url"`
+	CountryDBPath   string   `yaml:"country_db_path"`
+	RefreshInterval Duration `yaml:"refresh_interval"`
+}
+
+type IPLogConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	DBPath         string   `yaml:"db_path"`
+	Retention      Duration `yaml:"retention"`
+	GeoQueueSize   int      `yaml:"geo_queue_size"`
+	WriteQueueSize int      `yaml:"write_queue_size"`
+}
+
+type FirewallConfig struct {
+	Enabled bool           `yaml:"enabled"`
+	Default string         `yaml:"default"`
+	Rules   []FirewallRule `yaml:"rules"`
+}
+
+type FirewallRule struct {
+	Action  string `yaml:"action"`
+	CIDR    string `yaml:"cidr,omitempty"`
+	ASN     int    `yaml:"asn,omitempty"`
+	Country string `yaml:"country,omitempty"`
 }
 
 type ShapingConfig struct {
@@ -638,6 +674,18 @@ func (c *Config) setDefaults() {
 	if c.Logging.Format == "" {
 		c.Logging.Format = defaultLoggingFormat
 	}
+	if c.GeoIP.RefreshInterval == 0 {
+		c.GeoIP.RefreshInterval = Duration(defaultGeoIPRefreshInterval)
+	}
+	if c.IPLog.GeoQueueSize == 0 {
+		c.IPLog.GeoQueueSize = defaultIPLogGeoQueueSize
+	}
+	if c.IPLog.WriteQueueSize == 0 {
+		c.IPLog.WriteQueueSize = defaultIPLogWriteQueueSize
+	}
+	if c.Firewall.Default == "" {
+		c.Firewall.Default = "allow"
+	}
 
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
@@ -936,6 +984,90 @@ func (c *Config) validate() error {
 		}
 	}
 
+	c.GeoIP.ASNDBURL = strings.TrimSpace(c.GeoIP.ASNDBURL)
+	c.GeoIP.ASNDBPath = strings.TrimSpace(c.GeoIP.ASNDBPath)
+	c.GeoIP.CountryDBURL = strings.TrimSpace(c.GeoIP.CountryDBURL)
+	c.GeoIP.CountryDBPath = strings.TrimSpace(c.GeoIP.CountryDBPath)
+	if c.GeoIP.Enabled {
+		if c.GeoIP.RefreshInterval.Duration() <= 0 {
+			return errors.New("geoip.refresh_interval must be > 0")
+		}
+		if !geoDBConfigured(c.GeoIP.ASNDBURL, c.GeoIP.ASNDBPath) && !geoDBConfigured(c.GeoIP.CountryDBURL, c.GeoIP.CountryDBPath) {
+			return errors.New("geoip.enabled requires at least one of asn_db_url/asn_db_path or country_db_url/country_db_path")
+		}
+		if err := validateGeoDBConfig("geoip.asn_db", c.GeoIP.ASNDBURL, c.GeoIP.ASNDBPath); err != nil {
+			return err
+		}
+		if err := validateGeoDBConfig("geoip.country_db", c.GeoIP.CountryDBURL, c.GeoIP.CountryDBPath); err != nil {
+			return err
+		}
+	}
+
+	c.IPLog.DBPath = strings.TrimSpace(c.IPLog.DBPath)
+	if c.IPLog.Enabled {
+		if c.IPLog.DBPath == "" {
+			return errors.New("ip_log.db_path is required when ip_log.enabled is true")
+		}
+		if c.IPLog.GeoQueueSize <= 0 {
+			return errors.New("ip_log.geo_queue_size must be > 0")
+		}
+		if c.IPLog.WriteQueueSize <= 0 {
+			return errors.New("ip_log.write_queue_size must be > 0")
+		}
+		if c.IPLog.Retention.Duration() < 0 {
+			return errors.New("ip_log.retention must be >= 0")
+		}
+	}
+
+	c.Firewall.Default = strings.ToLower(strings.TrimSpace(c.Firewall.Default))
+	if c.Firewall.Enabled {
+		switch c.Firewall.Default {
+		case "allow", "deny":
+		default:
+			return errors.New("firewall.default must be allow or deny")
+		}
+		for i := range c.Firewall.Rules {
+			rule := &c.Firewall.Rules[i]
+			rule.Action = strings.ToLower(strings.TrimSpace(rule.Action))
+			switch rule.Action {
+			case "allow", "deny":
+			default:
+				return fmt.Errorf("firewall.rules[%d].action must be allow or deny", i)
+			}
+			matcherCount := 0
+			if strings.TrimSpace(rule.CIDR) != "" {
+				rule.CIDR = strings.TrimSpace(rule.CIDR)
+				matcherCount++
+			}
+			if rule.ASN != 0 {
+				matcherCount++
+			}
+			rule.Country = strings.ToUpper(strings.TrimSpace(rule.Country))
+			if rule.Country != "" {
+				matcherCount++
+			}
+			if matcherCount != 1 {
+				return fmt.Errorf("firewall.rules[%d] must specify exactly one matcher", i)
+			}
+		}
+	}
+
+	return nil
+}
+
+func geoDBConfigured(url, path string) bool {
+	return strings.TrimSpace(url) != "" || strings.TrimSpace(path) != ""
+}
+
+func validateGeoDBConfig(prefix, url, path string) error {
+	url = strings.TrimSpace(url)
+	path = strings.TrimSpace(path)
+	if url == "" && path == "" {
+		return nil
+	}
+	if url == "" || path == "" {
+		return fmt.Errorf("%s requires both url and path", prefix)
+	}
 	return nil
 }
 

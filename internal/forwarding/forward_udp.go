@@ -12,19 +12,23 @@ import (
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
+	"github.com/NodePath81/fbforward/internal/firewall"
+	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type UDPListener struct {
-	cfg     config.ListenerConfig
-	manager upstream.UpstreamSelector
-	metrics *metrics.Metrics
-	status  *control.StatusStore
-	timeout time.Duration
-	sem     chan struct{}
-	logger  util.Logger
+	cfg      config.ListenerConfig
+	manager  upstream.UpstreamSelector
+	metrics  *metrics.Metrics
+	status   *control.StatusStore
+	timeout  time.Duration
+	firewall *firewall.Engine
+	pipeline *iplog.Pipeline
+	sem      chan struct{}
+	logger   util.Logger
 
 	conn     *net.UDPConn
 	mu       sync.Mutex
@@ -56,13 +60,15 @@ var udpPacketPool = sync.Pool{
 	},
 }
 
-func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *UDPListener {
+func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, fw *firewall.Engine, pipeline *iplog.Pipeline, logger util.Logger) *UDPListener {
 	return &UDPListener{
 		cfg:      cfg,
 		manager:  manager,
 		metrics:  metrics,
 		status:   status,
 		timeout:  timeout,
+		firewall: fw,
+		pipeline: pipeline,
 		sem:      make(chan struct{}, limits.MaxUDPMappings),
 		logger:   util.ComponentLogger(logger, util.CompForwardUDP),
 		mappings: make(map[string]*udpMapping),
@@ -154,6 +160,9 @@ func (l *UDPListener) Close() error {
 }
 
 func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr, payload []byte) {
+	if l.firewall != nil && !l.firewall.Check(clientAddr.IP) {
+		return
+	}
 	key := clientAddr.String()
 	clientIP := clientAddr.IP.String()
 	mapping, reservation, err := l.getOrReserveMapping(key, clientIP)
@@ -261,6 +270,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr) (*udpMapping, error)
 		metrics:       l.metrics,
 		status:        l.status,
 		logger:        l.logger,
+		pipeline:      l.pipeline,
 		activityCh:    make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		created:       time.Now(),
@@ -325,6 +335,7 @@ type udpMapping struct {
 	metrics       *metrics.Metrics
 	status        *control.StatusStore
 	logger        util.Logger
+	pipeline      *iplog.Pipeline
 	created       time.Time
 	totalUp       uint64
 	totalDown     uint64
@@ -455,6 +466,18 @@ func (m *udpMapping) closeWithReason(reason string) {
 			"flow.duration_ms", durationMs,
 			"result", "closed",
 		)
+		if m.pipeline != nil {
+			m.pipeline.Emit(iplog.CloseEvent{
+				IP:         m.clientIP,
+				Protocol:   "udp",
+				Upstream:   m.upstreamTag,
+				Port:       m.parent.cfg.BindPort,
+				BytesUp:    atomic.LoadUint64(&m.totalUp),
+				BytesDown:  atomic.LoadUint64(&m.totalDown),
+				DurationMs: durationMs,
+				RecordedAt: time.Now(),
+			})
+		}
 		<-m.parent.sem
 	})
 }

@@ -64,6 +64,13 @@ type Metrics struct {
 	lastBytesTCPDown   map[string]uint64
 	lastBytesUDPUp     map[string]uint64
 	lastBytesUDPDown   map[string]uint64
+	iplogEventsTotal   uint64
+	iplogEventsDropped uint64
+	iplogWritesTotal   uint64
+	firewallDenied     map[string]uint64
+	batchBuckets       []uint64
+	batchCount         uint64
+	batchSum           uint64
 	schedule           ScheduleMetrics
 	memoryAllocBytes   uint64
 	startTime          time.Time
@@ -74,6 +81,8 @@ type ScheduleMetrics struct {
 	NextScheduled time.Time
 	LastRun       map[string]time.Time
 }
+
+var iplogBatchBounds = []int{1, 5, 10, 25, 50, 100, 250, 500}
 
 func NewMetrics(tags []string) *Metrics {
 	upstreams := make(map[string]*UpstreamMetrics, len(tags))
@@ -130,6 +139,8 @@ func NewMetrics(tags []string) *Metrics {
 		lastBytesTCPDown:   lastBytesTCPDown,
 		lastBytesUDPUp:     lastBytesUDPUp,
 		lastBytesUDPDown:   lastBytesUDPDown,
+		firewallDenied:     make(map[string]uint64),
+		batchBuckets:       make([]uint64, len(iplogBatchBounds)),
 		startTime:          time.Now(),
 	}
 }
@@ -358,6 +369,46 @@ func (m *Metrics) AddBytesDown(tag string, n uint64, proto string) {
 	}
 }
 
+func (m *Metrics) IncIPLogEvent() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.iplogEventsTotal++
+}
+
+func (m *Metrics) IncIPLogEventDropped() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.iplogEventsDropped++
+}
+
+func (m *Metrics) AddIPLogWrites(n uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.iplogWritesTotal += n
+}
+
+func (m *Metrics) ObserveIPLogBatchSize(n int) {
+	if n <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, bound := range iplogBatchBounds {
+		if n <= bound {
+			m.batchBuckets[i]++
+		}
+	}
+	m.batchCount++
+	m.batchSum += uint64(n)
+}
+
+func (m *Metrics) IncFirewallDenied(ruleType, ruleValue string) {
+	key := ruleType + ":" + ruleValue
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.firewallDenied[key]++
+}
+
 func (m *Metrics) Handler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = w.Write([]byte(m.Render()))
@@ -392,6 +443,13 @@ func (m *Metrics) Render() string {
 	bytesTCPDownPerSec := copyUint64Map(m.bytesTCPDownPerSec)
 	bytesUDPUpPerSec := copyUint64Map(m.bytesUDPUpPerSec)
 	bytesUDPDownPerSec := copyUint64Map(m.bytesUDPDownPerSec)
+	iplogEventsTotal := m.iplogEventsTotal
+	iplogEventsDropped := m.iplogEventsDropped
+	iplogWritesTotal := m.iplogWritesTotal
+	firewallDenied := copyUint64Map(m.firewallDenied)
+	batchBuckets := append([]uint64(nil), m.batchBuckets...)
+	batchCount := m.batchCount
+	batchSum := m.batchSum
 	schedule := m.schedule
 	memoryAlloc := m.memoryAllocBytes
 	startTime := m.startTime
@@ -688,6 +746,51 @@ func (m *Metrics) Render() string {
 		b.WriteString(formatFloat(time.Since(startTime).Seconds()))
 		b.WriteString("\n")
 	}
+	b.WriteString("# TYPE fbforward_iplog_events_total counter\n")
+	b.WriteString("fbforward_iplog_events_total ")
+	b.WriteString(strconv.FormatUint(iplogEventsTotal, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_iplog_events_dropped_total counter\n")
+	b.WriteString("fbforward_iplog_events_dropped_total ")
+	b.WriteString(strconv.FormatUint(iplogEventsDropped, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_iplog_writes_total counter\n")
+	b.WriteString("fbforward_iplog_writes_total ")
+	b.WriteString(strconv.FormatUint(iplogWritesTotal, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_firewall_denied_total counter\n")
+	firewallKeys := make([]string, 0, len(firewallDenied))
+	for key := range firewallDenied {
+		firewallKeys = append(firewallKeys, key)
+	}
+	sort.Strings(firewallKeys)
+	for _, key := range firewallKeys {
+		ruleType, ruleValue := splitFirewallKey(key)
+		b.WriteString("fbforward_firewall_denied_total{rule_type=\"")
+		b.WriteString(ruleType)
+		b.WriteString("\",rule_value=\"")
+		b.WriteString(ruleValue)
+		b.WriteString("\"} ")
+		b.WriteString(strconv.FormatUint(firewallDenied[key], 10))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_iplog_batch_size histogram\n")
+	for i, bound := range iplogBatchBounds {
+		b.WriteString("fbforward_iplog_batch_size_bucket{le=\"")
+		b.WriteString(strconv.Itoa(bound))
+		b.WriteString("\"} ")
+		b.WriteString(strconv.FormatUint(batchBuckets[i], 10))
+		b.WriteString("\n")
+	}
+	b.WriteString("fbforward_iplog_batch_size_bucket{le=\"+Inf\"} ")
+	b.WriteString(strconv.FormatUint(batchCount, 10))
+	b.WriteString("\n")
+	b.WriteString("fbforward_iplog_batch_size_sum ")
+	b.WriteString(strconv.FormatUint(batchSum, 10))
+	b.WriteString("\n")
+	b.WriteString("fbforward_iplog_batch_size_count ")
+	b.WriteString(strconv.FormatUint(batchCount, 10))
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -712,4 +815,12 @@ func splitScheduleKey(key string) (string, string, bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func splitFirewallKey(key string) (string, string) {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return key, ""
+	}
+	return parts[0], parts[1]
 }

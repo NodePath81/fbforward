@@ -12,19 +12,23 @@ import (
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
+	"github.com/NodePath81/fbforward/internal/firewall"
+	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type TCPListener struct {
-	cfg     config.ListenerConfig
-	manager upstream.UpstreamSelector
-	metrics *metrics.Metrics
-	status  *control.StatusStore
-	timeout time.Duration
-	sem     chan struct{}
-	logger  util.Logger
+	cfg      config.ListenerConfig
+	manager  upstream.UpstreamSelector
+	metrics  *metrics.Metrics
+	status   *control.StatusStore
+	timeout  time.Duration
+	firewall *firewall.Engine
+	pipeline *iplog.Pipeline
+	sem      chan struct{}
+	logger   util.Logger
 
 	listener net.Listener
 }
@@ -42,15 +46,17 @@ var tcpBufPool = sync.Pool{
 	},
 }
 
-func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, logger util.Logger) *TCPListener {
+func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, fw *firewall.Engine, pipeline *iplog.Pipeline, logger util.Logger) *TCPListener {
 	return &TCPListener{
-		cfg:     cfg,
-		manager: manager,
-		metrics: metrics,
-		status:  status,
-		timeout: timeout,
-		sem:     make(chan struct{}, limits.MaxTCPConnections),
-		logger:  util.ComponentLogger(logger, util.CompForwardTCP),
+		cfg:      cfg,
+		manager:  manager,
+		metrics:  metrics,
+		status:   status,
+		timeout:  timeout,
+		firewall: fw,
+		pipeline: pipeline,
+		sem:      make(chan struct{}, limits.MaxTCPConnections),
+		logger:   util.ComponentLogger(logger, util.CompForwardTCP),
 	}
 }
 
@@ -110,6 +116,12 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 	if tcpConn, ok := client.(*net.TCPConn); ok {
 		applyTCPOptions(tcpConn)
 	}
+	clientAddr := client.RemoteAddr().String()
+	clientIP := net.ParseIP(clientIPFromAddr(clientAddr))
+	if l.firewall != nil && !l.firewall.Check(clientIP) {
+		_ = client.Close()
+		return
+	}
 	up, err := l.manager.SelectUpstream()
 	if err != nil {
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.upstream_selection_failed", "error", err)
@@ -154,6 +166,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		metrics:      l.metrics,
 		status:       l.status,
 		logger:       l.logger,
+		pipeline:     l.pipeline,
 		upstreamIP:   upstreamIP,
 		upstreamAddr: remoteAddr,
 		listenAddr:   net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
@@ -170,6 +183,7 @@ type tcpConn struct {
 	metrics      *metrics.Metrics
 	status       *control.StatusStore
 	logger       util.Logger
+	pipeline     *iplog.Pipeline
 	upstreamIP   string
 	upstreamAddr string
 	listenAddr   string
@@ -368,6 +382,18 @@ func (c *tcpConn) closeWithReason(reason string) {
 			"flow.duration_ms", durationMs,
 			"result", "closed",
 		)
+		if c.pipeline != nil {
+			c.pipeline.Emit(iplog.CloseEvent{
+				IP:         c.clientIP,
+				Protocol:   "tcp",
+				Upstream:   c.upstreamTag,
+				Port:       c.listenPort,
+				BytesUp:    atomic.LoadUint64(&c.totalUp),
+				BytesDown:  atomic.LoadUint64(&c.totalDown),
+				DurationMs: durationMs,
+				RecordedAt: time.Now(),
+			})
+		}
 	})
 }
 
