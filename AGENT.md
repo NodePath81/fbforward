@@ -17,7 +17,7 @@ The runtime mix is:
 - TypeScript/Cloudflare Workers code for `fbcoord`
 - Python tooling for `scripts/coordlab`
 
-**fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using fbmeasure targeted probes (RTT, jitter, TCP retransmission rate, UDP loss rate), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI.
+**fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using fbmeasure targeted probes (RTT, jitter, TCP retransmission rate, UDP loss rate), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. Optional subsystems include GeoIP database management, persisted IP connection logging (SQLite), and CIDR/ASN/country firewalling. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI with dashboard operational status and a dedicated IP Log query page.
 
 **fbcoord summary**: Cloudflare Worker backed by Durable Objects. It coordinates a shared upstream pick across multiple fbforward nodes in the same pool, serves an operator UI/API, enforces auth bans through an auth-guard DO plus Cloudflare KV, and persists the shared coordination token in a token DO.
 
@@ -28,6 +28,7 @@ Go data-plane components require:
 - Go 1.25.5+
 - CAP_NET_RAW capability for ICMP operations
 - CAP_NET_ADMIN capability for fbforward traffic shaping (optional)
+- C toolchain (gcc) for `fbforward` builds because IP-log support currently links the CGO-based `github.com/mattn/go-sqlite3` driver
 
 Additional tooling:
 - `fbcoord`: Node.js/npm, `wrangler`, Cloudflare Workers/Durable Objects/KV
@@ -213,15 +214,24 @@ Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algor
 - `internal/forwarding/forward_tcp.go`: TCP forwarding, flow pinning
 - `internal/forwarding/forward_udp.go`: UDP forwarding, mapping lifecycle
 
+**GeoIP / IP-log / Firewall:**
+- `internal/geoip/manager.go`: MMDB database download, hot-reload, ASN/country lookup
+- `internal/iplog/store.go`: SQLite schema, write batching, retention pruning
+- `internal/iplog/pipeline.go`: async enrichment and write pipeline
+- `internal/firewall/engine.go`: CIDR/ASN/country rule evaluation, fail-open on missing GeoIP
+
 **Control plane:**
-- `internal/control/control.go`: RPC, WebSocket subscription protocol, metrics auth
+- `internal/control/control.go`: RPC (including `GetGeoIPStatus`, `RefreshGeoIP`, `GetIPLogStatus`, `QueryIPLog`), WebSocket subscription protocol, metrics auth
 - `internal/control/status.go`: WebSocket hub, status store, message broadcast
-- `internal/metrics/metrics.go`: Prometheus metric aggregation
+- `internal/metrics/metrics.go`: Prometheus metric aggregation (includes IP-log and firewall metrics)
 
 **Web UI:**
 - `web/handler.go`: embedded UI asset handler
 - `web/src/main.ts`: UI application logic
 - `web/src/auth.ts`: browser-side token entry and persistence
+- `web/src/pages/iplog.ts`: IP Log query page
+- `web/src/api/iplog.ts`: IP Log API client
+- `web/src/components/StatusCard/index.ts`: dashboard status cards (GeoIP, IP-log rows)
 - `web/index.html`: SPA template
 
 **fbcoord:**
@@ -297,6 +307,9 @@ sudo setcap cap_net_raw+ep ./build/bin/fbforward
 sudo setcap cap_net_raw,cap_net_admin+ep ./build/bin/fbforward
 ```
 
+Note:
+- `fbforward` builds currently require a working C toolchain because the IP-log SQLite driver is compiled in even when `ip_log.enabled` is `false` at runtime.
+
 ### fbcoord
 
 ```bash
@@ -348,7 +361,7 @@ python3 -m venv .venv
   - Client sends `{"type": "subscribe", "interval_ms": 2000}` to start receiving periodic snapshots
   - Separate message types: `connections_snapshot`, `queue_snapshot`, `test_history_event`, `add`, `update`, `remove`, `error`
   - All messages include `schema_version: 1`
-- **RPC** (`/rpc`): control commands (`SetUpstream`, `Restart`, `RunMeasurement`), config queries (`GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`)
+- **RPC** (`/rpc`): control commands (`SetUpstream`, `Restart`, `RunMeasurement`, `RefreshGeoIP`), config queries (`GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog`)
   - `GetStatus` returns only non-metric fields (tag, host, IPs, active, usable, reachable)
   - No numeric metrics (bandwidth, RTT, scores) in RPC responses
 - **Prometheus** (`/metrics`): all numeric metrics (bandwidth, RTT, jitter, loss/retrans rates, scores, utilization, queue depth, active connections)

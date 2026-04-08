@@ -432,7 +432,8 @@ The control plane follows a single-source-of-truth architecture:
 | Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
 | Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
-| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus` |
+| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog` |
+| GeoIP/IP-log operations | RPC `/rpc` | `RefreshGeoIP` (trigger re-download) |
 
 **Key principles:**
 - WebSocket delivers connection/queue telemetry via subscription (no polling)
@@ -701,7 +702,7 @@ Retrieve complete runtime configuration (all sections).
 
 **Parameters:** Empty object `{}`
 
-**Result:** Full configuration object with all sections (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `shaping`).
+**Result:** Full configuration object with all sections (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `logging`, `shaping`, `geoip`, `ip_log`, `firewall`).
 
 **Note:** The `coordination` block includes non-secret fields such as `endpoint`, `pool`, `node_id`, and `heartbeat_interval`. The coordination token is not returned.
 
@@ -1299,6 +1300,23 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 | `fbforward_memory_alloc_bytes` | gauge | - | Allocated memory (bytes) |
 | `fbforward_goroutines` | gauge | - | Runtime goroutine count |
 | `fbforward_uptime_seconds` | gauge | - | Process uptime (seconds) |
+
+**IP-log and firewall metrics:**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `fbforward_iplog_events_total` | counter | - | Total IP-log events captured (accepted flows) |
+| `fbforward_iplog_events_dropped_total` | counter | - | Events dropped due to full pipeline queues |
+| `fbforward_iplog_writes_total` | counter | - | Total batch writes to the SQLite database |
+| `fbforward_firewall_denied_total` | counter | `rule_type`, `rule_value` | Flows denied by firewall, per matching rule |
+| `fbforward_iplog_batch_size` | histogram | - | Distribution of events per write batch |
+
+**Label descriptions:**
+
+- `rule_type`: The type of firewall rule that matched (`cidr`, `asn`, or `country`)
+- `rule_value`: The value of the matching rule (e.g., `10.0.0.0/8`, `4134`, `US`)
+
+**Histogram buckets for `fbforward_iplog_batch_size`:** 1, 5, 10, 25, 50, 100, 250, 500.
 
 #### Scrape configuration
 

@@ -5,8 +5,11 @@ This repository contains two Linux-only networking tools built in Go plus a meas
 ## fbforward
 
 TCP/UDP port forwarder that selects the best upstream using fbmeasure-derived
-TCP/UDP metrics, with ICMP used for reachability only. It exposes Prometheus metrics, a token-protected
-RPC API, WebSocket status stream, and an embedded single-page Web UI.
+TCP/UDP metrics, with ICMP used for reachability only. Optional features include
+GeoIP-based lookups, persisted IP connection logging, and CIDR/ASN/country
+firewalling. It exposes Prometheus metrics, a token-protected RPC API, WebSocket
+status stream, and an embedded single-page Web UI with dashboard status rows
+for GeoIP/IP-log and a dedicated IP Log query page.
 
 Behavior highlights:
 
@@ -38,6 +41,7 @@ Docs: `doc/user-guide-bwprobe.md`.
 - fbforward:
   - ICMP probing requires `CAP_NET_RAW` (e.g., `sudo setcap cap_net_raw+ep ./build/bin/fbforward`).
   - Traffic shaping (optional) requires `CAP_NET_ADMIN`.
+  - fbforward currently links `github.com/mattn/go-sqlite3` for IP-log support, so building `fbforward` requires a working C toolchain (gcc) on the build host.
   - Web UI build requires Node.js + npm (see `web/package.json`).
 
 ## Build
@@ -100,7 +104,7 @@ coordination:
 Use a random token with at least 16 characters. The placeholder value
 `change-me` is rejected at startup.
 
-See `doc/configuration-reference.md` for the full schema (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `shaping`).
+See `doc/configuration-reference.md` for the full schema (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `logging`, `shaping`, `geoip`, `ip_log`, `firewall`).
 
 ## Run (fbforward)
 

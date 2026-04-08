@@ -22,6 +22,9 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 - Selects the best upstream automatically based on a composite quality score
 - Can optionally participate in an external fbcoord service to coordinate upstream selection across multiple fbforward nodes
 - Pins each flow to its assigned upstream until completion, ensuring in-flight connections are not disrupted
+- Can optionally manage GeoIP databases for ASN and country lookups
+- Can optionally log IP connections to SQLite with GeoIP enrichment
+- Can optionally enforce CIDR/ASN/country firewall rules before upstream selection
 
 The forwarder exposes a control plane with HTTP API, Prometheus metrics, WebSocket status stream, and an embedded web UI for monitoring and manual control.
 
@@ -70,15 +73,15 @@ fbforward does not:
 
 ## 1.2 Architecture overview
 
-fbforward runs as a single process with four functional planes operating concurrently.
+fbforward runs as a single process with multiple functional planes operating concurrently.
 
-### Three-plane design
+### Multi-plane design
 
-The architecture separates concerns into three main planes:
+The architecture separates concerns into several planes:
 
 **Data plane**: Handles actual traffic forwarding. TCP listeners accept client connections and proxy bidirectionally to the assigned upstream. UDP listeners create per-5-tuple mappings and forward packets to the assigned upstream. Each [flow](glossary.md#flow) (TCP connection or UDP mapping) is [pinned](glossary.md#flow-pinning) to an upstream at creation time and remains pinned until termination or expiry.
 
-**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, and status queries. The server also exposes Prometheus metrics at `/metrics`, a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access. All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. This node-local control plane is separate from the optional fbcoord coordination service, which coordinates picks across multiple fbforward nodes but does not replace local APIs or the local Web UI. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
+**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, status queries, GeoIP management (`GetGeoIPStatus`, `RefreshGeoIP`), IP-log queries (`GetIPLogStatus`, `QueryIPLog`), and operational status. The server also exposes Prometheus metrics at `/metrics` (including IP-log and firewall counters), a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access (including dashboard GeoIP/IP-log status rows and a dedicated `#/iplog` page). All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. This node-local control plane is separate from the optional fbcoord coordination service, which coordinates picks across multiple fbforward nodes but does not replace local APIs or the local Web UI. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
 
 **Measurement plane**: Assesses upstream quality. ICMP probes test reachability
 continuously. fbmeasure probe cycles run periodic TCP and UDP targeted tests
@@ -89,6 +92,8 @@ selects the [primary upstream](glossary.md#primary-upstream) based on scores
 and switching policy.
 
 **Shaping plane** (optional): Enforces bandwidth limits. When enabled, fbforward configures Linux traffic control (tc) qdiscs via netlink to rate-limit traffic to and from upstreams. Ingress shaping uses an IFB device to redirect incoming traffic through a qdisc.
+
+**GeoIP / IP-log / Firewall plane** (optional): Provides connection-level intelligence and enforcement. When enabled, fbforward manages GeoIP MMDB databases for ASN and country lookups, persists IP connection logs to SQLite with GeoIP enrichment, and evaluates CIDR/ASN/country firewall rules before upstream selection. Denied flows are rejected immediately and never forwarded or logged.
 
 ### Component diagram
 
@@ -190,6 +195,9 @@ fbforward initializes components in a specific order to ensure dependencies are 
    - Resolves upstream hostnames via DNS
    - Creates UpstreamManager with scoring configuration
    - Initializes Metrics aggregator and StatusStore
+   - Creates GeoIP manager (if `geoip.enabled`): loads MMDB databases from disk or downloads from URLs, starts background refresh goroutine
+   - Creates IP-log store and pipeline (if `ip_log.enabled`): opens SQLite database, starts enrichment/writer goroutines and retention prune loop
+   - Creates firewall engine (if `firewall.enabled`): loads rules, wires GeoIP lookups for ASN/country rules
    - Runs fast-start mode: Performs lightweight TCP dial probes to each upstream's measurement endpoint, computes fast-start scores from dial RTT, and selects initial primary
    - Starts ICMP prober for reachability monitoring (does not affect scoring)
    - Starts measurement collector for full TCP/UDP probe cycles
@@ -249,5 +257,8 @@ fbforward uses goroutines for concurrency:
 - One goroutine for ICMP probe loop
 - One goroutine for fbmeasure probe scheduling
 - One goroutine per control plane endpoint (RPC, WebSocket, metrics)
+- One goroutine for GeoIP refresh loop (if `geoip.enabled`)
+- Two goroutines for IP-log pipeline: enrichment worker and batch writer (if `ip_log.enabled`)
+- One goroutine for IP-log retention pruning (if `ip_log.enabled`)
 
 All goroutines receive a context derived from `Runtime.ctx`. Canceling the context triggers shutdown. Components use channels for cross-goroutine communication and `sync.RWMutex` for shared state access.

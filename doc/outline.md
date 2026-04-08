@@ -19,7 +19,7 @@ This outline defines the complete documentation structure for the fbforward mono
 
 **Content:**
 - Problem statement: intelligent upstream selection for TCP/UDP forwarding
-- Core capabilities: measurement-driven selection, flow pinning, traffic shaping
+- Core capabilities: measurement-driven selection, flow pinning, traffic shaping, GeoIP lookups, IP logging, CIDR/ASN/country firewalling
 - Target use cases and deployment scenarios
 
 ### 1.2 Architecture overview
@@ -34,7 +34,7 @@ This outline defines the complete documentation structure for the fbforward mono
 | **Depth** | Overview |
 
 **Content:**
-- Three-plane design: data plane, control plane, measurement plane
+- Multi-plane design: data plane, control plane, measurement plane, shaping plane, GeoIP/IP-log/firewall plane
 - Component diagram showing major subsystems
 - Binary relationships: fbforward, bwprobe, fbmeasure
 
@@ -44,7 +44,7 @@ This outline defines the complete documentation structure for the fbforward mono
 |-------|-------|
 | **ID** | 1.3 |
 | **Purpose** | Describe how components interact at runtime |
-| **Source artifacts** | internal/app/runtime.go, internal/upstream/upstream.go |
+| **Source artifacts** | internal/app/runtime.go, internal/upstream/upstream.go, internal/geoip/, internal/iplog/, internal/firewall/ |
 | **Dependencies** | 1.2 |
 | **Audience** | Operators, developers |
 | **Depth** | Overview |
@@ -162,7 +162,9 @@ This outline defines the complete documentation structure for the fbforward mono
 **Content:**
 - Starting and stopping
 - Hot reload / restart via RPC
-- Monitoring via web UI and Prometheus metrics
+- Monitoring via web UI (dashboard GeoIP/IP-log status, IP Log page) and Prometheus metrics
+- GeoIP refresh (manual via dashboard or `RefreshGeoIP` RPC, automatic via `refresh_interval`)
+- IP Log querying (via `#/iplog` page or `QueryIPLog` RPC)
 - Log interpretation
 
 #### 3.1.4 Troubleshooting
@@ -538,6 +540,53 @@ This outline defines the complete documentation structure for the fbforward mono
 - interface, ifb_device
 - aggregate_limit
 
+### 4.12 geoip section
+
+| Field | Value |
+|-------|-------|
+| **ID** | 4.12 |
+| **Purpose** | Document optional GeoIP database management |
+| **Source artifacts** | internal/config/config.go:GeoIPConfig, internal/geoip/manager.go |
+| **Dependencies** | 4.1 |
+| **Audience** | Operators |
+| **Depth** | Reference |
+
+**Content:**
+- enabled, asn_db_url, asn_db_path, country_db_url, country_db_path, refresh_interval
+- Hot-reload behavior, fail-open for missing databases
+
+### 4.13 ip_log section
+
+| Field | Value |
+|-------|-------|
+| **ID** | 4.13 |
+| **Purpose** | Document optional IP connection logging |
+| **Source artifacts** | internal/config/config.go:IPLogConfig, internal/iplog/ |
+| **Dependencies** | 4.1 |
+| **Audience** | Operators |
+| **Depth** | Reference |
+
+**Content:**
+- enabled, db_path, retention, pipeline tuning fields
+- CGO/SQLite requirement
+- Denied flows not logged
+
+### 4.14 firewall section
+
+| Field | Value |
+|-------|-------|
+| **ID** | 4.14 |
+| **Purpose** | Document optional CIDR/ASN/country firewall |
+| **Source artifacts** | internal/config/config.go:FirewallConfig, internal/firewall/engine.go |
+| **Dependencies** | 4.1 |
+| **Audience** | Operators |
+| **Depth** | Reference |
+
+**Content:**
+- enabled, default action, rules (action, cidr, asn, country)
+- Evaluation order, GeoIP dependency, fail-open behavior
+- Changes require restart
+
 ---
 
 ## 5. API reference
@@ -644,9 +693,12 @@ This outline defines the complete documentation structure for the fbforward mono
 - SetUpstream - manual upstream selection
 - Restart - trigger config reload
 - GetMeasurementConfig - retrieve measurement settings
-- GetRuntimeConfig - retrieve runtime configuration
+- GetRuntimeConfig - retrieve runtime configuration (all sections including geoip, ip_log, firewall)
 - GetScheduleStatus - retrieve measurement schedule status
-- GetQueueStatus - retrieve measurement queue details
+- GetGeoIPStatus - report GeoIP database availability and metadata
+- RefreshGeoIP - trigger GeoIP database re-download
+- GetIPLogStatus - report IP-log store stats
+- QueryIPLog - query persisted IP-log records with filters and pagination
 - RunMeasurement - trigger manual measurement
 
 #### 5.2.3 WebSocket status stream
@@ -678,7 +730,7 @@ This outline defines the complete documentation structure for the fbforward mono
 | **Depth** | Reference |
 
 **Content:**
-- Metric names and labels
+- Metric names and labels (including IP-log and firewall metrics)
 - Counter vs gauge vs histogram
 - Scrape configuration
 
@@ -971,16 +1023,16 @@ This outline defines the complete documentation structure for the fbforward mono
 |-------|-------|
 | **ID** | 7.1 |
 | **Purpose** | Provide detailed architecture documentation for contributors |
-| **Source artifacts** | internal/*, CLAUDE.md |
+| **Source artifacts** | internal/*, internal/geoip/, internal/iplog/, internal/firewall/, CLAUDE.md |
 | **Dependencies** | 1.2 |
 | **Audience** | Developers |
 | **Depth** | Deep-dive |
 
 **Content:**
-- Package dependency graph
-- Concurrency model (goroutine spawn points, context propagation)
-- State management patterns
-- Error handling conventions
+- Package dependency graph (including geoip, iplog, firewall packages)
+- Concurrency model (goroutine spawn points including GeoIP refresh, IP-log pipeline, prune loop)
+- State management patterns (including GeoIP atomic reader swap, IP-log pipeline, firewall stateless evaluation)
+- Error handling conventions (including GeoIP fail-open, pipeline drop behavior)
 
 ### 7.2 Extension points
 
@@ -1026,15 +1078,16 @@ This outline defines the complete documentation structure for the fbforward mono
 |-------|-------|
 | **ID** | 8.1 |
 | **Purpose** | Document unit and integration testing infrastructure |
-| **Source artifacts** | test/harness/, test/scenarios/, *_test.go |
+| **Source artifacts** | test/harness/, test/scenarios/, *_test.go (including internal/geoip/, internal/iplog/, internal/firewall/, internal/config/, internal/control/) |
 | **Dependencies** | 7.1 (architecture), 2.1 (prerequisites) |
 | **Audience** | Developers, contributors |
 | **Depth** | Reference |
 
 **Content:**
-- Unit test coverage (bwprobe algorithms, scoring logic)
+- Unit test coverage (bwprobe algorithms, scoring logic, config validation, control-plane RPC, GeoIP management, IP-log store/pipeline, firewall rule evaluation, forwarding, runtime, metrics)
 - Integration test architecture (rootless namespaces, harness)
 - Scenario YAML format
+- Frontend verification (`npm run build` in `web/`)
 - Running tests and troubleshooting
 
 See [test/testing-guide.md](test/testing-guide.md)
@@ -1101,6 +1154,9 @@ See [test/coordlab.md](test/coordlab.md)
 | switching.* | internal/config/config.go:SwitchingConfig | 4.8, 6.1.4 |
 | control.* | internal/config/config.go:ControlConfig | 4.9, 5.2.1 |
 | shaping.* | internal/config/config.go:ShapingConfig | 4.10, 3.1.2 |
+| geoip.* | internal/config/config.go:GeoIPConfig | 4.12, 3.1.2 |
+| ip_log.* | internal/config/config.go:IPLogConfig | 4.13, 3.1.2 |
+| firewall.* | internal/config/config.go:FirewallConfig | 4.14, 3.1.2 |
 
 | CLI tool | Primary guide | API reference |
 |----------|--------------|---------------|

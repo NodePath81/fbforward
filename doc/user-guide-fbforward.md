@@ -199,7 +199,7 @@ shaping:
   aggregate_limit: "1g"             # Total bandwidth cap
 ```
 
-When `ip_log.enabled` is turned on, `fbforward` uses the CGO-backed `github.com/mattn/go-sqlite3` driver. Builds that include IP logging therefore require a working C toolchain on the target build host.
+fbforward currently links the CGO-backed `github.com/mattn/go-sqlite3` driver for IP-log support. Building `fbforward` therefore requires a working C toolchain on the target build host, even if `ip_log.enabled` is `false` at runtime.
 
 See [Section 4](configuration-reference.md) for complete field documentation.
 
@@ -410,6 +410,42 @@ scrape_configs:
       - targets: ['127.0.0.1:8080']
     bearer_token: '<token>'
 ```
+
+### GeoIP, IP logging, and firewall
+
+These optional features are controlled by the `geoip`, `ip_log`, and `firewall` config sections. See [Section 4.12–4.14](configuration-reference.md#412-geoip-section) for the full field reference.
+
+**Minimum required subfields:**
+
+- `geoip`: At least one complete URL+path pair (`asn_db_url` + `asn_db_path`, or `country_db_url` + `country_db_path`)
+- `ip_log`: `db_path` is required when enabled. `retention` is optional; `0s` disables background pruning.
+- `firewall`: Each rule must specify exactly one of `cidr`, `asn`, or `country`
+
+**Dashboard operational rows:**
+
+When GeoIP or IP logging is enabled, the dashboard shows operational status cards:
+
+- **GeoIP ASN / Country**: Shows whether the in-memory reader is loaded and the on-disk database size. A "Refresh GeoIP" button triggers an immediate re-download from the configured URLs. This is equivalent to calling the `RefreshGeoIP` RPC method.
+- **IP Log**: Shows the total record count and database file size. These values come from the `GetIPLogStatus` RPC.
+
+**IP Log page (`#/iplog`):**
+
+The dedicated IP Log page lets operators query persisted connection records:
+
+- Filter by time range (start/end timestamps)
+- Filter by CIDR prefix (e.g., `10.0.0.0/8`)
+- Filter by ASN or country code
+- Sort by timestamp, bytes transferred, or other fields
+- Server-side pagination for large result sets
+
+CIDR queries require a time bound to prevent full-table scans.
+
+**Key operational semantics:**
+
+- GeoIP databases are **hot-reloaded** after a successful refresh. No restart needed.
+- Firewall rule changes require a **restart** (or `Restart` RPC) to take effect.
+- ASN/country firewall rules **fail open** when the corresponding GeoIP database is unavailable. CIDR rules always work.
+- Flows denied by the firewall are rejected before upstream selection and are **not** written to the IP log.
 
 ### Log interpretation
 

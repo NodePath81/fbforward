@@ -8,7 +8,7 @@ This reference documents all configuration options for fbforward. For operationa
 
 ### YAML structure
 
-fbforward uses YAML for configuration. The top-level structure contains 11 main sections:
+fbforward uses YAML for configuration. The top-level structure contains 15 top-level fields: the optional `hostname` plus 14 configuration sections.
 
 ```yaml
 hostname: fbforward-01           # Optional identifier
@@ -21,7 +21,11 @@ scoring: {...}                    # Quality scoring algorithm
 switching: {...}                  # Upstream switching behavior
 control: {...}                    # Control plane (HTTP API, web UI)
 coordination: {...}               # Optional fbcoord participation
+logging: {...}                    # Log level
 shaping: {...}                    # Linux tc traffic shaping
+geoip: {...}                      # Optional GeoIP database management
+ip_log: {...}                     # Optional SQLite-backed IP logging
+firewall: {...}                   # Optional CIDR / ASN / country firewall
 ```
 
 ### Duration format
@@ -1132,6 +1136,149 @@ fbforward will not create tc qdiscs or require `CAP_NET_ADMIN`.
 
 ---
 
+## 4.12 geoip section
+
+The `geoip` section configures optional MaxMind MMDB database management for ASN and country lookups. GeoIP data is used by `ip_log` for enriching connection records and by `firewall` for ASN/country-based rules.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable GeoIP database management |
+| `asn_db_url` | string | *none* | URL to download/refresh the ASN MMDB database |
+| `asn_db_path` | string | *none* | Local file path to the ASN MMDB database |
+| `country_db_url` | string | *none* | URL to download/refresh the country MMDB database |
+| `country_db_path` | string | *none* | Local file path to the country MMDB database |
+| `refresh_interval` | duration | `24h` | How often to re-download databases from URLs |
+
+**Example:**
+
+```yaml
+geoip:
+  enabled: true
+  asn_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/GeoLite2-ASN.mmdb"
+  asn_db_path: "/var/lib/fbforward/GeoLite2-ASN.mmdb"
+  country_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/Country-without-asn.mmdb"
+  country_db_path: "/var/lib/fbforward/Country-without-asn.mmdb"
+  refresh_interval: 24h
+```
+
+### Operational behavior
+
+- If a `*_db_url`/`*_db_path` pair is configured, fbforward will refresh that database when the local file is missing or stale, and then continue periodic refresh checks every `refresh_interval`.
+- After a successful refresh, the in-memory GeoIP reader is hot-swapped atomically. No restart is required.
+- If neither URL nor path is set for a database type, that lookup type is unavailable.
+- If a database file exists at the path but the URL download fails, fbforward continues using the existing file.
+
+### Interaction with other features
+
+- `ip_log`: When enabled, IP-log records are enriched with ASN and country from the GeoIP databases. If a database is unavailable, the corresponding field is left empty.
+- `firewall`: ASN and country firewall rules require the corresponding GeoIP database. Rules that depend on an unavailable database **fail open** (the rule is skipped, not enforced).
+
+---
+
+## 4.13 ip_log section
+
+The `ip_log` section configures optional persisted IP connection logging. When enabled, fbforward records each accepted flow's source IP, protocol, upstream tag, port, timestamps, byte counters, and (if GeoIP is available) ASN and country.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable IP logging |
+| `db_path` | string | *required if enabled* | Path to the SQLite database file |
+| `retention` | duration | `0s` | How long to keep log entries before pruning (`0s` disables retention pruning) |
+| `geo_queue_size` | int | `4096` | GeoIP enrichment pipeline buffer size |
+| `write_queue_size` | int | `4096` | Write pipeline buffer size |
+| `batch_size` | int | `100` | Number of events batched per write transaction |
+| `flush_interval` | duration | `5s` | Maximum time before flushing a partial batch |
+| `prune_interval` | duration | `1h` | How often the retention pruner runs |
+
+**Example:**
+
+```yaml
+ip_log:
+  enabled: true
+  db_path: "/var/lib/fbforward/iplog.sqlite"
+  retention: 720h
+  geo_queue_size: 4096
+  write_queue_size: 4096
+  batch_size: 100
+  flush_interval: 5s
+  prune_interval: 1h
+```
+
+### Pipeline architecture
+
+IP-log uses an asynchronous pipeline:
+
+1. **Event capture**: Each accepted TCP connection or UDP mapping generates an event.
+2. **GeoIP enrichment**: Events pass through an enrichment queue where ASN and country are looked up (if GeoIP is enabled).
+3. **Batched writes**: Enriched events are batched and written to SQLite in transactions for efficiency.
+4. **Retention pruning**: A background goroutine periodically deletes entries older than `retention`.
+
+### CGO requirement
+
+fbforward currently links `github.com/mattn/go-sqlite3`, which is a CGO-based SQLite driver. Building `fbforward` therefore requires a working C toolchain (gcc or equivalent) on the build host, even if `ip_log.enabled` is `false` at runtime.
+
+### Denied flows
+
+Flows denied by the `firewall` are rejected before upstream selection and are **not** written to the IP log. Only accepted flows appear in log records.
+
+### Query API
+
+Persisted log entries can be queried via the `QueryIPLog` RPC method. See [Section 5.2.2](api-reference.md#522-rpc-methods).
+
+---
+
+## 4.14 firewall section
+
+The `firewall` section configures optional connection-level firewall rules. Rules are evaluated before upstream selection; denied flows are rejected immediately and never forwarded.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable firewall |
+| `default` | string | `allow` | Default action when no rule matches: `allow` or `deny` |
+| `rules` | array | `[]` | Ordered list of firewall rules |
+
+### Rule fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | `allow` or `deny` |
+| `cidr` | string | CIDR range to match (e.g., `10.0.0.0/8`) |
+| `asn` | int | Autonomous System Number to match (requires GeoIP ASN database) |
+| `country` | string | ISO 3166-1 alpha-2 country code to match (requires GeoIP country database) |
+
+Each rule must specify exactly one match criterion: `cidr`, `asn`, or `country`.
+
+**Example:**
+
+```yaml
+firewall:
+  enabled: true
+  default: allow
+  rules:
+    - action: deny
+      cidr: 10.0.0.0/8
+    - action: deny
+      asn: 4134
+    - action: allow
+      country: US
+```
+
+### Evaluation order
+
+Rules are evaluated top-to-bottom. The first matching rule determines the action. If no rule matches, the `default` action applies.
+
+### GeoIP dependency
+
+- `cidr` rules always work regardless of GeoIP availability.
+- `asn` rules require the GeoIP ASN database (`geoip.asn_db_path`). If the database is unavailable, ASN rules **fail open** (are skipped).
+- `country` rules require the GeoIP country database (`geoip.country_db_path`). If the database is unavailable, country rules **fail open** (are skipped).
+
+### Configuration changes
+
+Firewall rules are applied at startup. Changes to `firewall` rules require a restart or `Restart` RPC call to take effect. There is no live config reload for firewall rules.
+
+---
+
 ## Cross-reference
 
 | Configuration section | Algorithm reference | User guide |
@@ -1146,3 +1293,6 @@ fbforward will not create tc qdiscs or require `CAP_NET_ADMIN`.
 | `control` | - | [3.1.3](user-guide-fbforward.md#313-operation), [5.2](api-reference.md#52-control-plane-api) |
 | `coordination` | - | [3.1.1](user-guide-fbforward.md#311-overview), [5.2](api-reference.md#52-control-plane-api) |
 | `shaping` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
+| `geoip` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
+| `ip_log` | - | [3.1.2](user-guide-fbforward.md#312-configuration), [5.2](api-reference.md#52-control-plane-api) |
+| `firewall` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |

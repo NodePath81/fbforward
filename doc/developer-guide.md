@@ -24,6 +24,9 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `internal/fbmeasure/` - fbmeasure client/server protocol and test implementations
 - `internal/resolver/` - DNS resolution with configurable strategy
 - `internal/shaping/` - Linux tc traffic shaping (HTB qdisc, IFB device)
+- `internal/geoip/` - GeoIP MMDB database management, hot-reload, ASN/country lookup
+- `internal/iplog/` - SQLite-backed IP connection logging, async enrichment/write pipeline
+- `internal/firewall/` - CIDR/ASN/country rule evaluation engine
 - `internal/util/` - Logger, helpers, type utilities
 - `internal/version/` - Version string injection
 - `web/` - Embedded web UI (TypeScript, Vite-built, served via `//go:embed`)
@@ -49,7 +52,9 @@ cmd/fbforward
        ├─> internal/config (Config loading)
        ├─> internal/upstream (UpstreamManager)
        ├─> internal/forwarding (TCPListener, UDPListener)
+       │    └─> internal/firewall (Engine) [optional, checks before forwarding]
        ├─> internal/control (ControlServer, StatusStore)
+       │    └─> internal/geoip, internal/iplog [optional, for operational RPCs]
        ├─> internal/metrics (Metrics)
        ├─> internal/probe (ProbeLoop)
        ├─> internal/measure (Collector, Scheduler)
@@ -58,6 +63,9 @@ cmd/fbforward
        │              └─> bwprobe/internal/rpc (Client)
        ├─> internal/resolver (Resolver)
        ├─> internal/shaping (TrafficShaper)
+       ├─> internal/geoip (Manager) [optional]
+       ├─> internal/iplog (Store, Pipeline) [optional]
+       ├─> internal/firewall (Engine) [optional]
        └─> web (WebUIHandler)
 ```
 
@@ -85,6 +93,10 @@ fbforward runs a single process with multiple goroutines for parallel I/O and ba
 | `ControlServer.Start()` | HTTP server handler goroutines | 1 per request (managed by `http.Server`) | Terminates on request completion |
 | `StatusHub.Run()` | WebSocket broadcast loop | 1 | Terminated by context cancel |
 | `Metrics.Start()` | Periodic metric updates | 1 | Terminated by context cancel |
+| `GeoIPManager.refreshLoop()` | Periodic GeoIP DB re-download | 1 (if `geoip.enabled`) | Terminated by context cancel |
+| `IPLogPipeline.enrichWorker()` | GeoIP enrichment of IP-log events | 1 (if `ip_log.enabled`) | Terminated by context cancel |
+| `IPLogPipeline.writeWorker()` | Batched SQLite writes | 1 (if `ip_log.enabled`) | Terminated by context cancel |
+| `IPLogStore.pruneLoop()` | Retention-based record deletion | 1 (if `ip_log.enabled`) | Terminated by context cancel |
 
 **Context propagation:**
 
@@ -172,6 +184,30 @@ Switching decision flow (auto mode):
 4. If advantage lost, clear pending switch
 5. Fast failover bypasses confirmation on high loss/retrans or consecutive dial failures
 
+**GeoIP state:**
+
+The GeoIP manager maintains:
+- In-memory MMDB readers for ASN and country databases
+- Reader swaps are atomic (pointer swap under mutex), allowing concurrent lookups during refresh
+- Refresh goroutine re-downloads databases at `geoip.refresh_interval` and hot-swaps the readers on success
+- If a refresh download fails, the existing readers remain active
+
+**IP-log pipeline state:**
+
+The IP-log subsystem uses a two-stage async pipeline:
+- Events flow through buffered channels: event capture → GeoIP enrichment → batch writer
+- If pipeline queues are full, events are dropped and counted via `fbforward_iplog_events_dropped_total`
+- The batch writer accumulates up to `batch_size` events or waits `flush_interval`, then writes in a single SQLite transaction
+- The prune goroutine periodically deletes entries older than `retention`
+
+**Firewall state:**
+
+The firewall engine is stateless at runtime:
+- Rules are loaded from configuration at startup
+- Each incoming flow is checked against rules top-to-bottom
+- ASN/country rules call into the GeoIP manager; if the required database is unavailable, the rule is skipped (fail-open)
+- Changes to firewall rules require a process restart or `Restart` RPC
+
 **Configuration reload:**
 
 On `Restart` RPC call:
@@ -231,6 +267,9 @@ fbforward follows Go conventions:
 - **Measurement timeout**: Skips sample, schedules next measurement normally
 - **Dial failure**: Marks upstream unusable after consecutive failures, auto-recovers on success
 - **Configuration validation**: Returns error on load, does not apply partial config
+- **GeoIP download failure**: Continues using existing on-disk database if available, logs warning
+- **GeoIP database unavailable**: ASN/country firewall rules fail open; IP-log enrichment leaves fields empty
+- **IP-log pipeline full**: Events are dropped, `fbforward_iplog_events_dropped_total` increments, and a warning event is logged
 
 **Fatal errors:**
 

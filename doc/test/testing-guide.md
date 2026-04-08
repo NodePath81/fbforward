@@ -8,7 +8,7 @@ This guide covers fbforward's test infrastructure: unit tests for algorithms and
 
 fbforward has two categories of tests:
 
-- **Unit tests** (`*_test.go` files) cover bwprobe measurement algorithms and upstream scoring logic. They run on any platform with Go installed.
+- **Unit tests** (`*_test.go` files) cover bwprobe measurement algorithms, upstream scoring logic, configuration validation, control-plane RPC, GeoIP management, IP-log store/pipeline, firewall rule evaluation, forwarding, runtime lifecycle, and metrics. They run on any platform with Go installed (some tests are Linux-only).
 - **Integration tests** use a rootless network-namespace harness to run real fbforward instances against simulated upstreams with controlled link conditions. They require Linux with unprivileged user namespace support.
 
 Integration scenarios are harness-driven and are not executed by `go test ./...`.
@@ -18,8 +18,12 @@ For the separate manual coordination lab, see [coordlab.md](coordlab.md).
 **Quick start:**
 
 ```bash
-# Unit tests
-go test ./bwprobe/internal/... ./internal/upstream -v
+# All unit tests
+go test ./...
+
+# Unit tests (specific packages)
+go test ./bwprobe/internal/... -v
+go test ./internal/upstream ./internal/config ./internal/control ./internal/geoip ./internal/iplog/... ./internal/firewall ./internal/forwarding ./internal/app ./internal/metrics -v
 
 # Integration tests (Linux only)
 ./scripts/setup-test-env.sh                    # preflight + build
@@ -30,7 +34,7 @@ go test ./bwprobe/internal/... ./internal/upstream -v
 .venv/bin/python scripts/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # Open http://127.0.0.1:18800
-.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --upstream upstream-1 --delay-ms 200
+.venv/bin/python scripts/coordlab/coordlab.py shaping-set --workdir /tmp/coordlab-phase5 --target upstream-1 --delay-ms 200
 .venv/bin/python scripts/coordlab/coordlab.py shaping-clear-all --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
@@ -74,7 +78,106 @@ Run:
 go test ./internal/upstream -v
 ```
 
-### 2.3 Writing new unit tests
+### 2.3 Configuration validation tests
+
+File: `internal/config/config_test.go`
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestCoordinationConfig*` (3) | Coordination block is optional; requires fields together when present; accepts complete block |
+| `TestGeoIPConfig*` (4) | Requires at least one complete URL+path pair when enabled; rejects incomplete pairs; rejects path without URL |
+| `TestIPLogConfig*` (3) | Requires `db_path` when enabled; applies default queue sizes; rejects invalid tuning (zero/negative) |
+| `TestFirewall*` (3) | Rules require exactly one matcher; country codes normalized to uppercase; invalid default/action rejected |
+
+### 2.4 Control-plane RPC tests
+
+File: `internal/control/control_test.go`
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestRPCRejectsMissingBearerToken` | Auth enforcement |
+| `TestRPCRejectsWrongHTTPMethod` | Only POST accepted |
+| `TestGetGeoIPStatus*` (4) | Unavailable without manager; returns configured status; accepts omitted/null params; handles unconfigured/single-DB |
+| `TestRefreshGeoIP*` (3) | Unavailable without manager; no-op without configured DBs; returns per-DB results |
+| `TestGetIPLogStatus*` (3) | Unavailable without store; returns stats; handles empty/stat-failure |
+| `TestQueryIPLog*` (6) | Unavailable without store; rejects CIDR without time bound; returns paginated results; rejects malformed paging; sort validation; combined filters |
+| `TestRuntimeConfigIncludesIPLogTuning` | `GetRuntimeConfig` includes all config sections |
+
+### 2.5 GeoIP manager tests
+
+File: `internal/geoip/manager_test.go`
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestLookupSupportsPartialAvailability` | Lookup succeeds when only one DB is loaded |
+| `TestStatusReports*` (3) | Status payload includes file metadata and reader availability |
+| `TestRefresh*` (4) | Failure preserves existing reader; success swaps atomically; partial success; no-op without configured DBs |
+| `TestRefreshNow*` (5) | Returns per-DB results; reports missing files; serializes concurrent calls |
+| `TestLookupDuringRefreshSeesConsistentValues` | Concurrent reads see consistent ASN+country |
+| `TestCloseIsIdempotent` | Close can be called multiple times |
+| `TestLoadLocalReadersWithSingleConfiguredDB` | Startup with one DB type configured |
+
+### 2.6 IP-log store tests
+
+File: `internal/iplog/store_test.go`
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestStoreInsertAndQuery` | Basic insert and query round-trip |
+| `TestStoreStats` / `TestStoreStatsEmpty` | Stats reporting (row count, DB size, oldest entry) |
+| `TestQueryRequiresTimeBoundForCIDR` | CIDR filter requires time bounds to prevent full-table scans |
+| `TestPruneRemovesOldRows` | Retention pruning deletes expired rows |
+| `TestStoreReopenPreservesSchemaAndData` | Schema survives close/reopen |
+| `TestQuery*` (5) | Combined filters, pagination, invalid bounds/CIDR, sort params, stable ordering |
+| `TestFileSizeGrowsAcrossBatches` | DB size metric accuracy |
+
+### 2.7 IP-log pipeline tests
+
+File: `internal/iplog/pipeline_test.go`
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestPipelineFlushesOnShutdown` | Pending events flushed on graceful stop |
+| `TestPipelineDropsWhenGeoQueueIsFull` | Events dropped when enrichment queue overflows |
+| `TestPipelineFlushesOnBatchSize` | Batch flushes at configured size |
+| `TestPipelineFlushesOnTimer` | Partial batch flushes after flush interval |
+| `TestPipelineWritesPartialGeoIPData` | Records with partial enrichment are written |
+| `TestPipelineWriteQueueOverflowIncrementsDropMetric` | Write-queue overflow counted |
+| `TestPipelineShutdownWithEmptyQueues` | Clean shutdown with no pending data |
+
+### 2.8 Firewall engine tests
+
+File: `internal/firewall/engine_test.go`
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestCIDRDenyRule` | CIDR matching works for deny rules |
+| `TestFirstMatchWins` | Rule evaluation stops at first match |
+| `TestASNRuleSkippedWhenDBUnavailable` | ASN rules fail open without GeoIP ASN DB |
+| `TestCountryRuleMatches` | Country matching with GeoIP data |
+| `TestCountryRuleSkippedWhenDBUnavailable` | Country rules fail open without GeoIP country DB |
+| `TestIPv6CIDRRuleMatches` | IPv6 CIDR matching |
+| `TestDenyMetricUsesRuleLabels` | Deny metrics include correct `rule_type` and `rule_value` labels |
+
+### 2.9 Other package tests
+
+| File | What it covers |
+|------|---------------|
+| `internal/forwarding/forwarding_test.go` | TCP/UDP forwarding logic and flow pinning |
+| `internal/app/runtime_test.go` | Runtime lifecycle, component wiring |
+| `internal/metrics/metrics_test.go` | Prometheus metric rendering, IP-log/firewall metric output |
+
+### 2.10 Frontend verification
+
+The web UI (including the IP Log page) can be verified by building the frontend:
+
+```bash
+cd web && npm run build
+```
+
+A successful build confirms that TypeScript sources compile without errors.
+
+### 2.11 Writing new unit tests
 
 - Use table-driven tests with `t.Run` subtests.
 - For scoring tests, use `config.DefaultScoringConfig()` to get valid defaults.
