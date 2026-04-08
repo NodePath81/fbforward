@@ -13,7 +13,11 @@ if str(ROOT) not in sys.path:
 
 from lib.state import (
     ClientInfo,
+    FirewallFeatureInfo,
+    GeoIPFeatureInfo,
+    IPLogFeatureInfo,
     LabState,
+    NodeFeatureInfo,
     NamespaceInfo,
     ProcessInfo,
     ProxyInfo,
@@ -24,6 +28,7 @@ from lib.state import (
     TopologyInfo,
     save_state,
 )
+from lib.locking import acquire_client_mutation_lock
 from web.app import create_app
 
 
@@ -121,6 +126,29 @@ def sample_state(workdir: Path) -> LabState:
             "upstream-1": TerminalInfo(host_port=18901, pid=302),
             "upstream-2": TerminalInfo(host_port=18902, pid=303),
         },
+        node_features={
+            "node-1": NodeFeatureInfo(
+                geoip=GeoIPFeatureInfo(
+                    enabled=True,
+                    asn_db_url="https://example.test/asn.mmdb",
+                    asn_db_path=str(workdir / "mmdb" / "GeoLite2-ASN.mmdb"),
+                    country_db_url="https://example.test/country.mmdb",
+                    country_db_path=str(workdir / "mmdb" / "Country-without-asn.mmdb"),
+                    refresh_interval="24h",
+                ),
+                ip_log=IPLogFeatureInfo(
+                    enabled=True,
+                    db_path=str(workdir / "data" / "node-1-iplog.sqlite"),
+                    retention="24h",
+                    geo_queue_size=128,
+                    write_queue_size=128,
+                    batch_size=10,
+                    flush_interval="2s",
+                    prune_interval="1h",
+                ),
+                firewall=FirewallFeatureInfo(enabled=True, default_policy="allow"),
+            ),
+        },
         shaping=ShapingInfo(
             targets={
                 "node-1": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-1", device="hub-node1"),
@@ -165,10 +193,14 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("error", payload)
         self.assertEqual({}, payload["clients"])
         self.assertEqual({}, payload["terminals"])
+        self.assertEqual({}, payload["node_features"])
 
     def test_status_returns_active_summary_without_tokens(self) -> None:
         self.write_state(sample_state(self.workdir))
-        with mock.patch("web.app.is_alive", return_value=True):
+        with (
+            mock.patch("web.app.is_alive", return_value=True),
+            mock.patch("lib.output.is_alive", return_value=True),
+        ):
             response = self.client.get("/api/status")
         self.assertEqual(200, response.status_code)
         payload = response.get_json()
@@ -178,7 +210,9 @@ class WebAppTest(unittest.TestCase):
         self.assertNotIn("client-1", payload["service_links"])
         self.assertEqual("198.51.100.10", payload["clients"]["client-1"]["identity_ip"])
         self.assertEqual("http://127.0.0.1:18900", payload["terminals"]["client-1"]["url"])
+        self.assertEqual("client-1 - 301", payload["terminals"]["client-1"]["label"])
         self.assertTrue(payload["terminals"]["upstream-1"]["alive"])
+        self.assertTrue(payload["node_features"]["node-1"]["geoip"]["enabled"])
         self.assertEqual("node-1", payload["shaping_targets"][0]["target"])
 
     def test_coordination_returns_partial_errors(self) -> None:
@@ -314,7 +348,7 @@ class WebAppTest(unittest.TestCase):
         updated.clients["client-2"] = ClientInfo(identity_ip="203.0.113.20")
         with (
             mock.patch("web.app.is_alive", return_value=True),
-            mock.patch("web.app.add_client", return_value=updated) as add_client,
+            mock.patch("web.app.run_locked_add_client", return_value=updated) as add_client,
         ):
             self.write_state(sample_state(self.workdir))
             response = self.client.post(
@@ -344,22 +378,18 @@ class WebAppTest(unittest.TestCase):
 
     def test_client_mutation_routes_return_409_when_busy(self) -> None:
         self.write_state(sample_state(self.workdir))
-        lock = self.app.config["client_mutation_lock"]
-        self.assertTrue(lock.acquire(blocking=False))
-        try:
+        with acquire_client_mutation_lock(self.workdir):
             response = self.client.post(
                 "/api/clients",
                 data=json.dumps({"name": "client-2", "identity_ip": "203.0.113.20"}),
                 content_type="application/json",
             )
-        finally:
-            lock.release()
         self.assertEqual(409, response.status_code)
 
     def test_add_client_route_port_conflict_mentions_only_ttyd_binding(self) -> None:
         self.write_state(sample_state(self.workdir))
         with mock.patch(
-            "web.app.add_client",
+            "web.app.run_locked_add_client",
             side_effect=RuntimeError("coordlab ttyd ports are already in use: ttyd-client-2:127.0.0.1:18900"),
         ):
             response = self.client.post(
@@ -372,6 +402,10 @@ class WebAppTest(unittest.TestCase):
         payload = response.get_json()
         self.assertIn("ttyd-client-2:127.0.0.1:18900", payload["error"])
         self.assertNotIn("fbcoord", payload["error"])
+
+    def test_terminal_links_renderer_uses_label_when_present(self) -> None:
+        script = (ROOT / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("${info.label || name}", script)
 
 
 if __name__ == "__main__":

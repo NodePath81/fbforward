@@ -139,8 +139,8 @@ def build_link(
     )
 
 
-def nsenter_run(pid: int, args: list[str]) -> subprocess.CompletedProcess[str]:
-    command = [
+def nsenter_command(pid: int, args: list[str]) -> list[str]:
+    return [
         "nsenter",
         "--preserve-credentials",
         "--keep-caps",
@@ -151,6 +151,10 @@ def nsenter_run(pid: int, args: list[str]) -> subprocess.CompletedProcess[str]:
         "--",
         *args,
     ]
+
+
+def nsenter_run(pid: int, args: list[str]) -> subprocess.CompletedProcess[str]:
+    command = nsenter_command(pid, args)
     try:
         return subprocess.run(command, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:

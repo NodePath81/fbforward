@@ -76,8 +76,11 @@ Common behavior:
 |--------|---------|-------------|
 | `up` | Build the full Phase 5 lab, start services, proxies, and terminals, switch both nodes to `coordination`, and verify readiness | `--workdir`, `--skip-build`, repeatable `--client NAME=IP` |
 | `down` | Stop Phase 5 services and tear down namespaces | `--workdir` |
-| `status` | Print the saved Phase 5 state, including live/dead process and namespace status, node features, and artifact paths | `--workdir` |
+| `status` | Print the saved Phase 5 state, including live/dead process and namespace status, node features, and artifact paths | `--workdir`, `--json` |
 | `web` | Start the Flask dashboard for an existing workdir | `--workdir`, `--host`, `--port` |
+| `add-client` | Add one client namespace to a running Phase 5 lab | `--workdir`, `--client NAME=IP`, `--json` |
+| `remove-client` | Remove one client namespace from a running Phase 5 lab | `--workdir`, `--name`, `--json` |
+| `exec` | Run one command inside a saved namespace using `nsenter` | `--workdir`, `--ns`, `--json`, `-- COMMAND ...` |
 | `shaping-status` | Show current live shaping for all targets | `--workdir` |
 | `shaping-set` | Apply delay and/or loss to one target | `--workdir`, `--target`, `--delay-ms`, `--loss-pct` |
 | `shaping-clear` | Remove shaping from one target | `--workdir`, `--target` |
@@ -86,7 +89,7 @@ Common behavior:
 | `disconnect` | Bring one node-side or upstream-side link down | `--workdir`, `--target` |
 | `reconnect` | Bring one node-side or upstream-side link back up | `--workdir`, `--target` |
 | `net-up` | Build the namespace topology only, without starting services, proxies, or ttyd | `--workdir`, repeatable `--client NAME=IP` |
-| `net-status` | Print the saved Phase 1 topology-only state | `--workdir` |
+| `net-status` | Print the saved Phase 1 topology-only state | `--workdir`, `--json` |
 | `net-down` | Tear down the Phase 1 topology-only lab | `--workdir` |
 
 ### Client specification rules
@@ -159,7 +162,7 @@ Usage:
 Usage:
 
 ```bash
-.venv/bin/python scripts/coordlab/coordlab.py status [--workdir PATH]
+.venv/bin/python scripts/coordlab/coordlab.py status [--workdir PATH] [--json]
 ```
 
 `status` renders the saved Phase 5 view of the lab:
@@ -172,6 +175,51 @@ Usage:
 - artifact directories and command reminders
 
 This command is useful both while the lab is active and after teardown, because it shows the saved state along with current liveness.
+
+With `--json`, `status` emits the same derived payload shape used by `GET /api/status`. This JSON is intended for scripts and agents, not as a raw dump of `state.json`.
+
+#### `add-client`
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py add-client [--workdir PATH] --client NAME=IP [--json]
+```
+
+`add-client` uses the same validation and runtime path as the web dashboard:
+
+- it requires an active Phase 5 lab
+- it rejects bad client specs, duplicate names, duplicate identity IPs, and identity IPs that overlap the transport CIDR
+- it acquires the same workdir-scoped mutation lock used by the web API
+- it creates `client-edge` on demand if the lab was started without clients
+
+By default it prints the updated human-readable status. With `--json`, it emits the updated derived status payload.
+
+Example:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py add-client \
+  --workdir /tmp/coordlab-phase5 \
+  --client client-3=203.0.113.30
+```
+
+#### `remove-client`
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py remove-client [--workdir PATH] --name NAME [--json]
+```
+
+`remove-client` removes one live client namespace, stops its ttyd terminal, and updates the saved state. It also uses the shared workdir mutation lock, so concurrent CLI or web client mutations fail fast instead of waiting.
+
+By default it prints the updated human-readable status. With `--json`, it emits the updated derived status payload.
+
+Example:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
+```
 
 #### `web`
 
@@ -188,6 +236,35 @@ Examples:
 ```bash
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5 --host 127.0.0.1 --port 18880
+```
+
+#### `exec`
+
+Usage:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py exec [--workdir PATH] --ns NAMESPACE [--json] -- COMMAND [ARGS...]
+```
+
+`exec` runs one command inside a saved namespace using `nsenter --preserve-credentials --keep-caps -t PID -U -n -- ...`.
+
+Default behavior:
+
+- stdin, stdout, and stderr are passed through directly
+- the child exit code becomes the CLI exit code
+- this is the preferred mode for interactive or streaming commands
+
+`--json` behavior:
+
+- captures stdout and stderr
+- prints a structured result with `namespace`, `pid`, `command`, `exit_code`, `stdout`, and `stderr`
+- still returns the child exit code
+
+Examples:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ping -c 1 10.0.0.2
+.venv/bin/python scripts/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns node-1 --json -- ss -ltnp
 ```
 
 #### Shaping commands
@@ -248,7 +325,7 @@ Usage:
 
 ```bash
 .venv/bin/python scripts/coordlab/coordlab.py net-up [--workdir PATH] [--client NAME=IP ...]
-.venv/bin/python scripts/coordlab/coordlab.py net-status [--workdir PATH]
+.venv/bin/python scripts/coordlab/coordlab.py net-status [--workdir PATH] [--json]
 .venv/bin/python scripts/coordlab/coordlab.py net-down [--workdir PATH]
 ```
 
@@ -263,6 +340,8 @@ Usage:
 - start ttyd terminals
 
 Use these commands when debugging namespace wiring, addresses, routing, or connectivity in isolation from the service processes.
+
+With `--json`, `net-status` emits the same derived status contract family as `status --json`, but without live service links or process-backed runtime expectations.
 
 ### Work directory
 
@@ -281,7 +360,7 @@ The work directory contains:
 
 - `state.json` — persisted lab state
 - `logs/` — one log file per managed process
-- `configs/` — generated `fbforward` configs
+- `configs/` — generated YAML node configs such as `configs/node-1.yaml` and `configs/node-2.yaml`
 - `mmdb/` — cached GeoIP MMDB files used by both nodes
 - `data/` — SQLite parent directory for per-node IP log databases
 - `fbcoord-runtime/` — isolated runtime copy used by `wrangler dev`
@@ -309,8 +388,22 @@ Operational inspection from CLI after startup:
 
 ```bash
 .venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5 --json
 .venv/bin/python scripts/coordlab/coordlab.py shaping-status --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py link-status --workdir /tmp/coordlab-phase5
+```
+
+Live client changes from CLI:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py add-client --workdir /tmp/coordlab-phase5 --client client-3=203.0.113.30
+.venv/bin/python scripts/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
+```
+
+Run a one-off command in a saved namespace:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ip route
 ```
 
 ---
@@ -352,6 +445,9 @@ Host-facing access points:
 - `http://127.0.0.1:18900+` — ttyd terminals for configured client namespaces and upstream namespaces
 
 Each ttyd terminal launches `/bin/bash --noprofile --norc -i` with `PS1` set to `<namespace>@\w$ ` so the namespace identity is always visible in the prompt.
+The dashboard labels each Web Shell entry as `NS - PID`, for example `client-1 - 12345`.
+
+Inside each node namespace, the generated forwarding listener binds `0.0.0.0:9000`. coordlab does not expose that forwarding port directly on the host; it is intended to be reached from client namespaces or via `coordlab exec`.
 
 ### Node feature defaults
 
@@ -439,6 +535,8 @@ It serves:
 
 The dashboard does not own any background state. It reads the current `state.json` on each request and talks to the live lab through the existing host proxies.
 
+The web UI and the CLI now share the same derived status model. `GET /api/status`, `coordlab.py status --json`, and `coordlab.py net-status --json` are intended to stay aligned so operators, scripts, and agents can consume one stable shape.
+
 ### Dashboard sections
 
 - Lab status
@@ -462,7 +560,24 @@ Phase 3 does not add dedicated dashboard panels for GeoIP, IP log, or firewall. 
 
 - GeoIP database status and refresh
 - IP log inspection and queries
-- firewall inspection and manual rule changes
+- firewall inspection and manual rule changes when supported by the node itself
+
+RPC requests to the nodes require Bearer authentication. The control token comes from coordlab-generated state and config:
+
+- `status` shows the saved control token summary in the human-readable output
+- `state.json` persists the token values directly
+- the generated YAML config files under `configs/` also contain the configured token
+
+Example RPC call:
+
+```bash
+TOKEN="$(jq -r '.tokens.control' /tmp/coordlab-phase5/state.json)"
+curl -s \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  http://127.0.0.1:18701/rpc \
+  -d '{"jsonrpc":"2.0","id":1,"method":"GetGeoIPStatus","params":{}}'
+```
 
 ---
 
@@ -489,6 +604,32 @@ Phase 3 feature smoke:
   - `8.8.8.8` via ASN rule
   - `1.1.1.1` via country rule
 - verify `203.0.113.20` is allowed by default
+
+Concrete CLI-based firewall verification:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py exec \
+  --workdir /tmp/coordlab-phase5 \
+  --ns upstream-1 -- \
+  python3 -m http.server 9000 --bind 0.0.0.0
+
+.venv/bin/python scripts/coordlab/coordlab.py exec \
+  --workdir /tmp/coordlab-phase5 \
+  --ns client-allow -- \
+  curl -sS --max-time 5 http://10.0.0.2:9000/
+
+.venv/bin/python scripts/coordlab/coordlab.py exec \
+  --workdir /tmp/coordlab-phase5 \
+  --ns client-deny-cidr -- \
+  curl -sS --max-time 5 http://10.0.0.2:9000/
+```
+
+Interpretation:
+
+- the allowed client should reach the forwarding listener inside the node namespace
+- the denied client should fail
+- firewall deny confirmation should come from node logs and Prometheus metrics, plus the generated config and persisted node feature summary
+- do not assume there is a dedicated firewall inspection RPC unless the node implementation explicitly provides one
 
 Developer-side validation:
 

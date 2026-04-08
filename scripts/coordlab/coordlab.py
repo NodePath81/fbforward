@@ -19,7 +19,8 @@ from typing import Iterable
 
 from lib import config as coordconfig
 from lib import netns
-from lib.output import render_summary
+from lib.locking import acquire_client_mutation_lock
+from lib.output import render_summary, status_payload
 from lib.process import ProcessManager, is_alive, terminate_pid, terminate_process_group
 from lib.proxy import run_proxy_daemon
 from lib.state import (
@@ -877,6 +878,45 @@ def load_active_state(workdir: Path) -> LabState:
     return state
 
 
+def print_json(payload: object) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def run_locked_add_client(workdir: Path, name: str, identity_ip: str) -> LabState:
+    with acquire_client_mutation_lock(workdir):
+        state = load_active_state(workdir)
+        return add_client(state, name, identity_ip)
+
+
+def run_locked_remove_client(workdir: Path, name: str) -> LabState:
+    with acquire_client_mutation_lock(workdir):
+        state = load_active_state(workdir)
+        if name not in state.clients:
+            raise KeyError(f"unknown client namespace: {name}")
+        return remove_client(state, name)
+
+
+def strip_remainder_command(command: list[str]) -> list[str]:
+    if command and command[0] == "--":
+        return command[1:]
+    return command
+
+
+def exception_message(exc: BaseException) -> str:
+    if getattr(exc, "args", None):
+        first = exc.args[0]
+        if isinstance(first, str):
+            return first
+    return str(exc)
+
+
+def emit_status_result(workdir: Path, state: LabState, *, json_output: bool) -> None:
+    if json_output:
+        print_json(status_payload(state, workdir))
+        return
+    print(render_summary(state, str(VENV_PYTHON)))
+
+
 def build_shaper_from_state(state: LabState):
     from lib.shaping import TrafficShaper
 
@@ -979,8 +1019,14 @@ def cmd_net_status(args: argparse.Namespace) -> int:
     state_path = state_path_for(workdir)
     state = load_state(state_path)
     if state is None:
+        if args.json:
+            print_json(status_payload(None, workdir))
+            return 1
         print(f"no coordlab state found at {state_path}")
         return 1
+    if args.json:
+        print_json(status_payload(state, workdir))
+        return 0
     print_basic_status(state)
     return 0
 
@@ -1163,10 +1209,89 @@ def cmd_status(args: argparse.Namespace) -> int:
     state_path = state_path_for(workdir)
     state = load_state(state_path)
     if state is None:
+        if args.json:
+            print_json(status_payload(None, workdir))
+            return 1
         print(f"no coordlab state found at {state_path}")
         return 1
+    if args.json:
+        print_json(status_payload(state, workdir))
+        return 0
     print(render_summary(state, str(VENV_PYTHON)))
     return 0
+
+
+def cmd_add_client(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    try:
+        client_specs = parse_client_specs([args.client])
+        name, identity_ip = next(iter(client_specs.items()))
+        updated = run_locked_add_client(workdir, name, identity_ip)
+    except (RuntimeError, KeyError) as exc:
+        if args.json:
+            print_json({"error": exception_message(exc)})
+            return 1
+        raise RuntimeError(exception_message(exc)) from exc
+    emit_status_result(workdir, updated, json_output=args.json)
+    return 0
+
+
+def cmd_remove_client(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    try:
+        updated = run_locked_remove_client(workdir, args.name)
+    except (RuntimeError, KeyError) as exc:
+        if args.json:
+            print_json({"error": exception_message(exc)})
+            return 1
+        raise RuntimeError(exception_message(exc)) from exc
+    emit_status_result(workdir, updated, json_output=args.json)
+    return 0
+
+
+def cmd_exec(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    command = strip_remainder_command(list(args.command))
+    if not command:
+        message = "exec requires a command after --"
+        if args.json:
+            print_json({"error": message})
+            return 1
+        raise RuntimeError(message)
+
+    try:
+        state = load_active_state(workdir)
+        namespace = state.namespaces.get(args.ns)
+        if namespace is None:
+            raise RuntimeError(f"unknown namespace: {args.ns}")
+        nsenter_command = netns.nsenter_command(namespace.pid, command)
+    except RuntimeError as exc:
+        if args.json:
+            print_json({"error": exception_message(exc)})
+            return 1
+        raise
+
+    try:
+        if args.json:
+            result = subprocess.run(nsenter_command, capture_output=True, text=True)
+            print_json(
+                {
+                    "namespace": args.ns,
+                    "pid": namespace.pid,
+                    "command": command,
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+            )
+            return result.returncode
+        result = subprocess.run(nsenter_command)
+        return int(result.returncode)
+    except OSError as exc:
+        if args.json:
+            print_json({"error": str(exc), "namespace": args.ns, "pid": namespace.pid, "command": command})
+            return 1
+        raise RuntimeError(str(exc)) from exc
 
 
 def cmd_shaping_status(args: argparse.Namespace) -> int:
@@ -1258,6 +1383,8 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
         if name == "net-up":
             sub.add_argument("--client", action="append", default=[], metavar="NAME=IP")
+        if name == "net-status":
+            sub.add_argument("--json", action="store_true")
         sub.set_defaults(handler=handler)
 
     for name, handler, help_text in (
@@ -1270,7 +1397,28 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "up":
             sub.add_argument("--skip-build", action="store_true")
             sub.add_argument("--client", action="append", default=[], metavar="NAME=IP")
+        if name == "status":
+            sub.add_argument("--json", action="store_true")
         sub.set_defaults(handler=handler)
+
+    add_client_cmd = subparsers.add_parser("add-client", help="add one client namespace to a running Phase 5 lab")
+    add_client_cmd.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    add_client_cmd.add_argument("--client", required=True, metavar="NAME=IP")
+    add_client_cmd.add_argument("--json", action="store_true")
+    add_client_cmd.set_defaults(handler=cmd_add_client)
+
+    remove_client_cmd = subparsers.add_parser("remove-client", help="remove one client namespace from a running Phase 5 lab")
+    remove_client_cmd.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    remove_client_cmd.add_argument("--name", required=True)
+    remove_client_cmd.add_argument("--json", action="store_true")
+    remove_client_cmd.set_defaults(handler=cmd_remove_client)
+
+    exec_cmd = subparsers.add_parser("exec", help="run a command inside one saved namespace")
+    exec_cmd.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    exec_cmd.add_argument("--ns", required=True)
+    exec_cmd.add_argument("--json", action="store_true")
+    exec_cmd.add_argument("command", nargs=argparse.REMAINDER)
+    exec_cmd.set_defaults(handler=cmd_exec)
 
     web = subparsers.add_parser("web", help="start the Phase 5 coordlab dashboard")
     web.add_argument("--workdir", default=str(DEFAULT_WORKDIR))

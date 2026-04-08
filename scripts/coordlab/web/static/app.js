@@ -188,7 +188,7 @@ function renderTerminalLinks(terminals) {
   }
   container.innerHTML = entries.map(([name, info]) => `
     <a class="service-card" href="${info.url}" target="_blank" rel="noreferrer">
-      <span class="service-name">${name}</span>
+      <span class="service-name">${info.label || name}</span>
       <span class="service-url">${info.url}</span>
       <span class="service-url">${info.alive ? "alive" : "dead"} • pid ${info.pid}</span>
     </a>

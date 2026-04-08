@@ -20,6 +20,7 @@ python3 -m venv .venv
   --client client-1=198.51.100.10 \
   --client client-2=203.0.113.20
 .venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5
+.venv/bin/python scripts/coordlab/coordlab.py status --workdir /tmp/coordlab-phase5 --json
 .venv/bin/python scripts/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 .venv/bin/python scripts/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
@@ -41,8 +42,19 @@ Terminal ports:
 
 - `127.0.0.1:18900+` -> ttyd browser terminals for configured clients and upstream namespaces
 - terminals open with `/bin/bash --noprofile --norc -i` and prompt as `<namespace>@<cwd>$`
+- the dashboard shows each terminal entry as `NS - PID`
 
 After `up` and `web`, normal manual testing is expected to happen primarily from the web page. The CLI remains responsible for lifecycle commands, while the dashboard provides the routine test-session controls, including live client add/remove.
+
+Phase 4 adds CLI parity for live client mutation and namespace access:
+
+```bash
+.venv/bin/python scripts/coordlab/coordlab.py add-client --workdir /tmp/coordlab-phase5 --client client-3=203.0.113.30
+.venv/bin/python scripts/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
+.venv/bin/python scripts/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ip route
+```
+
+`status --json`, `net-status --json`, `add-client --json`, `remove-client --json`, and `exec --json` are intended for scripting and agent automation. The full behavior and JSON contract are documented in [doc/test/coordlab.md](../../doc/test/coordlab.md).
 
 Generated node configs now enable:
 

@@ -17,6 +17,177 @@ def terminal_url(host_port: int) -> str:
     return f"http://127.0.0.1:{host_port}"
 
 
+def terminal_label(namespace_name: str, pid: int) -> str:
+    return f"{namespace_name} - {pid}"
+
+
+def proxy_dict(state: LabState) -> dict[str, dict]:
+    return {
+        name: {
+            "listen_host": proxy.listen_host,
+            "host_port": proxy.host_port,
+            "target_ns": proxy.target_ns,
+            "target_host": proxy.target_host,
+            "target_port": proxy.target_port,
+        }
+        for name, proxy in sorted(state.proxies.items())
+    }
+
+
+def service_links(state: LabState) -> dict[str, str]:
+    links: dict[str, str] = {}
+    for name in ("fbcoord", "node-1", "node-2"):
+        url = proxy_url(state, name)
+        if url:
+            links[name] = url
+    return links
+
+
+def client_dict(state: LabState) -> dict[str, dict]:
+    return {
+        name: {
+            "identity_ip": info.identity_ip,
+        }
+        for name, info in sorted(state.clients.items())
+    }
+
+
+def terminal_dict(state: LabState) -> dict[str, dict]:
+    return {
+        name: {
+            "host_port": info.host_port,
+            "pid": info.pid,
+            "alive": is_alive(info.pid),
+            "url": terminal_url(info.host_port),
+            "label": terminal_label(name, info.pid),
+        }
+        for name, info in sorted(state.terminals.items())
+    }
+
+
+def node_feature_dict(state: LabState) -> dict[str, dict]:
+    return {
+        name: {
+            "geoip": {
+                "enabled": info.geoip.enabled,
+                "asn_db_url": info.geoip.asn_db_url,
+                "asn_db_path": info.geoip.asn_db_path,
+                "country_db_url": info.geoip.country_db_url,
+                "country_db_path": info.geoip.country_db_path,
+                "refresh_interval": info.geoip.refresh_interval,
+            },
+            "ip_log": {
+                "enabled": info.ip_log.enabled,
+                "db_path": info.ip_log.db_path,
+                "retention": info.ip_log.retention,
+                "geo_queue_size": info.ip_log.geo_queue_size,
+                "write_queue_size": info.ip_log.write_queue_size,
+                "batch_size": info.ip_log.batch_size,
+                "flush_interval": info.ip_log.flush_interval,
+                "prune_interval": info.ip_log.prune_interval,
+            },
+            "firewall": {
+                "enabled": info.firewall.enabled,
+                "default_policy": info.firewall.default_policy,
+                "rules": [
+                    {
+                        "action": rule.action,
+                        "cidr": rule.cidr,
+                        "asn": rule.asn,
+                        "country": rule.country,
+                    }
+                    for rule in info.firewall.rules
+                ],
+            },
+        }
+        for name, info in sorted(state.node_features.items())
+    }
+
+
+def inactive_status_payload(workdir: Path, error: str) -> dict:
+    return {
+        "active": False,
+        "error": error,
+        "phase": None,
+        "work_dir": str(workdir),
+        "state_path": str(workdir / "state.json"),
+        "namespaces": [],
+        "processes": [],
+        "proxies": {},
+        "clients": {},
+        "terminals": {},
+        "node_features": {},
+        "service_links": {},
+        "shaping_targets": [],
+        "topology_links": [],
+    }
+
+
+def status_payload(state: LabState | None, workdir: Path) -> dict:
+    if state is None:
+        return inactive_status_payload(workdir, f"no coordlab state found at {workdir / 'state.json'}")
+    if not state.active:
+        return {
+            **inactive_status_payload(workdir, f"coordlab state is not active: {workdir / 'state.json'}"),
+            "phase": state.phase,
+        }
+
+    return {
+        "active": True,
+        "phase": state.phase,
+        "work_dir": state.work_dir,
+        "state_path": str(workdir / "state.json"),
+        "namespaces": [
+            {
+                "name": name,
+                "pid": info.pid,
+                "parent": info.parent,
+                "role": info.role,
+                "alive": is_alive(info.pid),
+            }
+            for name, info in sorted(state.namespaces.items())
+        ],
+        "processes": [
+            {
+                "name": name,
+                "pid": info.pid,
+                "ns": info.ns,
+                "alive": is_alive(info.pid),
+                "log_path": info.log_path,
+                "order": info.order,
+            }
+            for name, info in sorted(state.processes.items(), key=lambda item: (item[1].order, item[0]))
+        ],
+        "proxies": proxy_dict(state),
+        "clients": client_dict(state),
+        "terminals": terminal_dict(state),
+        "node_features": node_feature_dict(state),
+        "service_links": service_links(state),
+        "shaping_targets": [
+            {
+                "target": target_name,
+                "router_ns": target.router_ns,
+                "tag": target.tag,
+                "namespace": target.namespace,
+                "device": target.device,
+            }
+            for target_name, target in sorted(state.shaping.targets.items())
+        ],
+        "topology_links": [
+            {
+                "left_ns": link.left_ns,
+                "right_ns": link.right_ns,
+                "left_if": link.left_if,
+                "right_if": link.right_if,
+                "left_ip": link.left_ip,
+                "right_ip": link.right_ip,
+                "subnet": link.subnet,
+            }
+            for link in state.topology.links
+        ],
+    }
+
+
 def render_summary(state: LabState, python_executable: str) -> str:
     lines: list[str] = []
     workdir = Path(state.work_dir)
