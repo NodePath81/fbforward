@@ -145,6 +145,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		coordCtrl = coordination.NewController(ctx, cfg.Coordination, manager, metrics, util.ComponentLogger(logger, util.CompCoord))
 	}
 	ctrl := control.NewControlServer(cfg, manager, metrics, status, coordCtrl, restartFn, logger)
+	if rt.geoipMgr != nil {
+		ctrl.SetGeoIPManager(rt.geoipMgr)
+	}
 	if rt.iplogStore != nil {
 		ctrl.SetIPLogStore(rt.iplogStore)
 	}

@@ -46,6 +46,8 @@ type QueryParams struct {
 	CIDR      string
 	ASN       *int
 	Country   string
+	SortBy    string
+	SortOrder string
 	Limit     int
 	Offset    int
 }
@@ -53,4 +55,10 @@ type QueryParams struct {
 type QueryResult struct {
 	Total   int      `json:"total"`
 	Records []Record `json:"records"`
+}
+
+type StoreStats struct {
+	RecordCount    int   `json:"record_count"`
+	OldestRecordAt int64 `json:"oldest_record_at"`
+	NewestRecordAt int64 `json:"newest_record_at"`
 }

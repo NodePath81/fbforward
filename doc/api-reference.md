@@ -432,7 +432,7 @@ The control plane follows a single-source-of-truth architecture:
 | Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
 | Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
-| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus` |
+| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus` |
 
 **Key principles:**
 - WebSocket delivers connection/queue telemetry via subscription (no polling)
@@ -446,7 +446,7 @@ The control plane follows a single-source-of-truth architecture:
 |------|--------|---------------|-------------|
 | `/` | GET | No | Web UI (embedded SPA) |
 | `/auth` | GET | No | Authentication page for token input |
-| `/rpc` | POST | Yes | JSON-RPC methods |
+| `/rpc` | POST | Yes | Control RPC methods |
 | `/status` | GET | Yes | WebSocket status stream |
 | `/identity` | GET | Yes | Instance identity (hostname, IPs, version) |
 | `/metrics` | GET | Yes | Prometheus metrics |
@@ -455,7 +455,7 @@ The control plane follows a single-source-of-truth architecture:
 
 ### 5.2.2 RPC methods
 
-The `/rpc` endpoint accepts JSON-RPC 2.0 requests.
+The `/rpc` endpoint accepts the project’s simplified JSON-over-HTTP RPC format.
 
 #### Authentication
 
@@ -740,6 +740,127 @@ curl -X POST http://localhost:8080/rpc \
   -H "Content-Type: application/json" \
   -d '{"method": "GetScheduleStatus", "params": {}}'
 ```
+
+#### GetGeoIPStatus
+
+Report configured GeoIP database files, file metadata, and active in-memory reader availability.
+
+**Method:** `GetGeoIPStatus`
+
+**Parameters:** Empty object `{}` or omitted `params`
+
+**Result:**
+
+```json
+{
+  "asn_db": {
+    "configured": true,
+    "available": true,
+    "path": "/var/lib/fbforward/GeoLite2-ASN.mmdb",
+    "file_mod_time": 1712505600,
+    "file_size": 8421376
+  },
+  "country_db": {
+    "configured": true,
+    "available": true,
+    "path": "/var/lib/fbforward/Country-without-asn.mmdb",
+    "file_mod_time": 1712505600,
+    "file_size": 5242880
+  },
+  "refresh_interval": "24h0m0s"
+}
+```
+
+**Failure:**
+- HTTP `503` with `{ "ok": false, "error": "geoip manager not available" }` when GeoIP is not enabled
+
+#### RefreshGeoIP
+
+Trigger an immediate GeoIP download/validate/swap cycle outside the normal refresh schedule.
+
+**Method:** `RefreshGeoIP`
+
+**Parameters:** Empty object `{}` or omitted `params`
+
+**Result:**
+
+```json
+{
+  "asn_db": {
+    "configured": true,
+    "attempted": true,
+    "refreshed": true,
+    "previous_mod_time": 1712505600,
+    "current_mod_time": 1712592000,
+    "error": ""
+  },
+  "country_db": {
+    "configured": true,
+    "attempted": true,
+    "refreshed": false,
+    "previous_mod_time": 1712505600,
+    "current_mod_time": 1712505600,
+    "error": "download failed"
+  }
+}
+```
+
+**Failure:**
+- HTTP `503` with `{ "ok": false, "error": "geoip manager not available" }` when GeoIP is not enabled
+- HTTP `503` with `{ "ok": false, "error": "no geoip databases configured" }` if no DB pairs are configured
+
+#### GetIPLogStatus
+
+Report the current IP log database path, file size, row count, and record time bounds.
+
+**Method:** `GetIPLogStatus`
+
+**Parameters:** Empty object `{}` or omitted `params`
+
+**Result:**
+
+```json
+{
+  "db_path": "/var/lib/fbforward/iplog.sqlite",
+  "file_size": 10485760,
+  "record_count": 15230,
+  "oldest_record_at": 1710000000,
+  "newest_record_at": 1712592000,
+  "retention": "720h0m0s",
+  "prune_interval": "1h0m0s"
+}
+```
+
+**Failure:**
+- HTTP `503` with `{ "ok": false, "error": "ip log store not available" }` when IP logging is not enabled
+
+#### QueryIPLog
+
+Query persisted IP log records with optional filters, pagination, and sorting.
+
+**Method:** `QueryIPLog`
+
+**Parameters:**
+
+```json
+{
+  "start_time": 1712505600,
+  "end_time": 1712592000,
+  "cidr": "10.0.1.0/24",
+  "asn": 13335,
+  "country": "US",
+  "sort_by": "recorded_at" | "bytes_up" | "bytes_down" | "bytes_total" | "duration_ms",
+  "sort_order": "asc" | "desc",
+  "limit": 200,
+  "offset": 0
+}
+```
+
+**Notes:**
+- `sort_by` defaults to `recorded_at`
+- `sort_order` defaults to `desc`
+- `cidr` still requires `start_time` or `end_time`
+- sorting is deterministic: ties are broken by `id` in the same direction as `sort_order`
 
 #### RunMeasurement
 

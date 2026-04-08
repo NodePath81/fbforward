@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/coordination"
+	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
@@ -58,10 +60,17 @@ type ControlServer struct {
 	scheduler   *measure.Scheduler
 	collectorMu sync.RWMutex
 	collector   *measure.Collector
+	geoipMu     sync.RWMutex
+	geoipMgr    geoipManager
 	iplogMu     sync.RWMutex
 	iplogStore  *iplog.Store
 	nextReqID   uint64
 	nextWSID    uint64
+}
+
+type geoipManager interface {
+	Status() geoip.Status
+	RefreshNow(context.Context) (geoip.RefreshResult, error)
 }
 
 func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, metrics *metrics.Metrics, status *StatusStore, coord *coordination.Controller, restartFn func() error, logger util.Logger) *ControlServer {
@@ -130,6 +139,12 @@ func (c *ControlServer) SetCollector(collector *measure.Collector) {
 	c.collector = collector
 }
 
+func (c *ControlServer) SetGeoIPManager(manager geoipManager) {
+	c.geoipMu.Lock()
+	defer c.geoipMu.Unlock()
+	c.geoipMgr = manager
+}
+
 func (c *ControlServer) SetIPLogStore(store *iplog.Store) {
 	c.iplogMu.Lock()
 	defer c.iplogMu.Unlock()
@@ -163,8 +178,20 @@ type queryIPLogParams struct {
 	CIDR      string `json:"cidr,omitempty"`
 	ASN       *int   `json:"asn,omitempty"`
 	Country   string `json:"country,omitempty"`
+	SortBy    string `json:"sort_by,omitempty"`
+	SortOrder string `json:"sort_order,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
 	Offset    int    `json:"offset,omitempty"`
+}
+
+type ipLogStatusResponse struct {
+	DBPath         string `json:"db_path"`
+	FileSize       int64  `json:"file_size"`
+	RecordCount    int    `json:"record_count"`
+	OldestRecordAt int64  `json:"oldest_record_at"`
+	NewestRecordAt int64  `json:"newest_record_at"`
+	Retention      string `json:"retention"`
+	PruneInterval  string `json:"prune_interval"`
 }
 
 type statusResponse struct {
@@ -562,6 +589,52 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.getRuntimeConfig()})
 	case "GetScheduleStatus":
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.getScheduleStatus()})
+	case "GetGeoIPStatus":
+		c.geoipMu.RLock()
+		geoipMgr := c.geoipMgr
+		c.geoipMu.RUnlock()
+		if geoipMgr == nil {
+			completionErr = "geoip manager not available"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: geoipMgr.Status()})
+	case "RefreshGeoIP":
+		c.geoipMu.RLock()
+		geoipMgr := c.geoipMgr
+		c.geoipMu.RUnlock()
+		if geoipMgr == nil {
+			completionErr = "geoip manager not available"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		result, err := geoipMgr.RefreshNow(r.Context())
+		if err != nil {
+			completionErr = err.Error()
+			status := http.StatusInternalServerError
+			if errors.Is(err, geoip.ErrNoConfiguredDatabases) {
+				status = http.StatusServiceUnavailable
+			}
+			writeJSON(sw, status, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: result})
+	case "GetIPLogStatus":
+		c.iplogMu.RLock()
+		store := c.iplogStore
+		c.iplogMu.RUnlock()
+		if store == nil {
+			completionErr = "ip log store not available"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		result, err := c.getIPLogStatus(store)
+		if err != nil {
+			completionErr = err.Error()
+			writeJSON(sw, http.StatusInternalServerError, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: result})
 	case "QueryIPLog":
 		c.iplogMu.RLock()
 		store := c.iplogStore
@@ -585,6 +658,8 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			CIDR:      params.CIDR,
 			ASN:       params.ASN,
 			Country:   params.Country,
+			SortBy:    params.SortBy,
+			SortOrder: params.SortOrder,
 			Limit:     params.Limit,
 			Offset:    params.Offset,
 		})
@@ -683,6 +758,33 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		)
 		writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
 	}
+}
+
+func (c *ControlServer) getIPLogStatus(store *iplog.Store) (ipLogStatusResponse, error) {
+	stats, err := store.Stats()
+	if err != nil {
+		return ipLogStatusResponse{}, err
+	}
+	return ipLogStatusResponse{
+		DBPath:         c.fullCfg.IPLog.DBPath,
+		FileSize:       dbFileSize(c.fullCfg.IPLog.DBPath),
+		RecordCount:    stats.RecordCount,
+		OldestRecordAt: stats.OldestRecordAt,
+		NewestRecordAt: stats.NewestRecordAt,
+		Retention:      c.fullCfg.IPLog.Retention.Duration().String(),
+		PruneInterval:  c.fullCfg.IPLog.PruneInterval.Duration().String(),
+	}, nil
+}
+
+func dbFileSize(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 func (c *ControlServer) getMeasurementConfig() map[string]interface{} {

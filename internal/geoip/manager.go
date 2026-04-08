@@ -31,6 +31,36 @@ type Availability struct {
 	CountryAvailable bool
 }
 
+type DBStatus struct {
+	Configured  bool   `json:"configured"`
+	Available   bool   `json:"available"`
+	Path        string `json:"path"`
+	FileModTime int64  `json:"file_mod_time"`
+	FileSize    int64  `json:"file_size"`
+}
+
+type Status struct {
+	ASNDB           DBStatus `json:"asn_db"`
+	CountryDB       DBStatus `json:"country_db"`
+	RefreshInterval string   `json:"refresh_interval"`
+}
+
+type RefreshDBResult struct {
+	Configured      bool   `json:"configured"`
+	Attempted       bool   `json:"attempted"`
+	Refreshed       bool   `json:"refreshed"`
+	PreviousModTime int64  `json:"previous_mod_time"`
+	CurrentModTime  int64  `json:"current_mod_time"`
+	Error           string `json:"error"`
+}
+
+type RefreshResult struct {
+	ASNDB     RefreshDBResult `json:"asn_db"`
+	CountryDB RefreshDBResult `json:"country_db"`
+}
+
+var ErrNoConfiguredDatabases = errors.New("no geoip databases configured")
+
 type LookupProvider interface {
 	Lookup(ip net.IP) LookupResult
 	Availability() Availability
@@ -156,6 +186,25 @@ func (m *Manager) Availability() Availability {
 	}
 }
 
+func (m *Manager) Status() Status {
+	if m == nil {
+		return Status{}
+	}
+	snapshot := m.snapshot()
+	return Status{
+		ASNDB:           buildDBStatus(m.cfg.ASNDBURL, m.cfg.ASNDBPath, snapshot.asn != nil),
+		CountryDB:       buildDBStatus(m.cfg.CountryDBURL, m.cfg.CountryDBPath, snapshot.country != nil),
+		RefreshInterval: m.cfg.RefreshInterval.Duration().String(),
+	}
+}
+
+func (m *Manager) RefreshNow(ctx context.Context) (RefreshResult, error) {
+	if m == nil {
+		return RefreshResult{}, nil
+	}
+	return m.refresh(ctx, true)
+}
+
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil
@@ -225,55 +274,133 @@ func openCountryIfExists(path string, opener func(string) (countryReader, error)
 }
 
 func (m *Manager) refreshConfigured(ctx context.Context) {
+	_, _ = m.refresh(ctx, false)
+}
+
+func (m *Manager) refresh(ctx context.Context, force bool) (RefreshResult, error) {
 	m.refreshMu.Lock()
 	defer m.refreshMu.Unlock()
 
-	if geoDBConfigured(m.cfg.ASNDBURL, m.cfg.ASNDBPath) && m.needsRefresh(m.cfg.ASNDBPath) {
-		if err := m.refreshASN(ctx); err != nil {
-			util.Event(m.logger, slog.LevelWarn, "geoip.asn_refresh_failed", "path", m.cfg.ASNDBPath, "error", err)
+	if !m.hasConfiguredDB() {
+		if force {
+			return RefreshResult{}, ErrNoConfiguredDatabases
 		}
+		return RefreshResult{}, nil
 	}
-	if geoDBConfigured(m.cfg.CountryDBURL, m.cfg.CountryDBPath) && m.needsRefresh(m.cfg.CountryDBPath) {
-		if err := m.refreshCountry(ctx); err != nil {
-			util.Event(m.logger, slog.LevelWarn, "geoip.country_refresh_failed", "path", m.cfg.CountryDBPath, "error", err)
-		}
+
+	result := RefreshResult{
+		ASNDB:     m.refreshASNResult(ctx, force),
+		CountryDB: m.refreshCountryResult(ctx, force),
 	}
+	return result, nil
 }
 
-func (m *Manager) refreshASN(ctx context.Context) error {
-	if err := m.download(ctx, m.cfg.ASNDBURL, m.cfg.ASNDBPath); err != nil {
-		return err
-	}
-	reader, err := m.openASN(m.cfg.ASNDBPath)
-	if err != nil {
-		return err
-	}
-	snapshot := m.snapshot()
-	if err := m.swapReaders(reader, snapshot.country); err != nil {
-		_ = reader.Close()
-		return err
-	}
-	util.Event(m.logger, slog.LevelInfo, "geoip.asn_refreshed", "path", m.cfg.ASNDBPath)
-	m.logAvailability("geoip.refresh_availability")
-	return nil
+func (m *Manager) refreshASNResult(ctx context.Context, force bool) RefreshDBResult {
+	return m.refreshDB(
+		ctx,
+		geoDBConfigured(m.cfg.ASNDBURL, m.cfg.ASNDBPath),
+		m.cfg.ASNDBURL,
+		m.cfg.ASNDBPath,
+		force,
+		func(path string) (io.Closer, error) {
+			return m.openASN(path)
+		},
+		func(reader io.Closer) error {
+			asn, ok := reader.(asnReader)
+			if !ok {
+				return errors.New("unexpected ASN reader type")
+			}
+			snapshot := m.snapshot()
+			return m.swapReaders(asn, snapshot.country)
+		},
+		"geoip.asn_refreshed",
+		"geoip.asn_refresh_failed",
+	)
 }
 
-func (m *Manager) refreshCountry(ctx context.Context) error {
-	if err := m.download(ctx, m.cfg.CountryDBURL, m.cfg.CountryDBPath); err != nil {
-		return err
+func (m *Manager) refreshCountryResult(ctx context.Context, force bool) RefreshDBResult {
+	return m.refreshDB(
+		ctx,
+		geoDBConfigured(m.cfg.CountryDBURL, m.cfg.CountryDBPath),
+		m.cfg.CountryDBURL,
+		m.cfg.CountryDBPath,
+		force,
+		func(path string) (io.Closer, error) {
+			return m.openCountry(path)
+		},
+		func(reader io.Closer) error {
+			country, ok := reader.(countryReader)
+			if !ok {
+				return errors.New("unexpected country reader type")
+			}
+			snapshot := m.snapshot()
+			return m.swapReaders(snapshot.asn, country)
+		},
+		"geoip.country_refreshed",
+		"geoip.country_refresh_failed",
+	)
+}
+
+func (m *Manager) refreshDB(ctx context.Context, configured bool, sourceURL, targetPath string, force bool, open func(string) (io.Closer, error), activate func(io.Closer) error, successEvent string, failureEvent string) RefreshDBResult {
+	result := RefreshDBResult{
+		Configured:      configured,
+		PreviousModTime: fileModTime(targetPath),
+		CurrentModTime:  fileModTime(targetPath),
 	}
-	reader, err := m.openCountry(m.cfg.CountryDBPath)
+	if !configured {
+		return result
+	}
+	if !force && !m.needsRefresh(targetPath) {
+		return result
+	}
+	result.Attempted = true
+
+	tmpPath, err := downloadTempPath(ctx, sourceURL, targetPath, m.download)
 	if err != nil {
-		return err
+		result.Error = err.Error()
+		result.CurrentModTime = fileModTime(targetPath)
+		util.Event(m.logger, slog.LevelWarn, failureEvent, "path", targetPath, "error", err)
+		return result
 	}
-	snapshot := m.snapshot()
-	if err := m.swapReaders(snapshot.asn, reader); err != nil {
-		_ = reader.Close()
-		return err
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+
+	reader, err := open(tmpPath)
+	if err != nil {
+		result.Error = err.Error()
+		result.CurrentModTime = fileModTime(targetPath)
+		util.Event(m.logger, slog.LevelWarn, failureEvent, "path", targetPath, "error", err)
+		return result
 	}
-	util.Event(m.logger, slog.LevelInfo, "geoip.country_refreshed", "path", m.cfg.CountryDBPath)
+	defer func() {
+		if !result.Refreshed {
+			_ = reader.Close()
+		}
+	}()
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		result.Error = err.Error()
+		result.CurrentModTime = fileModTime(targetPath)
+		util.Event(m.logger, slog.LevelWarn, failureEvent, "path", targetPath, "error", err)
+		return result
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		result.Error = err.Error()
+		result.CurrentModTime = fileModTime(targetPath)
+		util.Event(m.logger, slog.LevelWarn, failureEvent, "path", targetPath, "error", err)
+		return result
+	}
+	if err := activate(reader); err != nil {
+		result.Error = err.Error()
+		result.CurrentModTime = fileModTime(targetPath)
+		util.Event(m.logger, slog.LevelWarn, failureEvent, "path", targetPath, "error", err)
+		return result
+	}
+	result.Refreshed = true
+	result.CurrentModTime = fileModTime(targetPath)
+	util.Event(m.logger, slog.LevelInfo, successEvent, "path", targetPath)
 	m.logAvailability("geoip.refresh_availability")
-	return nil
+	return result
 }
 
 func (m *Manager) swapReaders(asn asnReader, country countryReader) error {
@@ -313,6 +440,56 @@ func (m *Manager) logAvailability(eventName string) {
 
 func geoDBConfigured(url, path string) bool {
 	return url != "" && path != ""
+}
+
+func buildDBStatus(url, path string, available bool) DBStatus {
+	modTime, size := fileStat(path)
+	return DBStatus{
+		Configured:  geoDBConfigured(url, path),
+		Available:   available,
+		Path:        path,
+		FileModTime: modTime,
+		FileSize:    size,
+	}
+}
+
+func fileStat(path string) (int64, int64) {
+	if path == "" {
+		return 0, 0
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, 0
+	}
+	return info.ModTime().Unix(), info.Size()
+}
+
+func fileModTime(path string) int64 {
+	modTime, _ := fileStat(path)
+	return modTime
+}
+
+func downloadTempPath(ctx context.Context, sourceURL, targetPath string, downloader func(context.Context, string, string) error) (string, error) {
+	if sourceURL == "" || targetPath == "" {
+		return "", errors.New("missing geoip download url or path")
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(targetPath), filepath.Base(targetPath)+".manual-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	if err := downloader(ctx, sourceURL, tmpPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	return tmpPath, nil
 }
 
 func openMMDBASNReader(path string) (asnReader, error) {
