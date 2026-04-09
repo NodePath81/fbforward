@@ -1,9 +1,7 @@
 package coordination
 
 type HelloMessage struct {
-	Type   string `json:"type"`
-	Pool   string `json:"pool"`
-	NodeID string `json:"node_id"`
+	Type string `json:"type"`
 }
 
 type PreferencesMessage struct {

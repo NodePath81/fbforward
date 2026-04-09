@@ -592,8 +592,6 @@ Retrieve current runtime status.
   "coordination": {
     "available": true,
     "connected": true,
-    "pool": "default",
-    "node_id": "fbforward-01",
     "selected_upstream": "primary",
     "version": 4,
     "fallback_active": false
@@ -625,8 +623,6 @@ Retrieve current runtime status.
 - `reachable`: ICMP probe reachability status
 - `coordination.available`: Whether coordination mode is configured locally
 - `coordination.connected`: Whether the node is currently connected to `fbcoord`
-- `coordination.pool`: Configured coordination pool name
-- `coordination.node_id`: Configured node identifier
 - `coordination.selected_upstream`: Latest coordinated upstream pick, if any
 - `coordination.version`: Latest applied coordination version
 - `coordination.fallback_active`: Whether coordination mode is currently using local auto-selection fallback
@@ -704,7 +700,10 @@ Retrieve complete runtime configuration (all sections).
 
 **Result:** Full configuration object with all sections (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `logging`, `shaping`, `geoip`, `ip_log`, `firewall`).
 
-**Note:** The `coordination` block includes non-secret fields such as `endpoint`, `pool`, `node_id`, and `heartbeat_interval`. The coordination token is not returned.
+**Note:** The `coordination` block includes non-secret effective fields such as
+`endpoint` and `heartbeat_interval`. The coordination token is not returned.
+Legacy `pool` and `node_id` fields are ignored with warnings and are not
+returned.
 
 #### GetScheduleStatus
 

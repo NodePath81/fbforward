@@ -1,7 +1,5 @@
 export interface HelloMessage {
   type: 'hello';
-  pool: string;
-  node_id: string;
 }
 
 export interface PreferencesMessage {

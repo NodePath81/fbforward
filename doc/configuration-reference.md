@@ -1013,27 +1013,27 @@ The `coordination` section enables optional participation in an external
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `endpoint` | string | *required when section is used* | Base URL for the `fbcoord` service |
-| `pool` | string | *required when section is used* | Coordination pool name |
-| `node_id` | string | *required when section is used* | Stable node identifier submitted to `fbcoord` |
 | `token` | string | *required when section is used* | Bearer token used to authenticate with `fbcoord` |
 | `heartbeat_interval` | duration | `10s` | Heartbeat and full preference submission interval |
+| `pool` | string | ignored | Legacy field retained for backward-compatible parsing; produces a warning |
+| `node_id` | string | ignored | Legacy field retained for backward-compatible parsing; produces a warning |
 
 **Example:**
 
 ```yaml
 coordination:
   endpoint: https://fbcoord.example.workers.dev
-  pool: default
-  node_id: fbforward-01
-  token: "replace-with-a-separate-long-random-token"
+  token: "replace-with-a-per-node-fbcoord-token"
   heartbeat_interval: 10s
 ```
 
 **Behavior:**
 - The section is optional.
-- If any coordination field is set, all of `endpoint`, `pool`, `node_id`, and `token` must be set.
+- Effective configuration requires `endpoint` and `token` together.
 - fbforward connects to `fbcoord` only while runtime mode is `coordination`, using the node participation endpoint `/ws/node`.
 - The local node submits its sorted upstream preference list in best-first order.
+- fbcoord derives node identity from the node token; fbforward does not send an authoritative `node_id`.
+- Legacy `coordination.pool` and `coordination.node_id` are ignored with warnings.
 - If `fbcoord` returns no upstream, disconnects, or returns a locally unusable upstream, fbforward stays in coordination mode and falls back to local auto-selection behavior.
 
 **Validation:**

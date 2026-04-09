@@ -103,16 +103,25 @@ describe('PoolState', () => {
 });
 
 describe('parseNodeInboundMessage', () => {
-  it('accepts a valid hello message', () => {
+  it('accepts a minimal hello message', () => {
+    expect(parseNodeInboundMessage({
+      type: 'hello'
+    })).toEqual({
+      message: {
+        type: 'hello'
+      },
+      close: false
+    });
+  });
+
+  it('ignores legacy pool and node_id fields on hello', () => {
     expect(parseNodeInboundMessage({
       type: 'hello',
       pool: 'alpha',
       node_id: 'node-1'
-    }, 'alpha')).toEqual({
+    })).toEqual({
       message: {
-        type: 'hello',
-        pool: 'alpha',
-        node_id: 'node-1'
+        type: 'hello'
       },
       close: false
     });
@@ -122,7 +131,7 @@ describe('parseNodeInboundMessage', () => {
     const result = parseNodeInboundMessage({
       type: 'preferences',
       upstreams: ['ok', 123]
-    }, 'alpha');
+    });
 
     expect(result.error).toContain('strings');
     expect(result.close).toBe(true);
@@ -133,7 +142,7 @@ describe('parseNodeInboundMessage', () => {
       type: 'preferences',
       upstreams: ['a', 'b'],
       active_upstream: 'c'
-    }, 'alpha');
+    });
 
     expect(result.error).toContain('active_upstream');
     expect(result.close).toBe(true);

@@ -4,17 +4,17 @@ import type {
   HeartbeatMessage,
   HelloMessage,
   NodeInboundMessage,
-  PickMessage,
-  PreferencesMessage
+  PickMessage
 } from '../protocol/types';
-import { MAX_UPSTREAMS, validateNodeId, validatePoolName, validateUpstreamTag } from '../validation';
+import { MAX_UPSTREAMS, validateNodeId, validateUpstreamTag } from '../validation';
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 const DEFAULT_STALE_AFTER_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
-const REGISTRY_OBJECT_NAME = 'global';
 const MESSAGE_WINDOW_MS = 5_000;
 const MAX_MESSAGES_PER_WINDOW = 10;
 const RECONNECT_THROTTLE_MS = 5_000;
+
+export const AUTHENTICATED_NODE_ID_HEADER = 'x-fbcoord-node-id';
 
 type ConnectionLike = Pick<WebSocket, 'close' | 'send'>;
 
@@ -63,7 +63,7 @@ function parseString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-export function parseNodeInboundMessage(raw: unknown, expectedPool: string): { message?: NodeInboundMessage; error?: string; close: boolean } {
+export function parseNodeInboundMessage(raw: unknown): { message?: NodeInboundMessage; error?: string; close: boolean } {
   if (!raw || typeof raw !== 'object') {
     return { error: 'invalid message payload', close: true };
   }
@@ -74,28 +74,10 @@ export function parseNodeInboundMessage(raw: unknown, expectedPool: string): { m
   }
 
   if (type === 'hello') {
-    const pool = parseString((raw as { pool?: unknown }).pool);
-    const nodeId = parseString((raw as { node_id?: unknown }).node_id);
-    if (!pool || !nodeId) {
-      return { error: 'hello requires pool and node_id', close: true };
-    }
-    const poolError = validatePoolName(pool);
-    if (poolError) {
-      return { error: poolError, close: true };
-    }
-    if (pool !== expectedPool) {
-      return { error: 'Pool mismatch', close: true };
-    }
-    const nodeError = validateNodeId(nodeId);
-    if (nodeError) {
-      return { error: nodeError, close: true };
-    }
     return {
       message: {
-        type: 'hello',
-        pool,
-        node_id: nodeId.trim()
-      },
+        type: 'hello'
+      } satisfies HelloMessage,
       close: false
     };
   }
@@ -299,25 +281,12 @@ export class PoolState {
 
 export class PoolDurableObject {
   private readonly state = new PoolState();
-  private readonly registry?: DurableObjectNamespace;
-
-  constructor(
-    _state: DurableObjectState,
-    env?: { FBCOORD_REGISTRY?: DurableObjectNamespace }
-  ) {
-    this.registry = env?.FBCOORD_REGISTRY;
-  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const expectedPool = url.searchParams.get('pool')?.trim();
-    if (!expectedPool) {
-      return new Response('missing pool', { status: 400 });
-    }
 
     if (request.method === 'GET' && url.pathname === '/state') {
       return Response.json({
-        pool: expectedPool,
         pick: this.state.currentPick(),
         node_count: this.state.nodeCount(),
         nodes: this.state.nodeSnapshot()
@@ -328,11 +297,17 @@ export class PoolDurableObject {
       return new Response('websocket upgrade required', { status: 426 });
     }
 
+    const authenticatedNodeId = request.headers.get(AUTHENTICATED_NODE_ID_HEADER)?.trim() ?? '';
+    const nodeIdError = validateNodeId(authenticatedNodeId);
+    if (nodeIdError) {
+      return new Response('missing authenticated node_id', { status: 401 });
+    }
+
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     server.accept();
-    this.attach(server, expectedPool);
+    this.attach(server, authenticatedNodeId);
 
     return new Response(null, {
       status: 101,
@@ -340,7 +315,7 @@ export class PoolDurableObject {
     } as ResponseInit & { webSocket: WebSocket });
   }
 
-  private attach(socket: WebSocket, expectedPool: string): void {
+  private attach(socket: WebSocket, authenticatedNodeId: string): void {
     let nodeId: string | null = null;
     const messageLimiter = new ConnectionRateLimiter();
 
@@ -355,11 +330,12 @@ export class PoolDurableObject {
     };
 
     const broadcastPick = (): void => {
+      const snapshot = this.state.currentPick();
       for (const connection of this.state.connectionsList()) {
         connection.send(JSON.stringify({
           type: 'pick',
-          version: this.state.currentPick().version,
-          upstream: this.state.currentPick().upstream
+          version: snapshot.version,
+          upstream: snapshot.upstream
         } satisfies PickMessage));
       }
     };
@@ -369,22 +345,20 @@ export class PoolDurableObject {
       socket.send(JSON.stringify(payload));
     };
 
-    const closeNode = async (): Promise<void> => {
+    const closeNode = (): void => {
       if (!nodeId) {
         return;
       }
-      const beforeCount = this.state.nodeCount();
       if (this.state.removeNode(nodeId)) {
         broadcastPick();
       }
-      await this.syncRegistry(expectedPool, beforeCount, this.state.nodeCount());
       nodeId = null;
     };
 
     socket.addEventListener('message', event => {
       void this.handleMessage(
         event,
-        expectedPool,
+        authenticatedNodeId,
         socket,
         messageLimiter,
         sendPick,
@@ -397,17 +371,13 @@ export class PoolDurableObject {
       );
     });
 
-    socket.addEventListener('close', () => {
-      void closeNode();
-    });
-    socket.addEventListener('error', () => {
-      void closeNode();
-    });
+    socket.addEventListener('close', closeNode);
+    socket.addEventListener('error', closeNode);
   }
 
   private async handleMessage(
     event: MessageEvent,
-    expectedPool: string,
+    authenticatedNodeId: string,
     socket: WebSocket,
     messageLimiter: ConnectionRateLimiter,
     sendPick: (target: WebSocket) => void,
@@ -431,7 +401,7 @@ export class PoolDurableObject {
       return;
     }
 
-    const parsed = parseNodeInboundMessage(rawMessage, expectedPool);
+    const parsed = parseNodeInboundMessage(rawMessage);
     if (!parsed.message) {
       sendError('invalid_message', parsed.error ?? 'Invalid message');
       if (parsed.close) {
@@ -442,16 +412,14 @@ export class PoolDurableObject {
     const message = parsed.message;
 
     if (message.type === 'hello') {
-      const beforeCount = this.state.nodeCount();
-      const { previous: replaced, changed, throttled } = this.state.registerConnection(message.node_id, socket);
+      const { previous: replaced, changed, throttled } = this.state.registerConnection(authenticatedNodeId, socket);
       if (throttled) {
         sendError('reconnect_throttled', 'node reconnect is temporarily throttled');
         socket.close(1013, 'reconnect_throttled');
         return;
       }
-      setNodeId(message.node_id);
+      setNodeId(authenticatedNodeId);
       const reaped = this.state.reapStaleNodes();
-      await this.syncRegistry(expectedPool, beforeCount, this.state.nodeCount());
 
       if (replaced && replaced !== socket) {
         replaced.close(1012, 'replaced');
@@ -478,29 +446,10 @@ export class PoolDurableObject {
     }
 
     if (message.type === 'heartbeat') {
-      const beforeCount = this.state.nodeCount();
       const changed = this.state.heartbeat(nodeId);
-      await this.syncRegistry(expectedPool, beforeCount, this.state.nodeCount());
       if (changed) {
         broadcastPick();
       }
     }
-  }
-
-  private async syncRegistry(pool: string, beforeCount: number, afterCount: number): Promise<void> {
-    if (!this.registry || beforeCount === afterCount || (beforeCount > 0 && afterCount > 0)) {
-      return;
-    }
-
-    const registryId = this.registry.idFromName(REGISTRY_OBJECT_NAME);
-    const stub = this.registry.get(registryId);
-    const pathname = beforeCount === 0 && afterCount > 0 ? '/register' : '/deregister';
-    await stub.fetch(new Request(`https://registry.internal${pathname}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({ pool })
-    }));
   }
 }

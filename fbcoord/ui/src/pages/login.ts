@@ -12,7 +12,7 @@ export function renderLoginPage(options: {
   header.innerHTML = `
     <div class="kicker">fbcoord</div>
     <h1>Operator Login</h1>
-    <p class="muted">Use the shared coordination token to open the admin dashboard and rotate it when needed.</p>
+    <p class="muted">Use the operator token to open the admin dashboard and manage node credentials.</p>
   `;
 
   const body = document.createElement('div');
@@ -22,13 +22,13 @@ export function renderLoginPage(options: {
   label.className = 'stack';
   const labelText = document.createElement('span');
   labelText.className = 'field-label';
-  labelText.textContent = 'Shared token';
+  labelText.textContent = 'Operator token';
   const input = document.createElement('input');
   input.className = 'text-input';
   input.type = 'password';
   input.name = 'token';
   input.autocomplete = 'current-password';
-  input.placeholder = 'Paste the current FBCOORD_TOKEN';
+  input.placeholder = 'Paste the current operator token';
   label.append(labelText, input);
 
   const notice = document.createElement('div');
@@ -51,7 +51,7 @@ export function renderLoginPage(options: {
     const token = input.value.trim();
     if (!token) {
       notice.hidden = false;
-      notice.textContent = 'Enter the shared token.';
+      notice.textContent = 'Enter the operator token.';
       return;
     }
 

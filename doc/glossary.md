@@ -170,16 +170,26 @@ Unique identifier for an upstream. Used in logs, metrics, and manual selection. 
 ## Coordination terms
 
 ### Aggregate rank
-The summed zero-based position of a shared upstream across all submitted preference lists in a pool. fbcoord selects the shared upstream with the lowest aggregate rank, breaking ties lexicographically. See [Section 5.3.3](outline.md#533-selection-algorithm).
+The summed zero-based position of a shared upstream across all submitted
+preference lists in fbcoord's global coordination state. fbcoord selects the
+shared upstream with the lowest aggregate rank, breaking ties lexicographically.
+See [Section 5.3.3](outline.md#533-selection-algorithm).
 
 ### Coordinated pick
-The current upstream selected by fbcoord for a coordination pool. The coordinated pick may also be `null` when there is no shared upstream. See [Section 3.4.1](outline.md#341-overview), [Section 5.3.4](outline.md#534-pool-state-and-lifecycle).
+The current upstream selected by fbcoord for the deployment-wide coordination
+state. The coordinated pick may also be `null` when there is no shared
+upstream. See [Section 3.4.1](outline.md#341-overview), [Section 5.3.4](outline.md#534-coordination-state-and-lifecycle).
 
 ### Coordination pool
-A named group of fbforward nodes that participate together in fbcoord. Each pool has its own node membership, coordinated pick, and version sequence. See [Section 3.4.3](outline.md#343-operation-and-web-ui), [Section 5.3.4](outline.md#534-pool-state-and-lifecycle).
+Legacy fbcoord concept for a named group of nodes. Current fbcoord deployments
+use one global coordination state instead, and legacy pool fields are accepted
+only for backward compatibility and then ignored.
 
 ### fbcoord
-Cloudflare Workers-based coordination service that accepts upstream preference lists from multiple fbforward nodes and returns one coordinated pick per pool. It is separate from each node's local control plane. See [Section 3.4.1](outline.md#341-overview), [Section 5.3](outline.md#53-fbcoord-protocol).
+Cloudflare Workers-based coordination service that accepts upstream preference
+lists from multiple fbforward nodes and returns one coordinated pick for the
+deployment. It is separate from each node's local control plane. See
+[Section 3.4.1](outline.md#341-overview), [Section 5.3](outline.md#53-fbcoord-protocol).
 
 ### Preference list
 An ordered list of upstream tags submitted by an fbforward node to fbcoord. The order is best first and feeds the aggregate-rank selector. See [Section 5.3.2](outline.md#532-message-reference), [Section 5.3.3](outline.md#533-selection-algorithm).

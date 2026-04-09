@@ -91,6 +91,9 @@ func checkConfig(path string) {
 		fmt.Fprintf(os.Stderr, "config invalid: %v\n", err)
 		os.Exit(1)
 	}
+	for _, warning := range cfg.Warnings {
+		fmt.Fprintf(os.Stderr, "config warning: %s\n", warning)
+	}
 	fmt.Printf("config valid: %d upstreams, %d listeners\n", len(cfg.Upstreams), len(cfg.Forwarding.Listeners))
 	os.Exit(0)
 }

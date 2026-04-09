@@ -26,7 +26,7 @@ func NewClient(cfg config.CoordinationConfig) *Client {
 }
 
 func (c *Client) DialNode(ctx context.Context) (*websocket.Conn, *http.Response, error) {
-	wsURL, err := buildNodeURL(c.cfg.Endpoint, c.cfg.Pool)
+	wsURL, err := buildNodeURL(c.cfg.Endpoint)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -35,7 +35,7 @@ func (c *Client) DialNode(ctx context.Context) (*websocket.Conn, *http.Response,
 	return c.dialer.DialContext(ctx, wsURL, header)
 }
 
-func buildNodeURL(endpoint, pool string) (string, error) {
+func buildNodeURL(endpoint string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil {
 		return "", fmt.Errorf("invalid coordination endpoint: %w", err)
@@ -58,9 +58,7 @@ func buildNodeURL(endpoint, pool string) (string, error) {
 	} else {
 		parsed.Path = basePath + "/ws/node"
 	}
-	query := parsed.Query()
-	query.Set("pool", pool)
-	parsed.RawQuery = query.Encode()
+	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
 }

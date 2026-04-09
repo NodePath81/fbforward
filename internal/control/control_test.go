@@ -289,6 +289,70 @@ func TestRefreshGeoIPReturnsResult(t *testing.T) {
 	}
 }
 
+func TestGetRuntimeConfigOmitsLegacyCoordinationFields(t *testing.T) {
+	server := newTestControlServer(t)
+	server.fullCfg.Coordination = config.CoordinationConfig{
+		Endpoint:          "https://fbcoord.example",
+		Token:             "node-token",
+		HeartbeatInterval: config.Duration(5 * time.Second),
+		Pool:              "legacy-pool",
+		NodeID:            "legacy-node",
+	}
+
+	result := server.getRuntimeConfig()
+	coordinationCfg, ok := result["coordination"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("coordination config missing or wrong type: %#v", result["coordination"])
+	}
+	if _, exists := coordinationCfg["pool"]; exists {
+		t.Fatalf("unexpected legacy pool in runtime config: %#v", coordinationCfg)
+	}
+	if _, exists := coordinationCfg["node_id"]; exists {
+		t.Fatalf("unexpected legacy node_id in runtime config: %#v", coordinationCfg)
+	}
+	if coordinationCfg["endpoint"] != "https://fbcoord.example" {
+		t.Fatalf("unexpected coordination endpoint: %#v", coordinationCfg)
+	}
+}
+
+func TestGetStatusOmitsLegacyCoordinationFields(t *testing.T) {
+	server := newTestControlServer(t)
+	server.fullCfg.Coordination = config.CoordinationConfig{
+		Endpoint: "https://fbcoord.example",
+		Token:    "node-token",
+		Pool:     "legacy-pool",
+		NodeID:   "legacy-node",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "GetStatus", nil)))
+	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	rec := httptest.NewRecorder()
+
+	server.handleRPC(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp rpcResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected result payload: %#v", resp.Result)
+	}
+	coordinationState, ok := result["coordination"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected coordination payload: %#v", result["coordination"])
+	}
+	if _, exists := coordinationState["pool"]; exists {
+		t.Fatalf("unexpected legacy pool in status response: %#v", coordinationState)
+	}
+	if _, exists := coordinationState["node_id"]; exists {
+		t.Fatalf("unexpected legacy node_id in status response: %#v", coordinationState)
+	}
+}
+
 func TestRefreshGeoIPAcceptsOmittedAndNullParams(t *testing.T) {
 	server := newTestControlServer(t)
 	server.SetGeoIPManager(fakeGeoIPManager{refreshResult: geoip.RefreshResult{}})

@@ -136,9 +136,7 @@ func (c *Controller) runSession(ctx context.Context) error {
 	}()
 
 	if err := c.writeMessage(conn, HelloMessage{
-		Type:   "hello",
-		Pool:   c.cfg.Pool,
-		NodeID: c.cfg.NodeID,
+		Type: "hello",
 	}); err != nil {
 		return err
 	}

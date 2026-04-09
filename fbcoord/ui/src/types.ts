@@ -3,12 +3,6 @@ export interface PickInfo {
   upstream: string | null;
 }
 
-export interface PoolSummary {
-  name: string;
-  node_count: number;
-  pick: PickInfo;
-}
-
 export interface NodeDetail {
   node_id: string;
   upstreams: string[];
@@ -17,10 +11,9 @@ export interface NodeDetail {
   connected_at: number;
 }
 
-export interface PoolDetail {
-  pool: string;
-  node_count: number;
+export interface CoordinationState {
   pick: PickInfo;
+  node_count: number;
   nodes: NodeDetail[];
 }
 
@@ -31,4 +24,16 @@ export interface TokenInfo {
 
 export interface TokenRotateResponse extends TokenInfo {
   token?: string;
+}
+
+export interface NodeTokenInfo {
+  node_id: string;
+  masked_prefix: string;
+  created_at: number;
+  last_used_at: number | null;
+}
+
+export interface CreateNodeTokenResponse {
+  token: string;
+  info: NodeTokenInfo;
 }

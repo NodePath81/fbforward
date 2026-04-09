@@ -335,8 +335,8 @@ This outline defines the complete documentation structure for the fbforward mono
 
 **Content:**
 - Wrangler deployment
-- Worker secret bootstrap (`FBCOORD_TOKEN`)
-- Shared token distribution to fbforward nodes
+- Operator-token bootstrap (`FBCOORD_TOKEN`)
+- Per-node token provisioning and migration workflow
 - Health checks and basic verification
 
 #### 3.4.3 Operation and web UI
@@ -351,10 +351,10 @@ This outline defines the complete documentation structure for the fbforward mono
 | **Depth** | Reference |
 
 **Content:**
-- Dashboard and node detail views
-- Token rotation flow
+- Single global-state dashboard
+- Operator-token and node-token management flows
 - Rate limiting behavior
-- Pool lifecycle and redeploy/reconnect behavior
+- Global-state lifecycle and redeploy/reconnect behavior
 
 #### 3.4.4 Troubleshooting
 
@@ -368,9 +368,9 @@ This outline defines the complete documentation structure for the fbforward mono
 | **Depth** | Reference |
 
 **Content:**
-- Token mismatch and auth failures
+- Operator-token and node-token mismatch failures
 - Rate-limit lockouts
-- Empty pool / no-consensus conditions
+- Empty state / no-consensus conditions
 - Stale node eviction and reconnection behavior
 
 ---
@@ -750,8 +750,9 @@ This outline defines the complete documentation structure for the fbforward mono
 | **Depth** | Reference |
 
 **Content:**
-- `GET /ws/node?pool=...`
-- Bearer token auth
+- `GET /ws/node`
+- Bearer node-token auth
+- Ignored legacy `pool` query parameter
 - Rate-limit behavior before upgrade
 - First-message requirements
 
@@ -790,20 +791,20 @@ This outline defines the complete documentation structure for the fbforward mono
 - Lexicographic tie-break
 - No-consensus cases
 
-#### 5.3.4 Pool state and lifecycle
+#### 5.3.4 Coordination state and lifecycle
 
 | Field | Value |
 |-------|-------|
 | **ID** | 5.3.4 |
-| **Purpose** | Document pool membership, stale eviction, and version semantics |
-| **Source artifacts** | fbcoord/src/durable-objects/pool.ts, fbcoord/src/durable-objects/registry.ts |
+| **Purpose** | Document global node membership, stale eviction, and version semantics |
+| **Source artifacts** | fbcoord/src/durable-objects/pool.ts |
 | **Dependencies** | 5.3.3 |
 | **Audience** | Developers |
 | **Depth** | Reference |
 
 **Content:**
 - Node registration and replacement by `node_id`
-- Pool registration/deregistration
+- Global coordination-state snapshots
 - Stale eviction timing
 - Pick version increment rules
 

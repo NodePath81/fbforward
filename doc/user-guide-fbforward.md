@@ -48,7 +48,11 @@ fbforward supports three upstream selection modes:
 
 **Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
 
-**Coordination mode**: An operator selects coordination mode via the control plane RPC method `SetUpstream` with `mode: "coordination"`. fbforward then connects to `fbcoord`, submits its sorted local upstream preference list, and applies the coordinated upstream returned by `fbcoord` when that pick is locally usable.
+**Coordination mode**: An operator selects coordination mode via the control
+plane RPC method `SetUpstream` with `mode: "coordination"`. fbforward then
+connects to `fbcoord`, submits its sorted local upstream preference list, and
+applies the coordinated upstream returned by `fbcoord` when that pick is
+locally usable.
 
 Mode behavior:
 - Startup mode is always auto
@@ -57,6 +61,16 @@ Mode behavior:
 - In coordination mode, a valid coordinated pick overrides local auto selection for new flows
 - If `fbcoord` returns no upstream, disconnects, or returns a locally invalid upstream, fbforward remains in coordination mode but falls back to local auto-selection behavior
 - The local Web UI exposes `auto`, `manual`, and `coordination` mode buttons when enabled
+
+Coordination configuration now effectively requires only:
+
+- `coordination.endpoint`
+- `coordination.token`
+- optional `coordination.heartbeat_interval`
+
+Legacy `coordination.pool` and `coordination.node_id` are parsed for backward
+compatibility but ignored with warnings. Each fbforward node must use a
+per-node fbcoord token; the operator token is not valid for node connections.
 
 For deploying and operating the coordination service itself, see [fbcoord user guide](user-guide-fbcoord.md). For the node-to-coordinator wire contract and selector details, see [fbcoord protocol reference](fbcoord-protocol.md).
 

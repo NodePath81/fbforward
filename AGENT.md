@@ -19,7 +19,11 @@ The runtime mix is:
 
 **fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using fbmeasure targeted probes (RTT, jitter, TCP retransmission rate, UDP loss rate), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. Optional subsystems include GeoIP database management, persisted IP connection logging (SQLite), and CIDR/ASN/country firewalling. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI with dashboard operational status and a dedicated IP Log query page.
 
-**fbcoord summary**: Cloudflare Worker backed by Durable Objects. It coordinates a shared upstream pick across multiple fbforward nodes in the same pool, serves an operator UI/API, enforces auth bans through an auth-guard DO plus Cloudflare KV, and persists the shared coordination token in a token DO.
+**fbcoord summary**: Cloudflare Worker backed by Durable Objects. It
+coordinates a shared upstream pick across multiple fbforward nodes in one
+global coordination state, serves an operator UI/API, enforces auth bans
+through an auth-guard DO plus Cloudflare KV, and persists the operator token
+plus per-node tokens in a token DO.
 
 ## Platform requirements
 
@@ -110,28 +114,30 @@ Logic: [bwprobe/internal/engine/samples.go](bwprobe/internal/engine/samples.go)
 
 fbcoord is a Cloudflare Worker with four Durable Object bindings:
 
-- `PoolDurableObject`: live node connections, preferences, and coordinated picks per pool
-- `RegistryDurableObject`: active pool registry
-- `TokenDurableObject`: shared coordination token record and session signing secret
+- `PoolDurableObject`: live node connections, preferences, and the single global coordinated pick
+- `RegistryDurableObject`: retained binding that is currently unused by runtime behavior
+- `TokenDurableObject`: operator-token record, per-node token records, and session signing secret
 - `AuthGuardDurableObject`: authoritative auth failure counters and active bans
 
 Cloudflare KV (`FBCOORD_AUTH_KV`) is used as a fast replicated ban cache and manual denylist layer, but the auth-guard DO remains the source of truth for short-window enforcement.
 
 ### Security model
 
-- Operator login and node auth both use the shared coordination token, but rate limiting is split by scope: `login` vs `node-auth`
+- Operator login and node auth use different credentials: one operator token for the UI/API, many node tokens for `/ws/node`
 - Token verification uses PBKDF2-HMAC-SHA256 with per-record salt plus a Worker-side pepper secret
-- Token rotation requires both an authenticated operator session and `current_token`
+- Operator-token rotation requires both an authenticated operator session and `current_token`
+- Node-token replacement is modeled as revoke plus mint for the same `node_id`
 - Mutating admin endpoints enforce `Origin` when present
-- Pool and node WebSocket traffic is validated at runtime and rate-limited per connection
+- Node WebSocket traffic is validated at runtime and rate-limited per connection
 
 ### Public routes
 
 - `/healthz`: worker health check
-- `/ws/node?pool=<pool>`: node coordination socket
+- `/ws/node`: node coordination socket
 - `/api/auth/login`, `/api/auth/check`, `/api/auth/logout`
-- `/api/pools`, `/api/pools/:pool`
+- `/api/state`
 - `/api/token/info`, `/api/token/rotate`
+- `/api/node-tokens`
 
 The `fbcoord` admin UI is a separate TypeScript app under `fbcoord/ui/`.
 
@@ -237,7 +243,7 @@ Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algor
 **fbcoord:**
 - `fbcoord/src/worker.ts`: Worker entrypoint, routing, admin API, auth guard integration
 - `fbcoord/src/durable-objects/pool.ts`: node socket lifecycle and coordinated pick logic
-- `fbcoord/src/durable-objects/token.ts`: shared token persistence and verification
+- `fbcoord/src/durable-objects/token.ts`: operator-token and node-token persistence and verification
 - `fbcoord/src/durable-objects/auth-guard.ts`: auth failure counters, bans, KV cache integration
 - `fbcoord/ui/`: admin UI source
 - `fbcoord/wrangler.toml`: Worker bindings, migrations, KV namespace config

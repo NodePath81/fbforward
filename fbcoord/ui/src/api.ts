@@ -1,7 +1,13 @@
-import type { PoolDetail, PoolSummary, TokenInfo, TokenRotateResponse } from './types.js';
+import type {
+  CoordinationState,
+  CreateNodeTokenResponse,
+  NodeTokenInfo,
+  TokenInfo,
+  TokenRotateResponse
+} from './types.js';
 
-interface PoolsResponse {
-  pools: PoolSummary[];
+interface NodeTokensResponse {
+  tokens: NodeTokenInfo[];
 }
 
 export class ApiError extends Error {
@@ -55,13 +61,8 @@ export async function login(token: string): Promise<void> {
   });
 }
 
-export async function getPools(): Promise<PoolSummary[]> {
-  const response = await request<PoolsResponse>('/api/pools');
-  return response.pools;
-}
-
-export async function getPool(pool: string): Promise<PoolDetail> {
-  return request<PoolDetail>(`/api/pools/${encodeURIComponent(pool)}`);
+export async function getState(): Promise<CoordinationState> {
+  return request<CoordinationState>('/api/state');
 }
 
 export async function getTokenInfo(): Promise<TokenInfo> {
@@ -76,5 +77,23 @@ export async function rotateToken(payload: {
   return request<TokenRotateResponse>('/api/token/rotate', {
     method: 'POST',
     body: JSON.stringify(payload)
+  });
+}
+
+export async function listNodeTokens(): Promise<NodeTokenInfo[]> {
+  const response = await request<NodeTokensResponse>('/api/node-tokens');
+  return response.tokens;
+}
+
+export async function createNodeToken(nodeId: string): Promise<CreateNodeTokenResponse> {
+  return request<CreateNodeTokenResponse>('/api/node-tokens', {
+    method: 'POST',
+    body: JSON.stringify({ node_id: nodeId })
+  });
+}
+
+export async function revokeNodeToken(nodeId: string): Promise<void> {
+  await request<{ ok: boolean }>(`/api/node-tokens/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE'
   });
 }

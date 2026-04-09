@@ -20,7 +20,7 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 - Forwards traffic to one of multiple configured upstreams
 - Measures upstream quality using fbmeasure targeted probes and ICMP reachability probes
 - Selects the best upstream automatically based on a composite quality score
-- Can optionally participate in an external fbcoord service to coordinate upstream selection across multiple fbforward nodes
+- Can optionally participate in an external fbcoord service to coordinate upstream selection across multiple fbforward nodes in one shared global state
 - Pins each flow to its assigned upstream until completion, ensuring in-flight connections are not disrupted
 - Can optionally manage GeoIP databases for ASN and country lookups
 - Can optionally log IP connections to SQLite with GeoIP enrichment
@@ -151,7 +151,9 @@ probe traffic. No special capabilities required.
 
 **bwprobe**: The standalone measurement CLI tool. Can be run independently for manual link testing or used as a library via the `bwprobe/pkg` Go package.
 
-The repository also contains `fbcoord`, a Cloudflare Workers service backed by Durable Objects. It is a companion service for multi-node coordination, not a Go binary.
+The repository also contains `fbcoord`, a Cloudflare Workers service backed by
+Durable Objects. It is a companion service for multi-node coordination with a
+separate operator token plus per-node tokens, not a Go binary.
 
 <!-- Diagram: D3 Binary relationships -->
 ```mermaid

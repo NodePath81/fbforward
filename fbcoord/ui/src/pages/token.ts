@@ -1,6 +1,9 @@
-import type { TokenInfo } from '../types.js';
+import type { NodeTokenInfo, TokenInfo } from '../types.js';
 
-function formatTimestamp(timestamp: number): string {
+function formatTimestamp(timestamp: number | null): string {
+  if (timestamp === null) {
+    return 'Never';
+  }
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short'
@@ -9,10 +12,15 @@ function formatTimestamp(timestamp: number): string {
 
 export function renderTokenPage(options: {
   info: TokenInfo;
+  nodeTokens: NodeTokenInfo[];
   generatedToken: string | null;
+  generatedNodeToken: { node_id: string; token: string } | null;
   onGenerate: (currentToken: string) => Promise<void>;
   onSubmitCustom: (currentToken: string, token: string) => Promise<void>;
   onCopyGenerated: () => Promise<void>;
+  onCreateNodeToken: (nodeId: string) => Promise<void>;
+  onCopyGeneratedNodeToken: () => Promise<void>;
+  onRevokeNodeToken: (nodeId: string) => Promise<void>;
 }): HTMLElement {
   const shell = document.createElement('main');
   shell.className = 'shell';
@@ -39,7 +47,7 @@ export function renderTokenPage(options: {
   currentHeader.className = 'panel-header';
   const headerKicker = document.createElement('div');
   headerKicker.className = 'kicker';
-  headerKicker.textContent = 'Current Token';
+  headerKicker.textContent = 'Operator Token';
   const headerTitle = document.createElement('h2');
   headerTitle.textContent = options.info.masked_prefix;
   const headerMeta = document.createElement('p');
@@ -51,7 +59,7 @@ export function renderTokenPage(options: {
   currentBody.className = 'panel-body';
   const bodyText = document.createElement('p');
   bodyText.className = 'muted';
-  bodyText.textContent = 'The full token is never shown here. After rotation, connected nodes must be updated before they can reconnect.';
+  bodyText.textContent = 'The full operator token is never shown here. Rotating it does not affect any existing node tokens.';
   currentBody.append(bodyText);
   currentPanel.append(currentHeader, currentBody);
 
@@ -61,9 +69,9 @@ export function renderTokenPage(options: {
   const header = document.createElement('div');
   header.className = 'panel-header';
   header.innerHTML = `
-    <div class="kicker">Rotate Token</div>
-    <h2>Replace the shared credential</h2>
-    <p class="muted">You can mint a fresh random token or paste your own replacement. Re-enter the current token to confirm the change.</p>
+    <div class="kicker">Rotate Operator Token</div>
+    <h2>Replace the operator credential</h2>
+    <p class="muted">You can mint a fresh random operator token or paste your own replacement. Re-enter the current operator token to confirm the change.</p>
   `;
 
   const body = document.createElement('div');
@@ -73,11 +81,11 @@ export function renderTokenPage(options: {
   currentTokenField.className = 'stack';
   const currentTokenLabel = document.createElement('span');
   currentTokenLabel.className = 'field-label';
-  currentTokenLabel.textContent = 'Current token';
+  currentTokenLabel.textContent = 'Current operator token';
   const currentTokenInput = document.createElement('input');
   currentTokenInput.className = 'text-input';
   currentTokenInput.type = 'password';
-  currentTokenInput.placeholder = 'Re-enter the current shared token to confirm rotation';
+  currentTokenInput.placeholder = 'Re-enter the current operator token to confirm rotation';
   currentTokenField.append(currentTokenLabel, currentTokenInput);
 
   if (options.generatedToken) {
@@ -86,7 +94,7 @@ export function renderTokenPage(options: {
 
     const title = document.createElement('div');
     title.className = 'status-good';
-    title.textContent = 'New token generated. This is the only time it will be shown.';
+    title.textContent = 'New operator token generated. This is the only time it will be shown.';
 
     const tokenValue = document.createElement('input');
     tokenValue.className = 'text-input inline-code';
@@ -96,7 +104,7 @@ export function renderTokenPage(options: {
     const copyButton = document.createElement('button');
     copyButton.className = 'button secondary';
     copyButton.type = 'button';
-    copyButton.textContent = 'Copy token';
+    copyButton.textContent = 'Copy operator token';
     copyButton.addEventListener('click', () => {
       void options.onCopyGenerated();
     });
@@ -112,19 +120,19 @@ export function renderTokenPage(options: {
   const generateButton = document.createElement('button');
   generateButton.className = 'button warn';
   generateButton.type = 'button';
-  generateButton.textContent = 'Generate random token';
+  generateButton.textContent = 'Generate random operator token';
   generateButton.addEventListener('click', () => {
     const currentToken = currentTokenInput.value.trim();
     if (!currentToken) {
       notice.hidden = false;
-      notice.textContent = 'Enter the current token to confirm rotation.';
+      notice.textContent = 'Enter the current operator token to confirm rotation.';
       return;
     }
     notice.hidden = true;
     void options.onGenerate(currentToken)
       .catch(error => {
         notice.hidden = false;
-        notice.textContent = error instanceof Error ? error.message : 'Token rotation failed';
+        notice.textContent = error instanceof Error ? error.message : 'Operator token rotation failed';
       });
   });
 
@@ -135,17 +143,17 @@ export function renderTokenPage(options: {
   label.className = 'stack';
   const labelText = document.createElement('span');
   labelText.className = 'field-label';
-  labelText.textContent = 'Custom token';
+  labelText.textContent = 'Custom operator token';
   const input = document.createElement('input');
   input.className = 'text-input';
   input.type = 'password';
-  input.placeholder = 'Enter a strong replacement token';
+  input.placeholder = 'Enter a strong replacement operator token';
   label.append(labelText, input);
 
   const submit = document.createElement('button');
   submit.className = 'button secondary';
   submit.type = 'submit';
-  submit.textContent = 'Apply custom token';
+  submit.textContent = 'Apply custom operator token';
 
   customForm.append(label, notice, submit);
   customForm.addEventListener('submit', event => {
@@ -154,26 +162,168 @@ export function renderTokenPage(options: {
     const token = input.value.trim();
     if (!currentToken) {
       notice.hidden = false;
-      notice.textContent = 'Enter the current token to confirm rotation.';
+      notice.textContent = 'Enter the current operator token to confirm rotation.';
       return;
     }
     if (token.length < 32) {
       notice.hidden = false;
-      notice.textContent = 'Custom tokens must be at least 32 characters.';
+      notice.textContent = 'Custom operator tokens must be at least 32 characters.';
       return;
     }
     notice.hidden = true;
     void options.onSubmitCustom(currentToken, token)
       .catch(error => {
         notice.hidden = false;
-        notice.textContent = error instanceof Error ? error.message : 'Token rotation failed';
+        notice.textContent = error instanceof Error ? error.message : 'Operator token rotation failed';
       });
   });
 
   body.append(currentTokenField, generateButton, customForm);
   rotatePanel.append(header, body);
 
-  grid.append(currentPanel, rotatePanel);
+  const nodePanel = document.createElement('div');
+  nodePanel.className = 'panel';
+  const nodeHeader = document.createElement('div');
+  nodeHeader.className = 'panel-header';
+  nodeHeader.innerHTML = `
+    <div class="kicker">Node Tokens</div>
+    <h2>Provision node credentials</h2>
+    <p class="muted">Each node token is bound to exactly one node ID and can be revoked independently.</p>
+  `;
+
+  const nodeBody = document.createElement('div');
+  nodeBody.className = 'panel-body stack';
+
+  if (options.generatedNodeToken) {
+    const tokenOnce = document.createElement('div');
+    tokenOnce.className = 'token-once';
+
+    const title = document.createElement('div');
+    title.className = 'status-good';
+    title.textContent = `New node token for ${options.generatedNodeToken.node_id}. This is the only time it will be shown.`;
+
+    const tokenValue = document.createElement('input');
+    tokenValue.className = 'text-input inline-code';
+    tokenValue.readOnly = true;
+    tokenValue.value = options.generatedNodeToken.token;
+
+    const copyButton = document.createElement('button');
+    copyButton.className = 'button secondary';
+    copyButton.type = 'button';
+    copyButton.textContent = 'Copy node token';
+    copyButton.addEventListener('click', () => {
+      void options.onCopyGeneratedNodeToken();
+    });
+
+    tokenOnce.append(title, tokenValue, copyButton);
+    nodeBody.append(tokenOnce);
+  }
+
+  const createNotice = document.createElement('div');
+  createNotice.className = 'notice';
+  createNotice.hidden = true;
+
+  const createForm = document.createElement('form');
+  createForm.className = 'stack';
+  const nodeIdLabel = document.createElement('label');
+  nodeIdLabel.className = 'stack';
+  const nodeIdText = document.createElement('span');
+  nodeIdText.className = 'field-label';
+  nodeIdText.textContent = 'Node ID';
+  const nodeIdInput = document.createElement('input');
+  nodeIdInput.className = 'text-input';
+  nodeIdInput.type = 'text';
+  nodeIdInput.placeholder = 'Enter a unique node ID';
+  nodeIdLabel.append(nodeIdText, nodeIdInput);
+
+  const createButton = document.createElement('button');
+  createButton.className = 'button';
+  createButton.type = 'submit';
+  createButton.textContent = 'Mint node token';
+
+  createForm.append(nodeIdLabel, createNotice, createButton);
+  createForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const nodeId = nodeIdInput.value.trim();
+    if (!nodeId) {
+      createNotice.hidden = false;
+      createNotice.textContent = 'Enter a node ID.';
+      return;
+    }
+    createNotice.hidden = true;
+    void options.onCreateNodeToken(nodeId)
+      .catch(error => {
+        createNotice.hidden = false;
+        createNotice.textContent = error instanceof Error ? error.message : 'Node token creation failed';
+      });
+  });
+
+  nodeBody.append(createForm);
+
+  if (options.nodeTokens.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No node tokens have been provisioned yet.';
+    nodeBody.append(empty);
+  } else {
+    const tableWrap = document.createElement('div');
+    tableWrap.className = 'table-wrap';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = `
+      <tr>
+        <th>Node ID</th>
+        <th>Token Prefix</th>
+        <th>Created</th>
+        <th>Last Used</th>
+        <th>Action</th>
+      </tr>
+    `;
+    table.append(thead);
+
+    const tbody = document.createElement('tbody');
+    for (const token of options.nodeTokens) {
+      const row = document.createElement('tr');
+
+      const nodeId = document.createElement('td');
+      nodeId.className = 'inline-code';
+      nodeId.textContent = token.node_id;
+
+      const prefix = document.createElement('td');
+      prefix.className = 'inline-code';
+      prefix.textContent = token.masked_prefix;
+
+      const created = document.createElement('td');
+      created.textContent = formatTimestamp(token.created_at);
+
+      const lastUsed = document.createElement('td');
+      lastUsed.textContent = formatTimestamp(token.last_used_at);
+
+      const action = document.createElement('td');
+      const revokeButton = document.createElement('button');
+      revokeButton.className = 'button secondary';
+      revokeButton.type = 'button';
+      revokeButton.textContent = 'Revoke';
+      revokeButton.addEventListener('click', () => {
+        void options.onRevokeNodeToken(token.node_id)
+          .catch(error => {
+            createNotice.hidden = false;
+            createNotice.textContent = error instanceof Error ? error.message : 'Node token revocation failed';
+          });
+      });
+      action.append(revokeButton);
+
+      row.append(nodeId, prefix, created, lastUsed, action);
+      tbody.append(row);
+    }
+    table.append(tbody);
+    tableWrap.append(table);
+    nodeBody.append(tableWrap);
+  }
+
+  nodePanel.append(nodeHeader, nodeBody);
+
+  grid.append(currentPanel, rotatePanel, nodePanel);
   shell.append(toolbar, grid);
   return shell;
 }

@@ -1,7 +1,16 @@
-import { ApiError, checkAuth, getPool, getPools, getTokenInfo, login, rotateToken } from './api.js';
+import {
+  ApiError,
+  checkAuth,
+  createNodeToken,
+  getState,
+  getTokenInfo,
+  listNodeTokens,
+  login,
+  revokeNodeToken,
+  rotateToken
+} from './api.js';
 import { renderDashboardPage } from './pages/dashboard.js';
 import { renderLoginPage } from './pages/login.js';
-import { renderPoolDetailPage } from './pages/pool-detail.js';
 import { renderTokenPage } from './pages/token.js';
 import { appState } from './state.js';
 
@@ -16,7 +25,6 @@ let pollTimer: number | null = null;
 type Route =
   | { kind: 'login' }
   | { kind: 'dashboard' }
-  | { kind: 'pool'; pool: string }
   | { kind: 'token' };
 
 function stopPolling(): void {
@@ -43,12 +51,6 @@ function parseRoute(): Route {
   }
   if (hash === '#/token') {
     return { kind: 'token' };
-  }
-  if (hash.startsWith('#/pool/')) {
-    return {
-      kind: 'pool',
-      pool: decodeURIComponent(hash.slice('#/pool/'.length))
-    };
   }
   return { kind: 'dashboard' };
 }
@@ -102,7 +104,7 @@ async function renderRoute(): Promise<void> {
             throw new Error(`Too many attempts.${wait}`);
           }
           if (error instanceof ApiError && error.status === 401) {
-            throw new Error('Invalid token.');
+            throw new Error('Invalid operator token.');
           }
           throw error;
         }
@@ -114,12 +116,12 @@ async function renderRoute(): Promise<void> {
   }
 
   if (route.kind === 'dashboard') {
-    const pools = await getPools();
+    const state = await getState();
     if (renderId !== appState.renderNonce) {
       return;
     }
     setContent(renderDashboardPage({
-      pools,
+      state,
       pollIntervalMs: appState.pollIntervalMs,
       onPollIntervalChange: ms => {
         appState.pollIntervalMs = ms;
@@ -130,33 +132,20 @@ async function renderRoute(): Promise<void> {
     return;
   }
 
-  if (route.kind === 'pool') {
-    try {
-      const detail = await getPool(route.pool);
-      if (renderId !== appState.renderNonce) {
-        return;
-      }
-      setContent(renderPoolDetailPage(detail));
-      schedulePolling();
-      return;
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) {
-        window.location.hash = '#/';
-        return;
-      }
-      throw error;
-    }
-  }
-
-  const info = await getTokenInfo();
+  const [info, nodeTokens] = await Promise.all([
+    getTokenInfo(),
+    listNodeTokens()
+  ]);
   if (renderId !== appState.renderNonce) {
     return;
   }
   setContent(renderTokenPage({
     info,
+    nodeTokens,
     generatedToken: appState.generatedToken,
+    generatedNodeToken: appState.generatedNodeToken,
     onGenerate: async currentToken => {
-      if (!requiresConfirmation('Rotate the shared token now? Connected nodes using the old token will need to be updated.')) {
+      if (!requiresConfirmation('Rotate the operator token now? Existing operator sessions stay valid, but new logins must use the replacement token.')) {
         return;
       }
       const result = await rotateToken({ current_token: currentToken, generate: true });
@@ -164,7 +153,7 @@ async function renderRoute(): Promise<void> {
       await renderRoute();
     },
     onSubmitCustom: async (currentToken, token) => {
-      if (!requiresConfirmation('Replace the shared token with this custom value? Connected nodes using the old token will need to be updated.')) {
+      if (!requiresConfirmation('Replace the operator token with this custom value? Existing operator sessions stay valid, but new logins must use the replacement token.')) {
         return;
       }
       await rotateToken({ current_token: currentToken, token });
@@ -176,6 +165,30 @@ async function renderRoute(): Promise<void> {
         return;
       }
       await navigator.clipboard.writeText(appState.generatedToken);
+    },
+    onCreateNodeToken: async nodeId => {
+      const result = await createNodeToken(nodeId);
+      appState.generatedNodeToken = {
+        node_id: result.info.node_id,
+        token: result.token
+      };
+      await renderRoute();
+    },
+    onCopyGeneratedNodeToken: async () => {
+      if (!appState.generatedNodeToken) {
+        return;
+      }
+      await navigator.clipboard.writeText(appState.generatedNodeToken.token);
+    },
+    onRevokeNodeToken: async nodeId => {
+      if (!requiresConfirmation(`Revoke the node token for ${nodeId}? Existing live connections are not forced closed, but future reconnects will fail.`)) {
+        return;
+      }
+      await revokeNodeToken(nodeId);
+      if (appState.generatedNodeToken?.node_id === nodeId) {
+        appState.generatedNodeToken = null;
+      }
+      await renderRoute();
     }
   }));
 }

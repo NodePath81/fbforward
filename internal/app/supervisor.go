@@ -28,6 +28,9 @@ func (s *Supervisor) Start() error {
 	if err != nil {
 		return err
 	}
+	for _, warning := range cfg.Warnings {
+		util.Event(lifecycleLogger, slog.LevelWarn, "lifecycle.config_warning", "warning", warning)
+	}
 	runtime, err := NewRuntime(cfg, s.logger, s.Restart)
 	if err != nil {
 		return err

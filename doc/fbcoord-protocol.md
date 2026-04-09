@@ -1,6 +1,8 @@
 # fbcoord protocol reference
 
-This document describes the coordination contract between fbforward nodes and fbcoord. For deployment, UI usage, and troubleshooting, see [fbcoord user guide](user-guide-fbcoord.md).
+This document describes the coordination contract between fbforward nodes and
+fbcoord. For deployment, UI usage, and troubleshooting, see
+[fbcoord user guide](user-guide-fbcoord.md).
 
 ---
 
@@ -11,43 +13,55 @@ This document describes the coordination contract between fbforward nodes and fb
 Nodes connect to:
 
 ```text
-GET /ws/node?pool=<pool>
+GET /ws/node
 ```
 
-fbcoord is designed for deployment behind Cloudflare Workers, so the expected external transport is WebSocket over HTTPS.
+fbcoord is designed for deployment behind Cloudflare Workers, so the expected
+external transport is WebSocket over HTTPS.
+
+Any `pool` query parameter sent for backward compatibility is ignored. fbcoord
+maintains one global coordination state per deployment.
 
 ### Authentication
 
 The WebSocket upgrade request must include:
 
 ```text
-Authorization: Bearer <shared-token>
+Authorization: Bearer <node-token>
 ```
 
-Current behavior before upgrade:
+Current behavior:
 
-- valid token: request is routed to the pool Durable Object
+- valid node token: request is upgraded and routed into the global coordination
+  state
+- operator token: `401 Unauthorized`
 - invalid or missing token: `401 Unauthorized`
 - source IP currently rate-limited: `429 Too Many Requests` with `Retry-After`
 
-The pool name is required both:
-
-- in the query string (`?pool=<pool>`)
-- in the first `hello` message
-
-If those values do not match, fbcoord sends `error { code: "invalid_pool" }` and closes the socket.
+The authenticated `node_id` is derived server-side from the validated node
+token. The Worker passes that trusted identity to the Durable Object over an
+internal header; the Durable Object does not trust a client-supplied `node_id`.
 
 ### First-message requirement
 
-After upgrade, the first node message must be `hello`. Any other message before `hello` produces:
+After upgrade, the first node message must be `hello`. Any other message
+produces:
 
 ```json
-{ "type": "error", "code": "missing_hello", "message": "hello must be sent first" }
+{
+  "type": "error",
+  "code": "missing_hello",
+  "message": "hello must be sent first"
+}
 ```
+
+and the socket is closed with code `1008`.
 
 ### Liveness expectation
 
-The current server implementation evicts stale nodes after 30 seconds without heartbeat. That matches three 10-second heartbeat intervals, which is the default fbforward coordination heartbeat.
+The current server implementation evicts stale nodes after 30 seconds without a
+heartbeat. That matches three 10-second heartbeat intervals, which is the
+default fbforward coordination heartbeat.
 
 ---
 
@@ -59,25 +73,26 @@ Sent once per connection, first message only.
 
 ```json
 {
-  "type": "hello",
-  "pool": "default",
-  "node_id": "edge-sfo-01"
+  "type": "hello"
 }
 ```
 
-Fields:
+Compatibility notes:
 
-- `pool`: pool name, must match the query parameter
-- `node_id`: stable per-node identifier within the pool
+- legacy `pool` and `node_id` fields are accepted if present
+- those legacy fields are ignored
 
 Behavior:
 
-- if another connection with the same `node_id` is already active in that pool, the old connection is closed and replaced
-- fbcoord immediately sends the current `pick` snapshot after successful `hello`
+- if another connection with the same authenticated `node_id` is already
+  active, the old connection is closed and replaced
+- fbcoord immediately sends the current `pick` snapshot after successful
+  `hello`
 
 ### `preferences`
 
-Sent after `hello`, then again whenever the node's ranked preference list changes.
+Sent after `hello`, then again whenever the node's ranked preference list
+changes.
 
 ```json
 {
@@ -94,8 +109,10 @@ Fields:
 
 Notes:
 
-- the submitted order is significant and feeds the aggregate-rank selector directly
-- an empty `upstreams` list is an explicit signal that the pool should have no coordinated pick while that node remains active
+- the submitted order is significant and feeds the aggregate-rank selector
+  directly
+- an empty `upstreams` list is an explicit signal that the global coordination
+  state should have no coordinated pick while that node remains active
 
 ### `heartbeat`
 
@@ -111,7 +128,8 @@ Heartbeats update `last_seen` and prevent stale eviction.
 
 ### `pick`
 
-Broadcast by fbcoord whenever the pool's visible coordinated pick changes, and also sent immediately after successful `hello`.
+Broadcast by fbcoord whenever the visible coordinated pick changes, and also
+sent immediately after successful `hello`.
 
 ```json
 {
@@ -133,8 +151,9 @@ No-consensus example:
 
 Fields:
 
-- `version`: monotonic pool pick version
-- `upstream`: selected upstream tag, or `null` when there is no coordinated pick
+- `version`: monotonic pick version for the deployment-wide coordination state
+- `upstream`: selected upstream tag, or `null` when there is no coordinated
+  pick
 
 ### `error`
 
@@ -151,35 +170,43 @@ Sent for protocol-level problems on an established socket.
 Current error codes:
 
 - `invalid_json`
-- `invalid_pool`
+- `invalid_message`
 - `missing_hello`
+- `rate_limited`
+- `reconnect_throttled`
 
 Connection behavior:
 
-- `invalid_json`: socket stays open
-- `missing_hello`: socket stays open
-- `invalid_pool`: socket is closed with code `1008`
+- `invalid_json`: socket is closed with code `1008`
+- `invalid_message`: socket is closed with code `1008`
+- `missing_hello`: socket is closed with code `1008`
+- `rate_limited`: socket is closed with code `1008`
+- `reconnect_throttled`: socket is closed with code `1013`
 
 ### Session lifecycle
 
 Normal lifecycle:
 
-1. Client opens `GET /ws/node?pool=<pool>` with Bearer token.
-2. Server upgrades the request.
+1. Client opens `GET /ws/node` with Bearer node token.
+2. Worker validates the node token, derives the bound `node_id`, and upgrades
+   the request.
 3. Client sends `hello`.
-4. Server sends the current `pick`.
-5. Client sends `preferences`.
-6. Server recomputes and broadcasts `pick` if the visible pool result changes.
-7. Client continues sending `heartbeat`.
-8. On disconnect or stale eviction, the node is removed from the pool state.
+4. Server registers the connection under the authenticated `node_id`.
+5. Server sends the current `pick`.
+6. Client sends `preferences`.
+7. Server recomputes and broadcasts `pick` if the visible result changes.
+8. Client continues sending `heartbeat`.
+9. On disconnect or stale eviction, the node is removed from the global state.
 
-If a node reconnects with the same `node_id`, the old socket is closed with code `1012` and reason `replaced`.
+If a node reconnects with the same token or another token bound to the same
+`node_id`, the old socket is closed with code `1012` and reason `replaced`.
 
 ---
 
 ## 5.3.3 Selection algorithm
 
-fbcoord selects one coordinated upstream per pool from the submitted preference lists of all active nodes in that pool.
+fbcoord selects one coordinated upstream for the deployment-wide coordination
+state from the submitted preference lists of all active nodes.
 
 Current algorithm:
 
@@ -187,9 +214,11 @@ Current algorithm:
 2. If any active node submitted an empty list, return `null`.
 3. Compute the intersection of all submitted upstream lists.
 4. If the intersection is empty, return `null`.
-5. For each shared upstream, compute aggregate rank as the sum of its zero-based index in each node's list.
+5. For each shared upstream, compute aggregate rank as the sum of its zero-based
+   index in each node's list.
 6. Choose the shared upstream with the lowest aggregate rank.
-7. If multiple upstreams tie on aggregate rank, choose the lexicographically smallest tag.
+7. If multiple upstreams tie on aggregate rank, choose the lexicographically
+   smallest tag.
 
 Worked example:
 
@@ -217,15 +246,16 @@ No-consensus cases:
 - any node submits `[]`
 - nodes submit disjoint sets
 
-The selector is deterministic. The same set of submitted lists produces the same pick.
+The selector is deterministic. The same set of submitted lists produces the
+same pick.
 
 ---
 
-## 5.3.4 Pool state and lifecycle
+## 5.3.4 Coordination state and lifecycle
 
-### Pool state model
+### Coordination state model
 
-Each pool tracks:
+The global coordination state tracks:
 
 - active nodes keyed by `node_id`
 - each node's last submitted `upstreams`
@@ -234,20 +264,12 @@ Each pool tracks:
 - `connected_at`
 - current visible `pick { version, upstream }`
 
-The admin UI reads this state through internal Worker-to-Durable-Object queries exposed as `GET /state`.
-
-### Pool registration
-
-Pool visibility is lifecycle-driven:
-
-- when node count transitions from `0 -> 1`, the pool is registered as active
-- when node count transitions from `1 -> 0`, the pool is deregistered
-
-That registry state drives the dashboard pool list.
+The admin UI reads this state through `GET /api/state`.
 
 ### Stale eviction
 
-If a node does not refresh `last_seen` within 30 seconds, it is evicted from pool state. Eviction removes:
+If a node does not refresh `last_seen` within 30 seconds, it is evicted from
+state. Eviction removes:
 
 - the node snapshot
 - its live connection
@@ -257,13 +279,14 @@ If eviction changes the visible pick, fbcoord broadcasts a new `pick`.
 
 ### Version semantics
 
-Pool pick versions start at:
+Pick versions start at:
 
 ```json
 { "version": 0, "upstream": null }
 ```
 
-The version increments only when the visible `upstream` value changes. It does not increment when:
+The version increments only when the visible `upstream` value changes. It does
+not increment when:
 
 - node membership changes but the selected upstream stays the same
 - a node resubmits the same preference list
@@ -279,25 +302,31 @@ It does increment when the visible pick changes in either direction:
 
 Reconnect semantics:
 
-- same `node_id` within a pool replaces the older live connection
-- the replacement connection receives the current pick immediately after `hello`
+- same `node_id` replaces the older live connection
+- the replacement connection receives the current pick immediately after
+  `hello`
 
 Redeploy semantics:
 
 - Worker redeploys drop live WebSocket sessions
 - nodes are expected to reconnect and resend `hello` plus `preferences`
-- pool state repopulates from those reconnects
+- node tokens remain valid across redeploys unless they were explicitly revoked
 
 ### Admin API state shape
 
-Current admin HTTP state surfaces mirror this pool model:
+Current admin HTTP state surface:
 
-- `GET /api/pools` returns pool summaries with `name`, `node_count`, and `pick`
-- `GET /api/pools/:pool` returns `pool`, `pick`, `node_count`, and per-node detail with:
+- `GET /api/state` returns `pick`, `node_count`, and per-node detail with:
   - `node_id`
   - `upstreams`
   - `active_upstream`
   - `last_seen`
   - `connected_at`
 
-These admin routes are for operator visibility. They are separate from the node coordination WebSocket protocol itself.
+Credential management is separate from the node WebSocket protocol:
+
+- `GET /api/token/info`
+- `POST /api/token/rotate`
+- `GET /api/node-tokens`
+- `POST /api/node-tokens`
+- `DELETE /api/node-tokens/:node_id`

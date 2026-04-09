@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { activeBanKey, AuthGuardDurableObject } from '../src/durable-objects/auth-guard';
-import { RegistryDurableObject } from '../src/durable-objects/registry';
+import { AUTHENTICATED_NODE_ID_HEADER } from '../src/durable-objects/pool';
 import { TokenDurableObject } from '../src/durable-objects/token';
 import { createWorker, type Env } from '../src/worker';
 import { FactoryNamespace, jsonResponse, MemoryKV, MemoryStorage, RecordingStub, StaticNamespace } from './support';
@@ -10,46 +10,51 @@ const BOOTSTRAP_TOKEN = 'bootstrap-token-abcdefghijklmnopqrstuvwxyz123456';
 const ROTATED_TOKEN = 'rotated-token-abcdefghijklmnopqrstuvwxyz789012';
 const TOKEN_PEPPER = 'pepper-abcdefghijklmnopqrstuvwxyz1234567890';
 
+interface StatePayload {
+  pick: {
+    version: number;
+    upstream: string | null;
+  };
+  node_count: number;
+  nodes: Array<{
+    node_id: string;
+    upstreams: string[];
+    active_upstream: string | null;
+    last_seen: number;
+    connected_at: number;
+  }>;
+}
+
 function cookieHeader(response: Response): string {
   return response.headers.get('Set-Cookie')?.split(';', 1)[0] ?? '';
 }
 
-function createEnv(poolState: Record<string, unknown> = {}): {
+function createEnv(state: StatePayload = {
+  pick: { version: 0, upstream: null },
+  node_count: 0,
+  nodes: []
+}): {
   env: Env;
-  poolNamespace: StaticNamespace;
   poolStub: RecordingStub;
-  registry: RegistryDurableObject;
   authKv: MemoryKV;
 } {
   const poolStub = new RecordingStub(request => {
     const url = new URL(request.url);
     if (url.pathname === '/state') {
-      const pool = url.searchParams.get('pool') ?? 'default';
-      return jsonResponse(poolState[pool] ?? {
-        pool,
-        pick: { version: 0, upstream: null },
-        node_count: 0,
-        nodes: []
-      });
+      return jsonResponse(state);
     }
     return new Response('proxied', { status: 200 });
   });
 
   const poolNamespace = new StaticNamespace({
-    default: poolStub,
-    alpha: poolStub
+    global: poolStub
   });
 
-  const registry = new RegistryDurableObject({ storage: new MemoryStorage() } as DurableObjectState);
   const tokenStore = new TokenDurableObject(
     { storage: new MemoryStorage() } as DurableObjectState,
     { FBCOORD_TOKEN: BOOTSTRAP_TOKEN, FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER }
   );
   const authKv = new MemoryKV();
-
-  const registryNamespace = new StaticNamespace({
-    global: new RecordingStub(request => registry.fetch(request))
-  });
 
   const tokenNamespace = new StaticNamespace({
     global: new RecordingStub(request => tokenStore.fetch(request))
@@ -66,18 +71,44 @@ function createEnv(poolState: Record<string, unknown> = {}): {
   return {
     env: {
       FBCOORD_POOL: poolNamespace,
-      FBCOORD_REGISTRY: registryNamespace,
+      FBCOORD_REGISTRY: new StaticNamespace({
+        global: new RecordingStub()
+      }),
       FBCOORD_TOKEN_STORE: tokenNamespace,
       FBCOORD_AUTH_GUARD: authGuardNamespace,
       FBCOORD_AUTH_KV: authKv,
       FBCOORD_TOKEN: BOOTSTRAP_TOKEN,
       FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER
     },
-    poolNamespace,
     poolStub,
-    registry,
     authKv
   };
+}
+
+async function login(worker: ReturnType<typeof createWorker>, env: Env, token: string = BOOTSTRAP_TOKEN): Promise<Response> {
+  return worker.fetch(new Request('https://example.com/api/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token })
+  }), env);
+}
+
+async function createNodeToken(
+  worker: ReturnType<typeof createWorker>,
+  env: Env,
+  cookie: string,
+  nodeId: string
+): Promise<{ token: string }> {
+  const response = await worker.fetch(new Request('https://example.com/api/node-tokens', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Cookie: cookie
+    },
+    body: JSON.stringify({ node_id: nodeId })
+  }), env);
+  expect(response.status).toBe(200);
+  return response.json() as Promise<{ token: string }>;
 }
 
 describe('worker fetch', () => {
@@ -101,72 +132,152 @@ describe('worker fetch', () => {
     expect(poolStub.requests).toHaveLength(0);
   });
 
-  it('routes authorized node requests to the pool durable object', async () => {
+  it('rejects the operator token on the node websocket route after upgrade', async () => {
     const { env, poolStub } = createEnv();
     const worker = createWorker();
 
-    const request = new Request('https://example.com/ws/node?pool=default', {
+    const response = await worker.fetch(new Request('https://example.com/ws/node?pool=default', {
       headers: {
         Authorization: `Bearer ${BOOTSTRAP_TOKEN}`
       }
-    });
+    }), env);
 
-    const response = await worker.fetch(request, env);
+    expect(response.status).toBe(401);
+    expect(poolStub.requests).toHaveLength(0);
+  });
+
+  it('authenticates node tokens on /ws/node, ignores the pool query, and injects node identity', async () => {
+    const { env, poolStub } = createEnv();
+    const worker = createWorker();
+
+    const loginResponse = await login(worker, env);
+    const cookie = cookieHeader(loginResponse);
+    const created = await createNodeToken(worker, env, cookie, 'node-1');
+
+    const response = await worker.fetch(new Request('https://example.com/ws/node?pool=default', {
+      headers: {
+        Authorization: `Bearer ${created.token}`
+      }
+    }), env);
 
     expect(response.status).toBe(200);
     expect(poolStub.requests).toHaveLength(1);
+    expect(poolStub.requests[0]?.headers.get(AUTHENTICATED_NODE_ID_HEADER)).toBe('node-1');
   });
 
-  it('creates a session on login and allows authenticated API reads', async () => {
-    const poolState = {
-      alpha: {
-        pool: 'alpha',
-        pick: { version: 3, upstream: 'us-a' },
-        node_count: 1,
-        nodes: [
-          {
-            node_id: 'node-1',
-            upstreams: ['us-a', 'us-b'],
-            active_upstream: 'us-a',
-            last_seen: 1_000,
-            connected_at: 500
-          }
-        ]
-      }
-    };
-    const { env, registry } = createEnv(poolState);
+  it('rejects node tokens on the operator login route', async () => {
+    const { env } = createEnv();
     const worker = createWorker();
 
-    await registry.fetch(new Request('https://registry.internal/register', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pool: 'alpha' })
-    }));
+    const loginResponse = await login(worker, env);
+    const created = await createNodeToken(worker, env, cookieHeader(loginResponse), 'node-1');
 
-    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
-    }), env);
+    const response = await login(worker, env, created.token);
 
-    expect(loginResponse.status).toBe(200);
+    expect(response.status).toBe(401);
+  });
 
-    const poolsResponse = await worker.fetch(new Request('https://example.com/api/pools', {
+  it('creates a session on login and allows authenticated reads from /api/state', async () => {
+    const { env } = createEnv({
+      pick: { version: 3, upstream: 'us-a' },
+      node_count: 1,
+      nodes: [
+        {
+          node_id: 'node-1',
+          upstreams: ['us-a', 'us-b'],
+          active_upstream: 'us-a',
+          last_seen: 1_000,
+          connected_at: 500
+        }
+      ]
+    });
+    const worker = createWorker();
+
+    const loginResponse = await login(worker, env);
+
+    const stateResponse = await worker.fetch(new Request('https://example.com/api/state', {
       headers: {
         Cookie: cookieHeader(loginResponse)
       }
     }), env);
 
-    expect(poolsResponse.status).toBe(200);
-    await expect(poolsResponse.json()).resolves.toEqual({
-      pools: [
+    expect(stateResponse.status).toBe(200);
+    await expect(stateResponse.json()).resolves.toEqual({
+      pick: { version: 3, upstream: 'us-a' },
+      node_count: 1,
+      nodes: [
         {
-          name: 'alpha',
-          node_count: 1,
-          pick: { version: 3, upstream: 'us-a' }
+          node_id: 'node-1',
+          upstreams: ['us-a', 'us-b'],
+          active_upstream: 'us-a',
+          last_seen: 1_000,
+          connected_at: 500
         }
       ]
     });
+  });
+
+  it('requires an operator session for node-token management APIs', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const listResponse = await worker.fetch(new Request('https://example.com/api/node-tokens'), env);
+    expect(listResponse.status).toBe(401);
+
+    const createResponse = await worker.fetch(new Request('https://example.com/api/node-tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ node_id: 'node-1' })
+    }), env);
+    expect(createResponse.status).toBe(401);
+
+    const revokeResponse = await worker.fetch(new Request('https://example.com/api/node-tokens/node-1', {
+      method: 'DELETE'
+    }), env);
+    expect(revokeResponse.status).toBe(401);
+  });
+
+  it('lists, mints, and revokes node tokens through the authenticated API', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const loginResponse = await login(worker, env);
+    const cookie = cookieHeader(loginResponse);
+
+    const created = await createNodeToken(worker, env, cookie, 'node-1');
+    expect(created.token.length).toBeGreaterThanOrEqual(32);
+
+    const listResponse = await worker.fetch(new Request('https://example.com/api/node-tokens', {
+      headers: {
+        Cookie: cookie
+      }
+    }), env);
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toEqual({
+      tokens: [
+        {
+          node_id: 'node-1',
+          masked_prefix: `${created.token.slice(0, 8)}...`,
+          created_at: expect.any(Number),
+          last_used_at: null
+        }
+      ]
+    });
+
+    const revokeResponse = await worker.fetch(new Request('https://example.com/api/node-tokens/node-1', {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie
+      }
+    }), env);
+    expect(revokeResponse.status).toBe(200);
+
+    const nodeResponse = await worker.fetch(new Request('https://example.com/ws/node', {
+      headers: {
+        Authorization: `Bearer ${created.token}`
+      }
+    }), env);
+    expect(nodeResponse.status).toBe(401);
   });
 
   it('rate-limits repeated failed logins across worker instances', async () => {
@@ -191,6 +302,8 @@ describe('worker fetch', () => {
   it('does not let node auth reset failed login attempts from the same client key', async () => {
     const { env } = createEnv();
     const worker = createWorker();
+    const loginResponse = await login(worker, env);
+    const created = await createNodeToken(worker, env, cookieHeader(loginResponse), 'node-1');
 
     const badLogin = () => new Request('https://example.com/api/auth/login', {
       method: 'POST',
@@ -204,9 +317,9 @@ describe('worker fetch', () => {
     expect((await worker.fetch(badLogin(), env)).status).toBe(401);
     expect((await worker.fetch(badLogin(), env)).status).toBe(401);
 
-    const nodeAuth = await worker.fetch(new Request('https://example.com/ws/node?pool=default', {
+    const nodeAuth = await worker.fetch(new Request('https://example.com/ws/node', {
       headers: {
-        Authorization: `Bearer ${BOOTSTRAP_TOKEN}`,
+        Authorization: `Bearer ${created.token}`,
         'cf-connecting-ip': '203.0.113.9'
       }
     }), env);
@@ -235,15 +348,11 @@ describe('worker fetch', () => {
     expect(response.status).toBe(429);
   });
 
-  it('requires current_token for token rotation', async () => {
+  it('requires current_token for operator token rotation', async () => {
     const { env } = createEnv();
     const worker = createWorker();
 
-    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
-    }), env);
+    const loginResponse = await login(worker, env);
 
     const response = await worker.fetch(new Request('https://example.com/api/token/rotate', {
       method: 'POST',
@@ -257,15 +366,11 @@ describe('worker fetch', () => {
     expect(response.status).toBe(401);
   });
 
-  it('rejects token rotation when current_token is wrong', async () => {
+  it('rejects operator token rotation when current_token is wrong', async () => {
     const { env } = createEnv();
     const worker = createWorker();
 
-    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
-    }), env);
+    const loginResponse = await login(worker, env);
 
     const response = await worker.fetch(new Request('https://example.com/api/token/rotate', {
       method: 'POST',
@@ -282,17 +387,13 @@ describe('worker fetch', () => {
     expect(response.status).toBe(401);
   });
 
-  it('keeps the current session valid after token rotation when current_token is supplied', async () => {
+  it('keeps the current session valid after operator token rotation and leaves node tokens valid', async () => {
     const { env } = createEnv();
     const worker = createWorker();
 
-    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
-    }), env);
-
+    const loginResponse = await login(worker, env);
     const cookie = cookieHeader(loginResponse);
+    const created = await createNodeToken(worker, env, cookie, 'node-1');
 
     const rotateResponse = await worker.fetch(new Request('https://example.com/api/token/rotate', {
       method: 'POST',
@@ -312,19 +413,22 @@ describe('worker fetch', () => {
     }), env);
     expect(authCheck.status).toBe(200);
 
-    const oldTokenResponse = await worker.fetch(new Request('https://example.com/ws/node?pool=default', {
+    expect((await login(worker, env, BOOTSTRAP_TOKEN)).status).toBe(401);
+    expect((await login(worker, env, ROTATED_TOKEN)).status).toBe(200);
+
+    const oldTokenResponse = await worker.fetch(new Request('https://example.com/ws/node', {
       headers: {
         Authorization: `Bearer ${BOOTSTRAP_TOKEN}`
       }
     }), env);
     expect(oldTokenResponse.status).toBe(401);
 
-    const newTokenResponse = await worker.fetch(new Request('https://example.com/ws/node?pool=default', {
+    const nodeTokenResponse = await worker.fetch(new Request('https://example.com/ws/node', {
       headers: {
-        Authorization: `Bearer ${ROTATED_TOKEN}`
+        Authorization: `Bearer ${created.token}`
       }
     }), env);
-    expect(newTokenResponse.status).toBe(200);
+    expect(nodeTokenResponse.status).toBe(200);
   });
 
   it('rejects invalid origins on mutating endpoints and allows missing Origin', async () => {
@@ -341,13 +445,7 @@ describe('worker fetch', () => {
     }), env);
     expect(forbidden.status).toBe(403);
 
-    const allowed = await worker.fetch(new Request('https://example.com/api/auth/login', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
-    }), env);
+    const allowed = await login(worker, env);
     expect(allowed.status).toBe(200);
   });
 
@@ -355,11 +453,7 @@ describe('worker fetch', () => {
     const { env } = createEnv();
     const worker = createWorker();
 
-    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
-    }), env);
+    const loginResponse = await login(worker, env);
 
     const logoutResponse = await worker.fetch(new Request('https://example.com/api/auth/logout', {
       method: 'POST',
@@ -376,19 +470,5 @@ describe('worker fetch', () => {
       }
     }), env);
     expect(authCheck.status).toBe(401);
-  });
-
-  it('rejects invalid pool names before routing to the pool durable object', async () => {
-    const { env, poolStub } = createEnv();
-    const worker = createWorker();
-
-    const response = await worker.fetch(new Request('https://example.com/ws/node?pool=../bad', {
-      headers: {
-        Authorization: `Bearer ${BOOTSTRAP_TOKEN}`
-      }
-    }), env);
-
-    expect(response.status).toBe(400);
-    expect(poolStub.requests).toHaveLength(0);
   });
 });

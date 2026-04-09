@@ -1,10 +1,9 @@
 import { extractBearerToken, extractClientKey, getCookie, isAllowedOrigin } from './auth';
 import { AuthGuardDurableObject, activeBanKey, manualDenyKey, type AuthScope, type GuardStatusResponse } from './durable-objects/auth-guard';
+import { AUTHENTICATED_NODE_ID_HEADER, PoolDurableObject } from './durable-objects/pool';
 import { RegistryDurableObject } from './durable-objects/registry';
-import { PoolDurableObject } from './durable-objects/pool';
 import { TokenDurableObject } from './durable-objects/token';
 import { clearSessionCookie, createSession, createSessionCookie, SESSION_COOKIE_NAME, validateSession } from './session';
-import { validatePoolName } from './validation';
 
 export interface Env {
   FBCOORD_POOL: DurableObjectNamespace;
@@ -19,8 +18,13 @@ export interface Env {
 
 const GLOBAL_OBJECT_NAME = 'global';
 
-interface TokenValidationResponse {
+interface OperatorTokenValidationResponse {
   valid: boolean;
+}
+
+interface NodeTokenValidationResponse {
+  valid: boolean;
+  node_id?: string;
 }
 
 interface TokenInfoResponse {
@@ -28,16 +32,18 @@ interface TokenInfoResponse {
   created_at: number;
 }
 
+interface NodeTokenInfoResponse {
+  node_id: string;
+  masked_prefix: string;
+  created_at: number;
+  last_used_at: number | null;
+}
+
 interface SessionSecretResponse {
   session_secret: string;
 }
 
-interface RegistryListResponse {
-  pools: string[];
-}
-
-interface PoolStateResponse {
-  pool: string;
+interface StateResponse {
   pick: {
     version: number;
     upstream: string | null;
@@ -55,6 +61,15 @@ interface PoolStateResponse {
 interface RotateTokenResponse {
   info: TokenInfoResponse;
   token?: string;
+}
+
+interface CreateNodeTokenResponse {
+  token: string;
+  info: NodeTokenInfoResponse;
+}
+
+interface ListNodeTokensResponse {
+  tokens: NodeTokenInfoResponse[];
 }
 
 interface BanMarker {
@@ -114,16 +129,16 @@ function tokenStoreStub(env: Env): DurableObjectStub {
   return env.FBCOORD_TOKEN_STORE.get(env.FBCOORD_TOKEN_STORE.idFromName(GLOBAL_OBJECT_NAME));
 }
 
-function registryStub(env: Env): DurableObjectStub {
-  return env.FBCOORD_REGISTRY.get(env.FBCOORD_REGISTRY.idFromName(GLOBAL_OBJECT_NAME));
+function stateStub(env: Env): DurableObjectStub {
+  return env.FBCOORD_POOL.get(env.FBCOORD_POOL.idFromName(GLOBAL_OBJECT_NAME));
 }
 
 function authGuardStub(env: Env, scope: AuthScope, clientKey: string): DurableObjectStub {
   return env.FBCOORD_AUTH_GUARD.get(env.FBCOORD_AUTH_GUARD.idFromName(`${scope}:${clientKey}`));
 }
 
-async function validateSharedToken(env: Env, token: string): Promise<boolean> {
-  const response = await tokenStoreStub(env).fetch(new Request('https://token.internal/validate', {
+async function validateOperatorToken(env: Env, token: string): Promise<boolean> {
+  const response = await tokenStoreStub(env).fetch(new Request('https://token.internal/validate-operator', {
     method: 'POST',
     headers: {
       'content-type': 'application/json'
@@ -133,8 +148,22 @@ async function validateSharedToken(env: Env, token: string): Promise<boolean> {
   if (!response.ok) {
     return false;
   }
-  const body = await response.json() as TokenValidationResponse;
+  const body = await response.json() as OperatorTokenValidationResponse;
   return body.valid;
+}
+
+async function validateNodeToken(env: Env, token: string): Promise<NodeTokenValidationResponse> {
+  const response = await tokenStoreStub(env).fetch(new Request('https://token.internal/validate-node', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ token })
+  }));
+  if (!response.ok) {
+    return { valid: false };
+  }
+  return response.json() as Promise<NodeTokenValidationResponse>;
 }
 
 async function getSessionSecret(env: Env): Promise<string> {
@@ -158,17 +187,31 @@ async function rotateToken(env: Env, body: unknown): Promise<Response> {
   }));
 }
 
-async function listPools(env: Env): Promise<string[]> {
-  const response = await registryStub(env).fetch('https://registry.internal/list');
-  const body = await response.json() as RegistryListResponse;
-  return body.pools;
+async function listNodeTokens(env: Env): Promise<NodeTokenInfoResponse[]> {
+  const response = await tokenStoreStub(env).fetch('https://token.internal/node-tokens');
+  const body = await response.json() as ListNodeTokensResponse;
+  return body.tokens;
 }
 
-async function fetchPoolState(env: Env, pool: string): Promise<PoolStateResponse> {
-  const durableObjectId = env.FBCOORD_POOL.idFromName(pool);
-  const stub = env.FBCOORD_POOL.get(durableObjectId);
-  const response = await stub.fetch(`https://pool.internal/state?pool=${encodeURIComponent(pool)}`);
-  return response.json() as Promise<PoolStateResponse>;
+async function createNodeToken(env: Env, nodeId: string): Promise<Response> {
+  return tokenStoreStub(env).fetch(new Request('https://token.internal/node-tokens', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ node_id: nodeId })
+  }));
+}
+
+async function revokeNodeToken(env: Env, nodeId: string): Promise<Response> {
+  return tokenStoreStub(env).fetch(new Request(`https://token.internal/node-tokens/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE'
+  }));
+}
+
+async function fetchState(env: Env): Promise<StateResponse> {
+  const response = await stateStub(env).fetch('https://pool.internal/state');
+  return response.json() as Promise<StateResponse>;
 }
 
 async function checkKVBan(env: Env, scope: AuthScope, clientKey: string): Promise<{ blocked: boolean; retryAfterSeconds: number | null }> {
@@ -246,6 +289,12 @@ function requireSameOrigin(request: Request): Response | null {
   return isAllowedOrigin(request) ? null : originMismatchResponse();
 }
 
+function withAuthenticatedNodeId(request: Request, nodeId: string): Request {
+  const headers = new Headers(request.headers);
+  headers.set(AUTHENTICATED_NODE_ID_HEADER, nodeId);
+  return new Request(request, { headers });
+}
+
 function createWorker() {
   return {
     async fetch(request: Request, env: Env): Promise<Response> {
@@ -263,24 +312,14 @@ function createWorker() {
         }
 
         const token = extractBearerToken(request);
-        if (!token || !(await validateSharedToken(env, token))) {
+        const validation = token ? await validateNodeToken(env, token) : { valid: false };
+        if (!validation.valid || !validation.node_id) {
           await recordAuthFailure(env, 'node-auth', clientKey);
           return new Response('unauthorized', { status: 401 });
         }
         await recordAuthSuccess(env, 'node-auth', clientKey);
 
-        const pool = url.searchParams.get('pool')?.trim();
-        if (!pool) {
-          return new Response('missing pool', { status: 400 });
-        }
-        const poolError = validatePoolName(pool);
-        if (poolError) {
-          return new Response(poolError, { status: 400 });
-        }
-
-        const durableObjectId = env.FBCOORD_POOL.idFromName(pool);
-        const stub = env.FBCOORD_POOL.get(durableObjectId);
-        return stub.fetch(request);
+        return stateStub(env).fetch(withAuthenticatedNodeId(request, validation.node_id));
       }
 
       if (url.pathname === '/api/auth/login') {
@@ -299,7 +338,7 @@ function createWorker() {
 
         const body = await parseJsonBody<{ token?: string }>(request);
         const token = body?.token?.trim();
-        if (!token || !(await validateSharedToken(env, token))) {
+        if (!token || !(await validateOperatorToken(env, token))) {
           await recordAuthFailure(env, 'login', clientKey);
           return json({ error: 'invalid token' }, 401);
         }
@@ -343,49 +382,11 @@ function createWorker() {
           });
         }
 
-        if (url.pathname === '/api/pools') {
+        if (url.pathname === '/api/state') {
           if (request.method !== 'GET') {
             return methodNotAllowed('GET');
           }
-
-          const poolNames = await listPools(env);
-          const pools = [];
-          for (const pool of poolNames) {
-            if (validatePoolName(pool)) {
-              continue;
-            }
-            const state = await fetchPoolState(env, pool);
-            if (state.node_count === 0) {
-              continue;
-            }
-            pools.push({
-              name: pool,
-              node_count: state.node_count,
-              pick: state.pick
-            });
-          }
-          return json({ pools });
-        }
-
-        if (url.pathname.startsWith('/api/pools/')) {
-          if (request.method !== 'GET') {
-            return methodNotAllowed('GET');
-          }
-
-          const pool = decodeURIComponent(url.pathname.slice('/api/pools/'.length)).trim();
-          if (!pool) {
-            return json({ error: 'missing pool' }, 400);
-          }
-          const poolError = validatePoolName(pool);
-          if (poolError) {
-            return json({ error: poolError }, 400);
-          }
-
-          const state = await fetchPoolState(env, pool);
-          if (state.node_count === 0) {
-            return json({ error: 'pool not found' }, 404);
-          }
-          return json(state);
+          return json(await fetchState(env));
         }
 
         if (url.pathname === '/api/token/info') {
@@ -410,7 +411,7 @@ function createWorker() {
           }
 
           const currentToken = body.current_token?.trim();
-          if (!currentToken || !(await validateSharedToken(env, currentToken))) {
+          if (!currentToken || !(await validateOperatorToken(env, currentToken))) {
             return json({ error: 'invalid current token' }, 401);
           }
 
@@ -428,6 +429,51 @@ function createWorker() {
             ...result.info,
             ...(result.token ? { token: result.token } : {})
           });
+        }
+
+        if (url.pathname === '/api/node-tokens') {
+          if (request.method === 'GET') {
+            return json({ tokens: await listNodeTokens(env) });
+          }
+
+          if (request.method === 'POST') {
+            const originError = requireSameOrigin(request);
+            if (originError) {
+              return originError;
+            }
+
+            const body = await parseJsonBody<{ node_id?: string }>(request);
+            if (!body) {
+              return json({ error: 'invalid json' }, 400);
+            }
+
+            const response = await createNodeToken(env, body.node_id?.trim() ?? '');
+            if (!response.ok) {
+              const errorBody = await parseJsonResponse<{ error?: string }>(response.clone());
+              return json({ error: errorBody?.error ?? 'invalid node token request' }, response.status);
+            }
+            return json(await response.json() as CreateNodeTokenResponse);
+          }
+
+          return methodNotAllowed('GET, POST');
+        }
+
+        if (url.pathname.startsWith('/api/node-tokens/')) {
+          if (request.method !== 'DELETE') {
+            return methodNotAllowed('DELETE');
+          }
+          const originError = requireSameOrigin(request);
+          if (originError) {
+            return originError;
+          }
+
+          const nodeId = decodeURIComponent(url.pathname.slice('/api/node-tokens/'.length)).trim();
+          const response = await revokeNodeToken(env, nodeId);
+          if (!response.ok) {
+            const errorBody = await parseJsonResponse<{ error?: string }>(response.clone());
+            return json({ error: errorBody?.error ?? 'invalid node token request' }, response.status);
+          }
+          return json({ ok: true });
         }
 
         return json({ error: 'not found' }, 404);

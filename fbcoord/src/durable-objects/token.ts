@@ -1,4 +1,8 @@
+import { validateNodeId } from '../validation';
+
 const TOKEN_RECORD_KEY = 'token_record';
+const NODE_TOKEN_RECORDS_KEY = 'node_token_records';
+const NODE_TOKEN_LOOKUP_KEY = 'node_token_lookup';
 const MASK_PREFIX_LENGTH = 8;
 const MIN_TOKEN_LENGTH = 32;
 const PBKDF2_ITERATIONS = 50_000;
@@ -9,6 +13,13 @@ export interface TokenInfo {
   created_at: number;
 }
 
+export interface NodeTokenInfo {
+  node_id: string;
+  masked_prefix: string;
+  created_at: number;
+  last_used_at: number | null;
+}
+
 interface ValidateBody {
   token?: string;
 }
@@ -16,6 +27,10 @@ interface ValidateBody {
 interface RotateBody {
   token?: string;
   generate?: boolean;
+}
+
+interface CreateNodeTokenBody {
+  node_id?: string;
 }
 
 interface LegacyTokenRecord {
@@ -35,7 +50,24 @@ export interface TokenRecord {
   sessionSecret: string;
 }
 
+interface StoredNodeTokenRecord {
+  version: typeof PBKDF2_VERSION;
+  iterations: number;
+  salt: string;
+  verifier: string;
+  lookupHash: string;
+  maskedPrefix: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+}
+
+type NodeTokenRecords = Record<string, StoredNodeTokenRecord>;
+type NodeTokenLookup = Record<string, string>;
+
 const encoder = new TextEncoder();
+
+class ConflictError extends Error {}
+class NotFoundError extends Error {}
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = '';
@@ -104,6 +136,10 @@ async function deriveVerifier(token: string, salt: string, pepper: string, itera
   return bytesToBase64Url(new Uint8Array(bits));
 }
 
+async function deriveNodeLookupHash(token: string, pepper: string): Promise<string> {
+  return sha256(`${token}\u0000${pepper}\u0000node`);
+}
+
 function maskToken(token: string): string {
   return `${token.slice(0, MASK_PREFIX_LENGTH)}...`;
 }
@@ -165,6 +201,15 @@ function json(data: unknown, status: number = 200): Response {
   });
 }
 
+function nodeTokenInfo(nodeId: string, record: StoredNodeTokenRecord): NodeTokenInfo {
+  return {
+    node_id: nodeId,
+    masked_prefix: record.maskedPrefix,
+    created_at: record.createdAt,
+    last_used_at: record.lastUsedAt
+  };
+}
+
 export class TokenStore {
   constructor(
     private readonly storage: DurableObjectStorage,
@@ -173,7 +218,7 @@ export class TokenStore {
     private readonly now: () => number = () => Date.now()
   ) {}
 
-  async validate(candidate: string): Promise<boolean> {
+  async validateOperator(candidate: string): Promise<boolean> {
     const record = await this.ensureRecord();
     const trimmed = candidate.trim();
     if (isCurrentRecord(record)) {
@@ -189,6 +234,45 @@ export class TokenStore {
     const migrated = await this.createRecord(trimmed, record.maskedPrefix, record.createdAt, record.sessionSecret);
     await this.storage.put(TOKEN_RECORD_KEY, migrated);
     return true;
+  }
+
+  async validate(candidate: string): Promise<boolean> {
+    return this.validateOperator(candidate);
+  }
+
+  async validateNode(candidate: string): Promise<{ valid: boolean; node_id?: string }> {
+    const token = candidate.trim();
+    if (token === '') {
+      return { valid: false };
+    }
+
+    const lookupHash = await deriveNodeLookupHash(token, this.pepper);
+    const lookup = await this.nodeTokenLookup();
+    const nodeId = lookup[lookupHash];
+    if (!nodeId) {
+      return { valid: false };
+    }
+
+    const records = await this.nodeTokenRecords();
+    const record = records[nodeId];
+    if (!record) {
+      delete lookup[lookupHash];
+      await this.storage.put(NODE_TOKEN_LOOKUP_KEY, lookup);
+      return { valid: false };
+    }
+
+    const derived = await deriveVerifier(token, record.salt, this.pepper, record.iterations);
+    if (!constantTimeEqual(base64UrlToBytes(derived), base64UrlToBytes(record.verifier))) {
+      return { valid: false };
+    }
+
+    records[nodeId] = {
+      ...record,
+      lastUsedAt: this.now()
+    };
+    await this.storage.put(NODE_TOKEN_RECORDS_KEY, records);
+
+    return { valid: true, node_id: nodeId };
   }
 
   async info(): Promise<TokenInfo> {
@@ -222,6 +306,67 @@ export class TokenStore {
       },
       token: body.generate ? nextToken : undefined
     };
+  }
+
+  async listNodeTokens(): Promise<NodeTokenInfo[]> {
+    const records = await this.nodeTokenRecords();
+    return Object.entries(records)
+      .map(([nodeId, record]) => nodeTokenInfo(nodeId, record))
+      .sort((left, right) => left.node_id.localeCompare(right.node_id));
+  }
+
+  async createNodeToken(nodeIdInput: string): Promise<{ token: string; info: NodeTokenInfo }> {
+    const nodeId = nodeIdInput.trim();
+    const nodeIdError = validateNodeId(nodeId);
+    if (nodeIdError) {
+      throw new Error(nodeIdError);
+    }
+
+    const records = await this.nodeTokenRecords();
+    if (records[nodeId]) {
+      throw new ConflictError('node_id already exists');
+    }
+
+    const token = randomToken();
+    const createdAt = this.now();
+    const salt = randomToken(16);
+    const lookupHash = await deriveNodeLookupHash(token, this.pepper);
+    const record: StoredNodeTokenRecord = {
+      version: PBKDF2_VERSION,
+      iterations: PBKDF2_ITERATIONS,
+      salt,
+      verifier: await deriveVerifier(token, salt, this.pepper, PBKDF2_ITERATIONS),
+      lookupHash,
+      maskedPrefix: maskToken(token),
+      createdAt,
+      lastUsedAt: null
+    };
+
+    const lookup = await this.nodeTokenLookup();
+    records[nodeId] = record;
+    lookup[lookupHash] = nodeId;
+    await this.storage.put(NODE_TOKEN_RECORDS_KEY, records);
+    await this.storage.put(NODE_TOKEN_LOOKUP_KEY, lookup);
+
+    return {
+      token,
+      info: nodeTokenInfo(nodeId, record)
+    };
+  }
+
+  async revokeNodeToken(nodeIdInput: string): Promise<void> {
+    const nodeId = nodeIdInput.trim();
+    const records = await this.nodeTokenRecords();
+    const record = records[nodeId];
+    if (!record) {
+      throw new NotFoundError('node token not found');
+    }
+
+    const lookup = await this.nodeTokenLookup();
+    delete records[nodeId];
+    delete lookup[record.lookupHash];
+    await this.storage.put(NODE_TOKEN_RECORDS_KEY, records);
+    await this.storage.put(NODE_TOKEN_LOOKUP_KEY, lookup);
   }
 
   private async ensureRecord(): Promise<LegacyTokenRecord | TokenRecord> {
@@ -258,6 +403,14 @@ export class TokenStore {
       sessionSecret
     };
   }
+
+  private async nodeTokenRecords(): Promise<NodeTokenRecords> {
+    return await this.storage.get<NodeTokenRecords>(NODE_TOKEN_RECORDS_KEY) ?? {};
+  }
+
+  private async nodeTokenLookup(): Promise<NodeTokenLookup> {
+    return await this.storage.get<NodeTokenLookup>(NODE_TOKEN_LOOKUP_KEY) ?? {};
+  }
 }
 
 export class TokenDurableObject {
@@ -270,13 +423,22 @@ export class TokenDurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    if (request.method === 'POST' && url.pathname === '/validate') {
+    if (request.method === 'POST' && url.pathname === '/validate-operator') {
       const body = await request.json() as ValidateBody;
       const token = body.token?.trim();
       if (!token) {
         return json({ valid: false }, 400);
       }
-      return json({ valid: await this.store.validate(token) });
+      return json({ valid: await this.store.validateOperator(token) });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/validate-node') {
+      const body = await request.json() as ValidateBody;
+      const token = body.token?.trim();
+      if (!token) {
+        return json({ valid: false }, 400);
+      }
+      return json(await this.store.validateNode(token));
     }
 
     if (request.method === 'GET' && url.pathname === '/info') {
@@ -292,6 +454,35 @@ export class TokenDurableObject {
         return json(await this.store.rotate(await request.json() as RotateBody));
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : 'invalid token' }, 400);
+      }
+    }
+
+    if (request.method === 'GET' && url.pathname === '/node-tokens') {
+      return json({ tokens: await this.store.listNodeTokens() });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/node-tokens') {
+      try {
+        const body = await request.json() as CreateNodeTokenBody;
+        return json(await this.store.createNodeToken(body.node_id ?? ''));
+      } catch (error) {
+        if (error instanceof ConflictError) {
+          return json({ error: error.message }, 409);
+        }
+        return json({ error: error instanceof Error ? error.message : 'invalid node token request' }, 400);
+      }
+    }
+
+    if (request.method === 'DELETE' && url.pathname.startsWith('/node-tokens/')) {
+      try {
+        const nodeId = decodeURIComponent(url.pathname.slice('/node-tokens/'.length));
+        await this.store.revokeNodeToken(nodeId);
+        return json({ ok: true });
+      } catch (error) {
+        if (error instanceof NotFoundError) {
+          return json({ error: error.message }, 404);
+        }
+        return json({ error: error instanceof Error ? error.message : 'invalid node token request' }, 400);
       }
     }
 

@@ -137,6 +137,7 @@ type Config struct {
 	GeoIP        GeoIPConfig        `yaml:"geoip"`
 	IPLog        IPLogConfig        `yaml:"ip_log"`
 	Firewall     FirewallConfig     `yaml:"firewall"`
+	Warnings     []string           `yaml:"-"`
 }
 
 type LoggingConfig struct {
@@ -402,16 +403,17 @@ func (m ControlMetricsConfig) IsEnabled() bool {
 
 func (c CoordinationConfig) HasAnyField() bool {
 	return strings.TrimSpace(c.Endpoint) != "" ||
-		strings.TrimSpace(c.Pool) != "" ||
-		strings.TrimSpace(c.NodeID) != "" ||
 		strings.TrimSpace(c.Token) != "" ||
 		c.HeartbeatInterval != 0
 }
 
+func (c CoordinationConfig) HasLegacyFields() bool {
+	return strings.TrimSpace(c.Pool) != "" ||
+		strings.TrimSpace(c.NodeID) != ""
+}
+
 func (c CoordinationConfig) IsConfigured() bool {
 	return strings.TrimSpace(c.Endpoint) != "" &&
-		strings.TrimSpace(c.Pool) != "" &&
-		strings.TrimSpace(c.NodeID) != "" &&
 		strings.TrimSpace(c.Token) != ""
 }
 
@@ -771,6 +773,8 @@ func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
 }
 
 func (c *Config) validate() error {
+	c.Warnings = nil
+
 	if len(c.Forwarding.Listeners) == 0 {
 		return errors.New("forwarding.listeners must not be empty")
 	}
@@ -861,9 +865,15 @@ func (c *Config) validate() error {
 	c.Coordination.Pool = strings.TrimSpace(c.Coordination.Pool)
 	c.Coordination.NodeID = strings.TrimSpace(c.Coordination.NodeID)
 	c.Coordination.Token = strings.TrimSpace(c.Coordination.Token)
+	if c.Coordination.Pool != "" {
+		c.Warnings = append(c.Warnings, "coordination.pool is ignored and may be removed from the config")
+	}
+	if c.Coordination.NodeID != "" {
+		c.Warnings = append(c.Warnings, "coordination.node_id is ignored and may be removed from the config")
+	}
 	if c.Coordination.HasAnyField() {
-		if c.Coordination.Endpoint == "" || c.Coordination.Pool == "" || c.Coordination.NodeID == "" || c.Coordination.Token == "" {
-			return errors.New("coordination.endpoint, pool, node_id, and token must be set together")
+		if c.Coordination.Endpoint == "" || c.Coordination.Token == "" {
+			return errors.New("coordination.endpoint and token must be set together")
 		}
 		if c.Coordination.HeartbeatInterval.Duration() <= 0 {
 			return errors.New("coordination.heartbeat_interval must be > 0")
