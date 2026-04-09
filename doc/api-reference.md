@@ -432,7 +432,7 @@ The control plane follows a single-source-of-truth architecture:
 | Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
 | Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
-| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog` |
+| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents` |
 | GeoIP/IP-log operations | RPC `/rpc` | `RefreshGeoIP` (trigger re-download) |
 
 **Key principles:**
@@ -812,7 +812,7 @@ Trigger an immediate GeoIP download/validate/swap cycle outside the normal refre
 
 #### GetIPLogStatus
 
-Report the current IP log database path, file size, row count, and record time bounds.
+Report the current IP log database path, file size, flow/rejection counts, and overall record time bounds.
 
 **Method:** `GetIPLogStatus`
 
@@ -824,7 +824,10 @@ Report the current IP log database path, file size, row count, and record time b
 {
   "db_path": "/var/lib/fbforward/iplog.sqlite",
   "file_size": 10485760,
-  "record_count": 15230,
+  "record_count": 15231,
+  "flow_record_count": 15230,
+  "rejection_record_count": 1,
+  "total_record_count": 15231,
   "oldest_record_at": 1710000000,
   "newest_record_at": 1712592000,
   "retention": "720h0m0s",
@@ -832,12 +835,16 @@ Report the current IP log database path, file size, row count, and record time b
 }
 ```
 
+**Notes:**
+- `record_count` is retained as a compatibility alias for `total_record_count`
+- `oldest_record_at` and `newest_record_at` span both flow-close and rejection tables
+
 **Failure:**
 - HTTP `503` with `{ "ok": false, "error": "ip log store not available" }` when IP logging is not enabled
 
 #### QueryIPLog
 
-Query persisted IP log records with optional filters, pagination, and sorting.
+Query persisted accepted flow-close records with optional filters, pagination, and sorting.
 
 **Method:** `QueryIPLog`
 
@@ -862,6 +869,131 @@ Query persisted IP log records with optional filters, pagination, and sorting.
 - `sort_order` defaults to `desc`
 - `cidr` still requires `start_time` or `end_time`
 - sorting is deterministic: ties are broken by `id` in the same direction as `sort_order`
+- `QueryIPLog` is the flow-only compatibility API. Rejection records are excluded; use `QueryRejectionLog` or `QueryLogEvents` for rejection history.
+
+#### QueryRejectionLog
+
+Query persisted rejection records with optional filters, pagination, and sorting.
+
+**Method:** `QueryRejectionLog`
+
+**Parameters:**
+
+```json
+{
+  "start_time": 1712505600,
+  "end_time": 1712592000,
+  "cidr": "198.51.100.0/24",
+  "asn": 13335,
+  "country": "US",
+  "reason": "firewall_deny",
+  "protocol": "tcp" | "udp",
+  "port": 9000,
+  "matched_rule_type": "cidr",
+  "matched_rule_value": "198.51.100.0/24",
+  "sort_by": "recorded_at" | "ip" | "asn" | "country" | "protocol" | "port" | "reason" | "matched_rule_type" | "matched_rule_value",
+  "sort_order": "asc" | "desc",
+  "limit": 200,
+  "offset": 0
+}
+```
+
+**Result:**
+
+```json
+{
+  "total": 1,
+  "records": [
+    {
+      "id": 7,
+      "ip": "198.51.100.10",
+      "asn": 64500,
+      "as_org": "Example Org",
+      "country": "US",
+      "protocol": "tcp",
+      "port": 9000,
+      "reason": "firewall_deny",
+      "matched_rule_type": "cidr",
+      "matched_rule_value": "198.51.100.0/24",
+      "recorded_at": 1712592000
+    }
+  ]
+}
+```
+
+**Notes:**
+- `limit` defaults to `200` and may not exceed `1000`
+- `sort_by` defaults to `recorded_at`
+- `sort_order` defaults to `desc`
+- `cidr` still requires `start_time` or `end_time`
+- Stable rejection reasons are `firewall_deny`, `tcp_connection_limit`, `udp_per_ip_mapping_limit`, and `udp_mapping_limit`
+
+#### QueryLogEvents
+
+Query merged flow-close and rejection history with optional filters, pagination, and sorting. This is the API used by the `#/iplog` page.
+
+**Method:** `QueryLogEvents`
+
+**Parameters:**
+
+```json
+{
+  "start_time": 1712505600,
+  "end_time": 1712592000,
+  "cidr": "198.51.100.0/24",
+  "asn": 13335,
+  "country": "US",
+  "protocol": "tcp" | "udp",
+  "port": 9000,
+  "reason": "firewall_deny",
+  "matched_rule_type": "cidr",
+  "matched_rule_value": "198.51.100.0/24",
+  "entry_type": "all" | "flow" | "rejection",
+  "sort_by": "recorded_at",
+  "sort_order": "asc" | "desc",
+  "limit": 200,
+  "offset": 0
+}
+```
+
+**Result:**
+
+```json
+{
+  "total": 1,
+  "records": [
+    {
+      "entry_type": "rejection",
+      "ip": "198.51.100.10",
+      "asn": 64500,
+      "as_org": "Example Org",
+      "country": "US",
+      "protocol": "tcp",
+      "port": 9000,
+      "recorded_at": 1712592000,
+      "upstream": null,
+      "bytes_up": null,
+      "bytes_down": null,
+      "duration_ms": null,
+      "reason": "firewall_deny",
+      "matched_rule_type": "cidr",
+      "matched_rule_value": "198.51.100.0/24"
+    }
+  ]
+}
+```
+
+**Notes:**
+- `entry_type` defaults to `all`
+- `limit` defaults to `200` and may not exceed `1000`
+- `sort_by` defaults to `recorded_at`
+- `sort_order` defaults to `desc`
+- `cidr` still requires `start_time` or `end_time`
+- When `entry_type=all`, allowed `sort_by` values are `recorded_at`, `ip`, `asn`, `country`, `protocol`, `port`, and `entry_type`
+- When `entry_type=flow`, additional `sort_by` values are `upstream`, `bytes_up`, `bytes_down`, `bytes_total`, and `duration_ms`
+- When `entry_type=rejection`, additional `sort_by` values are `reason`, `matched_rule_type`, and `matched_rule_value`
+- Non-applicable fields are returned as `null`
+- The server merges flow and rejection rows before sorting and pagination so result ordering remains stable across pages
 
 #### RunMeasurement
 

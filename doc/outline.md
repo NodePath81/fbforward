@@ -164,7 +164,7 @@ This outline defines the complete documentation structure for the fbforward mono
 - Hot reload / restart via RPC
 - Monitoring via web UI (dashboard GeoIP/IP-log status, IP Log page) and Prometheus metrics
 - GeoIP refresh (manual via dashboard or `RefreshGeoIP` RPC, automatic via `refresh_interval`)
-- IP Log querying (via `#/iplog` page or `QueryIPLog` RPC)
+- IP Log querying (via `#/iplog` page or `QueryLogEvents` / `QueryIPLog` / `QueryRejectionLog` RPCs)
 - Log interpretation
 
 #### 3.1.4 Troubleshooting
@@ -697,8 +697,10 @@ This outline defines the complete documentation structure for the fbforward mono
 - GetScheduleStatus - retrieve measurement schedule status
 - GetGeoIPStatus - report GeoIP database availability and metadata
 - RefreshGeoIP - trigger GeoIP database re-download
-- GetIPLogStatus - report IP-log store stats
-- QueryIPLog - query persisted IP-log records with filters and pagination
+- GetIPLogStatus - report IP-log store stats, including flow/rejection counts
+- QueryIPLog - query persisted accepted flow-close records
+- QueryRejectionLog - query persisted rejection records
+- QueryLogEvents - query merged flow/rejection history for the IP Log page
 - RunMeasurement - trigger manual measurement
 
 #### 5.2.3 WebSocket status stream

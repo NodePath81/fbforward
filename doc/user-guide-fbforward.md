@@ -188,6 +188,7 @@ geoip:
 
 ip_log:
   enabled: false                    # Optional SQLite-backed IP log
+  log_rejections: true              # Optional; defaults to true when IP log is enabled
 
 firewall:
   enabled: false                    # Optional CIDR / ASN / country firewall
@@ -352,7 +353,7 @@ The UI displays:
 **Operational status**:
 - GeoIP ASN database availability
 - GeoIP country database availability
-- IP-log database record count and file size
+- IP-log total/rejection record counts and file size
 - Manual `Refresh GeoIP` action from the dashboard status card
 
 **Score history**:
@@ -360,8 +361,8 @@ The UI displays:
 - Switching events marked on chart
 
 **IP log page**:
-- A dedicated `IP Log` page for querying persisted IP-log records
-- Filter by time bounds, CIDR, ASN, and country
+- A dedicated `IP Log` page for querying persisted flow-close and rejection records
+- Filter by time bounds, CIDR, ASN, country, type, protocol, port, and rejection metadata
 - Server-side sort and pagination over persisted records
 
 **Measurement status**:
@@ -418,7 +419,7 @@ These optional features are controlled by the `geoip`, `ip_log`, and `firewall` 
 **Minimum required subfields:**
 
 - `geoip`: At least one complete URL+path pair (`asn_db_url` + `asn_db_path`, or `country_db_url` + `country_db_path`)
-- `ip_log`: `db_path` is required when enabled. `retention` is optional; `0s` disables background pruning.
+- `ip_log`: `db_path` is required when enabled. `log_rejections` defaults to `true`. `retention` is optional; `0s` disables background pruning.
 - `firewall`: Each rule must specify exactly one of `cidr`, `asn`, or `country`
 
 **Dashboard operational rows:**
@@ -426,26 +427,29 @@ These optional features are controlled by the `geoip`, `ip_log`, and `firewall` 
 When GeoIP or IP logging is enabled, the dashboard shows operational status cards:
 
 - **GeoIP ASN / Country**: Shows whether the in-memory reader is loaded and the on-disk database size. A "Refresh GeoIP" button triggers an immediate re-download from the configured URLs. This is equivalent to calling the `RefreshGeoIP` RPC method.
-- **IP Log**: Shows the total record count and database file size. These values come from the `GetIPLogStatus` RPC.
+- **IP Log**: Shows the total record count, rejection record count, and database file size. These values come from the `GetIPLogStatus` RPC.
 
 **IP Log page (`#/iplog`):**
 
-The dedicated IP Log page lets operators query persisted connection records:
+The dedicated IP Log page lets operators query unified persisted flow and rejection history via the `QueryLogEvents` RPC:
 
 - Filter by time range (start/end timestamps)
 - Filter by CIDR prefix (e.g., `10.0.0.0/8`)
-- Filter by ASN or country code
-- Sort by timestamp, bytes transferred, or other fields
+- Filter by ASN, country, protocol, port, or entry type
+- Filter rejection rows by reason, matched rule type, or matched rule value
+- Sort by common fields across all rows, or use flow-only / rejection-only sort keys after narrowing the type filter
 - Server-side pagination for large result sets
 
 CIDR queries require a time bound to prevent full-table scans.
+
+For automation that only needs accepted flow-close records, `QueryIPLog` remains available as the flow-only compatibility RPC. `QueryRejectionLog` is available when callers want rejection history without merged flow rows.
 
 **Key operational semantics:**
 
 - GeoIP databases are **hot-reloaded** after a successful refresh. No restart needed.
 - Firewall rule changes require a **restart** (or `Restart` RPC) to take effect.
 - ASN/country firewall rules **fail open** when the corresponding GeoIP database is unavailable. CIDR rules always work.
-- Flows denied by the firewall are rejected before upstream selection and are written to the rejection history in the IP Log database. They do **not** appear as normal flow-close records.
+- When `ip_log.log_rejections` is enabled (default when IP logging is enabled), firewall denies, TCP connection-limit rejects, UDP per-IP mapping-limit rejects, and UDP global mapping-limit rejects are written to rejection history in the IP Log database. They do **not** appear as normal flow-close records.
 
 ### Log interpretation
 

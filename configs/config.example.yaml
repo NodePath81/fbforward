@@ -184,6 +184,7 @@ geoip:
 
 ip_log:
   enabled: false
+  log_rejections: true   # Defaults to true when ip_log.enabled is true.
   db_path: "/var/lib/fbforward/iplog.sqlite"
   retention: 720h
   geo_queue_size: 4096

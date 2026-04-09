@@ -195,9 +195,10 @@ The GeoIP manager maintains:
 **IP-log pipeline state:**
 
 The IP-log subsystem uses a two-stage async pipeline:
-- Events flow through buffered channels: event capture → GeoIP enrichment → batch writer
-- If pipeline queues are full, events are dropped and counted via `fbforward_iplog_events_dropped_total`
-- The batch writer accumulates up to `batch_size` events or waits `flush_interval`, then writes in a single SQLite transaction
+- Events flow through buffered channels: flow-close capture / rejection capture → GeoIP enrichment → batch writer
+- Rejection events are deduplicated for 60 seconds by IP, protocol, port, reason, and matched-rule metadata before they enter GeoIP enrichment
+- If pipeline queues are full, flow-close and rejection events are dropped and counted via `fbforward_iplog_events_dropped_total`
+- The batch writer accumulates up to `batch_size` events or waits `flush_interval`, then writes in a single SQLite transaction to separate flow and rejection tables
 - The prune goroutine periodically deletes entries older than `retention`
 
 **Firewall state:**

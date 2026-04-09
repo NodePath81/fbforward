@@ -598,11 +598,12 @@ Phase 3 feature smoke:
 
 - confirm `mmdb/GeoLite2-ASN.mmdb` and `mmdb/Country-without-asn.mmdb` exist under the work directory after `up`
 - use the node UI or `GetGeoIPStatus` RPC to confirm both MMDBs are configured and available
-- generate traffic from an allowed client identity and confirm `QueryIPLog` returns geo-enriched records
+- generate traffic from an allowed client identity and confirm `QueryIPLog` returns geo-enriched flow-close records
 - verify firewall denies for:
   - `198.51.100.10` via CIDR rule
   - `8.8.8.8` via ASN rule
   - `1.1.1.1` via country rule
+- confirm blocked attempts appear in `QueryRejectionLog` or `QueryLogEvents`, while `QueryIPLog` remains flow-only
 - verify `203.0.113.20` is allowed by default
 
 Concrete CLI-based firewall verification:
@@ -628,7 +629,7 @@ Interpretation:
 
 - the allowed client should reach the forwarding listener inside the node namespace
 - the denied client should fail
-- firewall deny confirmation should come from node logs and Prometheus metrics, plus the generated config and persisted node feature summary
+- firewall deny confirmation should come from node logs, Prometheus metrics, and `QueryRejectionLog` or `QueryLogEvents`, plus the generated config and persisted node feature summary
 - do not assume there is a dedicated firewall inspection RPC unless the node implementation explicitly provides one
 
 Developer-side validation:

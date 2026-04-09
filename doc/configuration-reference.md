@@ -1177,11 +1177,12 @@ geoip:
 
 ## 4.13 ip_log section
 
-The `ip_log` section configures optional persisted IP connection logging. When enabled, fbforward records each accepted flow's source IP, protocol, upstream tag, port, timestamps, byte counters, and (if GeoIP is available) ASN and country.
+The `ip_log` section configures optional persisted IP flow and rejection logging. When enabled, fbforward records each accepted flow's source IP, protocol, upstream tag, port, timestamps, byte counters, and (if GeoIP is available) ASN and country. When rejection logging is enabled, it also records scoped reject events such as firewall denies and connection/mapping-limit rejects.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable IP logging |
+| `log_rejections` | bool | `true` when `enabled: true` | Persist rejection records for firewall denies and connection/mapping-limit rejects |
 | `db_path` | string | *required if enabled* | Path to the SQLite database file |
 | `retention` | duration | `0s` | How long to keep log entries before pruning (`0s` disables retention pruning) |
 | `geo_queue_size` | int | `4096` | GeoIP enrichment pipeline buffer size |
@@ -1195,6 +1196,7 @@ The `ip_log` section configures optional persisted IP connection logging. When e
 ```yaml
 ip_log:
   enabled: true
+  log_rejections: true
   db_path: "/var/lib/fbforward/iplog.sqlite"
   retention: 720h
   geo_queue_size: 4096
@@ -1208,28 +1210,29 @@ ip_log:
 
 IP-log uses an asynchronous pipeline:
 
-1. **Event capture**: Each accepted TCP connection or UDP mapping generates an event.
-2. **GeoIP enrichment**: Events pass through an enrichment queue where ASN and country are looked up (if GeoIP is enabled).
-3. **Batched writes**: Enriched events are batched and written to SQLite in transactions for efficiency.
-4. **Retention pruning**: A background goroutine periodically deletes entries older than `retention`.
+1. **Event capture**: Accepted TCP connection closes and UDP mapping closes generate flow-close events. When `log_rejections` is enabled, firewall denies and supported connection/mapping-limit rejects generate rejection events.
+2. **GeoIP enrichment**: Flow-close and rejection events pass through an enrichment queue where ASN and country are looked up (if GeoIP is enabled).
+3. **Batched writes**: Enriched events are batched and written to SQLite in transactions. Flow-close records and rejection records are stored in separate tables.
+4. **Rejection dedupe**: Rejection events are deduplicated in-memory for 60 seconds by IP, protocol, port, reason, and matched-rule metadata before they enter the write path.
+5. **Retention pruning**: A background goroutine periodically deletes entries older than `retention`.
 
 ### CGO requirement
 
 fbforward currently links `github.com/mattn/go-sqlite3`, which is a CGO-based SQLite driver. Building `fbforward` therefore requires a working C toolchain (gcc or equivalent) on the build host, even if `ip_log.enabled` is `false` at runtime.
 
-### Denied flows
+### Rejected traffic
 
-Flows denied by the `firewall` are rejected before upstream selection and are **not** written to the IP log. Only accepted flows appear in log records.
+When `log_rejections` is enabled, denied or limit-rejected traffic is written to rejection history in the IP-log database. These records share GeoIP enrichment and retention behavior with normal flow records, but they do **not** appear in `QueryIPLog` results.
 
 ### Query API
 
-Persisted log entries can be queried via the `QueryIPLog` RPC method. See [Section 5.2.2](api-reference.md#522-rpc-methods).
+Accepted flow-close records can be queried via the `QueryIPLog` RPC method. Rejection history is available via `QueryRejectionLog`, and merged flow/rejection history is available via `QueryLogEvents`. See [Section 5.2.2](api-reference.md#522-rpc-methods).
 
 ---
 
 ## 4.14 firewall section
 
-The `firewall` section configures optional connection-level firewall rules. Rules are evaluated before upstream selection; denied flows are rejected immediately and never forwarded.
+The `firewall` section configures optional connection-level firewall rules. Rules are evaluated before upstream selection; denied flows are rejected immediately and never forwarded. When rejection logging is enabled under `ip_log`, deny decisions are also persisted as rejection records.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

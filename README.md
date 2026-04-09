@@ -6,10 +6,10 @@ This repository contains two Linux-only networking tools built in Go plus a meas
 
 TCP/UDP port forwarder that selects the best upstream using fbmeasure-derived
 TCP/UDP metrics, with ICMP used for reachability only. Optional features include
-GeoIP-based lookups, persisted IP connection logging, and CIDR/ASN/country
+GeoIP-based lookups, persisted IP flow and rejection logging, and CIDR/ASN/country
 firewalling. It exposes Prometheus metrics, a token-protected RPC API, WebSocket
 status stream, and an embedded single-page Web UI with dashboard status rows
-for GeoIP/IP-log and a dedicated IP Log query page.
+for GeoIP/IP-log and a dedicated IP Log page for unified flow/rejection history.
 
 Behavior highlights:
 
