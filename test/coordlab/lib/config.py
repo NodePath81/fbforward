@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 from secrets import token_hex
 
@@ -29,6 +30,12 @@ FIREWALL_RULES = [
     FirewallRuleInfo(action="deny", asn=15169),
     FirewallRuleInfo(action="deny", country="AU"),
 ]
+
+
+@dataclass(slots=True)
+class GeneratedTokens:
+    tokens: TokenInfo
+    operator_pepper: str
 
 
 def mmdb_dir_for(work_dir: str | Path) -> Path:
@@ -110,8 +117,15 @@ def render_node_feature_config(features: NodeFeatureInfo) -> str:
     )
 
 
-def generate_tokens() -> TokenInfo:
-    return TokenInfo(coord_token=token_hex(32), control_token=token_hex(32))
+def generate_tokens() -> GeneratedTokens:
+    return GeneratedTokens(
+        tokens=TokenInfo(
+            control_token=token_hex(32),
+            operator_token=token_hex(32),
+            node_tokens={},
+        ),
+        operator_pepper=token_hex(32),
+    )
 
 
 def generate_fbforward_config(
@@ -128,6 +142,9 @@ def generate_fbforward_config(
     coord_ip = netns.find_link(topology.links, "hub", "fbcoord").right_ip
     us1_ip = netns.find_link(topology.links, "hub-up", "upstream-1").right_ip
     us2_ip = netns.find_link(topology.links, "hub-up", "upstream-2").right_ip
+    node_token = tokens.node_tokens.get(node_name)
+    if not node_token:
+        raise RuntimeError(f"missing coordlab node token for {node_name}")
 
     rendered = (
         textwrap.dedent(
@@ -179,9 +196,7 @@ def generate_fbforward_config(
 
             coordination:
               endpoint: http://{coord_ip}:8787
-              pool: lab
-              node_id: {node_name}
-              token: "{tokens.coord_token}"
+              token: "{node_token}"
               heartbeat_interval: 10s
             """
         )
@@ -202,7 +217,7 @@ def generate_fbforward_config(
     return target
 
 
-def prepare_fbcoord_runtime(work_dir: str | Path, coord_token: str) -> Path:
+def prepare_fbcoord_runtime(work_dir: str | Path, operator_token: str, operator_pepper: str) -> Path:
     work_path = Path(work_dir)
     runtime_dir = work_path / FBCOORD_RUNTIME_DIR
     if runtime_dir.exists():
@@ -219,5 +234,8 @@ def prepare_fbcoord_runtime(work_dir: str | Path, coord_token: str) -> Path:
     if node_modules_src.exists():
         (runtime_dir / "node_modules").symlink_to(node_modules_src)
 
-    (runtime_dir / ".dev.vars").write_text(f"FBCOORD_TOKEN={coord_token}\n", encoding="utf-8")
+    (runtime_dir / ".dev.vars").write_text(
+        f"FBCOORD_TOKEN={operator_token}\nFBCOORD_TOKEN_PEPPER={operator_pepper}\n",
+        encoding="utf-8",
+    )
     return runtime_dir

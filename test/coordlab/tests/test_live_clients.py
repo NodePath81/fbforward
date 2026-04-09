@@ -83,7 +83,11 @@ def sample_state(workdir: Path, *, with_client: bool) -> LabState:
         clients=clients,
         terminals={},
         shaping=ShapingInfo(),
-        tokens=TokenInfo(coord_token="coord", control_token="control"),
+        tokens=TokenInfo(
+            control_token="control",
+            operator_token="operator",
+            node_tokens={"node-1": "node-1-token", "node-2": "node-2-token"},
+        ),
         topology=TopologyInfo(base_cidr="10.99.0.0/24", links=links, next_subnet_index=next_subnet_index),
     )
 

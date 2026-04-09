@@ -84,6 +84,32 @@ HTTP_HELPER = textwrap.dedent(
     """
 )
 
+HTTP_HEADERS_HELPER = textwrap.dedent(
+    """\
+    import json
+    import sys
+    import urllib.error
+    import urllib.request
+
+    url = sys.argv[1]
+    method = sys.argv[2]
+    headers = json.loads(sys.argv[3])
+    body = sys.argv[4].encode("utf-8") if len(sys.argv) > 4 and sys.argv[4] else None
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+
+    def emit(status, response, payload):
+        print(status)
+        print(json.dumps(dict(response.headers.items())))
+        print(payload)
+
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            emit(resp.status, resp, resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        emit(exc.code, exc, exc.read().decode("utf-8"))
+    """
+)
+
 
 def state_path_for(workdir: Path) -> Path:
     return workdir / STATE_FILENAME
@@ -290,12 +316,14 @@ def print_basic_status(state: LabState) -> None:
             )
             print(f"    ip_log: {ip_log_status} db={features.ip_log.db_path}")
             print(f"    firewall: {firewall_status} default={features.firewall.default_policy}")
-    if state.tokens.coord_token or state.tokens.control_token:
+    if state.tokens.control_token or state.tokens.operator_token or state.tokens.node_tokens:
         print("tokens:")
-        if state.tokens.coord_token:
-            print(f"  coord_token={state.tokens.coord_token}")
         if state.tokens.control_token:
             print(f"  control_token={state.tokens.control_token}")
+        if state.tokens.operator_token:
+            print(f"  operator_token={state.tokens.operator_token}")
+        for node_id, token in sorted(state.tokens.node_tokens.items()):
+            print(f"  node_token[{node_id}]={token}")
     print("artifacts:")
     print(f"  configs={configs_dir_for(workdir)}")
     print(f"  data={data_dir_for(workdir)}")
@@ -552,6 +580,84 @@ def ns_http_request(pid: int, url: str, *, method: str = "GET", headers: dict[st
     status = int(lines[0].strip())
     body_text = "\n".join(lines[1:])
     return status, body_text
+
+
+def ns_http_request_with_headers(
+    pid: int,
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: str = "",
+) -> tuple[int, dict[str, str], str]:
+    result = netns.nsenter_run(
+        pid,
+        [
+            str(VENV_PYTHON),
+            "-c",
+            HTTP_HEADERS_HELPER,
+            url,
+            method,
+            json.dumps(headers or {}),
+            body,
+        ],
+    )
+    lines = result.stdout.splitlines()
+    if len(lines) < 2:
+        raise RuntimeError(f"no HTTP headers returned for {url}")
+    status = int(lines[0].strip())
+    response_headers = json.loads(lines[1])
+    body_text = "\n".join(lines[2:])
+    return status, response_headers, body_text
+
+
+def fbcoord_namespace_base_url(topology: netns.Topology) -> str:
+    fbcoord_ip = netns.find_link(topology.links, "hub", "fbcoord").right_ip
+    return f"http://{fbcoord_ip}:8787"
+
+
+def extract_session_cookie(response_headers: dict[str, str]) -> str:
+    header = response_headers.get("Set-Cookie") or response_headers.get("set-cookie") or ""
+    return header.split(";", 1)[0].strip()
+
+
+def mint_fbcoord_node_tokens(base_url: str, request_pid: int, operator_token: str, node_ids: Iterable[str]) -> dict[str, str]:
+    login_status, login_headers, login_body = ns_http_request_with_headers(
+        request_pid,
+        f"{base_url.rstrip('/')}/api/auth/login",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body=json.dumps({"token": operator_token}),
+    )
+    if login_status != 200:
+        raise RuntimeError(f"fbcoord login failed: status={login_status} body={login_body.strip()}")
+
+    session_cookie = extract_session_cookie(login_headers)
+    if not session_cookie:
+        raise RuntimeError("fbcoord login did not return a session cookie")
+
+    minted_tokens: dict[str, str] = {}
+    for node_id in node_ids:
+        status, body = ns_http_request(
+            request_pid,
+            f"{base_url.rstrip('/')}/api/node-tokens",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": session_cookie,
+            },
+            body=json.dumps({"node_id": node_id}),
+        )
+        if status != 200:
+            raise RuntimeError(f"fbcoord node-token mint failed for {node_id}: status={status} body={body.strip()}")
+
+        payload = json.loads(body)
+        token = payload.get("token")
+        if not isinstance(token, str) or not token:
+            raise RuntimeError(f"fbcoord node-token mint returned invalid token for {node_id}: {payload!r}")
+        minted_tokens[node_id] = token
+
+    return minted_tokens
 
 
 def wait_for_condition(timeout_sec: float, poll_fn, failure_message: str) -> None:
@@ -1056,21 +1162,19 @@ def cmd_up(args: argparse.Namespace) -> int:
     ensure_geoip_mmdbs(workdir)
     data_dir_for(workdir).mkdir(parents=True, exist_ok=True)
 
-    tokens = coordconfig.generate_tokens()
+    generated_tokens = coordconfig.generate_tokens()
+    tokens = generated_tokens.tokens
     node_features = build_node_feature_summary(workdir)
     topology = netns.build_topology(str(workdir), client_specs=client_specs)
     manager = ProcessManager(logs_dir_for(workdir))
 
     try:
         netns.verify_connectivity(topology)
-        runtime_dir = coordconfig.prepare_fbcoord_runtime(workdir, tokens.coord_token)
-
-        config_paths = {
-            node: coordconfig.generate_fbforward_config(node, topology, tokens, workdir)
-            for node in ("node-1", "node-2")
-        }
-        for config_path in config_paths.values():
-            validate_fbforward_config(config_path)
+        runtime_dir = coordconfig.prepare_fbcoord_runtime(
+            workdir,
+            tokens.operator_token,
+            generated_tokens.operator_pepper,
+        )
 
         manager.start(
             topology.namespaces["upstream-1"].pid,
@@ -1090,8 +1194,27 @@ def cmd_up(args: argparse.Namespace) -> int:
             [*wrangler_command(), "--ip", "0.0.0.0", "--port", "8787"],
             "fbcoord",
             cwd=str(runtime_dir),
-            env={"FBCOORD_TOKEN": tokens.coord_token},
+            env={
+                "FBCOORD_TOKEN": tokens.operator_token,
+                "FBCOORD_TOKEN_PEPPER": generated_tokens.operator_pepper,
+            },
         )
+        verify_fbcoord_health_in_namespace(topology, manager)
+
+        tokens.node_tokens = mint_fbcoord_node_tokens(
+            fbcoord_namespace_base_url(topology),
+            topology.namespaces["node-1"].pid,
+            tokens.operator_token,
+            ("node-1", "node-2"),
+        )
+
+        config_paths = {
+            node: coordconfig.generate_fbforward_config(node, topology, tokens, workdir)
+            for node in ("node-1", "node-2")
+        }
+        for config_path in config_paths.values():
+            validate_fbforward_config(config_path)
+
         manager.start(
             topology.namespaces["node-1"].pid,
             "node-1",
@@ -1105,7 +1228,6 @@ def cmd_up(args: argparse.Namespace) -> int:
             "fbforward-node-2",
         )
 
-        verify_fbcoord_health_in_namespace(topology, manager)
         verify_fbforward_rpc_in_namespace(topology, manager, "node-1", tokens.control_token)
         verify_fbforward_rpc_in_namespace(topology, manager, "node-2", tokens.control_token)
 
@@ -1157,7 +1279,7 @@ def cmd_up(args: argparse.Namespace) -> int:
 
         readiness.wait_for_status(node1_url, tokens.control_token, predicate=coordination_connected)
         readiness.wait_for_status(node2_url, tokens.control_token, predicate=coordination_connected)
-        readiness.verify_fbcoord_api(fbcoord_url, tokens.coord_token, expected_pool="lab")
+        readiness.verify_fbcoord_api(fbcoord_url, tokens.operator_token, expected_node_ids=("node-1", "node-2"))
 
         terminals = start_ttyd_terminals(manager, topology, ttyd_ports)
         state = build_state(

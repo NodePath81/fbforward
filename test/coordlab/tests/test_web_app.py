@@ -167,7 +167,11 @@ def sample_state(workdir: Path) -> LabState:
                 ),
             },
         ),
-        tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
+        tokens=TokenInfo(
+            control_token="control-token",
+            operator_token="operator-token",
+            node_tokens={"node-1": "node-1-token", "node-2": "node-2-token"},
+        ),
         topology=TopologyInfo(base_cidr="10.99.0.0/24", next_subnet_index=10),
     )
 
@@ -219,13 +223,21 @@ class WebAppTest(unittest.TestCase):
         self.write_state(sample_state(self.workdir))
         with (
             mock.patch("web.app.is_alive", return_value=True),
-            mock.patch("web.app.fetch_fbcoord_pool", return_value={"pool": "lab", "pick": {"version": 2, "upstream": "us-2"}, "node_count": 2, "nodes": []}),
+            mock.patch(
+                "web.app.fetch_fbcoord_state",
+                return_value={
+                    "pick": {"version": 2, "upstream": "us-2"},
+                    "node_count": 2,
+                    "nodes": [{"node_id": "node-1"}, {"node_id": "node-2"}],
+                },
+            ),
             mock.patch("web.app.fetch_node_status", side_effect=[{"mode": "coordination"}, RuntimeError("node-2 unavailable")]),
         ):
             response = self.client.get("/api/coordination")
         self.assertEqual(200, response.status_code)
         payload = response.get_json()
-        self.assertEqual("lab", payload["fbcoord"]["pool"])
+        self.assertEqual(2, payload["fbcoord"]["node_count"])
+        self.assertEqual("node-1", payload["fbcoord"]["nodes"][0]["node_id"])
         self.assertEqual("coordination", payload["nodes"]["node-1"]["mode"])
         self.assertIsNone(payload["nodes"]["node-2"])
         self.assertIn("node-2", payload["errors"])
@@ -240,7 +252,10 @@ class WebAppTest(unittest.TestCase):
 
         with (
             mock.patch("web.app.is_alive", side_effect=fake_is_alive),
-            mock.patch("web.app.fetch_fbcoord_pool", return_value={"pool": "lab", "pick": {"version": 2, "upstream": "us-2"}, "node_count": 1, "nodes": []}),
+            mock.patch(
+                "web.app.fetch_fbcoord_state",
+                return_value={"pick": {"version": 2, "upstream": "us-2"}, "node_count": 1, "nodes": [{"node_id": "node-2"}]},
+            ),
             mock.patch("web.app.fetch_node_status", return_value={"mode": "coordination"}) as fetch_node_status,
         ):
             response = self.client.get("/api/coordination")
@@ -251,7 +266,7 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("process exited; see log", payload["errors"]["node-1"])
         fetch_node_status.assert_called_once_with(mock.ANY, "node-2")
 
-    def test_coordination_maps_missing_pool_after_node_disconnect(self) -> None:
+    def test_coordination_surfaces_fbcoord_state_fetch_errors(self) -> None:
         self.write_state(sample_state(self.workdir))
 
         def fake_is_alive(pid: int) -> bool:
@@ -259,14 +274,14 @@ class WebAppTest(unittest.TestCase):
 
         with (
             mock.patch("web.app.is_alive", side_effect=fake_is_alive),
-            mock.patch("web.app.fetch_fbcoord_pool", side_effect=RuntimeError('fbcoord pool fetch failed: status=404 body={"error":"pool not found"}')),
+            mock.patch("web.app.fetch_fbcoord_state", side_effect=RuntimeError('fbcoord state fetch failed: status=500 body={"error":"boom"}')),
             mock.patch("web.app.fetch_node_status") as fetch_node_status,
         ):
             response = self.client.get("/api/coordination")
 
         self.assertEqual(200, response.status_code)
         payload = response.get_json()
-        self.assertEqual("pool disappeared after node disconnect", payload["errors"]["fbcoord"])
+        self.assertEqual('fbcoord state fetch failed: status=500 body={"error":"boom"}', payload["errors"]["fbcoord"])
         self.assertEqual("process exited; see log", payload["errors"]["node-1"])
         self.assertEqual("process exited; see log", payload["errors"]["node-2"])
         fetch_node_status.assert_not_called()

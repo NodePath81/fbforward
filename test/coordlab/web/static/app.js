@@ -234,16 +234,19 @@ function renderCoordination(payload) {
 
   if (payload.fbcoord) {
     const pick = payload.fbcoord.pick || {};
+    const connectedNodes = Array.isArray(payload.fbcoord.nodes)
+      ? payload.fbcoord.nodes.map((node) => node.node_id).filter(Boolean)
+      : [];
     fbcoordCard.innerHTML = `
-      <div class="stat-line"><strong>Pool:</strong> ${payload.fbcoord.pool}</div>
       <div class="stat-line"><strong>Pick:</strong> ${pick.upstream || "none"}</div>
       <div class="stat-line"><strong>Version:</strong> ${pick.version ?? 0}</div>
       <div class="stat-line"><strong>Nodes:</strong> ${payload.fbcoord.node_count}</div>
+      <div class="stat-line"><strong>Connected:</strong> ${connectedNodes.length ? connectedNodes.join(", ") : "none"}</div>
     `;
   } else if (errorMap.fbcoord) {
     fbcoordCard.innerHTML = `<p class="subtle">${errorMap.fbcoord}</p>`;
   } else {
-    fbcoordCard.innerHTML = `<p class="subtle">fbcoord pool data unavailable.</p>`;
+    fbcoordCard.innerHTML = `<p class="subtle">fbcoord state data unavailable.</p>`;
   }
 
   nodeCards.innerHTML = ["node-1", "node-2"].map((nodeName) => {
@@ -382,7 +385,7 @@ async function loadCoordination() {
     const payload = await requestJson("/api/coordination");
     renderCoordination(payload);
   } catch (error) {
-    renderCoordination({ fbcoord: null, nodes: {}, errors: { coordination: error.message } });
+    renderCoordination({ fbcoord: null, nodes: {}, errors: { fbcoord: error.message } });
   }
 }
 

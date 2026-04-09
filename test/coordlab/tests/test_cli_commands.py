@@ -84,7 +84,11 @@ def sample_state(workdir: Path) -> LabState:
                 "node-1": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-1", device="hub-node1"),
             },
         ),
-        tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
+        tokens=TokenInfo(
+            control_token="control-token",
+            operator_token="operator-token",
+            node_tokens={"node-1": "node-1-token"},
+        ),
         topology=TopologyInfo(base_cidr="10.99.0.0/24", next_subnet_index=10),
     )
 

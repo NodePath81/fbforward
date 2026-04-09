@@ -128,8 +128,10 @@ What `up` does:
 - rebuilds binaries and `fbcoord` UI unless `--skip-build` is set
 - downloads missing MMDB files into `mmdb/`
 - creates the namespace topology
-- generates node configs into `configs/`
-- starts `fbmeasure`, `fbcoord`, `fbforward`, the host proxy daemon, and ttyd terminals
+- starts `fbcoord`, logs in with the generated operator token, and mints one
+  node token per managed node
+- generates node configs into `configs/` using those per-node tokens
+- starts `fbmeasure`, `fbforward`, the host proxy daemon, and ttyd terminals
 - switches both nodes to coordination mode and verifies readiness
 - writes the final state to `state.json`
 
@@ -500,7 +502,7 @@ The generated firewall defaults are intentionally simple and testable:
 - configured client namespaces and client identity IPs
 - terminal endpoints for client and upstream namespaces
 - shaping topology (target name, router namespace, and shaped device for both shaping axes)
-- generated coordination and control tokens
+- generated control token, fbcoord operator token, and per-node fbcoord tokens
 - persisted per-node feature summaries for GeoIP, IP log, and firewall
 - topology link metadata
 - the next `/30` transport allocation index used for live client additions
@@ -565,13 +567,14 @@ Phase 3 does not add dedicated dashboard panels for GeoIP, IP log, or firewall. 
 RPC requests to the nodes require Bearer authentication. The control token comes from coordlab-generated state and config:
 
 - `status` shows the saved control token summary in the human-readable output
-- `state.json` persists the token values directly
+- `state.json` persists the token values directly under `tokens.control_token`,
+  `tokens.operator_token`, and `tokens.node_tokens`
 - the generated YAML config files under `configs/` also contain the configured token
 
 Example RPC call:
 
 ```bash
-TOKEN="$(jq -r '.tokens.control' /tmp/coordlab-phase5/state.json)"
+TOKEN="$(jq -r '.tokens.control_token' /tmp/coordlab-phase5/state.json)"
 curl -s \
   -H "Authorization: Bearer ${TOKEN}" \
   -H 'Content-Type: application/json' \

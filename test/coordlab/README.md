@@ -27,6 +27,9 @@ python3 -m venv .venv
 
 `up` rebuilds the Go binaries and the `fbcoord` UI by default. Use `--skip-build` only when you explicitly want to reuse existing build artifacts.
 It also downloads the GeoIP MMDB cache into the work directory when files are missing.
+During startup, coordlab now boots fbcoord with a generated operator token,
+mints one node token per managed fbforward node, and writes those per-node
+tokens into the generated node configs.
 
 Host proxy ports:
 
@@ -70,6 +73,8 @@ Workdir artifacts now include:
 - `mmdb/Country-without-asn.mmdb`
 - `data/node-1-iplog.sqlite`
 - `data/node-2-iplog.sqlite`
+- `state.json` with `tokens.control_token`, `tokens.operator_token`, and
+  `tokens.node_tokens`
 
 Suggested manual firewall checks:
 

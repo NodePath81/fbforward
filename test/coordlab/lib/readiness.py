@@ -49,22 +49,28 @@ def wait_for_status(
     raise RuntimeError(f"{base_url} did not reach expected status within {timeout_sec}s: {last_error}")
 
 
-def verify_fbcoord_api(base_url: str, coord_token: str, *, expected_pool: str) -> list[dict]:
+def verify_fbcoord_api(base_url: str, operator_token: str, *, expected_node_ids: tuple[str, ...] | list[str]) -> dict:
     with httpx.Client(timeout=5.0, follow_redirects=True) as client:
-        login = client.post(f"{base_url.rstrip('/')}/api/auth/login", json={"token": coord_token})
+        login = client.post(f"{base_url.rstrip('/')}/api/auth/login", json={"token": operator_token})
         if login.status_code != 200:
             raise RuntimeError(f"fbcoord login failed: status={login.status_code} body={login.text.strip()}")
         session_cookie = login.headers.get("set-cookie", "").split(";", 1)[0].strip()
         if not session_cookie:
             raise RuntimeError("fbcoord login did not return a session cookie")
-        pools = client.get(
-            f"{base_url.rstrip('/')}/api/pools",
+        state = client.get(
+            f"{base_url.rstrip('/')}/api/state",
             headers={"Cookie": session_cookie},
         )
-        if pools.status_code != 200:
-            raise RuntimeError(f"fbcoord pools fetch failed: status={pools.status_code} body={pools.text.strip()}")
-        payload = pools.json()
-        entries = payload.get("pools", [])
-        if not any(pool.get("name") == expected_pool for pool in entries):
-            raise RuntimeError(f"expected pool {expected_pool!r} not found in fbcoord pools response")
-        return entries
+        if state.status_code != 200:
+            raise RuntimeError(f"fbcoord state fetch failed: status={state.status_code} body={state.text.strip()}")
+        payload = state.json()
+        nodes = payload.get("nodes", [])
+        observed_node_ids = {
+            node.get("node_id")
+            for node in nodes
+            if isinstance(node, dict)
+        }
+        missing = [node_id for node_id in expected_node_ids if node_id not in observed_node_ids]
+        if missing:
+            raise RuntimeError(f"expected node_ids {missing!r} not found in fbcoord state response")
+        return payload

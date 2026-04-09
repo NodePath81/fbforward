@@ -24,6 +24,7 @@ from coordlab import (
     ensure_geoip_mmdbs,
     ensure_fbforward_binaries,
     fixed_proxy_bindings,
+    mint_fbcoord_node_tokens,
     print_basic_status,
     parse_client_specs,
 )
@@ -236,6 +237,60 @@ class CoordlabHelpersTest(unittest.TestCase):
         self.assertIn("firewall: enabled default=allow", output)
         self.assertIn("mmdb=/tmp/coordlab-phase3/mmdb", output)
         self.assertIn("data=/tmp/coordlab-phase3/data", output)
+
+    def test_mint_fbcoord_node_tokens_logs_in_and_records_returned_tokens(self) -> None:
+        with (
+            mock.patch(
+                "coordlab.ns_http_request_with_headers",
+                return_value=(
+                    200,
+                    {"Set-Cookie": "fbcoord_session=test-session; Max-Age=86400; HttpOnly; Secure"},
+                    '{"ok":true}',
+                ),
+            ) as login_request,
+            mock.patch(
+                "coordlab.ns_http_request",
+                side_effect=[
+                    (200, '{"token":"node-1-token","info":{"node_id":"node-1"}}'),
+                    (200, '{"token":"node-2-token","info":{"node_id":"node-2"}}'),
+                ],
+            ) as node_request,
+        ):
+            minted = mint_fbcoord_node_tokens(
+                "http://10.99.0.2:8787",
+                101,
+                "operator-token",
+                ("node-1", "node-2"),
+            )
+
+        self.assertEqual(
+            {
+                "node-1": "node-1-token",
+                "node-2": "node-2-token",
+            },
+            minted,
+        )
+        login_request.assert_called_once_with(
+            101,
+            "http://10.99.0.2:8787/api/auth/login",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            body='{"token": "operator-token"}',
+        )
+        self.assertEqual(2, node_request.call_count)
+        self.assertEqual(
+            mock.call(
+                101,
+                "http://10.99.0.2:8787/api/node-tokens",
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Cookie": "fbcoord_session=test-session",
+                },
+                body='{"node_id": "node-1"}',
+            ),
+            node_request.call_args_list[0],
+        )
 
 
 if __name__ == "__main__":

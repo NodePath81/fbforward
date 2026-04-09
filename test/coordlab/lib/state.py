@@ -110,8 +110,9 @@ class ShapingInfo:
 
 @dataclass(slots=True)
 class TokenInfo:
-    coord_token: str = ""
     control_token: str = ""
+    operator_token: str = ""
+    node_tokens: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

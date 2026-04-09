@@ -15,7 +15,6 @@ from lib.shaping import TrafficShaper
 from lib.state import LabState, load_state
 
 STATE_FILENAME = "state.json"
-DEFAULT_POOL = "lab"
 DEFAULT_LOG_LINES = 100
 MAX_LOG_LINES = 500
 MIN_LOG_LINES = 1
@@ -109,23 +108,23 @@ def link_state_payload(state: LabState, controller: LinkStateController | None =
     }
 
 
-def fetch_fbcoord_pool(state: LabState, *, pool: str = DEFAULT_POOL) -> dict:
+def fetch_fbcoord_state(state: LabState) -> dict:
     base_url = proxy_url(state, "fbcoord")
     if not base_url:
         raise RuntimeError("fbcoord proxy is not configured")
-    if not state.tokens.coord_token:
-        raise RuntimeError("coordination token is missing from coordlab state")
+    if not state.tokens.operator_token:
+        raise RuntimeError("fbcoord operator token is missing from coordlab state")
 
     with httpx.Client(timeout=5.0, follow_redirects=True) as client:
-        login = client.post(f"{base_url}/api/auth/login", json={"token": state.tokens.coord_token})
+        login = client.post(f"{base_url}/api/auth/login", json={"token": state.tokens.operator_token})
         if login.status_code != 200:
             raise RuntimeError(f"fbcoord login failed: status={login.status_code} body={login.text.strip()}")
         cookie = login.headers.get("set-cookie", "").split(";", 1)[0].strip()
         if not cookie:
             raise RuntimeError("fbcoord login did not return a session cookie")
-        response = client.get(f"{base_url}/api/pools/{pool}", headers={"Cookie": cookie})
+        response = client.get(f"{base_url}/api/state", headers={"Cookie": cookie})
         if response.status_code != 200:
-            raise RuntimeError(f"fbcoord pool fetch failed: status={response.status_code} body={response.text.strip()}")
+            raise RuntimeError(f"fbcoord state fetch failed: status={response.status_code} body={response.text.strip()}")
         return response.json()
 
 
@@ -179,12 +178,9 @@ def coordination_payload(state: LabState) -> dict:
         return payload
 
     try:
-        payload["fbcoord"] = fetch_fbcoord_pool(state, pool=DEFAULT_POOL)
+        payload["fbcoord"] = fetch_fbcoord_state(state)
     except Exception as exc:
-        message = str(exc)
-        if "status=404" in message and node_process_alive and not any(node_process_alive.values()):
-            message = "pool disappeared after node disconnect"
-        payload["errors"]["fbcoord"] = message
+        payload["errors"]["fbcoord"] = str(exc)
 
     return payload
 

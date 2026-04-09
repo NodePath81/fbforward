@@ -254,12 +254,14 @@ def render_summary(state: LabState, python_executable: str) -> str:
             lines.append(f"      firewall: {firewall_status} default={features.firewall.default_policy}")
         lines.append("")
 
-    if state.tokens.coord_token or state.tokens.control_token:
+    if state.tokens.control_token or state.tokens.operator_token or state.tokens.node_tokens:
         lines.append("  tokens:")
-        if state.tokens.coord_token:
-            lines.append(f"    coordination: {state.tokens.coord_token}")
         if state.tokens.control_token:
             lines.append(f"    control:      {state.tokens.control_token}")
+        if state.tokens.operator_token:
+            lines.append(f"    operator:     {state.tokens.operator_token}")
+        for node_id, token in sorted(state.tokens.node_tokens.items()):
+            lines.append(f"    node[{node_id}]: {token}")
         lines.append("")
 
     lines.append("  artifacts:")

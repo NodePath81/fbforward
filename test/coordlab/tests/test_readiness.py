@@ -59,15 +59,15 @@ class ReadinessHelpersTest(unittest.TestCase):
             )
         self.assertEqual("coordination", status["mode"])
 
-    def test_verify_fbcoord_api_confirms_expected_pool(self) -> None:
+    def test_verify_fbcoord_api_confirms_expected_node_ids(self) -> None:
         login = mock.Mock(status_code=200, text='{"ok":true}')
         login.headers = {"set-cookie": "fbcoord_session=test-session; Max-Age=86400; HttpOnly; Secure"}
-        pools = mock.Mock(status_code=200)
-        pools.json.return_value = {"pools": [{"name": "lab", "node_count": 2}]}
-        client = FakeClient(get_responses=[pools], post_responses=[login])
+        state = mock.Mock(status_code=200)
+        state.json.return_value = {"pick": {"version": 1, "upstream": "us-1"}, "node_count": 2, "nodes": [{"node_id": "node-1"}, {"node_id": "node-2"}]}
+        client = FakeClient(get_responses=[state], post_responses=[login])
         with mock.patch("lib.readiness.httpx.Client", return_value=client):
-            entries = readiness.verify_fbcoord_api("http://127.0.0.1:18700", "coord-token", expected_pool="lab")
-        self.assertEqual("lab", entries[0]["name"])
+            payload = readiness.verify_fbcoord_api("http://127.0.0.1:18700", "operator-token", expected_node_ids=("node-1", "node-2"))
+        self.assertEqual(2, payload["node_count"])
         self.assertEqual({"Cookie": "fbcoord_session=test-session"}, client.last_get_headers)
 
 

@@ -99,7 +99,11 @@ class StateRoundTripTest(unittest.TestCase):
                     ),
                 },
             ),
-            tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
+            tokens=TokenInfo(
+                control_token="control-token",
+                operator_token="operator-token",
+                node_tokens={"node-1": "node-1-token", "node-2": "node-2-token"},
+            ),
             topology=TopologyInfo(
                 base_cidr="10.99.0.0/24",
                 next_subnet_index=8,
@@ -134,7 +138,8 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.terminals["client-1"].host_port, loaded.terminals["client-1"].host_port)
         self.assertEqual(state.shaping.targets["node-1"].router_ns, loaded.shaping.targets["node-1"].router_ns)
         self.assertEqual(state.shaping.targets["upstream-1"].device, loaded.shaping.targets["upstream-1"].device)
-        self.assertEqual(state.tokens.coord_token, loaded.tokens.coord_token)
+        self.assertEqual(state.tokens.operator_token, loaded.tokens.operator_token)
+        self.assertEqual(state.tokens.node_tokens, loaded.tokens.node_tokens)
         self.assertEqual(state.topology.links[0].right_if, loaded.topology.links[0].right_if)
         self.assertEqual(state.topology.next_subnet_index, loaded.topology.next_subnet_index)
         self.assertEqual(state.node_features["node-1"].geoip.asn_db_path, loaded.node_features["node-1"].geoip.asn_db_path)

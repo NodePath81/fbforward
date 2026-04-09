@@ -30,17 +30,21 @@ def fake_topology(tmpdir: str) -> Topology:
 
 class ConfigHelpersTest(unittest.TestCase):
     def test_generate_tokens_returns_hex_values(self) -> None:
-        tokens = coordconfig.generate_tokens()
-        self.assertEqual(64, len(tokens.coord_token))
-        self.assertEqual(64, len(tokens.control_token))
-        int(tokens.coord_token, 16)
-        int(tokens.control_token, 16)
+        generated = coordconfig.generate_tokens()
+        self.assertEqual(64, len(generated.tokens.control_token))
+        self.assertEqual(64, len(generated.tokens.operator_token))
+        self.assertEqual({}, generated.tokens.node_tokens)
+        self.assertEqual(64, len(generated.operator_pepper))
+        int(generated.tokens.control_token, 16)
+        int(generated.tokens.operator_token, 16)
+        int(generated.operator_pepper, 16)
 
     def test_generate_fbforward_config_contains_expected_service_values(self) -> None:
-        tokens = coordconfig.generate_tokens()
+        generated = coordconfig.generate_tokens()
+        generated.tokens.node_tokens["node-1"] = "node-1-token"
         with tempfile.TemporaryDirectory() as tmpdir:
             topology = fake_topology(tmpdir)
-            config_path = coordconfig.generate_fbforward_config("node-1", topology, tokens, tmpdir)
+            config_path = coordconfig.generate_fbforward_config("node-1", topology, generated.tokens, tmpdir)
             rendered = config_path.read_text(encoding="utf-8")
             self.assertTrue((Path(tmpdir) / coordconfig.DATA_DIRNAME).exists())
 
@@ -49,8 +53,10 @@ class ConfigHelpersTest(unittest.TestCase):
         self.assertIn("endpoint: http://10.99.0.2:8787", rendered)
         self.assertIn("host: 10.99.0.22", rendered)
         self.assertIn("host: 10.99.0.26", rendered)
-        self.assertIn("pool: lab", rendered)
         self.assertIn("heartbeat_interval: 10s", rendered)
+        self.assertIn('token: "node-1-token"', rendered)
+        self.assertNotIn("pool:", rendered)
+        self.assertNotIn("node_id:", rendered)
         self.assertIn("geoip:", rendered)
         self.assertIn(f'asn_db_url: "{coordconfig.GEOIP_ASN_DB_URL}"', rendered)
         self.assertIn(f'country_db_url: "{coordconfig.GEOIP_COUNTRY_DB_URL}"', rendered)
@@ -97,9 +103,12 @@ class ConfigHelpersTest(unittest.TestCase):
 
     def test_prepare_fbcoord_runtime_writes_dev_vars_and_links_node_modules(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            runtime_dir = coordconfig.prepare_fbcoord_runtime(tmpdir, "coord-token")
+            runtime_dir = coordconfig.prepare_fbcoord_runtime(tmpdir, "operator-token", "operator-pepper")
             self.assertTrue((runtime_dir / ".dev.vars").exists())
-            self.assertEqual("FBCOORD_TOKEN=coord-token\n", (runtime_dir / ".dev.vars").read_text(encoding="utf-8"))
+            self.assertEqual(
+                "FBCOORD_TOKEN=operator-token\nFBCOORD_TOKEN_PEPPER=operator-pepper\n",
+                (runtime_dir / ".dev.vars").read_text(encoding="utf-8"),
+            )
             self.assertTrue((runtime_dir / "src/worker.ts").exists())
             self.assertTrue((runtime_dir / "node_modules").is_symlink())
 

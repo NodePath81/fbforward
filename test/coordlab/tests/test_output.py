@@ -92,7 +92,11 @@ class OutputSummaryTest(unittest.TestCase):
                     ),
                 ),
             },
-            tokens=TokenInfo(coord_token="coord-token", control_token="control-token"),
+            tokens=TokenInfo(
+                control_token="control-token",
+                operator_token="operator-token",
+                node_tokens={"node-1": "node-1-token"},
+            ),
             topology=TopologyInfo(base_cidr="10.99.0.0/24"),
         )
 
@@ -112,6 +116,8 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertIn("ip_log: enabled", summary)
         self.assertIn("/tmp/coordlab-phase3/data/node-1-iplog.sqlite", summary)
         self.assertIn("firewall: enabled default=allow", summary)
+        self.assertIn("operator:", summary)
+        self.assertIn("node[node-1]:", summary)
         self.assertIn("/tmp/coordlab-phase3/mmdb", summary)
         self.assertIn("/tmp/coordlab-phase3/data", summary)
         self.assertIn(" web --workdir ", summary)
