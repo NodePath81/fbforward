@@ -121,6 +121,21 @@ func TestIPLogConfigDefaultsQueueSizes(t *testing.T) {
 	if got := cfg.IPLog.PruneInterval.Duration(); got != defaultIPLogPruneInterval {
 		t.Fatalf("expected default prune interval %s, got %s", defaultIPLogPruneInterval, got)
 	}
+	if cfg.IPLog.LogRejections == nil || !*cfg.IPLog.LogRejections {
+		t.Fatalf("expected log_rejections default to true when ip_log is enabled, got %#v", cfg.IPLog.LogRejections)
+	}
+}
+
+func TestIPLogConfigPreservesExplicitLogRejectionsFalse(t *testing.T) {
+	cfg := testConfig()
+	cfg.IPLog.Enabled = true
+	cfg.IPLog.DBPath = "/tmp/iplog.sqlite"
+	disabled := false
+	cfg.IPLog.LogRejections = &disabled
+	cfg.setDefaults()
+	if cfg.IPLog.LogRejections == nil || *cfg.IPLog.LogRejections {
+		t.Fatalf("expected explicit log_rejections=false to be preserved, got %#v", cfg.IPLog.LogRejections)
+	}
 }
 
 func TestIPLogConfigRejectsInvalidTuning(t *testing.T) {

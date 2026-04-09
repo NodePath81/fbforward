@@ -14,6 +14,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type testSelector struct {
@@ -58,8 +59,9 @@ func (c *stubConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *stubConn) SetWriteDeadline(time.Time) error { return nil }
 
 type recordingWriter struct {
-	mu      sync.Mutex
-	records []iplog.EnrichedRecord
+	mu               sync.Mutex
+	records          []iplog.EnrichedRecord
+	rejectionRecords []iplog.EnrichedRejectionRecord
 }
 
 func (w *recordingWriter) InsertBatch(records []iplog.EnrichedRecord) error {
@@ -69,10 +71,32 @@ func (w *recordingWriter) InsertBatch(records []iplog.EnrichedRecord) error {
 	return nil
 }
 
+func (w *recordingWriter) InsertRejectionBatch(records []iplog.EnrichedRejectionRecord) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.rejectionRecords = append(w.rejectionRecords, records...)
+	return nil
+}
+
 func (w *recordingWriter) count() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.records)
+}
+
+func (w *recordingWriter) rejectionCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.rejectionRecords)
+}
+
+func (w *recordingWriter) firstRejection() iplog.EnrichedRejectionRecord {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.rejectionRecords) == 0 {
+		return iplog.EnrichedRejectionRecord{}
+	}
+	return w.rejectionRecords[0]
 }
 
 func newStatusStore(t *testing.T) (*control.StatusStore, chan struct{}) {
@@ -85,6 +109,7 @@ func newStatusStore(t *testing.T) (*control.StatusStore, chan struct{}) {
 func newPipeline(t *testing.T, writer *recordingWriter) *iplog.Pipeline {
 	t.Helper()
 	p := iplog.NewPipeline(config.IPLogConfig{
+		Enabled:        true,
 		GeoQueueSize:   4,
 		WriteQueueSize: 4,
 		BatchSize:      1,
@@ -92,6 +117,16 @@ func newPipeline(t *testing.T, writer *recordingWriter) *iplog.Pipeline {
 	}, nil, writer, metrics.NewMetrics(nil), nil)
 	p.Start()
 	return p
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen error: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 func TestTCPFirewallDenySkipsUpstreamSelection(t *testing.T) {
@@ -130,6 +165,107 @@ func TestTCPFirewallDenySkipsUpstreamSelection(t *testing.T) {
 	}
 }
 
+func TestTCPFirewallDenyEmitsRejectionRecord(t *testing.T) {
+	selector := &testSelector{}
+	engine, err := firewall.NewEngine(config.FirewallConfig{
+		Enabled: true,
+		Default: "allow",
+		Rules: []config.FirewallRule{{
+			Action: "deny",
+			CIDR:   "10.0.0.0/8",
+		}},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+
+	writer := &recordingWriter{}
+	pipeline := newPipeline(t, writer)
+
+	conn := &stubConn{
+		local:  stubAddr("127.0.0.1:9000"),
+		remote: stubAddr("10.1.2.3:12345"),
+	}
+	listener := &TCPListener{
+		cfg:      config.ListenerConfig{BindPort: 9000},
+		manager:  selector,
+		firewall: engine,
+		pipeline: pipeline,
+		sem:      make(chan struct{}, 1),
+	}
+	listener.sem <- struct{}{}
+
+	listener.handleConn(context.Background(), conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	if writer.rejectionCount() != 1 {
+		t.Fatalf("expected one rejection record, got %d", writer.rejectionCount())
+	}
+	record := writer.firstRejection()
+	if record.Reason != "firewall_deny" || record.MatchedRuleType != "cidr" || record.MatchedRuleValue != "10.0.0.0/8" {
+		t.Fatalf("unexpected rejection record: %+v", record)
+	}
+}
+
+func TestTCPConnectionLimitEmitsRejectionRecord(t *testing.T) {
+	writer := &recordingWriter{}
+	pipeline := newPipeline(t, writer)
+
+	port := freeTCPPort(t)
+	listener := NewTCPListener(
+		config.ListenerConfig{BindAddr: "127.0.0.1", BindPort: port},
+		config.ForwardingLimitsConfig{MaxTCPConnections: 0},
+		time.Second,
+		&testSelector{},
+		nil,
+		nil,
+		nil,
+		pipeline,
+		nil,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	if err := listener.Start(ctx, &wg); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", util.FormatPort(port)))
+	if err != nil {
+		t.Fatalf("Dial error: %v", err)
+	}
+	_ = conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if writer.rejectionCount() == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = listener.Close()
+	cancel()
+	wg.Wait()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	if err := pipeline.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+
+	if writer.rejectionCount() != 1 {
+		t.Fatalf("expected one rejection record, got %d", writer.rejectionCount())
+	}
+	if got := writer.firstRejection().Reason; got != "tcp_connection_limit" {
+		t.Fatalf("expected tcp_connection_limit rejection, got %+v", writer.firstRejection())
+	}
+}
+
 func TestUDPFirewallDenySkipsMappingCreation(t *testing.T) {
 	selector := &testSelector{}
 	engine, err := firewall.NewEngine(config.FirewallConfig{
@@ -162,6 +298,99 @@ func TestUDPFirewallDenySkipsMappingCreation(t *testing.T) {
 	}
 	if len(listener.mappings) != 0 || len(listener.pending) != 0 {
 		t.Fatalf("expected denied UDP packet to avoid mapping creation")
+	}
+}
+
+func TestUDPFirewallDenyEmitsRejectionRecord(t *testing.T) {
+	engine, err := firewall.NewEngine(config.FirewallConfig{
+		Enabled: true,
+		Default: "allow",
+		Rules: []config.FirewallRule{{
+			Action: "deny",
+			CIDR:   "10.0.0.0/8",
+		}},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+
+	writer := &recordingWriter{}
+	pipeline := newPipeline(t, writer)
+	listener := &UDPListener{
+		cfg:      config.ListenerConfig{BindPort: 9000},
+		firewall: engine,
+		pipeline: pipeline,
+		sem:      make(chan struct{}, 1),
+		mappings: make(map[string]*udpMapping),
+		pending:  make(map[string]*udpMappingReservation),
+		ipCounts: make(map[string]int),
+		maxPerIP: udpMaxMappingsPerIP,
+	}
+
+	listener.handlePacket(context.Background(), &net.UDPAddr{IP: net.ParseIP("10.1.2.3"), Port: 12345}, []byte("payload"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	if writer.rejectionCount() != 1 {
+		t.Fatalf("expected one rejection record, got %d", writer.rejectionCount())
+	}
+	if got := writer.firstRejection().Reason; got != "firewall_deny" {
+		t.Fatalf("unexpected rejection record: %+v", writer.firstRejection())
+	}
+}
+
+func TestUDPPerIPLimitEmitsRejectionRecord(t *testing.T) {
+	writer := &recordingWriter{}
+	pipeline := newPipeline(t, writer)
+
+	listener := &UDPListener{
+		cfg:      config.ListenerConfig{BindPort: 9000},
+		pipeline: pipeline,
+		sem:      make(chan struct{}, 1),
+		mappings: make(map[string]*udpMapping),
+		pending:  make(map[string]*udpMappingReservation),
+		ipCounts: make(map[string]int),
+		maxPerIP: 0,
+	}
+
+	listener.handlePacket(context.Background(), &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 12345}, []byte("payload"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	if writer.rejectionCount() != 1 || writer.firstRejection().Reason != "udp_per_ip_mapping_limit" {
+		t.Fatalf("unexpected rejection records: %+v", writer.rejectionRecords)
+	}
+}
+
+func TestUDPMappingLimitEmitsRejectionRecord(t *testing.T) {
+	writer := &recordingWriter{}
+	pipeline := newPipeline(t, writer)
+
+	listener := &UDPListener{
+		cfg:      config.ListenerConfig{BindPort: 9000},
+		pipeline: pipeline,
+		sem:      make(chan struct{}),
+		mappings: make(map[string]*udpMapping),
+		pending:  make(map[string]*udpMappingReservation),
+		ipCounts: make(map[string]int),
+		maxPerIP: udpMaxMappingsPerIP,
+	}
+
+	listener.handlePacket(context.Background(), &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 12345}, []byte("payload"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	if writer.rejectionCount() != 1 || writer.firstRejection().Reason != "udp_mapping_limit" {
+		t.Fatalf("unexpected rejection records: %+v", writer.rejectionRecords)
 	}
 }
 

@@ -167,3 +167,33 @@ func TestDenyMetricUsesRuleLabels(t *testing.T) {
 		t.Fatalf("expected labeled firewall deny metric, got:\n%s", rendered)
 	}
 }
+
+func TestDecideReturnsRuleMetadata(t *testing.T) {
+	engine, err := NewEngine(config.FirewallConfig{
+		Enabled: true,
+		Default: "allow",
+		Rules: []config.FirewallRule{{
+			Action: "deny",
+			CIDR:   "10.0.0.0/8",
+		}},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine error: %v", err)
+	}
+
+	decision := engine.Decide(net.ParseIP("10.1.2.3"))
+	if decision.Allowed {
+		t.Fatalf("expected deny decision")
+	}
+	if decision.RuleType != "cidr" || decision.RuleValue != "10.0.0.0/8" {
+		t.Fatalf("unexpected decision metadata: %+v", decision)
+	}
+
+	allowed := engine.Decide(net.ParseIP("192.168.1.10"))
+	if !allowed.Allowed {
+		t.Fatalf("expected allow decision")
+	}
+	if allowed.RuleType != "" || allowed.RuleValue != "" {
+		t.Fatalf("expected allow decision to omit rule metadata, got %+v", allowed)
+	}
+}

@@ -29,9 +29,10 @@ func (f fakeLookup) Availability() geoip.Availability {
 }
 
 type fakeWriter struct {
-	mu      sync.Mutex
-	batches [][]EnrichedRecord
-	block   chan struct{}
+	mu               sync.Mutex
+	batches          [][]EnrichedRecord
+	rejectionBatches [][]EnrichedRejectionRecord
+	block            chan struct{}
 }
 
 func (w *fakeWriter) InsertBatch(records []EnrichedRecord) error {
@@ -42,6 +43,17 @@ func (w *fakeWriter) InsertBatch(records []EnrichedRecord) error {
 	defer w.mu.Unlock()
 	copied := append([]EnrichedRecord(nil), records...)
 	w.batches = append(w.batches, copied)
+	return nil
+}
+
+func (w *fakeWriter) InsertRejectionBatch(records []EnrichedRejectionRecord) error {
+	if w.block != nil {
+		<-w.block
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	copied := append([]EnrichedRejectionRecord(nil), records...)
+	w.rejectionBatches = append(w.rejectionBatches, copied)
 	return nil
 }
 
@@ -60,6 +72,26 @@ func (w *fakeWriter) flatten() []EnrichedRecord {
 	defer w.mu.Unlock()
 	var out []EnrichedRecord
 	for _, batch := range w.batches {
+		out = append(out, batch...)
+	}
+	return out
+}
+
+func (w *fakeWriter) rejectionCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	total := 0
+	for _, batch := range w.rejectionBatches {
+		total += len(batch)
+	}
+	return total
+}
+
+func (w *fakeWriter) flattenRejections() []EnrichedRejectionRecord {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []EnrichedRejectionRecord
+	for _, batch := range w.rejectionBatches {
 		out = append(out, batch...)
 	}
 	return out
@@ -112,7 +144,7 @@ func TestPipelineDropsWhenGeoQueueIsFull(t *testing.T) {
 	pipeline.mu.Lock()
 	pipeline.closed = false
 	pipeline.mu.Unlock()
-	pipeline.geoCh <- CloseEvent{IP: "10.0.0.1"}
+	pipeline.geoCh <- geoQueueItem{flow: &CloseEvent{IP: "10.0.0.1"}}
 
 	if pipeline.Emit(CloseEvent{IP: "10.0.0.2"}) {
 		t.Fatalf("expected emit to fail when queue is full")
@@ -229,8 +261,8 @@ func TestPipelineWriteQueueOverflowIncrementsDropMetric(t *testing.T) {
 		FlushInterval:  config.Duration(time.Hour),
 	}, nil, writer, m, nil)
 
-	pipeline.writeCh <- EnrichedRecord{CloseEvent: CloseEvent{IP: "10.0.0.0"}}
-	pipeline.geoCh <- CloseEvent{IP: "10.0.0.1"}
+	pipeline.writeCh <- writeQueueItem{flow: &EnrichedRecord{CloseEvent: CloseEvent{IP: "10.0.0.0"}}}
+	pipeline.geoCh <- geoQueueItem{flow: &CloseEvent{IP: "10.0.0.1"}}
 	close(pipeline.geoCh)
 
 	pipeline.runGeoWorker()
@@ -255,4 +287,110 @@ func TestPipelineShutdownWithEmptyQueues(t *testing.T) {
 	if err := pipeline.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown error: %v", err)
 	}
+}
+
+func TestPipelineEmitRejectionWritesOncePerDedupeWindow(t *testing.T) {
+	writer := &fakeWriter{}
+	pipeline := NewPipeline(config.IPLogConfig{
+		Enabled:        true,
+		LogRejections:  boolPtr(true),
+		GeoQueueSize:   4,
+		WriteQueueSize: 4,
+		BatchSize:      1,
+		FlushInterval:  config.Duration(time.Hour),
+	}, nil, writer, metrics.NewMetrics(nil), nil)
+	pipeline.Start()
+
+	now := time.Now().UTC()
+	if !pipeline.EmitRejection(RejectionEvent{
+		IP:               "10.0.0.1",
+		Protocol:         "tcp",
+		Port:             9000,
+		Reason:           "firewall_deny",
+		MatchedRuleType:  "cidr",
+		MatchedRuleValue: "10.0.0.0/8",
+		RecordedAt:       now,
+	}) {
+		t.Fatalf("expected first rejection emit to succeed")
+	}
+	if pipeline.EmitRejection(RejectionEvent{
+		IP:               "10.0.0.1",
+		Protocol:         "tcp",
+		Port:             9000,
+		Reason:           "firewall_deny",
+		MatchedRuleType:  "cidr",
+		MatchedRuleValue: "10.0.0.0/8",
+		RecordedAt:       now.Add(30 * time.Second),
+	}) {
+		t.Fatalf("expected duplicate rejection inside dedupe window to be suppressed")
+	}
+	if !pipeline.EmitRejection(RejectionEvent{
+		IP:               "10.0.0.1",
+		Protocol:         "tcp",
+		Port:             9000,
+		Reason:           "firewall_deny",
+		MatchedRuleType:  "cidr",
+		MatchedRuleValue: "10.0.0.0/8",
+		RecordedAt:       now.Add(61 * time.Second),
+	}) {
+		t.Fatalf("expected rejection after dedupe window to be accepted")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	if writer.rejectionCount() != 2 {
+		t.Fatalf("expected two rejection records, got %d", writer.rejectionCount())
+	}
+}
+
+func TestPipelineEmitRejectionGeoEnrichesRecord(t *testing.T) {
+	writer := &fakeWriter{}
+	pipeline := NewPipeline(config.IPLogConfig{
+		Enabled:        true,
+		LogRejections:  boolPtr(true),
+		GeoQueueSize:   4,
+		WriteQueueSize: 4,
+		BatchSize:      1,
+		FlushInterval:  config.Duration(time.Hour),
+	}, fakeLookup{
+		result: geoip.LookupResult{
+			ASN:              13335,
+			ASOrg:            "Cloudflare",
+			Country:          "US",
+			ASNDBAvailable:   true,
+			CountryAvailable: true,
+		},
+	}, writer, metrics.NewMetrics(nil), nil)
+	pipeline.Start()
+
+	if !pipeline.EmitRejection(RejectionEvent{
+		IP:         "1.1.1.1",
+		Protocol:   "udp",
+		Port:       9000,
+		Reason:     "udp_mapping_limit",
+		RecordedAt: time.Now(),
+	}) {
+		t.Fatalf("expected rejection emit to succeed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+
+	records := writer.flattenRejections()
+	if len(records) != 1 {
+		t.Fatalf("expected one rejection record, got %d", len(records))
+	}
+	if records[0].ASN != 13335 || records[0].ASOrg != "Cloudflare" || records[0].Country != "US" {
+		t.Fatalf("expected enriched rejection record, got %+v", records[0])
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

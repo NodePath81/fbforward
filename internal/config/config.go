@@ -355,6 +355,7 @@ type GeoIPConfig struct {
 
 type IPLogConfig struct {
 	Enabled        bool     `yaml:"enabled"`
+	LogRejections  *bool    `yaml:"log_rejections"`
 	DBPath         string   `yaml:"db_path"`
 	Retention      Duration `yaml:"retention"`
 	GeoQueueSize   int      `yaml:"geo_queue_size"`
@@ -697,6 +698,10 @@ func (c *Config) setDefaults() {
 	}
 	if c.IPLog.PruneInterval == 0 {
 		c.IPLog.PruneInterval = Duration(defaultIPLogPruneInterval)
+	}
+	if c.IPLog.LogRejections == nil && c.IPLog.Enabled {
+		enabled := true
+		c.IPLog.LogRejections = &enabled
 	}
 	if c.Firewall.Default == "" {
 		c.Firewall.Default = "allow"

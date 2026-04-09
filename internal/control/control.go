@@ -184,14 +184,52 @@ type queryIPLogParams struct {
 	Offset    int    `json:"offset,omitempty"`
 }
 
+type queryRejectionLogParams struct {
+	StartTime        *int64 `json:"start_time,omitempty"`
+	EndTime          *int64 `json:"end_time,omitempty"`
+	CIDR             string `json:"cidr,omitempty"`
+	ASN              *int   `json:"asn,omitempty"`
+	Country          string `json:"country,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	Protocol         string `json:"protocol,omitempty"`
+	Port             *int   `json:"port,omitempty"`
+	MatchedRuleType  string `json:"matched_rule_type,omitempty"`
+	MatchedRuleValue string `json:"matched_rule_value,omitempty"`
+	SortBy           string `json:"sort_by,omitempty"`
+	SortOrder        string `json:"sort_order,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+	Offset           int    `json:"offset,omitempty"`
+}
+
+type queryLogEventsParams struct {
+	StartTime        *int64 `json:"start_time,omitempty"`
+	EndTime          *int64 `json:"end_time,omitempty"`
+	CIDR             string `json:"cidr,omitempty"`
+	ASN              *int   `json:"asn,omitempty"`
+	Country          string `json:"country,omitempty"`
+	Protocol         string `json:"protocol,omitempty"`
+	Port             *int   `json:"port,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	MatchedRuleType  string `json:"matched_rule_type,omitempty"`
+	MatchedRuleValue string `json:"matched_rule_value,omitempty"`
+	EntryType        string `json:"entry_type,omitempty"`
+	SortBy           string `json:"sort_by,omitempty"`
+	SortOrder        string `json:"sort_order,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+	Offset           int    `json:"offset,omitempty"`
+}
+
 type ipLogStatusResponse struct {
-	DBPath         string `json:"db_path"`
-	FileSize       int64  `json:"file_size"`
-	RecordCount    int    `json:"record_count"`
-	OldestRecordAt int64  `json:"oldest_record_at"`
-	NewestRecordAt int64  `json:"newest_record_at"`
-	Retention      string `json:"retention"`
-	PruneInterval  string `json:"prune_interval"`
+	DBPath               string `json:"db_path"`
+	FileSize             int64  `json:"file_size"`
+	RecordCount          int    `json:"record_count"`
+	FlowRecordCount      int    `json:"flow_record_count"`
+	RejectionRecordCount int    `json:"rejection_record_count"`
+	TotalRecordCount     int    `json:"total_record_count"`
+	OldestRecordAt       int64  `json:"oldest_record_at"`
+	NewestRecordAt       int64  `json:"newest_record_at"`
+	Retention            string `json:"retention"`
+	PruneInterval        string `json:"prune_interval"`
 }
 
 type statusResponse struct {
@@ -669,6 +707,85 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: result})
+	case "QueryRejectionLog":
+		c.iplogMu.RLock()
+		store := c.iplogStore
+		c.iplogMu.RUnlock()
+		if store == nil {
+			completionErr = "ip log store not available"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		var params queryRejectionLogParams
+		if len(req.Params) > 0 && string(req.Params) != "null" {
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				completionErr = "invalid params"
+				writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
+				return
+			}
+		}
+		result, err := store.QueryRejections(iplog.RejectionQueryParams{
+			StartTime:        params.StartTime,
+			EndTime:          params.EndTime,
+			CIDR:             params.CIDR,
+			ASN:              params.ASN,
+			Country:          params.Country,
+			Reason:           params.Reason,
+			Protocol:         params.Protocol,
+			Port:             params.Port,
+			MatchedRuleType:  params.MatchedRuleType,
+			MatchedRuleValue: params.MatchedRuleValue,
+			SortBy:           params.SortBy,
+			SortOrder:        params.SortOrder,
+			Limit:            params.Limit,
+			Offset:           params.Offset,
+		})
+		if err != nil {
+			completionErr = err.Error()
+			writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: result})
+	case "QueryLogEvents":
+		c.iplogMu.RLock()
+		store := c.iplogStore
+		c.iplogMu.RUnlock()
+		if store == nil {
+			completionErr = "ip log store not available"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		var params queryLogEventsParams
+		if len(req.Params) > 0 && string(req.Params) != "null" {
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				completionErr = "invalid params"
+				writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
+				return
+			}
+		}
+		result, err := store.QueryLogEvents(iplog.LogEventQueryParams{
+			StartTime:        params.StartTime,
+			EndTime:          params.EndTime,
+			CIDR:             params.CIDR,
+			ASN:              params.ASN,
+			Country:          params.Country,
+			Protocol:         params.Protocol,
+			Port:             params.Port,
+			Reason:           params.Reason,
+			MatchedRuleType:  params.MatchedRuleType,
+			MatchedRuleValue: params.MatchedRuleValue,
+			EntryType:        params.EntryType,
+			SortBy:           params.SortBy,
+			SortOrder:        params.SortOrder,
+			Limit:            params.Limit,
+			Offset:           params.Offset,
+		})
+		if err != nil {
+			completionErr = err.Error()
+			writeJSON(sw, http.StatusBadRequest, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: result})
 	case "ListUpstreams":
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true, Result: c.manager.Snapshot()})
 	case "RunMeasurement":
@@ -766,13 +883,16 @@ func (c *ControlServer) getIPLogStatus(store *iplog.Store) (ipLogStatusResponse,
 		return ipLogStatusResponse{}, err
 	}
 	return ipLogStatusResponse{
-		DBPath:         c.fullCfg.IPLog.DBPath,
-		FileSize:       dbFileSize(c.fullCfg.IPLog.DBPath),
-		RecordCount:    stats.RecordCount,
-		OldestRecordAt: stats.OldestRecordAt,
-		NewestRecordAt: stats.NewestRecordAt,
-		Retention:      c.fullCfg.IPLog.Retention.Duration().String(),
-		PruneInterval:  c.fullCfg.IPLog.PruneInterval.Duration().String(),
+		DBPath:               c.fullCfg.IPLog.DBPath,
+		FileSize:             dbFileSize(c.fullCfg.IPLog.DBPath),
+		RecordCount:          stats.TotalRecordCount,
+		FlowRecordCount:      stats.FlowRecordCount,
+		RejectionRecordCount: stats.RejectionRecordCount,
+		TotalRecordCount:     stats.TotalRecordCount,
+		OldestRecordAt:       stats.OldestRecordAt,
+		NewestRecordAt:       stats.NewestRecordAt,
+		Retention:            c.fullCfg.IPLog.Retention.Duration().String(),
+		PruneInterval:        c.fullCfg.IPLog.PruneInterval.Duration().String(),
 	}, nil
 }
 
@@ -979,6 +1099,7 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 		},
 		"ip_log": map[string]interface{}{
 			"enabled":          cfg.IPLog.Enabled,
+			"log_rejections":   util.BoolValue(cfg.IPLog.LogRejections, cfg.IPLog.Enabled),
 			"db_path":          cfg.IPLog.DBPath,
 			"retention":        cfg.IPLog.Retention.Duration().String(),
 			"geo_queue_size":   cfg.IPLog.GeoQueueSize,

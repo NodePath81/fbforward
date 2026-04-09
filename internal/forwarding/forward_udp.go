@@ -160,8 +160,12 @@ func (l *UDPListener) Close() error {
 }
 
 func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr, payload []byte) {
-	if l.firewall != nil && !l.firewall.Check(clientAddr.IP) {
-		return
+	if l.firewall != nil {
+		decision := l.firewall.Decide(clientAddr.IP)
+		if !decision.Allowed {
+			emitRejection(l.pipeline, "udp", l.cfg.BindPort, clientAddr.IP.String(), "firewall_deny", decision)
+			return
+		}
 	}
 	key := clientAddr.String()
 	clientIP := clientAddr.IP.String()
@@ -169,11 +173,13 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 	if err != nil {
 		switch {
 		case errors.Is(err, errUDPPerIPLimit):
+			emitRejection(l.pipeline, "udp", l.cfg.BindPort, clientIP, "udp_per_ip_mapping_limit", firewall.Decision{})
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_per_ip_limit_reached",
 				"client.addr", key,
 				"client.ip", clientIP,
 			)
 		case errors.Is(err, errUDPMappingLimit):
+			emitRejection(l.pipeline, "udp", l.cfg.BindPort, clientIP, "udp_mapping_limit", firewall.Decision{})
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_limit_reached", "client.addr", key)
 		case errors.Is(err, errUDPUpstreamSelection):
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)

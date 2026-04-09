@@ -20,6 +20,12 @@ type Engine struct {
 	logger       util.Logger
 }
 
+type Decision struct {
+	Allowed   bool
+	RuleType  string
+	RuleValue string
+}
+
 type compiledRule struct {
 	action  bool
 	kind    string
@@ -68,9 +74,9 @@ func NewEngine(cfg config.FirewallConfig, lookup geoip.LookupProvider, metrics *
 	return engine, nil
 }
 
-func (e *Engine) Check(ip net.IP) bool {
+func (e *Engine) Decide(ip net.IP) Decision {
 	if e == nil || ip == nil {
-		return true
+		return Decision{Allowed: true}
 	}
 	var lookup geoip.LookupResult
 	lookedUp := false
@@ -111,9 +117,17 @@ func (e *Engine) Check(ip net.IP) bool {
 				"firewall.rule_value", rule.value,
 			)
 		}
-		return rule.action
+		return Decision{
+			Allowed:   rule.action,
+			RuleType:  rule.kind,
+			RuleValue: rule.value,
+		}
 	}
-	return e.defaultAllow
+	return Decision{Allowed: e.defaultAllow}
+}
+
+func (e *Engine) Check(ip net.IP) bool {
+	return e.Decide(ip).Allowed
 }
 
 func (e *Engine) lookupResult(ip net.IP) geoip.LookupResult {

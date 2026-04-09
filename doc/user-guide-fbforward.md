@@ -445,7 +445,7 @@ CIDR queries require a time bound to prevent full-table scans.
 - GeoIP databases are **hot-reloaded** after a successful refresh. No restart needed.
 - Firewall rule changes require a **restart** (or `Restart` RPC) to take effect.
 - ASN/country firewall rules **fail open** when the corresponding GeoIP database is unavailable. CIDR rules always work.
-- Flows denied by the firewall are rejected before upstream selection and are **not** written to the IP log.
+- Flows denied by the firewall are rejected before upstream selection and are written to the rejection history in the IP Log database. They do **not** appear as normal flow-close records.
 
 ### Log interpretation
 

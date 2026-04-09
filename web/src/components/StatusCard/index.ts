@@ -157,5 +157,5 @@ function formatIPLogStatus(status: IPLogStatusResponse | null, error: string | n
   if (!status) {
     return '-';
   }
-  return `${status.record_count.toLocaleString()} · ${formatBytes(status.file_size)}`;
+  return `${status.total_record_count.toLocaleString()} total / ${status.rejection_record_count.toLocaleString()} rejects · ${formatBytes(status.file_size)}`;
 }

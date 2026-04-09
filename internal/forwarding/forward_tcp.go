@@ -90,6 +90,8 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 			case l.sem <- struct{}{}:
 				go l.handleConn(ctx, conn)
 			default:
+				clientIP := clientIPFromAddr(conn.RemoteAddr().String())
+				emitRejection(l.pipeline, "tcp", l.cfg.BindPort, clientIP, "tcp_connection_limit", firewall.Decision{})
 				util.Event(l.logger, slog.LevelWarn, "forward.tcp.connection_limit_reached",
 					"client.addr", conn.RemoteAddr().String(),
 				)
@@ -117,10 +119,15 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		applyTCPOptions(tcpConn)
 	}
 	clientAddr := client.RemoteAddr().String()
-	clientIP := net.ParseIP(clientIPFromAddr(clientAddr))
-	if l.firewall != nil && !l.firewall.Check(clientIP) {
-		_ = client.Close()
-		return
+	clientIPStr := clientIPFromAddr(clientAddr)
+	clientIP := net.ParseIP(clientIPStr)
+	if l.firewall != nil {
+		decision := l.firewall.Decide(clientIP)
+		if !decision.Allowed {
+			emitRejection(l.pipeline, "tcp", l.cfg.BindPort, clientIPStr, "firewall_deny", decision)
+			_ = client.Close()
+			return
+		}
 	}
 	up, err := l.manager.SelectUpstream()
 	if err != nil {

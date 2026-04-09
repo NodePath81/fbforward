@@ -91,7 +91,9 @@ export type RPCMethod =
   | 'GetGeoIPStatus'
   | 'RefreshGeoIP'
   | 'GetIPLogStatus'
-  | 'QueryIPLog';
+  | 'QueryIPLog'
+  | 'QueryRejectionLog'
+  | 'QueryLogEvents';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;
@@ -144,6 +146,9 @@ export interface IPLogStatusResponse {
   db_path: string;
   file_size: number;
   record_count: number;
+  flow_record_count: number;
+  rejection_record_count: number;
+  total_record_count: number;
   oldest_record_at: number;
   newest_record_at: number;
   retention: string;
@@ -156,6 +161,36 @@ export type IPLogSortBy =
   | 'bytes_down'
   | 'bytes_total'
   | 'duration_ms';
+
+export type LogEntryType = 'all' | 'flow' | 'rejection';
+
+export type RejectionLogSortBy =
+  | 'recorded_at'
+  | 'ip'
+  | 'asn'
+  | 'country'
+  | 'protocol'
+  | 'port'
+  | 'reason'
+  | 'matched_rule_type'
+  | 'matched_rule_value';
+
+export type LogEventSortBy =
+  | 'recorded_at'
+  | 'ip'
+  | 'asn'
+  | 'country'
+  | 'protocol'
+  | 'port'
+  | 'entry_type'
+  | 'upstream'
+  | 'bytes_up'
+  | 'bytes_down'
+  | 'bytes_total'
+  | 'duration_ms'
+  | 'reason'
+  | 'matched_rule_type'
+  | 'matched_rule_value';
 
 export type IPLogSortOrder = 'asc' | 'desc';
 
@@ -189,6 +224,83 @@ export interface IPLogRecord {
 export interface IPLogQueryResult {
   total: number;
   records: IPLogRecord[];
+}
+
+export interface RejectionLogQueryParams {
+  start_time?: number;
+  end_time?: number;
+  cidr?: string;
+  asn?: number;
+  country?: string;
+  reason?: string;
+  protocol?: 'tcp' | 'udp';
+  port?: number;
+  matched_rule_type?: string;
+  matched_rule_value?: string;
+  sort_by?: RejectionLogSortBy;
+  sort_order?: IPLogSortOrder;
+  limit?: number;
+  offset?: number;
+}
+
+export interface RejectionLogRecord {
+  id: number;
+  ip: string;
+  asn: number;
+  as_org: string;
+  country: string;
+  protocol: string;
+  port: number;
+  reason: string;
+  matched_rule_type: string;
+  matched_rule_value: string;
+  recorded_at: number;
+}
+
+export interface RejectionLogQueryResult {
+  total: number;
+  records: RejectionLogRecord[];
+}
+
+export interface LogEventQueryParams {
+  start_time?: number;
+  end_time?: number;
+  cidr?: string;
+  asn?: number;
+  country?: string;
+  protocol?: 'tcp' | 'udp';
+  port?: number;
+  reason?: string;
+  matched_rule_type?: string;
+  matched_rule_value?: string;
+  entry_type?: LogEntryType;
+  sort_by?: LogEventSortBy;
+  sort_order?: IPLogSortOrder;
+  limit?: number;
+  offset?: number;
+}
+
+export interface LogEventRecord {
+  entry_type: 'flow' | 'rejection';
+  ip: string;
+  asn: number;
+  as_org: string;
+  country: string;
+  protocol: string;
+  port: number;
+  recorded_at: number;
+  upstream: string | null;
+  bytes_up: number | null;
+  bytes_down: number | null;
+  duration_ms: number | null;
+  reason: string | null;
+  matched_rule_type: string | null;
+  matched_rule_value: string | null;
+}
+
+export interface LogEventQueryResult {
+  total: number;
+  records: LogEventRecord[];
 }
 
 export type WSMessageType =

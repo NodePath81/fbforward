@@ -69,7 +69,7 @@ func TestStoreStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats error: %v", err)
 	}
-	if stats.RecordCount != 2 {
+	if stats.FlowRecordCount != 2 || stats.TotalRecordCount != 2 {
 		t.Fatalf("expected record count 2, got %+v", stats)
 	}
 	if stats.OldestRecordAt != now.Add(-2*time.Minute).Unix() {
@@ -86,7 +86,7 @@ func TestStoreStatsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats error: %v", err)
 	}
-	if stats.RecordCount != 0 || stats.OldestRecordAt != 0 || stats.NewestRecordAt != 0 {
+	if stats.FlowRecordCount != 0 || stats.RejectionRecordCount != 0 || stats.TotalRecordCount != 0 || stats.OldestRecordAt != 0 || stats.NewestRecordAt != 0 {
 		t.Fatalf("expected empty stats, got %+v", stats)
 	}
 }
@@ -163,7 +163,7 @@ func TestStoreReopenPreservesSchemaAndData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats error: %v", err)
 	}
-	if stats.RecordCount != 1 {
+	if stats.FlowRecordCount != 1 || stats.TotalRecordCount != 1 {
 		t.Fatalf("expected stats to reflect reopened data, got %+v", stats)
 	}
 }
@@ -411,7 +411,7 @@ func TestFileSizeGrowsAcrossBatches(t *testing.T) {
 		t.Fatalf("first InsertBatch error: %v", err)
 	}
 	before, err := store.Stats()
-	if err != nil || before.RecordCount != 1 {
+	if err != nil || before.FlowRecordCount != 1 || before.TotalRecordCount != 1 {
 		t.Fatalf("expected first stats to succeed, got %+v err=%v", before, err)
 	}
 	info1, err := os.Stat(path)
@@ -431,5 +431,116 @@ func TestFileSizeGrowsAcrossBatches(t *testing.T) {
 	}
 	if info2.Size() < info1.Size() {
 		t.Fatalf("expected db file size to stay monotonic, before=%d after=%d", info1.Size(), info2.Size())
+	}
+}
+
+func TestStoreInsertQueryRejectionsAndStats(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if err := store.InsertBatch([]EnrichedRecord{
+		{CloseEvent: CloseEvent{IP: "192.168.1.10", Protocol: "tcp", Upstream: "primary", Port: 9000, RecordedAt: now.Add(-time.Minute)}},
+	}); err != nil {
+		t.Fatalf("InsertBatch error: %v", err)
+	}
+	if err := store.InsertRejectionBatch([]EnrichedRejectionRecord{
+		{
+			RejectionEvent: RejectionEvent{
+				IP:               "10.0.0.1",
+				Protocol:         "udp",
+				Port:             9000,
+				Reason:           "udp_mapping_limit",
+				MatchedRuleType:  "",
+				MatchedRuleValue: "",
+				RecordedAt:       now,
+			},
+			ASN:     64500,
+			Country: "US",
+		},
+	}); err != nil {
+		t.Fatalf("InsertRejectionBatch error: %v", err)
+	}
+
+	stats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats error: %v", err)
+	}
+	if stats.FlowRecordCount != 1 || stats.RejectionRecordCount != 1 || stats.TotalRecordCount != 2 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+
+	rejections, err := store.QueryRejections(RejectionQueryParams{
+		Reason:   "udp_mapping_limit",
+		Protocol: "udp",
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("QueryRejections error: %v", err)
+	}
+	if rejections.Total != 1 || len(rejections.Records) != 1 {
+		t.Fatalf("unexpected rejection query result: %+v", rejections)
+	}
+	if rejections.Records[0].Country != "US" || rejections.Records[0].Reason != "udp_mapping_limit" {
+		t.Fatalf("unexpected rejection record: %+v", rejections.Records[0])
+	}
+}
+
+func TestStoreQueryLogEventsMergedAndSortValidation(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-time.Hour).Unix()
+
+	if err := store.InsertBatch([]EnrichedRecord{
+		{CloseEvent: CloseEvent{IP: "192.168.1.10", Protocol: "tcp", Upstream: "primary", Port: 9000, BytesUp: 10, BytesDown: 20, DurationMs: 30, RecordedAt: now.Add(-time.Minute)}},
+	}); err != nil {
+		t.Fatalf("InsertBatch error: %v", err)
+	}
+	if err := store.InsertRejectionBatch([]EnrichedRejectionRecord{
+		{
+			RejectionEvent: RejectionEvent{
+				IP:               "10.0.0.1",
+				Protocol:         "udp",
+				Port:             9000,
+				Reason:           "firewall_deny",
+				MatchedRuleType:  "cidr",
+				MatchedRuleValue: "10.0.0.0/8",
+				RecordedAt:       now,
+			},
+			ASN:     64500,
+			Country: "US",
+		},
+	}); err != nil {
+		t.Fatalf("InsertRejectionBatch error: %v", err)
+	}
+
+	result, err := store.QueryLogEvents(LogEventQueryParams{
+		StartTime: &start,
+		EntryType: EntryTypeAll,
+		SortBy:    "recorded_at",
+		SortOrder: "desc",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogEvents error: %v", err)
+	}
+	if result.Total != 2 || len(result.Records) != 2 {
+		t.Fatalf("unexpected merged query result: %+v", result)
+	}
+	if result.Records[0].EntryType != EntryTypeRejection || result.Records[1].EntryType != EntryTypeFlow {
+		t.Fatalf("unexpected merged order: %+v", result.Records)
+	}
+	if result.Records[0].Reason == nil || *result.Records[0].Reason != "firewall_deny" {
+		t.Fatalf("expected rejection metadata in merged record, got %+v", result.Records[0])
+	}
+	if result.Records[1].Upstream == nil || *result.Records[1].Upstream != "primary" {
+		t.Fatalf("expected flow metadata in merged record, got %+v", result.Records[1])
+	}
+
+	if _, err := store.QueryLogEvents(LogEventQueryParams{
+		EntryType: EntryTypeAll,
+		SortBy:    "bytes_up",
+		Limit:     10,
+	}); err == nil {
+		t.Fatalf("expected invalid merged sort_by to fail")
 	}
 }
