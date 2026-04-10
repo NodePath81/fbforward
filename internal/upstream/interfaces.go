@@ -18,6 +18,20 @@ func (DefaultScorer) ComputeScore(stats UpstreamStats, cfg config.ScoringConfig,
 	return computeFullScore(stats, cfg, bias, staleThreshold)
 }
 
+type ActiveChange struct {
+	OldTag        string
+	NewTag        string
+	Reason        string
+	PreviousScore float64
+	NextScore     float64
+}
+
+type UsabilityChange struct {
+	Tag    string
+	Usable bool
+	Reason string
+}
+
 // UpstreamSelector is the minimal forwarding-side dependency.
 type UpstreamSelector interface {
 	SelectUpstream() (*Upstream, error)

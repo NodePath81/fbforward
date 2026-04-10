@@ -35,10 +35,11 @@ type Controller struct {
 	metrics *metrics.Metrics
 	logger  util.Logger
 
-	mu      sync.Mutex
-	enabled bool
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	mu                 sync.Mutex
+	enabled            bool
+	cancel             context.CancelFunc
+	connectionCallback func(bool)
+	wg                 sync.WaitGroup
 }
 
 func NewController(
@@ -95,6 +96,15 @@ func (c *Controller) Disable() {
 func (c *Controller) Close() {
 	c.Disable()
 	c.wg.Wait()
+}
+
+func (c *Controller) SetConnectionCallback(callback func(bool)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.connectionCallback = callback
 }
 
 func (c *Controller) run(ctx context.Context) {
@@ -172,9 +182,11 @@ func (c *Controller) runSession(ctx context.Context) error {
 	stopHandshake()
 
 	c.manager.SetCoordinationConnected(true)
+	c.callConnectionCallback(true)
 	c.syncMetrics()
 	defer func() {
 		c.manager.SetCoordinationConnected(false)
+		c.callConnectionCallback(false)
 		c.syncMetrics()
 	}()
 
@@ -283,6 +295,15 @@ func (c *Controller) waitForReady(ctx context.Context, conn *websocket.Conn) err
 		default:
 			return fmt.Errorf("unexpected coordination message type %q during handshake", envelope.Type)
 		}
+	}
+}
+
+func (c *Controller) callConnectionCallback(connected bool) {
+	c.mu.Lock()
+	callback := c.connectionCallback
+	c.mu.Unlock()
+	if callback != nil {
+		callback(connected)
 	}
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -131,6 +132,7 @@ type Config struct {
 	Scoring      ScoringConfig      `yaml:"scoring"`
 	Switching    SwitchingConfig    `yaml:"switching"`
 	Control      ControlConfig      `yaml:"control"`
+	Notify       NotifyConfig       `yaml:"notify"`
 	Coordination CoordinationConfig `yaml:"coordination"`
 	Logging      LoggingConfig      `yaml:"logging"`
 	Shaping      ShapingConfig      `yaml:"shaping"`
@@ -335,6 +337,15 @@ type ControlWebUIConfig struct {
 
 type ControlMetricsConfig struct {
 	Enabled *bool `yaml:"enabled"`
+}
+
+type NotifyConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Endpoint       string `yaml:"endpoint"`
+	KeyID          string `yaml:"key_id"`
+	TokenEnv       string `yaml:"token_env"`
+	SourceInstance string `yaml:"source_instance"`
+	Token          string `yaml:"-"`
 }
 
 type CoordinationConfig struct {
@@ -861,6 +872,51 @@ func (c *Config) validate() error {
 		return errors.New("control.bind_port must be in 1..65535")
 	}
 
+	c.Notify.Endpoint = strings.TrimSpace(c.Notify.Endpoint)
+	c.Notify.KeyID = strings.TrimSpace(c.Notify.KeyID)
+	c.Notify.TokenEnv = strings.TrimSpace(c.Notify.TokenEnv)
+	c.Notify.SourceInstance = strings.TrimSpace(c.Notify.SourceInstance)
+	c.Notify.Token = ""
+	if c.Notify.Enabled {
+		if c.Notify.Endpoint == "" {
+			return errors.New("notify.endpoint is required when notify.enabled is true")
+		}
+		parsedNotifyEndpoint, err := url.Parse(c.Notify.Endpoint)
+		if err != nil || parsedNotifyEndpoint.Host == "" {
+			return errors.New("notify.endpoint must be a valid URL")
+		}
+		if parsedNotifyEndpoint.Scheme != "http" && parsedNotifyEndpoint.Scheme != "https" {
+			return errors.New("notify.endpoint must use http or https")
+		}
+		if err := validateNotifyIdentifier(c.Notify.KeyID, "notify.key_id"); err != nil {
+			return err
+		}
+		if c.Notify.TokenEnv == "" {
+			return errors.New("notify.token_env is required when notify.enabled is true")
+		}
+		token := strings.TrimSpace(os.Getenv(c.Notify.TokenEnv))
+		if token == "" {
+			return fmt.Errorf("notify token env %q is not set or empty", c.Notify.TokenEnv)
+		}
+		if err := validateAuthTokenField(token, "notify.token_env"); err != nil {
+			return err
+		}
+		c.Notify.Token = token
+		if c.Notify.SourceInstance == "" {
+			c.Notify.SourceInstance = strings.TrimSpace(c.Hostname)
+			if c.Notify.SourceInstance == "" {
+				hostname, err := os.Hostname()
+				if err != nil {
+					return fmt.Errorf("resolve notify source instance: %w", err)
+				}
+				c.Notify.SourceInstance = strings.TrimSpace(hostname)
+			}
+		}
+		if err := validateNotifyIdentifier(c.Notify.SourceInstance, "notify.source_instance"); err != nil {
+			return err
+		}
+	}
+
 	c.Coordination.Endpoint = strings.TrimSpace(c.Coordination.Endpoint)
 	c.Coordination.Pool = strings.TrimSpace(c.Coordination.Pool)
 	c.Coordination.NodeID = strings.TrimSpace(c.Coordination.NodeID)
@@ -1096,6 +1152,27 @@ func (c *Config) validate() error {
 
 func geoDBConfigured(url, path string) bool {
 	return strings.TrimSpace(url) != "" || strings.TrimSpace(path) != ""
+}
+
+func validateNotifyIdentifier(value, field string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("%s must not be empty", field)
+	}
+	if len(trimmed) > 128 {
+		return fmt.Errorf("%s must be at most 128 characters", field)
+	}
+	for _, ch := range trimmed {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+		case ch >= 'A' && ch <= 'Z':
+		case ch >= '0' && ch <= '9':
+		case ch == '.', ch == '_', ch == ':', ch == '-':
+		default:
+			return fmt.Errorf("%s contains unsupported characters", field)
+		}
+	}
+	return nil
 }
 
 func validateGeoDBConfig(prefix, url, path string) error {

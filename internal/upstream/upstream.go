@@ -121,8 +121,8 @@ type UpstreamManager struct {
 	coordVersion   int64
 	coordFallback  bool
 	rng            *rand.Rand
-	onSelect       func(oldTag, newTag string)
-	onStateChange  func(tag string, usable bool)
+	onSelect       func(change ActiveChange)
+	onStateChange  func(change UsabilityChange)
 	switching      config.SwitchingConfig
 	staleThreshold time.Duration
 	scorer         Scorer
@@ -164,7 +164,7 @@ func (m *UpstreamManager) SetScorer(scorer Scorer) {
 	m.scorer = scorer
 }
 
-func (m *UpstreamManager) SetCallbacks(onSelect func(oldTag, newTag string), onStateChange func(tag string, usable bool)) {
+func (m *UpstreamManager) SetCallbacks(onSelect func(change ActiveChange), onStateChange func(change UsabilityChange)) {
 	m.onSelect = onSelect
 	m.onStateChange = onStateChange
 }
@@ -447,7 +447,15 @@ func (m *UpstreamManager) UpdateReachability(tag string, reachable bool) Upstrea
 		}
 	}
 	if prevUsable != up.stats.Usable && m.onStateChange != nil {
-		m.onStateChange(tag, up.stats.Usable)
+		reason := "recovered"
+		if !up.stats.Usable {
+			reason = m.usabilityReason(up.stats)
+		}
+		m.onStateChange(UsabilityChange{
+			Tag:    tag,
+			Usable: up.stats.Usable,
+			Reason: reason,
+		})
 	}
 	if tag == m.coordTag && !up.stats.Usable {
 		m.activateCoordinationFallbackLocked("coordination_fallback")
@@ -505,7 +513,15 @@ func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResul
 			util.Event(m.logger, slog.LevelWarn, "upstream.became_unusable", "upstream", tag, "switch.reason", m.usabilityReason(up.stats))
 		}
 		if m.onStateChange != nil {
-			m.onStateChange(tag, up.stats.Usable)
+			reason := "recovered"
+			if !up.stats.Usable {
+				reason = m.usabilityReason(up.stats)
+			}
+			m.onStateChange(UsabilityChange{
+				Tag:    tag,
+				Usable: up.stats.Usable,
+				Reason: reason,
+			})
 		}
 	}
 	if tag == m.coordTag && !up.stats.Usable {
@@ -763,7 +779,13 @@ func (m *UpstreamManager) setActiveLocked(tag, reason string) {
 		)
 	}
 	if m.onSelect != nil {
-		m.onSelect(old, tag)
+		m.onSelect(ActiveChange{
+			OldTag:        old,
+			NewTag:        tag,
+			Reason:        reason,
+			PreviousScore: prevScore,
+			NextScore:     nextScore,
+		})
 	}
 }
 

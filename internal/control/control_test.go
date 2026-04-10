@@ -906,3 +906,30 @@ func TestRuntimeConfigIncludesIPLogTuning(t *testing.T) {
 		t.Fatalf("expected log_rejections in runtime config, got %#v", got)
 	}
 }
+
+func TestRuntimeConfigSanitizesNotifyConfig(t *testing.T) {
+	server := newTestControlServer(t)
+	server.fullCfg.Notify = config.NotifyConfig{
+		Enabled:        true,
+		Endpoint:       "https://notify.example/v1/events",
+		KeyID:          "key-1",
+		TokenEnv:       "FBNOTIFY_TOKEN",
+		SourceInstance: "node-1",
+		Token:          "secret-node-token",
+	}
+
+	cfg := server.getRuntimeConfig()
+	notifyCfg, ok := cfg["notify"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("notify config missing or wrong type: %#v", cfg["notify"])
+	}
+	if notifyCfg["endpoint"] != "https://notify.example/v1/events" {
+		t.Fatalf("unexpected notify endpoint: %#v", notifyCfg["endpoint"])
+	}
+	if _, exists := notifyCfg["token"]; exists {
+		t.Fatalf("unexpected notify token in runtime config: %#v", notifyCfg)
+	}
+	if _, exists := notifyCfg["token_env"]; exists {
+		t.Fatalf("unexpected notify token_env in runtime config: %#v", notifyCfg)
+	}
+}

@@ -1079,6 +1079,12 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 				"enabled": cfg.Control.Metrics.IsEnabled(),
 			},
 		},
+		"notify": map[string]interface{}{
+			"enabled":         cfg.Notify.Enabled,
+			"endpoint":        cfg.Notify.Endpoint,
+			"key_id":          cfg.Notify.KeyID,
+			"source_instance": cfg.Notify.SourceInstance,
+		},
 		"coordination": map[string]interface{}{
 			"endpoint":           cfg.Coordination.Endpoint,
 			"heartbeat_interval": cfg.Coordination.HeartbeatInterval.Duration().String(),

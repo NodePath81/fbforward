@@ -125,3 +125,38 @@ export function jsonResponse(data: unknown, status: number = 200): Response {
     }
   });
 }
+
+export function createExecutionContext(): {
+  ctx: ExecutionContext;
+  flush(): Promise<void>;
+} {
+  const pending: Promise<unknown>[] = [];
+  return {
+    ctx: {
+      waitUntil(promise: Promise<unknown>): void {
+        pending.push(promise);
+      }
+    },
+    async flush(): Promise<void> {
+      await Promise.all(pending.splice(0));
+    }
+  };
+}
+
+export function createDurableObjectState(storage: DurableObjectStorage = new MemoryStorage()): {
+  state: DurableObjectState;
+  flush(): Promise<void>;
+} {
+  const pending: Promise<unknown>[] = [];
+  return {
+    state: {
+      storage,
+      waitUntil(promise: Promise<unknown>): void {
+        pending.push(promise);
+      }
+    },
+    async flush(): Promise<void> {
+      await Promise.all(pending.splice(0));
+    }
+  };
+}

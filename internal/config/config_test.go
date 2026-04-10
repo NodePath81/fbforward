@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,46 @@ func TestCoordinationConfigIgnoresLegacyPoolAndNodeIDWithWarnings(t *testing.T) 
 	}
 	if len(cfg.Warnings) != 2 {
 		t.Fatalf("expected warnings for ignored pool/node_id, got %#v", cfg.Warnings)
+	}
+}
+
+func TestNotifyConfigRequiresResolvedEnvTokenWhenEnabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.Notify = NotifyConfig{
+		Enabled:  true,
+		Endpoint: "https://notify.example/v1/events",
+		KeyID:    "key-1",
+		TokenEnv: "FBNOTIFY_TOKEN",
+	}
+	cfg.setDefaults()
+	err := cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), `notify token env "FBNOTIFY_TOKEN" is not set or empty`) {
+		t.Fatalf("expected missing notify env error, got %v", err)
+	}
+}
+
+func TestNotifyConfigResolvesTokenAndSourceInstance(t *testing.T) {
+	cfg := testConfig()
+	cfg.Notify = NotifyConfig{
+		Enabled:  true,
+		Endpoint: "https://notify.example/v1/events",
+		KeyID:    "key-1",
+		TokenEnv: "FBNOTIFY_TOKEN",
+	}
+	t.Setenv("FBNOTIFY_TOKEN", "node-token-abcdefghijklmnopqrstuvwxyz123456")
+	cfg.setDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected notify config to validate: %v", err)
+	}
+	if cfg.Notify.Token != "node-token-abcdefghijklmnopqrstuvwxyz123456" {
+		t.Fatalf("expected resolved notify token, got %q", cfg.Notify.Token)
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("Hostname error: %v", err)
+	}
+	if cfg.Notify.SourceInstance != hostname {
+		t.Fatalf("expected notify source instance %q, got %q", hostname, cfg.Notify.SourceInstance)
 	}
 }
 

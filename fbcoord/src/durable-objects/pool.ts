@@ -9,6 +9,7 @@ import type {
   PickMessage,
   ReadyMessage
 } from '../protocol/types';
+import { createNotifier, type Notifier, type NotifyEnv } from '../notify';
 import { MAX_UPSTREAMS, validateNodeId, validateUpstreamTag } from '../validation';
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -75,6 +76,7 @@ export interface PoolStateResponse {
 interface MutationResult {
   changed: boolean;
   rosterChanged: boolean;
+  aborted_nodes?: AbortedNodeNotification[];
 }
 
 interface RegisterConnectionResult extends MutationResult {
@@ -89,6 +91,11 @@ interface ReapResult extends MutationResult {
 interface RevokeNodeResult extends MutationResult {
   connection?: ConnectionLike;
   removed: boolean;
+}
+
+export interface AbortedNodeNotification {
+  node_id: string;
+  cause: 'timeout' | 'disconnect' | 'load-normalization';
 }
 
 export class ConnectionRateLimiter {
@@ -243,17 +250,20 @@ export class PoolState {
     return cloneStoredRoster(this.roster);
   }
 
-  normalizeLoadedRoster(): boolean {
+  normalizeLoadedRoster(): AbortedNodeNotification[] {
     const now = this.now();
-    let changed = false;
-    for (const entry of Object.values(this.roster)) {
+    const aborted: AbortedNodeNotification[] = [];
+    for (const [nodeId, entry] of Object.entries(this.roster)) {
       if (entry.status === 'online') {
         entry.status = 'aborted';
         entry.disconnectedAt = now;
-        changed = true;
+        aborted.push({
+          node_id: nodeId,
+          cause: 'load-normalization'
+        });
       }
     }
-    return changed;
+    return aborted;
   }
 
   nodeCount(): number {
@@ -366,7 +376,8 @@ export class PoolState {
 
     return {
       changed: this.recompute(),
-      rosterChanged: true
+      rosterChanged: true,
+      aborted_nodes: []
     };
   }
 
@@ -386,7 +397,8 @@ export class PoolState {
 
     return {
       changed: false,
-      rosterChanged: true
+      rosterChanged: true,
+      aborted_nodes: []
     };
   }
 
@@ -407,7 +419,8 @@ export class PoolState {
 
     return {
       changed: this.recompute(),
-      rosterChanged: true
+      rosterChanged: true,
+      aborted_nodes: []
     };
   }
 
@@ -428,7 +441,11 @@ export class PoolState {
 
     return {
       changed: this.recompute(),
-      rosterChanged: true
+      rosterChanged: true,
+      aborted_nodes: [{
+        node_id: nodeId,
+        cause: 'disconnect'
+      }]
     };
   }
 
@@ -436,6 +453,7 @@ export class PoolState {
     const cutoff = this.now() - this.staleAfterMs;
     const connectionsToClose: ConnectionLike[] = [];
     let rosterChanged = false;
+    const abortedNodes: AbortedNodeNotification[] = [];
 
     for (const [nodeId, current] of this.activeNodes.entries()) {
       if (current.lastSeen >= cutoff) {
@@ -451,13 +469,18 @@ export class PoolState {
         entry.status = 'aborted';
         entry.disconnectedAt = this.now();
         rosterChanged = true;
+        abortedNodes.push({
+          node_id: nodeId,
+          cause: 'timeout'
+        });
       }
     }
 
     return {
       changed: connectionsToClose.length > 0 ? this.recompute() : false,
       rosterChanged,
-      connectionsToClose
+      connectionsToClose,
+      aborted_nodes: abortedNodes
     };
   }
 
@@ -473,7 +496,8 @@ export class PoolState {
       return {
         removed: false,
         changed: false,
-        rosterChanged: false
+        rosterChanged: false,
+        aborted_nodes: []
       };
     }
 
@@ -481,7 +505,8 @@ export class PoolState {
       removed: true,
       connection: current?.connection,
       changed: this.recompute(),
-      rosterChanged: true
+      rosterChanged: true,
+      aborted_nodes: []
     };
   }
 
@@ -508,11 +533,15 @@ function sendJson(socket: WebSocket, payload: ReadyMessage | PickMessage | Closi
 
 export class PoolDurableObject {
   private readonly state = new PoolState();
+  private readonly durableState: DurableObjectState;
   private readonly storage: DurableObjectStorage;
+  private readonly notifier: Notifier;
   private loadPromise: Promise<void> | null = null;
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env: NotifyEnv) {
+    this.durableState = state;
     this.storage = state.storage;
+    this.notifier = createNotifier(env, 'fbcoord');
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -568,8 +597,10 @@ export class PoolDurableObject {
       this.loadPromise = (async () => {
         const stored = await this.storage.get<StoredRoster>(ROSTER_KEY);
         this.state.hydrateRoster(stored ?? {});
-        if (this.state.normalizeLoadedRoster()) {
+        const abortedNodes = this.state.normalizeLoadedRoster();
+        if (abortedNodes.length > 0) {
           await this.persistIfNeeded(true);
+          this.scheduleAbortedNotifications(abortedNodes);
         }
       })();
     }
@@ -608,8 +639,23 @@ export class PoolDurableObject {
     if (result.changed) {
       this.broadcastPick();
     }
+    this.scheduleAbortedNotifications(result.aborted_nodes ?? []);
     for (const connection of result.connectionsToClose) {
       connection.close(1001, 'stale');
+    }
+  }
+
+  private scheduleAbortedNotifications(abortedNodes: AbortedNodeNotification[]): void {
+    if (abortedNodes.length === 0 || !this.notifier.enabled()) {
+      return;
+    }
+    for (const node of abortedNodes) {
+      const task = this.notifier.send('pool.node_aborted', 'warn', {
+        'pool.name': 'global',
+        'node.id': node.node_id,
+        cause: node.cause
+      });
+      this.durableState.waitUntil(task);
     }
   }
 
@@ -663,6 +709,7 @@ export class PoolDurableObject {
       if (result.changed) {
         this.broadcastPick();
       }
+      this.scheduleAbortedNotifications(result.aborted_nodes ?? []);
     };
 
     socket.addEventListener('message', event => {

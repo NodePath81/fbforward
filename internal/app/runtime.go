@@ -19,6 +19,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/probe"
 	"github.com/NodePath81/fbforward/internal/resolver"
 	"github.com/NodePath81/fbforward/internal/shaping"
@@ -47,6 +48,8 @@ type Runtime struct {
 	upstreams     []*upstream.Upstream
 	listeners     []closer
 	collector     *measure.Collector
+	notifier      *notify.Client
+	notifyPolicy  *notify.Policy
 	wg            sync.WaitGroup
 }
 
@@ -125,13 +128,40 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		rt.shaper = shaping.NewTrafficShaper(cfg.Shaping, cfg.Forwarding.Listeners, upstreamShaping, logger)
 	}
 
-	manager.SetCallbacks(func(oldTag, newTag string) {
-		if oldTag != newTag {
-			metrics.SetActive(newTag)
+	if cfg.Notify.Enabled {
+		notifyLogger := util.ComponentLogger(logger, util.CompNotify)
+		notifier, err := notify.NewClient(notify.Config{
+			Endpoint:       cfg.Notify.Endpoint,
+			KeyID:          cfg.Notify.KeyID,
+			Token:          cfg.Notify.Token,
+			SourceService:  "fbforward",
+			SourceInstance: cfg.Notify.SourceInstance,
+			Logger:         notifyLogger,
+		})
+		if err != nil {
+			cancel()
+			return nil, err
 		}
-	}, func(tag string, usable bool) {
-		if !usable && cfg.Switching.CloseFlowsOnFailover {
-			status.CloseByUpstream(tag)
+		rt.notifier = notifier
+		rt.notifyPolicy = notify.NewPolicy(notifier, notify.PolicyConfig{
+			StartTime:            time.Now(),
+			CoordinationEndpoint: cfg.Coordination.Endpoint,
+		})
+	}
+
+	manager.SetCallbacks(func(change upstream.ActiveChange) {
+		if change.OldTag != change.NewTag {
+			metrics.SetActive(change.NewTag)
+		}
+		if rt.notifyPolicy != nil {
+			rt.notifyPolicy.HandleActiveChange(change.OldTag, change.NewTag, change.Reason, change.PreviousScore, change.NextScore)
+		}
+	}, func(change upstream.UsabilityChange) {
+		if !change.Usable && cfg.Switching.CloseFlowsOnFailover {
+			status.CloseByUpstream(change.Tag)
+		}
+		if rt.notifyPolicy != nil {
+			rt.notifyPolicy.HandleUsabilityChange(change.Tag, change.Usable, change.Reason)
 		}
 	})
 
@@ -143,6 +173,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	var coordCtrl *coordination.Controller
 	if cfg.Coordination.IsConfigured() {
 		coordCtrl = coordination.NewController(ctx, cfg.Coordination, manager, metrics, util.ComponentLogger(logger, util.CompCoord))
+		if rt.notifyPolicy != nil {
+			coordCtrl.SetConnectionCallback(rt.notifyPolicy.HandleCoordinationConnection)
+		}
 	}
 	ctrl := control.NewControlServer(cfg, manager, metrics, status, coordCtrl, restartFn, logger)
 	if rt.geoipMgr != nil {
@@ -222,8 +255,18 @@ func (r *Runtime) Stop() {
 		_ = r.control.Shutdown(ctx)
 		cancel()
 	}
+	if r.notifyPolicy != nil {
+		r.notifyPolicy.Close()
+	}
 	if r.coord != nil {
 		r.coord.Close()
+	}
+	if r.notifier != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.notifier.Close(ctx); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "notify.shutdown_failed", "error", err)
+		}
+		cancel()
 	}
 	r.wait()
 }

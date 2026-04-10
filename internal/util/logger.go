@@ -28,6 +28,7 @@ const (
 	CompGeoIP      = "geoip"
 	CompIPLog      = "iplog"
 	CompFirewall   = "firewall"
+	CompNotify     = "notify"
 )
 
 func NewLogger(level, format string) *slog.Logger {

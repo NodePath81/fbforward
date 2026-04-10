@@ -41,6 +41,10 @@ describe('PoolState', () => {
 
     expect(result.changed).toBe(true);
     expect(result.connectionsToClose).toEqual([first, second]);
+    expect(result.aborted_nodes).toEqual([
+      { node_id: 'node-1', cause: 'timeout' },
+      { node_id: 'node-2', cause: 'timeout' }
+    ]);
     expect(state.currentPick()).toEqual({ version: 2, upstream: null });
   });
 
@@ -114,7 +118,8 @@ describe('PoolState', () => {
     now = 3_000;
     expect(state.acceptTeardown('node-1', connection)).toEqual({
       changed: true,
-      rosterChanged: true
+      rosterChanged: true,
+      aborted_nodes: []
     });
 
     expect(state.stateSnapshot().nodes).toEqual([
@@ -143,7 +148,11 @@ describe('PoolState', () => {
     now = 4_000;
     expect(state.abortConnection('node-1', connection)).toEqual({
       changed: false,
-      rosterChanged: true
+      rosterChanged: true,
+      aborted_nodes: [{
+        node_id: 'node-1',
+        cause: 'disconnect'
+      }]
     });
 
     expect(state.stateSnapshot().nodes[0]).toEqual({
@@ -196,7 +205,10 @@ describe('PoolState', () => {
       }
     });
 
-    expect(state.normalizeLoadedRoster()).toBe(true);
+    expect(state.normalizeLoadedRoster()).toEqual([{
+      node_id: 'node-1',
+      cause: 'load-normalization'
+    }]);
     expect(state.stateSnapshot().nodes[0]).toEqual({
       node_id: 'node-1',
       status: 'aborted',

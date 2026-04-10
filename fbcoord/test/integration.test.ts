@@ -1,14 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { activeBanKey, AuthGuardDurableObject } from '../src/durable-objects/auth-guard';
 import { AUTHENTICATED_NODE_ID_HEADER } from '../src/durable-objects/pool';
 import { TokenDurableObject } from '../src/durable-objects/token';
 import { createWorker, type Env } from '../src/worker';
-import { FactoryNamespace, jsonResponse, MemoryKV, MemoryStorage, RecordingStub, StaticNamespace } from './support';
+import { createExecutionContext, FactoryNamespace, jsonResponse, MemoryKV, MemoryStorage, RecordingStub, StaticNamespace } from './support';
 
 const BOOTSTRAP_TOKEN = 'bootstrap-token-abcdefghijklmnopqrstuvwxyz123456';
 const ROTATED_TOKEN = 'rotated-token-abcdefghijklmnopqrstuvwxyz789012';
 const TOKEN_PEPPER = 'pepper-abcdefghijklmnopqrstuvwxyz1234567890';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 interface StatePayload {
   pick: {
@@ -75,7 +80,7 @@ function createEnv(state: StatePayload = {
   });
 
   const tokenStore = new TokenDurableObject(
-    { storage: new MemoryStorage() } as DurableObjectState,
+    { storage: new MemoryStorage() } as unknown as DurableObjectState,
     { FBCOORD_TOKEN: BOOTSTRAP_TOKEN, FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER }
   );
   const authKv = new MemoryKV();
@@ -86,7 +91,7 @@ function createEnv(state: StatePayload = {
 
   const authGuardNamespace = new FactoryNamespace(name => {
     const guard = new AuthGuardDurableObject(
-      { storage: new MemoryStorage() } as DurableObjectState,
+      { storage: new MemoryStorage() } as unknown as DurableObjectState,
       { FBCOORD_AUTH_KV: authKv }
     );
     return new RecordingStub(request => guard.fetch(request));
@@ -102,7 +107,11 @@ function createEnv(state: StatePayload = {
       FBCOORD_AUTH_GUARD: authGuardNamespace,
       FBCOORD_AUTH_KV: authKv,
       FBCOORD_TOKEN: BOOTSTRAP_TOKEN,
-      FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER
+      FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER,
+      FBNOTIFY_URL: '',
+      FBNOTIFY_KEY_ID: '',
+      FBNOTIFY_TOKEN: '',
+      FBNOTIFY_SOURCE_INSTANCE: ''
     },
     poolStub,
     authKv
@@ -510,6 +519,146 @@ describe('worker fetch', () => {
       }
     }), env);
     expect(nodeTokenResponse.status).toBe(200);
+  });
+
+  it('emits operator login notifications with raw client location fields', async () => {
+    const { env } = createEnv();
+    env.FBNOTIFY_URL = 'https://notify.example/v1/events';
+    env.FBNOTIFY_KEY_ID = 'notify-key';
+    env.FBNOTIFY_TOKEN = 'notify-token-abcdefghijklmnopqrstuvwxyz123456';
+    env.FBNOTIFY_SOURCE_INSTANCE = 'coord-1';
+    const worker = createWorker();
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'cf-connecting-ip': '203.0.113.20'
+      },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    });
+    Object.defineProperty(request, 'cf', {
+      value: {
+        country: 'US',
+        city: 'Seattle',
+        region: 'Washington'
+      },
+      configurable: true
+    });
+
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(request, env, ctx.ctx);
+    expect(response.status).toBe(200);
+    await ctx.flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0] as unknown[] | undefined;
+    expect(call).toBeDefined();
+    const init = call?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      event_name: 'operator.login',
+      severity: 'info',
+      source: {
+        service: 'fbcoord',
+        instance: 'coord-1'
+      },
+      attributes: {
+        'client.ip': '203.0.113.20',
+        'client.country': 'US',
+        'client.city': 'Seattle',
+        'client.region': 'Washington'
+      }
+    });
+  });
+
+  it('emits operator token rotation notifications on success', async () => {
+    const { env } = createEnv();
+    env.FBNOTIFY_URL = 'https://notify.example/v1/events';
+    env.FBNOTIFY_KEY_ID = 'notify-key';
+    env.FBNOTIFY_TOKEN = 'notify-token-abcdefghijklmnopqrstuvwxyz123456';
+    env.FBNOTIFY_SOURCE_INSTANCE = 'coord-1';
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const worker = createWorker();
+    const loginCtx = createExecutionContext();
+    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env, loginCtx.ctx);
+    expect(loginResponse.status).toBe(200);
+    await loginCtx.flush();
+    const cookie = cookieHeader(loginResponse);
+    fetchMock.mockClear();
+
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request('https://example.com/api/token/rotate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: cookie
+      },
+      body: JSON.stringify({ current_token: BOOTSTRAP_TOKEN, token: ROTATED_TOKEN })
+    }), env, ctx.ctx);
+
+    expect(response.status).toBe(200);
+    await ctx.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const call = fetchMock.mock.calls[0] as unknown[] | undefined;
+    expect(call).toBeDefined();
+    const init = call?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      event_name: 'operator.token_rotated',
+      severity: 'warn',
+      source: {
+        service: 'fbcoord',
+        instance: 'coord-1'
+      },
+      attributes: {}
+    });
+  });
+
+  it('emits operator token rotation notifications and ignores notifier failures', async () => {
+    const { env } = createEnv();
+    env.FBNOTIFY_URL = 'https://notify.example/v1/events';
+    env.FBNOTIFY_KEY_ID = 'notify-key';
+    env.FBNOTIFY_TOKEN = 'notify-token-abcdefghijklmnopqrstuvwxyz123456';
+    env.FBNOTIFY_SOURCE_INSTANCE = 'coord-1';
+    const fetchMock = vi.fn(async () => {
+      throw new Error('notify down');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const worker = createWorker();
+    const loginCtx = createExecutionContext();
+    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env, loginCtx.ctx);
+    expect(loginResponse.status).toBe(200);
+    await loginCtx.flush();
+    const cookie = cookieHeader(loginResponse);
+    fetchMock.mockClear();
+
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request('https://example.com/api/token/rotate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: cookie
+      },
+      body: JSON.stringify({ current_token: BOOTSTRAP_TOKEN, token: ROTATED_TOKEN })
+    }), env, ctx.ctx);
+
+    expect(response.status).toBe(200);
+    await ctx.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const successLogin = await login(worker, env, ROTATED_TOKEN);
+    expect(successLogin.status).toBe(200);
   });
 
   it('rejects invalid origins on mutating endpoints and allows missing Origin', async () => {

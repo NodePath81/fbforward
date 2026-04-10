@@ -17,10 +17,15 @@ interface DurableObjectStorage {
 
 interface DurableObjectState {
   storage: DurableObjectStorage;
+  waitUntil(promise: Promise<unknown>): void;
 }
 
 interface Fetcher {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
+
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
 }
 
 interface KVPutOptions {
@@ -36,6 +41,16 @@ interface KVNamespace {
 
 interface WebSocket {
   accept(): void;
+}
+
+interface IncomingRequestCfProperties {
+  country?: string;
+  city?: string;
+  region?: string;
+}
+
+interface Request {
+  cf?: IncomingRequestCfProperties;
 }
 
 declare const WebSocketPair: {

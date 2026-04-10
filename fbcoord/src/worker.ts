@@ -3,6 +3,7 @@ import { AuthGuardDurableObject, activeBanKey, manualDenyKey, type AuthScope, ty
 import { AUTHENTICATED_NODE_ID_HEADER, PoolDurableObject } from './durable-objects/pool';
 import { RegistryDurableObject } from './durable-objects/registry';
 import { TokenDurableObject } from './durable-objects/token';
+import { createNotifier } from './notify';
 import { clearSessionCookie, createSession, createSessionCookie, SESSION_COOKIE_NAME, validateSession } from './session';
 
 export interface Env {
@@ -13,6 +14,10 @@ export interface Env {
   FBCOORD_AUTH_KV: KVNamespace;
   FBCOORD_TOKEN: string;
   FBCOORD_TOKEN_PEPPER: string;
+  FBNOTIFY_URL?: string;
+  FBNOTIFY_KEY_ID?: string;
+  FBNOTIFY_TOKEN?: string;
+  FBNOTIFY_SOURCE_INSTANCE?: string;
   ASSETS?: Fetcher;
 }
 
@@ -106,6 +111,10 @@ interface ListNodeTokensResponse {
 
 interface BanMarker {
   blocked_until?: number;
+}
+
+interface ExecutionContextLike {
+  waitUntil(promise: Promise<unknown>): void;
 }
 
 function json(data: unknown, status: number = 200, headers?: HeadersInit): Response {
@@ -383,11 +392,38 @@ function withAuthenticatedNodeId(request: Request, nodeId: string): Request {
   return new Request(request, { headers });
 }
 
+function noOpContext(): ExecutionContextLike {
+  return {
+    waitUntil(promise: Promise<unknown>): void {
+      void promise;
+    }
+  };
+}
+
+function loginNotificationAttributes(request: Request): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {};
+  const clientIp = request.headers.get('cf-connecting-ip')?.trim();
+  if (clientIp) {
+    attributes['client.ip'] = clientIp;
+  }
+  if (request.cf?.country) {
+    attributes['client.country'] = request.cf.country;
+  }
+  if (request.cf?.city) {
+    attributes['client.city'] = request.cf.city;
+  }
+  if (request.cf?.region) {
+    attributes['client.region'] = request.cf.region;
+  }
+  return attributes;
+}
+
 function createWorker() {
   return {
-    async fetch(request: Request, env: Env): Promise<Response> {
+    async fetch(request: Request, env: Env, ctx: ExecutionContextLike = noOpContext()): Promise<Response> {
       const url = new URL(request.url);
       const clientKey = extractClientKey(request);
+      const notifier = createNotifier(env, 'fbcoord');
 
       if (url.pathname === '/healthz') {
         return new Response('ok', { status: 200 });
@@ -434,6 +470,7 @@ function createWorker() {
 
         const sessionSecret = await getSessionSecret(env);
         const session = await createSession(sessionSecret);
+        ctx.waitUntil(notifier.send('operator.login', 'info', loginNotificationAttributes(request)));
         return json({ ok: true }, 200, {
           'Set-Cookie': createSessionCookie(session, undefined, secureCookiesFor(request))
         });
@@ -513,6 +550,7 @@ function createWorker() {
           }
 
           const result = await response.json() as RotateTokenResponse;
+          ctx.waitUntil(notifier.send('operator.token_rotated', 'warn'));
           return json({
             ...result.info,
             ...(result.token ? { token: result.token } : {})
