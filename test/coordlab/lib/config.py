@@ -11,6 +11,8 @@ from .state import FirewallFeatureInfo, FirewallRuleInfo, GeoIPFeatureInfo, IPLo
 
 FBCOORD_RUNTIME_DIR = "fbcoord-runtime"
 FBCOORD_SOURCE_DIR = Path(__file__).resolve().parents[3] / "fbcoord"
+FBNOTIFY_RUNTIME_DIR = "fbnotify-runtime"
+FBNOTIFY_SOURCE_DIR = Path(__file__).resolve().parents[3] / "fbnotify"
 MMDB_DIRNAME = "mmdb"
 DATA_DIRNAME = "data"
 GEOIP_ASN_DB_FILENAME = "GeoLite2-ASN.mmdb"
@@ -30,12 +32,21 @@ FIREWALL_RULES = [
     FirewallRuleInfo(action="deny", asn=15169),
     FirewallRuleInfo(action="deny", country="AU"),
 ]
+FBNOTIFY_BUILD_SENTINEL = FBNOTIFY_SOURCE_DIR / "ui/dist/index.html"
 
 
 @dataclass(slots=True)
 class GeneratedTokens:
     tokens: TokenInfo
     operator_pepper: str
+
+
+@dataclass(slots=True)
+class FBNotifyNodeConfig:
+    endpoint: str
+    key_id: str
+    token_env: str
+    source_instance: str
 
 
 def mmdb_dir_for(work_dir: str | Path) -> Path:
@@ -133,6 +144,7 @@ def generate_fbforward_config(
     topology: netns.Topology,
     tokens: TokenInfo,
     work_dir: str | Path,
+    fbnotify: FBNotifyNodeConfig | None = None,
 ) -> Path:
     work_path = Path(work_dir)
     configs_dir = work_path / "configs"
@@ -145,6 +157,20 @@ def generate_fbforward_config(
     node_token = tokens.node_tokens.get(node_name)
     if not node_token:
         raise RuntimeError(f"missing coordlab node token for {node_name}")
+
+    notify_section = ""
+    if fbnotify is not None:
+        notify_section = textwrap.dedent(
+            f"""\
+
+            notify:
+              enabled: true
+              endpoint: {fbnotify.endpoint}
+              key_id: "{fbnotify.key_id}"
+              token_env: "{fbnotify.token_env}"
+              source_instance: {fbnotify.source_instance}
+            """
+        )
 
     rendered = (
         textwrap.dedent(
@@ -200,6 +226,7 @@ def generate_fbforward_config(
               heartbeat_interval: 10s
             """
         )
+        + notify_section
         + "\n"
         + render_node_feature_config(features)
         + "\n\n"
@@ -236,6 +263,30 @@ def prepare_fbcoord_runtime(work_dir: str | Path, operator_token: str, operator_
 
     (runtime_dir / ".dev.vars").write_text(
         f"FBCOORD_TOKEN={operator_token}\nFBCOORD_TOKEN_PEPPER={operator_pepper}\n",
+        encoding="utf-8",
+    )
+    return runtime_dir
+
+
+def prepare_fbnotify_runtime(work_dir: str | Path, operator_token: str, operator_pepper: str) -> Path:
+    work_path = Path(work_dir)
+    runtime_dir = work_path / FBNOTIFY_RUNTIME_DIR
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir)
+
+    shutil.copytree(
+        FBNOTIFY_SOURCE_DIR,
+        runtime_dir,
+        symlinks=True,
+        ignore=shutil.ignore_patterns(".git", ".wrangler", "node_modules", "__pycache__"),
+    )
+
+    node_modules_src = FBNOTIFY_SOURCE_DIR / "node_modules"
+    if node_modules_src.exists():
+        (runtime_dir / "node_modules").symlink_to(node_modules_src)
+
+    (runtime_dir / ".dev.vars").write_text(
+        f"FBNOTIFY_OPERATOR_TOKEN={operator_token}\nFBNOTIFY_TOKEN_PEPPER={operator_pepper}\n",
         encoding="utf-8",
     )
     return runtime_dir

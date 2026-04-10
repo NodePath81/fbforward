@@ -19,6 +19,7 @@ def fake_topology(tmpdir: str) -> Topology:
         "hub": Namespace(name="hub", pid=101, parent=None, role="hub"),
         "hub-up": Namespace(name="hub-up", pid=102, parent="hub", role="hub-up"),
         "fbcoord": Namespace(name="fbcoord", pid=103, parent="hub", role="fbcoord"),
+        "fbnotify": Namespace(name="fbnotify", pid=109, parent="hub", role="fbnotify"),
         "node-1": Namespace(name="node-1", pid=104, parent="hub", role="node"),
         "node-2": Namespace(name="node-2", pid=105, parent="hub", role="node"),
         "upstream-1": Namespace(name="upstream-1", pid=106, parent="hub-up", role="upstream"),
@@ -80,6 +81,32 @@ class ConfigHelpersTest(unittest.TestCase):
         self.assertIn("asn: 15169", rendered)
         self.assertIn("country: AU", rendered)
 
+    def test_generate_fbforward_config_includes_notify_block_when_provided(self) -> None:
+        generated = coordconfig.generate_tokens()
+        generated.tokens.node_tokens["node-1"] = "node-1-token"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            topology = fake_topology(tmpdir)
+            config_path = coordconfig.generate_fbforward_config(
+                "node-1",
+                topology,
+                generated.tokens,
+                tmpdir,
+                fbnotify=coordconfig.FBNotifyNodeConfig(
+                    endpoint="http://10.99.0.30:8787/v1/events",
+                    key_id="notify-key-1",
+                    token_env="FBNOTIFY_TOKEN_NODE_1",
+                    source_instance="node-1",
+                ),
+            )
+            rendered = config_path.read_text(encoding="utf-8")
+
+        self.assertIn("notify:", rendered)
+        self.assertIn("enabled: true", rendered)
+        self.assertIn("endpoint: http://10.99.0.30:8787/v1/events", rendered)
+        self.assertIn('key_id: "notify-key-1"', rendered)
+        self.assertIn('token_env: "FBNOTIFY_TOKEN_NODE_1"', rendered)
+        self.assertIn("source_instance: node-1", rendered)
+
     def test_build_node_feature_info_uses_per_node_db_path_and_curated_firewall_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             node1 = coordconfig.build_node_feature_info("node-1", tmpdir)
@@ -111,6 +138,18 @@ class ConfigHelpersTest(unittest.TestCase):
             )
             self.assertTrue((runtime_dir / "src/worker.ts").exists())
             self.assertTrue((runtime_dir / "node_modules").is_symlink())
+
+    def test_prepare_fbnotify_runtime_writes_dev_vars_and_links_node_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = coordconfig.prepare_fbnotify_runtime(tmpdir, "notify-token", "notify-pepper")
+            self.assertTrue((runtime_dir / ".dev.vars").exists())
+            self.assertEqual(
+                "FBNOTIFY_OPERATOR_TOKEN=notify-token\nFBNOTIFY_TOKEN_PEPPER=notify-pepper\n",
+                (runtime_dir / ".dev.vars").read_text(encoding="utf-8"),
+            )
+            self.assertTrue((runtime_dir / "src/worker.ts").exists())
+            if (coordconfig.FBNOTIFY_SOURCE_DIR / "node_modules").exists():
+                self.assertTrue((runtime_dir / "node_modules").is_symlink())
 
 
 if __name__ == "__main__":

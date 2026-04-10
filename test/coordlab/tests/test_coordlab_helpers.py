@@ -15,14 +15,18 @@ if str(ROOT) not in sys.path:
 from unittest import mock
 
 from coordlab import (
+    FBNOTIFY_NODE_TOKEN_ENVS,
     TTYD_BASE_PORT,
     allocate_live_ttyd_port,
     allocate_ttyd_ports,
     assert_host_ports_available,
+    bootstrap_fbnotify,
+    build_fbnotify_ingress_headers,
     build_ttyd_command,
     cmd_net_up,
     ensure_geoip_mmdbs,
     ensure_fbforward_binaries,
+    ensure_fbnotify_assets,
     fixed_proxy_bindings,
     mint_fbcoord_node_tokens,
     print_basic_status,
@@ -106,6 +110,17 @@ class CoordlabHelpersTest(unittest.TestCase):
         require_tools.assert_called_once_with(["make"])
         run_host.assert_called_once()
 
+    def test_ensure_fbnotify_assets_builds_without_skip(self) -> None:
+        with (
+            mock.patch("coordlab.require_tools") as require_tools,
+            mock.patch("coordlab.run_host") as run_host,
+            mock.patch("pathlib.Path.exists", return_value=True),
+        ):
+            ensure_fbnotify_assets(skip_build=False)
+
+        require_tools.assert_called_once_with(["npm"])
+        run_host.assert_called_once()
+
     def test_assert_host_ports_available_checks_proxy_and_extra_bindings(self) -> None:
         extra = [("ttyd-client-2", "127.0.0.1", TTYD_BASE_PORT)]
         with mock.patch("coordlab.assert_bindings_available") as assert_bindings_available:
@@ -114,6 +129,7 @@ class CoordlabHelpersTest(unittest.TestCase):
         assert_bindings_available.assert_called_once()
         bindings = assert_bindings_available.call_args.args[0]
         self.assertEqual([*fixed_proxy_bindings(), *extra], bindings)
+        self.assertIn(("fbnotify", "127.0.0.1", 18703), fixed_proxy_bindings())
 
     def test_ensure_geoip_mmdbs_downloads_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -291,6 +307,59 @@ class CoordlabHelpersTest(unittest.TestCase):
             ),
             node_request.call_args_list[0],
         )
+
+    def test_bootstrap_fbnotify_creates_capture_route_and_emitter_tokens(self) -> None:
+        with (
+            mock.patch(
+                "coordlab.ns_http_request_with_headers",
+                return_value=(
+                    200,
+                    {"Set-Cookie": "fbnotify_session=test-session; Max-Age=86400; HttpOnly; Secure"},
+                    '{"ok":true}',
+                ),
+            ) as login_request,
+            mock.patch(
+                "coordlab.ns_http_request",
+                side_effect=[
+                    (200, '{"id":"tgt_capture"}'),
+                    (200, '{"id":"route_default"}'),
+                    (200, '{"key_id":"node-1-key","token":"node-1-token"}'),
+                    (200, '{"key_id":"node-2-key","token":"node-2-token"}'),
+                    (200, '{"key_id":"fbcoord-key","token":"fbcoord-token"}'),
+                ],
+            ) as request,
+        ):
+            emitters = bootstrap_fbnotify("http://10.99.0.30:8787", 101, "operator-token")
+
+        self.assertEqual("node-1-key", emitters["node-1"].key_id)
+        self.assertEqual("fbcoord", emitters["fbcoord"].source_service)
+        login_request.assert_called_once()
+        self.assertEqual(
+            mock.call(
+                101,
+                "http://10.99.0.30:8787/api/targets",
+                method="POST",
+                headers={"Content-Type": "application/json", "Cookie": "fbnotify_session=test-session"},
+                body='{"name": "coordlab-capture", "type": "capture", "config": {}}',
+            ),
+            request.call_args_list[0],
+        )
+
+    def test_build_fbnotify_ingress_headers_signs_expected_payload(self) -> None:
+        headers = build_fbnotify_ingress_headers(
+            "key-1",
+            "secret-token",
+            '{"event_name":"demo.test"}',
+            header_timestamp=1775779200,
+        )
+        self.assertEqual("key-1", headers["X-FBNotify-Key-Id"])
+        self.assertEqual("1775779200", headers["X-FBNotify-Timestamp"])
+        self.assertEqual("application/json", headers["Content-Type"])
+        self.assertTrue(headers["X-FBNotify-Signature"])
+
+    def test_fixed_fbnotify_node_token_env_names(self) -> None:
+        self.assertEqual("FBNOTIFY_TOKEN_NODE_1", FBNOTIFY_NODE_TOKEN_ENVS["node-1"])
+        self.assertEqual("FBNOTIFY_TOKEN_NODE_2", FBNOTIFY_NODE_TOKEN_ENVS["node-2"])
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ PHASE1_NAMESPACE_ORDER = (
     ("hub-up", "hub", "hub-up"),
     ("internet", "hub", "internet"),
     ("fbcoord", "hub", "fbcoord"),
+    ("fbnotify", "hub", "fbnotify"),
     ("node-1", "hub", "node"),
     ("node-2", "hub", "node"),
     ("upstream-1", "hub-up", "upstream"),
@@ -27,6 +28,7 @@ LINK_NAME_ORDER = (
     ("internet", "hub-up", "inet-hubup", "hubup-inet"),
     ("hub-up", "upstream-1", "hubup-u1", "upstream1-peer"),
     ("hub-up", "upstream-2", "hubup-u2", "upstream2-peer"),
+    ("hub", "fbnotify", "hub-fbnotify", "fbnotify-peer"),
 )
 PHASE1_LINK_COUNT = len(LINK_NAME_ORDER)
 
@@ -242,7 +244,7 @@ def build_topology(
         for router in router_names:
             enable_forwarding(namespaces[router].pid)
 
-        for leaf in ("fbcoord", "node-1", "node-2"):
+        for leaf in ("fbcoord", "fbnotify", "node-1", "node-2"):
             link = find_link(links, "hub", leaf)
             add_default_route(namespaces[leaf].pid, link.left_ip, link.right_if)
 
@@ -352,6 +354,9 @@ def verify_connectivity(topology: Topology) -> None:
         ("node-2", find_link(topology.links, "hub-up", "upstream-1").right_ip),
         ("fbcoord", find_link(topology.links, "hub-up", "upstream-1").right_ip),
         ("fbcoord", find_link(topology.links, "hub-up", "upstream-2").right_ip),
+        ("fbnotify", find_link(topology.links, "hub-up", "upstream-1").right_ip),
+        ("fbnotify", find_link(topology.links, "hub-up", "upstream-2").right_ip),
+        ("node-1", find_link(topology.links, "hub", "fbnotify").right_ip),
         ("internet", link_hub_internet.left_ip),
         ("internet", link_internet_hubup.right_ip),
     ]

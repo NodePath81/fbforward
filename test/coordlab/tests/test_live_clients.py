@@ -178,7 +178,7 @@ class LiveClientMutationTest(unittest.TestCase):
         self.assertNotIn("client-1", updated.clients)
         self.assertNotIn("client-1", updated.terminals)
         self.assertNotIn("ttyd-client-1", updated.processes)
-        self.assertEqual(9, updated.topology.next_subnet_index)
+        self.assertEqual(10, updated.topology.next_subnet_index)
 
 
 if __name__ == "__main__":

@@ -14,10 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from coordlab import cmd_add_client, cmd_exec, cmd_net_status, cmd_remove_client, cmd_status
+from coordlab import cmd_add_client, cmd_exec, cmd_net_status, cmd_ntfybox_clear, cmd_ntfybox_list, cmd_remove_client, cmd_status
 from lib.locking import acquire_client_mutation_lock
 from lib.state import (
     ClientInfo,
+    FBNotifyEmitterInfo,
+    FBNotifyInfo,
     FirewallFeatureInfo,
     GeoIPFeatureInfo,
     IPLogFeatureInfo,
@@ -52,6 +54,7 @@ def sample_state(workdir: Path) -> LabState:
         },
         proxies={
             "fbcoord": ProxyInfo("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
+            "fbnotify": ProxyInfo("127.0.0.1", 18703, "fbnotify", "127.0.0.1", 8787),
             "node-1": ProxyInfo("127.0.0.1", 18701, "node-1", "127.0.0.1", 8080),
         },
         clients={"client-1": ClientInfo(identity_ip="198.51.100.10")},
@@ -89,6 +92,22 @@ def sample_state(workdir: Path) -> LabState:
             operator_token="operator-token",
             node_tokens={"node-1": "node-1-token"},
         ),
+        fbnotify=FBNotifyInfo(
+            available=True,
+            error="",
+            public_url="http://127.0.0.1:18703",
+            internal_base_url="http://10.99.0.30:8787",
+            internal_ingest_url="http://10.99.0.30:8787/v1/events",
+            operator_token="fbnotify-operator-token",
+            emitters={
+                "node-1": FBNotifyEmitterInfo(
+                    key_id="notify-key-1",
+                    token="fbnotify-secret-node-1",
+                    source_service="fbforward",
+                    source_instance="node-1",
+                )
+            },
+        ),
         topology=TopologyInfo(base_cidr="10.99.0.0/24", next_subnet_index=10),
     )
 
@@ -119,6 +138,8 @@ class CliCommandsTest(unittest.TestCase):
         payload = json.loads(output)
         self.assertTrue(payload["active"])
         self.assertEqual("http://127.0.0.1:18700", payload["service_links"]["fbcoord"])
+        self.assertEqual("http://127.0.0.1:18703", payload["service_links"]["fbnotify"])
+        self.assertTrue(payload["fbnotify"]["available"])
         self.assertEqual("client-1 - 301", payload["terminals"]["client-1"]["label"])
         self.assertTrue(payload["node_features"]["node-1"]["geoip"]["enabled"])
 
@@ -190,6 +211,43 @@ class CliCommandsTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         payload = json.loads(output)
         self.assertEqual("exec requires a command after --", payload["error"])
+
+    def test_ntfybox_list_json_returns_messages(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(workdir=str(self.workdir), json=True)
+        with mock.patch(
+            "coordlab.list_ntfybox_messages",
+            return_value=[{"event_name": "demo.test", "severity": "info"}],
+        ):
+            exit_code, output = self.capture_stdout(cmd_ntfybox_list, args)
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(output)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, payload["count"])
+        self.assertEqual("demo.test", payload["messages"][0]["event_name"])
+
+    def test_ntfybox_clear_json_returns_ok(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(workdir=str(self.workdir), json=True)
+        with mock.patch("coordlab.clear_ntfybox_messages") as clear:
+            exit_code, output = self.capture_stdout(cmd_ntfybox_clear, args)
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(output)
+        self.assertEqual({"ok": True}, payload)
+        clear.assert_called_once()
+
+    def test_ntfybox_commands_report_unavailable(self) -> None:
+        state = sample_state(self.workdir)
+        state.fbnotify.available = False
+        self.write_state(state)
+        args = argparse.Namespace(workdir=str(self.workdir), json=True)
+        exit_code, output = self.capture_stdout(cmd_ntfybox_list, args)
+
+        self.assertEqual(1, exit_code)
+        payload = json.loads(output)
+        self.assertEqual("fbnotify is not available for this lab run", payload["error"])
 
 
 if __name__ == "__main__":

@@ -70,6 +70,17 @@ class ReadinessHelpersTest(unittest.TestCase):
         self.assertEqual(2, payload["node_count"])
         self.assertEqual({"Cookie": "fbcoord_session=test-session"}, client.last_get_headers)
 
+    def test_verify_fbnotify_api_fetches_capture_messages(self) -> None:
+        login = mock.Mock(status_code=200, text='{"ok":true}')
+        login.headers = {"set-cookie": "fbnotify_session=test-session; Max-Age=86400; HttpOnly; Secure"}
+        capture = mock.Mock(status_code=200)
+        capture.json.return_value = {"messages": []}
+        client = FakeClient(get_responses=[capture], post_responses=[login])
+        with mock.patch("lib.readiness.httpx.Client", return_value=client):
+            payload = readiness.verify_fbnotify_api("http://127.0.0.1:18703", "operator-token")
+        self.assertEqual([], payload["messages"])
+        self.assertEqual({"Cookie": "fbnotify_session=test-session"}, client.last_get_headers)
+
 
 if __name__ == "__main__":
     unittest.main()

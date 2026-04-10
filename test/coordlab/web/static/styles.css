@@ -349,6 +349,20 @@ button {
   transition: border-color var(--fast), box-shadow var(--fast), background var(--fast), transform var(--fast);
 }
 
+a.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 95, 82, 0.26);
+  padding: 10px 12px;
+  background: transparent;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  transition: border-color var(--fast), background var(--fast), transform var(--fast);
+}
+
 select:hover,
 input:hover {
   border-color: var(--line-hover);
@@ -394,6 +408,12 @@ button.ghost:hover {
   background: rgba(31, 95, 82, 0.06);
   border-color: rgba(31, 95, 82, 0.4);
   box-shadow: none;
+  transform: translateY(-1px);
+}
+
+a.ghost:hover {
+  background: rgba(31, 95, 82, 0.06);
+  border-color: rgba(31, 95, 82, 0.4);
   transform: translateY(-1px);
 }
 

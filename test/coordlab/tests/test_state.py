@@ -11,6 +11,8 @@ if str(ROOT) not in sys.path:
 
 from lib.state import (
     ClientInfo,
+    FBNotifyEmitterInfo,
+    FBNotifyInfo,
     FirewallFeatureInfo,
     FirewallRuleInfo,
     GeoIPFeatureInfo,
@@ -104,6 +106,28 @@ class StateRoundTripTest(unittest.TestCase):
                 operator_token="operator-token",
                 node_tokens={"node-1": "node-1-token", "node-2": "node-2-token"},
             ),
+            fbnotify=FBNotifyInfo(
+                available=True,
+                error="",
+                public_url="http://127.0.0.1:18703",
+                internal_base_url="http://10.99.0.30:8787",
+                internal_ingest_url="http://10.99.0.30:8787/v1/events",
+                operator_token="fbnotify-operator-token",
+                emitters={
+                    "node-1": FBNotifyEmitterInfo(
+                        key_id="key-node-1",
+                        token="token-node-1",
+                        source_service="fbforward",
+                        source_instance="node-1",
+                    ),
+                    "fbcoord": FBNotifyEmitterInfo(
+                        key_id="key-fbcoord",
+                        token="token-fbcoord",
+                        source_service="fbcoord",
+                        source_instance="fbcoord",
+                    ),
+                },
+            ),
             topology=TopologyInfo(
                 base_cidr="10.99.0.0/24",
                 next_subnet_index=8,
@@ -140,6 +164,10 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.shaping.targets["upstream-1"].device, loaded.shaping.targets["upstream-1"].device)
         self.assertEqual(state.tokens.operator_token, loaded.tokens.operator_token)
         self.assertEqual(state.tokens.node_tokens, loaded.tokens.node_tokens)
+        self.assertTrue(loaded.fbnotify.available)
+        self.assertEqual("http://127.0.0.1:18703", loaded.fbnotify.public_url)
+        self.assertEqual("key-node-1", loaded.fbnotify.emitters["node-1"].key_id)
+        self.assertEqual("fbcoord", loaded.fbnotify.emitters["fbcoord"].source_service)
         self.assertEqual(state.topology.links[0].right_if, loaded.topology.links[0].right_if)
         self.assertEqual(state.topology.next_subnet_index, loaded.topology.next_subnet_index)
         self.assertEqual(state.node_features["node-1"].geoip.asn_db_path, loaded.node_features["node-1"].geoip.asn_db_path)

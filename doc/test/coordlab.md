@@ -1,6 +1,6 @@
 # coordlab manual test framework
 
-This document describes `coordlab`, the retained Python-based manual testing environment for `fbcoord` and coordinated `fbforward` nodes.
+This document describes `coordlab`, the retained Python-based manual testing environment for `fbcoord`, coordinated `fbforward` nodes, and optional `fbnotify` integration.
 
 coordlab is intended for interactive operator and developer testing on one Linux host, with a browser-accessible dashboard and explicit control over node-side and upstream-side degradation.
 
@@ -11,11 +11,13 @@ coordlab is intended for interactive operator and developer testing on one Linux
 coordlab provides a reusable local lab that can:
 
 - start a local `fbcoord` instance with `wrangler dev`
+- optionally start a local `fbnotify` instance with `wrangler dev`
 - start two real `fbforward` nodes against that coordinator
 - start two real `fbmeasure` upstreams
 - start zero or more client namespaces for manual end-to-end traffic generation
 - expose `fbcoord` and both node control planes back to the host
 - expose browser terminals for client and upstream namespaces
+- expose the `fbnotify` capture inbox through CLI and dashboard helpers when available
 - apply live delay and packet-loss shaping on both node-side and upstream-side links
 - disconnect and reconnect individual node-side and upstream-side links
 - expose a browser dashboard for lab status, coordination state, shaping, and log viewing
@@ -49,9 +51,11 @@ coordlab is intended for one Linux development host and expects the same baselin
 - `ttyd` for browser terminals
 - `make` for default `up` builds
 - `npm` plus `fbcoord/node_modules` for the `fbcoord` UI build
+- `npm` plus `fbnotify/node_modules` only when notification integration should be enabled in the lab
 - `tc` only when using shaping commands
 
-If `up` is run without `--skip-build`, coordlab rebuilds `fbforward`, `fbmeasure`, and the `fbcoord` UI before lab startup. If `--skip-build` is used, the existing binaries and built `fbcoord` assets must already exist.
+If `up` is run without `--skip-build`, coordlab rebuilds `fbforward`, `fbmeasure`, and the `fbcoord` UI before lab startup, and also tries to build `fbnotify` when its dependencies are present. If `--skip-build` is used, the existing binaries and built `fbcoord` and `fbnotify` assets must already exist.
+Missing `fbnotify` dependencies or other `fbnotify`-specific startup failures do not abort the whole lab; coordlab records degraded notification state and continues without notification wiring.
 
 ### CLI conventions
 
@@ -81,6 +85,8 @@ Common behavior:
 | `add-client` | Add one client namespace to a running Phase 5 lab | `--workdir`, `--client NAME=IP`, `--json` |
 | `remove-client` | Remove one client namespace from a running Phase 5 lab | `--workdir`, `--name`, `--json` |
 | `exec` | Run one command inside a saved namespace using `nsenter` | `--workdir`, `--ns`, `--json`, `-- COMMAND ...` |
+| `ntfybox-list` | List messages captured by the default `fbnotify` capture target | `--workdir`, `--json` |
+| `ntfybox-clear` | Clear messages captured by the default `fbnotify` capture target | `--workdir`, `--json` |
 | `shaping-status` | Show current live shaping for all targets | `--workdir` |
 | `shaping-set` | Apply delay and/or loss to one target | `--workdir`, `--target`, `--delay-ms`, `--loss-pct` |
 | `shaping-clear` | Remove shaping from one target | `--workdir`, `--target` |
@@ -124,13 +130,15 @@ Usage:
 What `up` does:
 
 - validates all requested client specs
-- checks the fixed proxy ports (`18700`-`18702`) and the ttyd port set starting at `18900`
+- checks the fixed proxy ports (`18700`-`18703`) and the ttyd port set starting at `18900`
 - rebuilds binaries and `fbcoord` UI unless `--skip-build` is set
+- tries to build and start `fbnotify` before the rest of the Phase 5 services
 - downloads missing MMDB files into `mmdb/`
 - creates the namespace topology
+- when `fbnotify` is available, bootstraps one default capture target, one global default route, and one emitter token each for `node-1`, `node-2`, and `fbcoord`
 - starts `fbcoord`, logs in with the generated operator token, and mints one
   node token per managed node
-- generates node configs into `configs/` using those per-node tokens
+- generates node configs into `configs/` using those per-node tokens, and injects `notify` config only when `fbnotify` is available
 - starts `fbmeasure`, `fbforward`, the host proxy daemon, and ttyd terminals
 - switches both nodes to coordination mode and verifies readiness
 - writes the final state to `state.json`
@@ -141,6 +149,10 @@ Important notes:
 - `up` starts ttyd terminals for all configured clients plus `upstream-1` and `upstream-2`
 - ttyd ports are deterministic at startup: sorted clients first, then sorted upstream namespaces
 - GeoIP MMDB downloads are cached per file; existing files are reused
+- `fbnotify` has two lab-facing URLs when available:
+  - internal emitter URL: `http://<fbnotify-ip>:8787/v1/events`
+  - public operator URL: `http://127.0.0.1:18703`
+- if any `fbnotify`-specific build, startup, health, or bootstrap step fails, coordlab still starts successfully in degraded mode without notification wiring
 
 Typical usage:
 
@@ -157,7 +169,7 @@ Usage:
 .venv/bin/python test/coordlab/coordlab.py down [--workdir PATH]
 ```
 
-`down` stops the proxy daemon, ttyd, `fbcoord`, `fbforward`, `fbmeasure`, and finally the namespace tree. It then marks the saved state inactive.
+`down` stops the proxy daemon, ttyd, `fbnotify` when present, `fbcoord`, `fbforward`, `fbmeasure`, and finally the namespace tree. It removes `fbnotify-runtime/` if present and then marks the saved state inactive.
 
 #### `status`
 
@@ -170,6 +182,7 @@ Usage:
 `status` renders the saved Phase 5 view of the lab:
 
 - host-facing service URLs
+- `fbnotify` availability, URLs, and degraded error state
 - process and namespace liveness
 - proxy mappings
 - configured clients and terminal URLs
@@ -179,6 +192,42 @@ Usage:
 This command is useful both while the lab is active and after teardown, because it shows the saved state along with current liveness.
 
 With `--json`, `status` emits the same derived payload shape used by `GET /api/status`. This JSON is intended for scripts and agents, not as a raw dump of `state.json`.
+
+#### `ntfybox-list`
+
+Usage:
+
+```bash
+.venv/bin/python test/coordlab/coordlab.py ntfybox-list [--workdir PATH] [--json]
+```
+
+`ntfybox-list` reads the `fbnotify` capture inbox through the public `fbnotify` API. It only works when the current lab run has `fbnotify` available.
+
+With `--json`, it returns:
+
+```json
+{"ok":true,"count":1,"messages":[...]}
+```
+
+When `fbnotify` is unavailable, it exits non-zero and reports:
+
+```json
+{"error":"fbnotify is not available for this lab run"}
+```
+
+#### `ntfybox-clear`
+
+Usage:
+
+```bash
+.venv/bin/python test/coordlab/coordlab.py ntfybox-clear [--workdir PATH] [--json]
+```
+
+`ntfybox-clear` clears the same capture inbox. With `--json`, it returns:
+
+```json
+{"ok":true}
+```
 
 #### `add-client`
 
@@ -356,6 +405,7 @@ coordlab stores runtime artifacts under a work directory, defaulting to `/tmp/co
 ```
 
 `up` always rebuilds `fbforward`, `fbmeasure`, and the `fbcoord` UI unless `--skip-build` is explicitly provided.
+When `fbnotify/node_modules` is present, it also rebuilds the standalone `fbnotify` Worker and UI.
 It also ensures the GeoIP MMDB cache is present under the work directory before node startup.
 
 The work directory contains:
@@ -366,6 +416,7 @@ The work directory contains:
 - `mmdb/` — cached GeoIP MMDB files used by both nodes
 - `data/` — SQLite parent directory for per-node IP log databases
 - `fbcoord-runtime/` — isolated runtime copy used by `wrangler dev`
+- `fbnotify-runtime/` — isolated runtime copy used by `wrangler dev` when `fbnotify` is started
 
 ### Common CLI workflows
 
@@ -408,6 +459,13 @@ Run a one-off command in a saved namespace:
 .venv/bin/python test/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ip route
 ```
 
+Inspect or clear captured notifications:
+
+```bash
+.venv/bin/python test/coordlab/coordlab.py ntfybox-list --workdir /tmp/coordlab-phase5 --json
+.venv/bin/python test/coordlab/coordlab.py ntfybox-clear --workdir /tmp/coordlab-phase5 --json
+```
+
 ---
 
 ## 3. Topology and services
@@ -418,6 +476,7 @@ coordlab builds a fixed service-side topology with an optional client-side exten
 - `hub-up`
 - `internet`
 - `fbcoord`
+- `fbnotify`
 - `node-1`
 - `node-2`
 - `upstream-1`
@@ -433,6 +492,7 @@ When `up` succeeds, coordlab manages:
 
 - `fbmeasure-upstream-1`
 - `fbmeasure-upstream-2`
+- `fbnotify` when available
 - `fbcoord`
 - `fbforward-node-1`
 - `fbforward-node-2`
@@ -443,8 +503,14 @@ Host-facing access points:
 - `http://127.0.0.1:18700` — `fbcoord`
 - `http://127.0.0.1:18701` — node-1 control/UI/metrics
 - `http://127.0.0.1:18702` — node-2 control/UI/metrics
+- `http://127.0.0.1:18703` — `fbnotify` when available
 - `http://127.0.0.1:18800` — coordlab dashboard when `web` is running
 - `http://127.0.0.1:18900+` — ttyd terminals for configured client namespaces and upstream namespaces
+
+`fbnotify` also has an internal lab-only address used by emitters:
+
+- `http://<fbnotify-ip>:8787` — `fbnotify` Worker inside the `fbnotify` namespace
+- `http://<fbnotify-ip>:8787/v1/events` — direct ingress URL used by `fbforward` and `fbcoord` when notification wiring is enabled
 
 Each ttyd terminal launches `/bin/bash --noprofile --norc -i` with `PS1` set to `<namespace>@\w$ ` so the namespace identity is always visible in the prompt.
 The dashboard labels each Web Shell entry as `NS - PID`, for example `client-1 - 12345`.
@@ -503,6 +569,7 @@ The generated firewall defaults are intentionally simple and testable:
 - terminal endpoints for client and upstream namespaces
 - shaping topology (target name, router namespace, and shaped device for both shaping axes)
 - generated control token, fbcoord operator token, and per-node fbcoord tokens
+- dedicated `fbnotify` state, including availability, URLs, the stored `fbnotify` operator token, and per-emitter key/token metadata
 - persisted per-node feature summaries for GeoIP, IP log, and firewall
 - topology link metadata
 - the next `/30` transport allocation index used for live client additions
@@ -525,6 +592,7 @@ It serves:
 - `GET /` — single-page dashboard
 - `GET /api/status`
 - `GET /api/coordination`
+- `GET /api/ntfybox`
 - `POST /api/clients`
 - `DELETE /api/clients/<name>`
 - `GET /api/shaping`
@@ -533,6 +601,7 @@ It serves:
 - `DELETE /api/shaping`
 - `GET /api/link-state`
 - `PUT /api/link-state/<target>`
+- `DELETE /api/ntfybox`
 - `GET /api/logs/<process>?lines=N`
 
 The dashboard does not own any background state. It reads the current `state.json` on each request and talks to the live lab through the existing host proxies.
@@ -544,6 +613,7 @@ The web UI and the CLI now share the same derived status model. `GET /api/status
 - Lab status
 - Client management
 - Coordination state
+- Notifications
 - Network topology
 - Traffic shaping
 - Service links
@@ -556,7 +626,9 @@ Disconnect is modeled separately from shaping:
 - disconnect is a hard partition using interface admin down/up
 - shaping values remain visible while disconnected and are restored when the link is reconnected
 
-After the lab has been started, the dashboard is the primary operator interface for normal manual testing. The CLI remains responsible for lifecycle commands such as `up`, `down`, and `web`; the web UI handles routine client add/remove, service access, shaping, link-state, and log viewing.
+After the lab has been started, the dashboard is the primary operator interface for normal manual testing. The CLI remains responsible for lifecycle commands such as `up`, `down`, and `web`; the web UI handles routine client add/remove, service access, shaping, link-state, log viewing, and notification inbox inspection.
+
+The Notifications panel is backed by the default `fbnotify` capture route when available. It supports recent-message viewing, clearing the capture inbox, unavailable and degraded states, and linking out to the full `fbnotify` UI through the shared Service Links area.
 
 Phase 3 does not add dedicated dashboard panels for GeoIP, IP log, or firewall. Operators should use the existing node service links to reach each node's native UI and RPC surface for:
 
@@ -592,7 +664,8 @@ Typical manual smoke:
 .venv/bin/python test/coordlab/coordlab.py up --workdir /tmp/coordlab-phase5
 .venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
 # open http://127.0.0.1:18800
-# add clients from the dashboard, then use the page for shaping, link-state control, service links, terminal access, and log viewing
+# add clients from the dashboard, then use the page for shaping, link-state control, service links, terminal access, log viewing, and the Notifications panel
+# if fbnotify is available, use ntfybox-list/ntfybox-clear or the dashboard panel to inspect captured notifications
 # open the node UI / RPC through the existing service links for GeoIP, IP log, and firewall verification
 .venv/bin/python test/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```

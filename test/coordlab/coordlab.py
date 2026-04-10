@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import importlib.util
 import ipaddress
 import json
@@ -15,7 +18,10 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from secrets import token_hex
 from typing import Iterable
+
+import httpx
 
 from lib import config as coordconfig
 from lib import netns
@@ -25,6 +31,8 @@ from lib.process import ProcessManager, is_alive, terminate_pid, terminate_proce
 from lib.proxy import run_proxy_daemon
 from lib.state import (
     ClientInfo,
+    FBNotifyEmitterInfo,
+    FBNotifyInfo,
     NodeFeatureInfo,
     LabState,
     LinkInfo,
@@ -47,11 +55,13 @@ STATE_FILENAME = "state.json"
 FBFORWARD_BIN = REPO_ROOT / "build/bin/fbforward"
 FBMEASURE_BIN = REPO_ROOT / "build/bin/fbmeasure"
 FBCOORD_BUILD_SENTINEL = REPO_ROOT / "fbcoord/ui/dist/index.html"
+FBNOTIFY_BUILD_SENTINEL = coordconfig.FBNOTIFY_BUILD_SENTINEL
 VENV_PYTHON = REPO_ROOT / ".venv/bin/python"
 REQUIREMENTS_FILE = REPO_ROOT / "test/coordlab/requirements.txt"
 CONFIGS_DIRNAME = "configs"
 LOGS_DIRNAME = "logs"
 RUNTIME_DIRNAME = coordconfig.FBCOORD_RUNTIME_DIR
+FBNOTIFY_RUNTIME_DIRNAME = coordconfig.FBNOTIFY_RUNTIME_DIR
 POLL_INTERVAL_SEC = 0.5
 READINESS_TIMEOUT_SEC = 30.0
 PROXY_PROCESS_NAME = "coordlab-proxy"
@@ -60,6 +70,14 @@ PROXY_SPECS = {
     "fbcoord": ("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
     "node-1": ("127.0.0.1", 18701, "node-1", "127.0.0.1", 8080),
     "node-2": ("127.0.0.1", 18702, "node-2", "127.0.0.1", 8080),
+    "fbnotify": ("127.0.0.1", 18703, "fbnotify", "127.0.0.1", 8787),
+}
+FBNOTIFY_SOURCE_INSTANCE = "fbcoord"
+FBNOTIFY_TARGET_NAME = "coordlab-capture"
+FBNOTIFY_ROUTE_NAME = "coordlab-default"
+FBNOTIFY_NODE_TOKEN_ENVS = {
+    "node-1": "FBNOTIFY_TOKEN_NODE_1",
+    "node-2": "FBNOTIFY_TOKEN_NODE_2",
 }
 
 HTTP_HELPER = textwrap.dedent(
@@ -127,6 +145,10 @@ def runtime_dir_for(workdir: Path) -> Path:
     return workdir / RUNTIME_DIRNAME
 
 
+def fbnotify_runtime_dir_for(workdir: Path) -> Path:
+    return workdir / FBNOTIFY_RUNTIME_DIRNAME
+
+
 def mmdb_dir_for(workdir: Path) -> Path:
     return coordconfig.mmdb_dir_for(workdir)
 
@@ -178,6 +200,7 @@ def build_state(
     node_features: dict[str, NodeFeatureInfo] | None = None,
     shaping: ShapingInfo | None = None,
     tokens: TokenInfo | None = None,
+    fbnotify: FBNotifyInfo | None = None,
 ) -> LabState:
     namespaces = {
         name: NamespaceInfo(pid=ns.pid, parent=ns.parent, role=ns.role)
@@ -212,6 +235,7 @@ def build_state(
         node_features=node_features or {},
         shaping=shaping or build_shaping_info(topology),
         tokens=tokens or TokenInfo(),
+        fbnotify=fbnotify or FBNotifyInfo(),
         topology=TopologyInfo(
             base_cidr=topology.base_cidr,
             links=links,
@@ -324,12 +348,23 @@ def print_basic_status(state: LabState) -> None:
             print(f"  operator_token={state.tokens.operator_token}")
         for node_id, token in sorted(state.tokens.node_tokens.items()):
             print(f"  node_token[{node_id}]={token}")
+    if state.fbnotify.public_url or state.fbnotify.error:
+        status = "available" if state.fbnotify.available else "degraded"
+        print("fbnotify:")
+        print(f"  status={status}")
+        if state.fbnotify.public_url:
+            print(f"  public_url={state.fbnotify.public_url}")
+        if state.fbnotify.internal_base_url:
+            print(f"  internal_url={state.fbnotify.internal_base_url}")
+        if state.fbnotify.error:
+            print(f"  error={state.fbnotify.error}")
     print("artifacts:")
     print(f"  configs={configs_dir_for(workdir)}")
     print(f"  data={data_dir_for(workdir)}")
     print(f"  logs={logs_dir_for(workdir)}")
     print(f"  mmdb={mmdb_dir_for(workdir)}")
     print(f"  fbcoord_runtime={runtime_dir_for(workdir)}")
+    print(f"  fbnotify_runtime={fbnotify_runtime_dir_for(workdir)}")
     print(f"  state={state_path_for(workdir)}")
 
 
@@ -474,6 +509,17 @@ def ensure_fbcoord_assets(skip_build: bool) -> None:
     run_host(["npm", "--prefix", "fbcoord", "run", "build"], cwd=REPO_ROOT)
 
 
+def ensure_fbnotify_assets(skip_build: bool) -> None:
+    if not (coordconfig.FBNOTIFY_SOURCE_DIR / "node_modules").exists():
+        raise RuntimeError("fbnotify/node_modules is missing; run `npm --prefix fbnotify install` before coordlab up")
+    if skip_build:
+        if not FBNOTIFY_BUILD_SENTINEL.exists():
+            raise RuntimeError(f"missing fbnotify build output with --skip-build: {FBNOTIFY_BUILD_SENTINEL}")
+        return
+    require_tools(["npm"])
+    run_host(["npm", "--prefix", "fbnotify", "run", "build"], cwd=REPO_ROOT)
+
+
 def download_geoip_mmdb(url: str, target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
@@ -547,8 +593,8 @@ def wrangler_command() -> list[str]:
     raise RuntimeError("wrangler is not available and npx is missing")
 
 
-def validate_fbforward_config(config_path: Path) -> None:
-    run_host([str(FBFORWARD_BIN), "check", "--config", str(config_path)])
+def validate_fbforward_config(config_path: Path, env: dict[str, str] | None = None) -> None:
+    run_host([str(FBFORWARD_BIN), "check", "--config", str(config_path)], env=env)
 
 
 def log_excerpt(log_path: str, *, lines: int = 20) -> str:
@@ -616,9 +662,23 @@ def fbcoord_namespace_base_url(topology: netns.Topology) -> str:
     return f"http://{fbcoord_ip}:8787"
 
 
+def fbnotify_namespace_base_url(topology: netns.Topology) -> str:
+    fbnotify_ip = netns.find_link(topology.links, "hub", "fbnotify").right_ip
+    return f"http://{fbnotify_ip}:8787"
+
+
+def fbnotify_ingest_url(topology: netns.Topology) -> str:
+    return f"{fbnotify_namespace_base_url(topology)}/v1/events"
+
+
 def extract_session_cookie(response_headers: dict[str, str]) -> str:
     header = response_headers.get("Set-Cookie") or response_headers.get("set-cookie") or ""
     return header.split(";", 1)[0].strip()
+
+
+def fbnotify_public_url() -> str:
+    listen_host, host_port, _, _, _ = PROXY_SPECS["fbnotify"]
+    return f"http://{listen_host}:{host_port}"
 
 
 def mint_fbcoord_node_tokens(base_url: str, request_pid: int, operator_token: str, node_ids: Iterable[str]) -> dict[str, str]:
@@ -658,6 +718,135 @@ def mint_fbcoord_node_tokens(base_url: str, request_pid: int, operator_token: st
         minted_tokens[node_id] = token
 
     return minted_tokens
+
+
+def build_fbnotify_ingress_headers(key_id: str, token: str, raw_body: str, *, header_timestamp: int | None = None) -> dict[str, str]:
+    ts = int(time.time()) if header_timestamp is None else int(header_timestamp)
+    payload = f"{ts}.{raw_body}".encode("utf-8")
+    digest = hmac.new(token.encode("utf-8"), payload, hashlib.sha256).digest()
+    signature = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return {
+        "Content-Type": "application/json",
+        "X-FBNotify-Key-Id": key_id,
+        "X-FBNotify-Timestamp": str(ts),
+        "X-FBNotify-Signature": signature,
+    }
+
+
+def emit_fbnotify_event(url: str, key_id: str, token: str, event: dict, *, request_pid: int | None = None) -> tuple[int, str]:
+    raw_body = json.dumps(event)
+    headers = build_fbnotify_ingress_headers(key_id, token, raw_body)
+    if request_pid is not None:
+        return ns_http_request(request_pid, url, method="POST", headers=headers, body=raw_body)
+    with httpx.Client(timeout=5.0, follow_redirects=True) as client:
+        response = client.post(url, headers=headers, content=raw_body)
+        return response.status_code, response.text
+
+
+def fbnotify_login_in_namespace(base_url: str, request_pid: int, operator_token: str) -> str:
+    login_status, login_headers, login_body = ns_http_request_with_headers(
+        request_pid,
+        f"{base_url.rstrip('/')}/api/auth/login",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body=json.dumps({"token": operator_token}),
+    )
+    if login_status != 200:
+        raise RuntimeError(f"fbnotify login failed: status={login_status} body={login_body.strip()}")
+
+    session_cookie = extract_session_cookie(login_headers)
+    if not session_cookie:
+        raise RuntimeError("fbnotify login did not return a session cookie")
+    return session_cookie
+
+
+def bootstrap_fbnotify(base_url: str, request_pid: int, operator_token: str) -> dict[str, FBNotifyEmitterInfo]:
+    session_cookie = fbnotify_login_in_namespace(base_url, request_pid, operator_token)
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": session_cookie,
+    }
+
+    target_status, target_body = ns_http_request(
+        request_pid,
+        f"{base_url.rstrip('/')}/api/targets",
+        method="POST",
+        headers=headers,
+        body=json.dumps({"name": FBNOTIFY_TARGET_NAME, "type": "capture", "config": {}}),
+    )
+    if target_status != 200:
+        raise RuntimeError(f"fbnotify target bootstrap failed: status={target_status} body={target_body.strip()}")
+    target_payload = json.loads(target_body)
+    target_id = target_payload.get("id")
+    if not isinstance(target_id, str) or not target_id:
+        raise RuntimeError(f"fbnotify target bootstrap returned invalid id: {target_payload!r}")
+
+    route_status, route_body = ns_http_request(
+        request_pid,
+        f"{base_url.rstrip('/')}/api/routes",
+        method="POST",
+        headers=headers,
+        body=json.dumps(
+            {
+                "name": FBNOTIFY_ROUTE_NAME,
+                "source_service": None,
+                "event_name": None,
+                "target_ids": [target_id],
+            }
+        ),
+    )
+    if route_status != 200:
+        raise RuntimeError(f"fbnotify route bootstrap failed: status={route_status} body={route_body.strip()}")
+
+    emitter_specs = {
+        "node-1": ("fbforward", "node-1"),
+        "node-2": ("fbforward", "node-2"),
+        "fbcoord": ("fbcoord", FBNOTIFY_SOURCE_INSTANCE),
+    }
+    emitters: dict[str, FBNotifyEmitterInfo] = {}
+    for emitter_name, (source_service, source_instance) in emitter_specs.items():
+        status, body = ns_http_request(
+            request_pid,
+            f"{base_url.rstrip('/')}/api/node-tokens",
+            method="POST",
+            headers=headers,
+            body=json.dumps(
+                {
+                    "source_service": source_service,
+                    "source_instance": source_instance,
+                }
+            ),
+        )
+        if status != 200:
+            raise RuntimeError(f"fbnotify node-token mint failed for {emitter_name}: status={status} body={body.strip()}")
+        payload = json.loads(body)
+        key_id = payload.get("key_id")
+        token = payload.get("token")
+        if not isinstance(key_id, str) or not key_id or not isinstance(token, str) or not token:
+            raise RuntimeError(f"fbnotify node-token mint returned invalid payload for {emitter_name}: {payload!r}")
+        emitters[emitter_name] = FBNotifyEmitterInfo(
+            key_id=key_id,
+            token=token,
+            source_service=source_service,
+            source_instance=source_instance,
+        )
+
+    return emitters
+
+
+def verify_fbnotify_health_in_namespace(topology: netns.Topology, manager: ProcessManager) -> None:
+    fbnotify_url = fbnotify_namespace_base_url(topology)
+    node_pid = topology.namespaces["node-1"].pid
+
+    def check() -> bool:
+        managed = manager.get("fbnotify")
+        if managed is None or not manager.is_alive("fbnotify"):
+            excerpt = log_excerpt(managed.log_path) if managed is not None else "<process not started>"
+            raise RuntimeError(f"fbnotify exited early\n{excerpt}")
+        status, body = ns_http_request(node_pid, f"{fbnotify_url}/healthz")
+        return status == 200 and body.strip() == "ok"
+
+    wait_for_condition(READINESS_TIMEOUT_SEC, check, "fbnotify did not become healthy from node-1 namespace")
 
 
 def wait_for_condition(timeout_sec: float, poll_fn, failure_message: str) -> None:
@@ -762,7 +951,7 @@ def apply_coordination_mode(node_url: str, control_token: str, *, skip_build: bo
         raise
 
 
-def build_proxy_infos() -> dict[str, ProxyInfo]:
+def build_proxy_infos(*, include_fbnotify: bool) -> dict[str, ProxyInfo]:
     return {
         name: ProxyInfo(
             listen_host=listen_host,
@@ -772,6 +961,7 @@ def build_proxy_infos() -> dict[str, ProxyInfo]:
             target_port=target_port,
         )
         for name, (listen_host, host_port, target_ns, target_host, target_port) in PROXY_SPECS.items()
+        if include_fbnotify or name != "fbnotify"
     }
 
 
@@ -984,6 +1174,52 @@ def load_active_state(workdir: Path) -> LabState:
     return state
 
 
+def require_fbnotify_available(state: LabState) -> FBNotifyInfo:
+    if not state.fbnotify.available or not state.fbnotify.public_url:
+        raise RuntimeError("fbnotify is not available for this lab run")
+    return state.fbnotify
+
+
+def fbnotify_host_session_cookie(info: FBNotifyInfo) -> str:
+    with httpx.Client(timeout=5.0, follow_redirects=True) as client:
+        response = client.post(f"{info.public_url.rstrip('/')}/api/auth/login", json={"token": info.operator_token})
+    if response.status_code != 200:
+        raise RuntimeError(f"fbnotify login failed: status={response.status_code} body={response.text.strip()}")
+    session_cookie = response.headers.get("set-cookie", "").split(";", 1)[0].strip()
+    if not session_cookie:
+        raise RuntimeError("fbnotify login did not return a session cookie")
+    return session_cookie
+
+
+def list_ntfybox_messages(state: LabState) -> list[dict]:
+    info = require_fbnotify_available(state)
+    session_cookie = fbnotify_host_session_cookie(info)
+    with httpx.Client(timeout=5.0, follow_redirects=True) as client:
+        response = client.get(
+            f"{info.public_url.rstrip('/')}/api/capture/messages",
+            headers={"Cookie": session_cookie},
+        )
+    if response.status_code != 200:
+        raise RuntimeError(f"fbnotify capture fetch failed: status={response.status_code} body={response.text.strip()}")
+    payload = response.json()
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        raise RuntimeError(f"fbnotify capture fetch returned invalid payload: {payload!r}")
+    return messages
+
+
+def clear_ntfybox_messages(state: LabState) -> None:
+    info = require_fbnotify_available(state)
+    session_cookie = fbnotify_host_session_cookie(info)
+    with httpx.Client(timeout=5.0, follow_redirects=True) as client:
+        response = client.post(
+            f"{info.public_url.rstrip('/')}/api/capture/clear",
+            headers={"Cookie": session_cookie},
+        )
+    if response.status_code != 200:
+        raise RuntimeError(f"fbnotify capture clear failed: status={response.status_code} body={response.text.strip()}")
+
+
 def print_json(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
@@ -1167,14 +1403,49 @@ def cmd_up(args: argparse.Namespace) -> int:
     node_features = build_node_feature_summary(workdir)
     topology = netns.build_topology(str(workdir), client_specs=client_specs)
     manager = ProcessManager(logs_dir_for(workdir))
+    fbnotify_info = FBNotifyInfo(
+        available=False,
+        error="",
+        public_url=fbnotify_public_url(),
+        internal_base_url=fbnotify_namespace_base_url(topology),
+        internal_ingest_url=fbnotify_ingest_url(topology),
+        operator_token=token_hex(32),
+        emitters={},
+    )
+    fbnotify_pepper = token_hex(32)
 
     try:
         netns.verify_connectivity(topology)
-        runtime_dir = coordconfig.prepare_fbcoord_runtime(
-            workdir,
-            tokens.operator_token,
-            generated_tokens.operator_pepper,
-        )
+
+        try:
+            ensure_fbnotify_assets(args.skip_build)
+            fbnotify_runtime_dir = coordconfig.prepare_fbnotify_runtime(
+                workdir,
+                fbnotify_info.operator_token,
+                fbnotify_pepper,
+            )
+            manager.start(
+                topology.namespaces["fbnotify"].pid,
+                "fbnotify",
+                [*wrangler_command(), "--ip", "0.0.0.0", "--port", "8787"],
+                "fbnotify",
+                cwd=str(fbnotify_runtime_dir),
+                env={
+                    "FBNOTIFY_OPERATOR_TOKEN": fbnotify_info.operator_token,
+                    "FBNOTIFY_TOKEN_PEPPER": fbnotify_pepper,
+                },
+            )
+            verify_fbnotify_health_in_namespace(topology, manager)
+            fbnotify_info.emitters = bootstrap_fbnotify(
+                fbnotify_info.internal_base_url,
+                topology.namespaces["node-1"].pid,
+                fbnotify_info.operator_token,
+            )
+            fbnotify_info.available = True
+        except Exception as exc:
+            fbnotify_info.available = False
+            fbnotify_info.error = exception_message(exc)
+            manager.stop("fbnotify")
 
         manager.start(
             topology.namespaces["upstream-1"].pid,
@@ -1188,16 +1459,33 @@ def cmd_up(args: argparse.Namespace) -> int:
             [str(FBMEASURE_BIN), "--port", "9876"],
             "fbmeasure-upstream-2",
         )
+
+        runtime_dir = coordconfig.prepare_fbcoord_runtime(
+            workdir,
+            tokens.operator_token,
+            generated_tokens.operator_pepper,
+        )
+        fbcoord_env = {
+            "FBCOORD_TOKEN": tokens.operator_token,
+            "FBCOORD_TOKEN_PEPPER": generated_tokens.operator_pepper,
+        }
+        if fbnotify_info.available:
+            fbcoord_notify = fbnotify_info.emitters["fbcoord"]
+            fbcoord_env.update(
+                {
+                    "FBNOTIFY_URL": fbnotify_info.internal_ingest_url,
+                    "FBNOTIFY_KEY_ID": fbcoord_notify.key_id,
+                    "FBNOTIFY_TOKEN": fbcoord_notify.token,
+                    "FBNOTIFY_SOURCE_INSTANCE": fbcoord_notify.source_instance,
+                }
+            )
         manager.start(
             topology.namespaces["fbcoord"].pid,
             "fbcoord",
             [*wrangler_command(), "--ip", "0.0.0.0", "--port", "8787"],
             "fbcoord",
             cwd=str(runtime_dir),
-            env={
-                "FBCOORD_TOKEN": tokens.operator_token,
-                "FBCOORD_TOKEN_PEPPER": generated_tokens.operator_pepper,
-            },
+            env=fbcoord_env,
         )
         verify_fbcoord_health_in_namespace(topology, manager)
 
@@ -1208,30 +1496,49 @@ def cmd_up(args: argparse.Namespace) -> int:
             ("node-1", "node-2"),
         )
 
-        config_paths = {
-            node: coordconfig.generate_fbforward_config(node, topology, tokens, workdir)
-            for node in ("node-1", "node-2")
-        }
-        for config_path in config_paths.values():
-            validate_fbforward_config(config_path)
+        config_paths: dict[str, Path] = {}
+        node_envs: dict[str, dict[str, str]] = {"node-1": {}, "node-2": {}}
+        for node in ("node-1", "node-2"):
+            fbnotify_node_cfg = None
+            if fbnotify_info.available:
+                emitter = fbnotify_info.emitters[node]
+                token_env = FBNOTIFY_NODE_TOKEN_ENVS[node]
+                fbnotify_node_cfg = coordconfig.FBNotifyNodeConfig(
+                    endpoint=fbnotify_info.internal_ingest_url,
+                    key_id=emitter.key_id,
+                    token_env=token_env,
+                    source_instance=emitter.source_instance,
+                )
+                node_envs[node][token_env] = emitter.token
+            config_paths[node] = coordconfig.generate_fbforward_config(
+                node,
+                topology,
+                tokens,
+                workdir,
+                fbnotify=fbnotify_node_cfg,
+            )
+        for node, config_path in config_paths.items():
+            validate_fbforward_config(config_path, env=node_envs[node] or None)
 
         manager.start(
             topology.namespaces["node-1"].pid,
             "node-1",
             [str(FBFORWARD_BIN), "run", "--config", str(config_paths["node-1"])],
             "fbforward-node-1",
+            env=node_envs["node-1"] or None,
         )
         manager.start(
             topology.namespaces["node-2"].pid,
             "node-2",
             [str(FBFORWARD_BIN), "run", "--config", str(config_paths["node-2"])],
             "fbforward-node-2",
+            env=node_envs["node-2"] or None,
         )
 
         verify_fbforward_rpc_in_namespace(topology, manager, "node-1", tokens.control_token)
         verify_fbforward_rpc_in_namespace(topology, manager, "node-2", tokens.control_token)
 
-        proxies = build_proxy_infos()
+        proxies = build_proxy_infos(include_fbnotify=fbnotify_info.available)
         state = build_state(
             workdir,
             topology,
@@ -1241,6 +1548,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             proxies=proxies,
             node_features=node_features,
             tokens=tokens,
+            fbnotify=fbnotify_info,
         )
         save_state(state_path, state)
 
@@ -1259,6 +1567,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             proxies=proxies,
             node_features=node_features,
             tokens=tokens,
+            fbnotify=fbnotify_info,
         )
         save_state(state_path, state)
 
@@ -1292,6 +1601,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             terminals=terminals,
             node_features=node_features,
             tokens=tokens,
+            fbnotify=fbnotify_info,
         )
         save_state(state_path, state)
         print(render_summary(state, str(VENV_PYTHON)))
@@ -1319,6 +1629,10 @@ def cmd_down(args: argparse.Namespace) -> int:
         terminate_process_group(info.pid, timeout_sec=5)
     for _, info in namespace_shutdown_order(state.namespaces):
         terminate_pid(info.pid, timeout_sec=5)
+
+    fbnotify_runtime_dir = fbnotify_runtime_dir_for(workdir)
+    if fbnotify_runtime_dir.exists():
+        shutil.rmtree(fbnotify_runtime_dir)
 
     state.active = False
     save_state(state_path, state)
@@ -1477,6 +1791,54 @@ def cmd_reconnect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ntfybox_list(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    try:
+        state = load_active_state(workdir)
+        messages = list_ntfybox_messages(state)
+    except RuntimeError as exc:
+        if args.json:
+            print_json({"error": exception_message(exc)})
+            return 1
+        raise RuntimeError(exception_message(exc)) from exc
+
+    payload = {
+        "ok": True,
+        "count": len(messages),
+        "messages": messages,
+    }
+    if args.json:
+        print_json(payload)
+        return 0
+    print(f"ntfybox messages: {len(messages)}")
+    for message in messages:
+        event_name = message.get("event_name", "unknown")
+        severity = message.get("severity", "unknown")
+        source = f"{message.get('source_service', '?')}/{message.get('source_instance', '?')}"
+        received_at = message.get("received_at", "?")
+        print(f"- {severity} {event_name} {source} received_at={received_at}")
+    return 0
+
+
+def cmd_ntfybox_clear(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir).expanduser().resolve()
+    try:
+        state = load_active_state(workdir)
+        clear_ntfybox_messages(state)
+    except RuntimeError as exc:
+        if args.json:
+            print_json({"error": exception_message(exc)})
+            return 1
+        raise RuntimeError(exception_message(exc)) from exc
+
+    payload = {"ok": True}
+    if args.json:
+        print_json(payload)
+        return 0
+    print("ntfybox cleared")
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     require_flask_environment()
     from web.app import create_app
@@ -1587,6 +1949,16 @@ def build_parser() -> argparse.ArgumentParser:
     reconnect.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
     reconnect.add_argument("--target", required=True, choices=["node-1", "node-2", "upstream-1", "upstream-2"])
     reconnect.set_defaults(handler=cmd_reconnect)
+
+    ntfybox_list = subparsers.add_parser("ntfybox-list", help="list captured fbnotify messages")
+    ntfybox_list.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    ntfybox_list.add_argument("--json", action="store_true")
+    ntfybox_list.set_defaults(handler=cmd_ntfybox_list)
+
+    ntfybox_clear = subparsers.add_parser("ntfybox-clear", help="clear captured fbnotify messages")
+    ntfybox_clear.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
+    ntfybox_clear.add_argument("--json", action="store_true")
+    ntfybox_clear.set_defaults(handler=cmd_ntfybox_clear)
 
     hidden = subparsers.add_parser("proxy-daemon", help=argparse.SUPPRESS)
     hidden.add_argument("--state", required=True)

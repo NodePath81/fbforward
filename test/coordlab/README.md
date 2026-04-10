@@ -1,6 +1,6 @@
 # coordlab
 
-Coordlab is the manual coordination lab for `fbcoord` and multi-node `fbforward`.
+Coordlab is the manual coordination lab for `fbcoord`, multi-node `fbforward`, and optional `fbnotify` integration.
 
 The full operator and CLI reference lives in [doc/test/coordlab.md](../../doc/test/coordlab.md).
 
@@ -25,17 +25,23 @@ python3 -m venv .venv
 .venv/bin/python test/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
 ```
 
-`up` rebuilds the Go binaries and the `fbcoord` UI by default. Use `--skip-build` only when you explicitly want to reuse existing build artifacts.
+`up` rebuilds the Go binaries and the `fbcoord` UI by default, and also tries to build `fbnotify` when its local dependencies are present. Use `--skip-build` only when you explicitly want to reuse existing build artifacts.
 It also downloads the GeoIP MMDB cache into the work directory when files are missing.
 During startup, coordlab now boots fbcoord with a generated operator token,
 mints one node token per managed fbforward node, and writes those per-node
-tokens into the generated node configs.
+tokens into the generated node configs. When `fbnotify` is available, coordlab
+also boots it in a dedicated namespace, configures a default capture route,
+mints emitter tokens for both nodes and `fbcoord`, and injects notification
+credentials into the node and coordinator runtime environment. If any
+`fbnotify`-specific step fails, the lab still starts in degraded mode without
+notification wiring.
 
 Host proxy ports:
 
 - `127.0.0.1:18700` -> `fbcoord`
 - `127.0.0.1:18701` -> `node-1`
 - `127.0.0.1:18702` -> `node-2`
+- `127.0.0.1:18703` -> `fbnotify` when available
 
 Dashboard:
 
@@ -55,9 +61,11 @@ Phase 4 adds CLI parity for live client mutation and namespace access:
 .venv/bin/python test/coordlab/coordlab.py add-client --workdir /tmp/coordlab-phase5 --client client-3=203.0.113.30
 .venv/bin/python test/coordlab/coordlab.py remove-client --workdir /tmp/coordlab-phase5 --name client-3
 .venv/bin/python test/coordlab/coordlab.py exec --workdir /tmp/coordlab-phase5 --ns client-1 -- ip route
+.venv/bin/python test/coordlab/coordlab.py ntfybox-list --workdir /tmp/coordlab-phase5 --json
+.venv/bin/python test/coordlab/coordlab.py ntfybox-clear --workdir /tmp/coordlab-phase5 --json
 ```
 
-`status --json`, `net-status --json`, `add-client --json`, `remove-client --json`, and `exec --json` are intended for scripting and agent automation. The full behavior and JSON contract are documented in [doc/test/coordlab.md](../../doc/test/coordlab.md).
+`status --json`, `net-status --json`, `add-client --json`, `remove-client --json`, `exec --json`, `ntfybox-list --json`, and `ntfybox-clear --json` are intended for scripting and agent automation. The full behavior and JSON contract are documented in [doc/test/coordlab.md](../../doc/test/coordlab.md).
 
 Generated node configs now enable:
 
@@ -73,8 +81,9 @@ Workdir artifacts now include:
 - `mmdb/Country-without-asn.mmdb`
 - `data/node-1-iplog.sqlite`
 - `data/node-2-iplog.sqlite`
-- `state.json` with `tokens.control_token`, `tokens.operator_token`, and
-  `tokens.node_tokens`
+- `fbnotify-runtime/` when `fbnotify` is started
+- `state.json` with `tokens.control_token`, `tokens.operator_token`,
+  `tokens.node_tokens`, and a dedicated `fbnotify` section
 
 Suggested manual firewall checks:
 
@@ -118,6 +127,8 @@ The web dashboard mirrors the same controls:
 - node-side and upstream-side delay/loss controls and presets
 - per-target disconnect/reconnect controls inside the same cards
 - direct links to the `fbcoord` admin UI and both node UIs
+- a Notifications panel backed by the `fbnotify` capture inbox when available
+- a direct link to the `fbnotify` UI when available
 - direct terminal links for configured clients and upstream namespaces
 - on-demand log tailing for any tracked process
 

@@ -116,6 +116,25 @@ class TokenInfo:
 
 
 @dataclass(slots=True)
+class FBNotifyEmitterInfo:
+    key_id: str = ""
+    token: str = ""
+    source_service: str = ""
+    source_instance: str = ""
+
+
+@dataclass(slots=True)
+class FBNotifyInfo:
+    available: bool = False
+    error: str = ""
+    public_url: str = ""
+    internal_base_url: str = ""
+    internal_ingest_url: str = ""
+    operator_token: str = ""
+    emitters: dict[str, FBNotifyEmitterInfo] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class TopologyInfo:
     base_cidr: str
     links: list[LinkInfo] = field(default_factory=list)
@@ -136,6 +155,7 @@ class LabState:
     node_features: dict[str, NodeFeatureInfo] = field(default_factory=dict)
     shaping: ShapingInfo = field(default_factory=ShapingInfo)
     tokens: TokenInfo = field(default_factory=TokenInfo)
+    fbnotify: FBNotifyInfo = field(default_factory=FBNotifyInfo)
     topology: TopologyInfo = field(default_factory=lambda: TopologyInfo(base_cidr=""))
 
     def to_dict(self) -> dict:
@@ -186,6 +206,19 @@ class LabState:
             },
         )
         tokens = TokenInfo(**data.get("tokens", {}))
+        fbnotify_raw = data.get("fbnotify", {})
+        fbnotify = FBNotifyInfo(
+            available=bool(fbnotify_raw.get("available", False)),
+            error=str(fbnotify_raw.get("error", "")),
+            public_url=str(fbnotify_raw.get("public_url", "")),
+            internal_base_url=str(fbnotify_raw.get("internal_base_url", "")),
+            internal_ingest_url=str(fbnotify_raw.get("internal_ingest_url", "")),
+            operator_token=str(fbnotify_raw.get("operator_token", "")),
+            emitters={
+                name: FBNotifyEmitterInfo(**info)
+                for name, info in fbnotify_raw.get("emitters", {}).items()
+            },
+        )
         topology_raw = data.get("topology", {})
         topology = TopologyInfo(
             base_cidr=topology_raw.get("base_cidr", ""),
@@ -205,6 +238,7 @@ class LabState:
             node_features=node_features,
             shaping=shaping,
             tokens=tokens,
+            fbnotify=fbnotify,
             topology=topology,
         )
 

@@ -12,6 +12,8 @@ if str(ROOT) not in sys.path:
 from lib.output import render_summary
 from lib.state import (
     ClientInfo,
+    FBNotifyEmitterInfo,
+    FBNotifyInfo,
     FirewallFeatureInfo,
     FirewallRuleInfo,
     GeoIPFeatureInfo,
@@ -44,6 +46,13 @@ class OutputSummaryTest(unittest.TestCase):
                     listen_host="127.0.0.1",
                     host_port=18700,
                     target_ns="fbcoord",
+                    target_host="127.0.0.1",
+                    target_port=8787,
+                ),
+                "fbnotify": ProxyInfo(
+                    listen_host="127.0.0.1",
+                    host_port=18703,
+                    target_ns="fbnotify",
                     target_host="127.0.0.1",
                     target_port=8787,
                 ),
@@ -97,6 +106,22 @@ class OutputSummaryTest(unittest.TestCase):
                 operator_token="operator-token",
                 node_tokens={"node-1": "node-1-token"},
             ),
+            fbnotify=FBNotifyInfo(
+                available=True,
+                error="",
+                public_url="http://127.0.0.1:18703",
+                internal_base_url="http://10.99.0.30:8787",
+                internal_ingest_url="http://10.99.0.30:8787/v1/events",
+                operator_token="fbnotify-operator-token",
+                emitters={
+                    "node-1": FBNotifyEmitterInfo(
+                        key_id="notify-key-1",
+                        token="fbnotify-secret-node-1",
+                        source_service="fbforward",
+                        source_instance="node-1",
+                    )
+                },
+            ),
             topology=TopologyInfo(base_cidr="10.99.0.0/24"),
         )
 
@@ -104,6 +129,7 @@ class OutputSummaryTest(unittest.TestCase):
             summary = render_summary(state, "/repo/.venv/bin/python")
 
         self.assertIn("http://127.0.0.1:18700", summary)
+        self.assertIn("http://127.0.0.1:18703", summary)
         self.assertIn("http://127.0.0.1:18701", summary)
         self.assertIn("/repo/.venv/bin/python", summary)
         self.assertIn("coordlab-proxy: alive", summary)
@@ -118,9 +144,12 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertIn("firewall: enabled default=allow", summary)
         self.assertIn("operator:", summary)
         self.assertIn("node[node-1]:", summary)
+        self.assertIn("fbnotify:", summary)
         self.assertIn("/tmp/coordlab-phase3/mmdb", summary)
         self.assertIn("/tmp/coordlab-phase3/data", summary)
         self.assertIn(" web --workdir ", summary)
+        self.assertNotIn("fbnotify-secret-node-1", summary)
+        self.assertNotIn("fbnotify-operator-token", summary)
 
 
 if __name__ == "__main__":

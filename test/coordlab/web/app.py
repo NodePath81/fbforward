@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 from flask import Flask, jsonify, render_template, request
 
-from coordlab import run_locked_add_client, run_locked_remove_client
+from coordlab import clear_ntfybox_messages, list_ntfybox_messages, run_locked_add_client, run_locked_remove_client
 from lib.output import proxy_url, status_payload
 from lib.process import is_alive
 from lib.rpc import get_status
@@ -384,5 +384,28 @@ def create_app(workdir: Path | str) -> Flask:
 
         text = read_log_text(Path(process.log_path), lines)
         return jsonify({"process": process_name, "lines": lines, "text": text})
+
+    @app.get("/api/ntfybox")
+    def api_ntfybox_list():
+        state, error = load_active_state_or_error(workdir)
+        if error is not None:
+            payload, status = error
+            return jsonify(payload), status
+        try:
+            return jsonify({"messages": list_ntfybox_messages(state)})
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
+    @app.delete("/api/ntfybox")
+    def api_ntfybox_clear():
+        state, error = load_active_state_or_error(workdir)
+        if error is not None:
+            payload, status = error
+            return jsonify(payload), status
+        try:
+            clear_ntfybox_messages(state)
+            return jsonify({"ok": True})
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
 
     return app

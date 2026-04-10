@@ -36,7 +36,7 @@ def proxy_dict(state: LabState) -> dict[str, dict]:
 
 def service_links(state: LabState) -> dict[str, str]:
     links: dict[str, str] = {}
-    for name in ("fbcoord", "node-1", "node-2"):
+    for name in ("fbcoord", "fbnotify", "node-1", "node-2"):
         url = proxy_url(state, name)
         if url:
             links[name] = url
@@ -118,6 +118,13 @@ def inactive_status_payload(workdir: Path, error: str) -> dict:
         "terminals": {},
         "node_features": {},
         "service_links": {},
+        "fbnotify": {
+            "available": False,
+            "error": "",
+            "public_url": "",
+            "internal_base_url": "",
+            "internal_ingest_url": "",
+        },
         "shaping_targets": [],
         "topology_links": [],
     }
@@ -163,6 +170,13 @@ def status_payload(state: LabState | None, workdir: Path) -> dict:
         "terminals": terminal_dict(state),
         "node_features": node_feature_dict(state),
         "service_links": service_links(state),
+        "fbnotify": {
+            "available": state.fbnotify.available,
+            "error": state.fbnotify.error,
+            "public_url": state.fbnotify.public_url,
+            "internal_base_url": state.fbnotify.internal_base_url,
+            "internal_ingest_url": state.fbnotify.internal_ingest_url,
+        },
         "shaping_targets": [
             {
                 "target": target_name,
@@ -195,15 +209,30 @@ def render_summary(state: LabState, python_executable: str) -> str:
     lines.append("")
 
     fbcoord_url = proxy_url(state, "fbcoord")
+    fbnotify_url = proxy_url(state, "fbnotify")
     node1_url = proxy_url(state, "node-1")
     node2_url = proxy_url(state, "node-2")
     if fbcoord_url:
         lines.append(f"  fbcoord: {fbcoord_url}")
+    if fbnotify_url:
+        lines.append(f"  fbnotify: {fbnotify_url}")
     if node1_url:
         lines.append(f"  node-1:  {node1_url}  (UI /, RPC /rpc, metrics /metrics)")
     if node2_url:
         lines.append(f"  node-2:  {node2_url}  (UI /, RPC /rpc, metrics /metrics)")
     lines.append("")
+
+    if state.fbnotify.public_url or state.fbnotify.error:
+        status = "available" if state.fbnotify.available else "degraded"
+        lines.append("  fbnotify:")
+        lines.append(f"    status: {status}")
+        if state.fbnotify.public_url:
+            lines.append(f"    public_url: {state.fbnotify.public_url}")
+        if state.fbnotify.internal_base_url:
+            lines.append(f"    internal_url: {state.fbnotify.internal_base_url}")
+        if state.fbnotify.error:
+            lines.append(f"    error: {state.fbnotify.error}")
+        lines.append("")
 
     lines.append("  process status:")
     for name, info in sorted(state.processes.items(), key=lambda item: (item[1].order, item[0])):

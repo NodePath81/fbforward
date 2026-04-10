@@ -13,6 +13,8 @@ if str(ROOT) not in sys.path:
 
 from lib.state import (
     ClientInfo,
+    FBNotifyEmitterInfo,
+    FBNotifyInfo,
     FirewallFeatureInfo,
     GeoIPFeatureInfo,
     IPLogFeatureInfo,
@@ -98,6 +100,7 @@ def sample_state(workdir: Path) -> LabState:
             "hub": NamespaceInfo(pid=99, parent=None, role="hub"),
             "hub-up": NamespaceInfo(pid=100, parent="hub", role="hub-up"),
             "internet": NamespaceInfo(pid=109, parent="hub", role="internet"),
+            "fbnotify": NamespaceInfo(pid=98, parent="hub", role="fbnotify"),
             "node-1": NamespaceInfo(pid=101, parent="hub", role="node"),
             "node-2": NamespaceInfo(pid=102, parent="hub", role="node"),
             "upstream-1": NamespaceInfo(pid=103, parent="hub-up", role="upstream"),
@@ -106,6 +109,7 @@ def sample_state(workdir: Path) -> LabState:
             "client-1": NamespaceInfo(pid=106, parent="client-edge", role="client"),
         },
         processes={
+            "fbnotify": ProcessInfo(pid=199, ns="fbnotify", log_path=str(workdir / "fbnotify.log"), order=0),
             "fbcoord": ProcessInfo(pid=200, ns="fbcoord", log_path=str(workdir / "fbcoord.log"), order=1),
             "fbforward-node-1": ProcessInfo(pid=201, ns="node-1", log_path=str(workdir / "node1.log"), order=2),
             "fbforward-node-2": ProcessInfo(pid=202, ns="node-2", log_path=str(workdir / "node2.log"), order=3),
@@ -115,8 +119,9 @@ def sample_state(workdir: Path) -> LabState:
         },
         proxies={
             "fbcoord": ProxyInfo("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
+            "fbnotify": ProxyInfo("127.0.0.1", 18703, "fbnotify", "127.0.0.1", 8787),
             "node-1": ProxyInfo("127.0.0.1", 18701, "node-1", "127.0.0.1", 8080),
-                "node-2": ProxyInfo("127.0.0.1", 18702, "node-2", "127.0.0.1", 8080),
+            "node-2": ProxyInfo("127.0.0.1", 18702, "node-2", "127.0.0.1", 8080),
         },
         clients={
             "client-1": ClientInfo(identity_ip="198.51.100.10"),
@@ -172,6 +177,22 @@ def sample_state(workdir: Path) -> LabState:
             operator_token="operator-token",
             node_tokens={"node-1": "node-1-token", "node-2": "node-2-token"},
         ),
+        fbnotify=FBNotifyInfo(
+            available=True,
+            error="",
+            public_url="http://127.0.0.1:18703",
+            internal_base_url="http://10.99.0.30:8787",
+            internal_ingest_url="http://10.99.0.30:8787/v1/events",
+            operator_token="fbnotify-operator-token",
+            emitters={
+                "node-1": FBNotifyEmitterInfo(
+                    key_id="notify-key-1",
+                    token="fbnotify-secret-node-1",
+                    source_service="fbforward",
+                    source_instance="node-1",
+                ),
+            },
+        ),
         topology=TopologyInfo(base_cidr="10.99.0.0/24", next_subnet_index=10),
     )
 
@@ -211,6 +232,8 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(payload["active"])
         self.assertNotIn("tokens", payload)
         self.assertIn("fbcoord", payload["service_links"])
+        self.assertIn("fbnotify", payload["service_links"])
+        self.assertTrue(payload["fbnotify"]["available"])
         self.assertNotIn("client-1", payload["service_links"])
         self.assertEqual("198.51.100.10", payload["clients"]["client-1"]["identity_ip"])
         self.assertEqual("http://127.0.0.1:18900", payload["terminals"]["client-1"]["url"])
@@ -357,6 +380,34 @@ class WebAppTest(unittest.TestCase):
 
         missing = self.client.get("/api/logs/missing")
         self.assertEqual(404, missing.status_code)
+
+    def test_ntfybox_routes_proxy_capture_data(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        with mock.patch("web.app.list_ntfybox_messages", return_value=[{"event_name": "demo.test"}]):
+            response = self.client.get("/api/ntfybox")
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual("demo.test", payload["messages"][0]["event_name"])
+
+    def test_ntfybox_clear_route_returns_ok(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        with mock.patch("web.app.clear_ntfybox_messages") as clear:
+            response = self.client.delete("/api/ntfybox")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True}, response.get_json())
+        clear.assert_called_once()
+
+    def test_ntfybox_routes_report_unavailable(self) -> None:
+        state = sample_state(self.workdir)
+        state.fbnotify.available = False
+        self.write_state(state)
+
+        response = self.client.get("/api/ntfybox")
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual("fbnotify is not available for this lab run", response.get_json()["error"])
 
     def test_add_client_route_returns_updated_status_payload(self) -> None:
         updated = sample_state(self.workdir)

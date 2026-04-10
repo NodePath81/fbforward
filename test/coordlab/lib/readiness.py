@@ -74,3 +74,20 @@ def verify_fbcoord_api(base_url: str, operator_token: str, *, expected_node_ids:
         if missing:
             raise RuntimeError(f"expected node_ids {missing!r} not found in fbcoord state response")
         return payload
+
+
+def verify_fbnotify_api(base_url: str, operator_token: str) -> dict:
+    with httpx.Client(timeout=5.0, follow_redirects=True) as client:
+        login = client.post(f"{base_url.rstrip('/')}/api/auth/login", json={"token": operator_token})
+        if login.status_code != 200:
+            raise RuntimeError(f"fbnotify login failed: status={login.status_code} body={login.text.strip()}")
+        session_cookie = login.headers.get("set-cookie", "").split(";", 1)[0].strip()
+        if not session_cookie:
+            raise RuntimeError("fbnotify login did not return a session cookie")
+        capture = client.get(
+            f"{base_url.rstrip('/')}/api/capture/messages",
+            headers={"Cookie": session_cookie},
+        )
+        if capture.status_code != 200:
+            raise RuntimeError(f"fbnotify capture fetch failed: status={capture.status_code} body={capture.text.strip()}")
+        return capture.json()

@@ -23,6 +23,7 @@ const state = {
   timer: null,
   clientMutationInFlight: false,
   clients: {},
+  fbnotify: null,
   processes: [],
   shapingTargets: [],
   linkTargets: {},
@@ -139,6 +140,40 @@ function renderServiceLinks(serviceLinks) {
       <span class="service-name">${name}</span>
       <span class="service-url">${url}</span>
     </a>
+  `).join("");
+}
+
+function renderNotifications(messages = [], error = "") {
+  const errorBox = document.querySelector("#notifications-error");
+  const list = document.querySelector("#notifications-list");
+  const openLink = document.querySelector("#notifications-open");
+  const fbnotifyUrl = state.fbnotify && state.fbnotify.available ? state.fbnotify.public_url : "";
+
+  errorBox.innerHTML = error ? `<p>${error}</p>` : "";
+  if (fbnotifyUrl) {
+    openLink.href = fbnotifyUrl;
+    openLink.classList.remove("hidden");
+  } else {
+    openLink.href = "#";
+    openLink.classList.add("hidden");
+  }
+
+  if (error) {
+    list.innerHTML = `<p class="subtle">Notification data unavailable.</p>`;
+    return;
+  }
+  if (!messages.length) {
+    list.innerHTML = `<p class="subtle">No captured notifications.</p>`;
+    return;
+  }
+  list.innerHTML = messages.map((message) => `
+    <div class="list-row">
+      <div>
+        <strong>${message.event_name}</strong>
+        <div class="subtle">${message.source_service}/${message.source_instance}</div>
+      </div>
+      <div class="subtle">${message.severity} • ${message.received_at}</div>
+    </div>
   `).join("");
 }
 
@@ -366,10 +401,17 @@ function applyStatusPayload(payload) {
     </div>
   `);
   state.clients = payload.clients || {};
+  state.fbnotify = payload.fbnotify || null;
   renderClientManagement(state.clients);
   renderClientPaths(state.clients);
   renderServiceLinks(payload.service_links || {});
   renderTerminalLinks(payload.terminals || {});
+  if (!state.fbnotify || !state.fbnotify.available) {
+    const message = state.fbnotify && state.fbnotify.error
+      ? state.fbnotify.error
+      : "fbnotify is not available for this lab run.";
+    renderNotifications([], message);
+  }
   state.processes = payload.processes || [];
   syncLogProcessOptions(state.processes);
 }
@@ -420,6 +462,31 @@ async function loadLogs() {
     document.querySelector("#log-output").textContent = payload.text || "(no log output)";
   } catch (error) {
     document.querySelector("#log-error").innerHTML = `<p>${error.message}</p>`;
+  }
+}
+
+async function loadNotifications() {
+  if (!state.fbnotify || !state.fbnotify.available) {
+    const message = state.fbnotify && state.fbnotify.error
+      ? state.fbnotify.error
+      : "fbnotify is not available for this lab run.";
+    renderNotifications([], message);
+    return;
+  }
+  try {
+    const payload = await requestJson("/api/ntfybox");
+    renderNotifications(payload.messages || []);
+  } catch (error) {
+    renderNotifications([], error.message);
+  }
+}
+
+async function clearNotifications() {
+  try {
+    await requestJson("/api/ntfybox", { method: "DELETE" });
+    await loadNotifications();
+  } catch (error) {
+    renderNotifications([], error.message);
   }
 }
 
@@ -545,6 +612,7 @@ async function refreshAll() {
   await loadCoordination();
   await loadShaping();
   await loadLinkState();
+  await loadNotifications();
 }
 
 function schedulePolling() {
@@ -562,6 +630,7 @@ function bindEvents() {
   document.querySelector("#refresh-now").addEventListener("click", () => void refreshAll());
   document.querySelector("#refresh-coordination").addEventListener("click", () => void loadCoordination());
   document.querySelector("#refresh-logs").addEventListener("click", () => void loadLogs());
+  document.querySelector("#notifications-clear").addEventListener("click", () => void clearNotifications());
   document.querySelector("#clear-all").addEventListener("click", () => void clearAllShaping());
   document.querySelector("#apply-preset").addEventListener("click", () => void applyPreset());
   document.querySelector("#client-form").addEventListener("submit", (event) => void addClient(event));

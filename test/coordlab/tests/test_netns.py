@@ -31,27 +31,31 @@ class NetnsHelpersTest(unittest.TestCase):
                 ("internet", "hub-up", "inet-hubup", "hubup-inet"),
                 ("hub-up", "upstream-1", "hubup-u1", "upstream1-peer"),
                 ("hub-up", "upstream-2", "hubup-u2", "upstream2-peer"),
+                ("hub", "fbnotify", "hub-fbnotify", "fbnotify-peer"),
             ],
             pairs,
         )
 
     def test_compute_namespace_order_appends_client_edge_and_clients(self) -> None:
         order = compute_namespace_order(["client-2", "client-1"])
+        self.assertIn(("fbnotify", "hub", "fbnotify"), order)
         self.assertEqual(("client-edge", "hub", "client-edge"), order[-3])
         self.assertEqual(("client-1", "client-edge", "client"), order[-2])
         self.assertEqual(("client-2", "client-edge", "client"), order[-1])
 
     def test_compute_link_order_appends_client_links(self) -> None:
         order = compute_link_order(["client-2", "client-1"])
+        self.assertEqual(("hub", "fbnotify", "hub-fbnotify", "fbnotify-peer"), order[-4])
         self.assertEqual(("internet", "client-edge", "inet-cedge", "cedge-inet"), order[-3])
         self.assertEqual(("client-edge", "client-1", "cedge-c1", "c1-peer"), order[-2])
         self.assertEqual(("client-edge", "client-2", "cedge-c2", "c2-peer"), order[-1])
 
     def test_default_links_expands_for_clients(self) -> None:
         links = default_links(client_names=["client-2", "client-1"])
-        pairs = [(link.left_ns, link.right_ns, link.left_if, link.right_if) for link in links[-3:]]
+        pairs = [(link.left_ns, link.right_ns, link.left_if, link.right_if) for link in links[-4:]]
         self.assertEqual(
             [
+                ("hub", "fbnotify", "hub-fbnotify", "fbnotify-peer"),
                 ("internet", "client-edge", "inet-cedge", "cedge-inet"),
                 ("client-edge", "client-1", "cedge-c1", "c1-peer"),
                 ("client-edge", "client-2", "cedge-c2", "c2-peer"),

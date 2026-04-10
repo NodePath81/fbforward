@@ -214,11 +214,25 @@
       <section class="grid two">
         <article class="panel">
           <div class="panel-header">
+            <h2>Notifications</h2>
+            <div class="inline-actions">
+              <a id="notifications-open" href="#" target="_blank" rel="noreferrer" class="ghost hidden">Open fbnotify</a>
+              <button id="notifications-clear" type="button" class="ghost">Clear</button>
+            </div>
+          </div>
+          <div id="notifications-error" class="error-list"></div>
+          <div id="notifications-list" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
             <h2>Service Links</h2>
           </div>
           <div id="service-links" class="card-grid"></div>
         </article>
+      </section>
 
+      <section class="grid two">
         <article class="panel">
           <div class="panel-header">
             <h2>Terminal Access</h2>
