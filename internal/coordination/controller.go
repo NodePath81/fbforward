@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
@@ -135,19 +136,29 @@ func (c *Controller) runSession(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	handshakeDone := make(chan struct{})
+	handshakeActive := atomic.Bool{}
+	handshakeActive.Store(true)
+	handshakeWatcherDone := make(chan struct{})
+	stopHandshakeWatcher := make(chan struct{})
+	var stopHandshakeOnce sync.Once
+	stopHandshake := func() {
+		handshakeActive.Store(false)
+		stopHandshakeOnce.Do(func() {
+			close(stopHandshakeWatcher)
+			<-handshakeWatcherDone
+		})
+	}
 	go func() {
+		defer close(handshakeWatcherDone)
 		select {
 		case <-ctx.Done():
-			select {
-			case <-handshakeDone:
-			default:
+			if handshakeActive.Load() {
 				_ = conn.Close()
 			}
-		case <-handshakeDone:
+		case <-stopHandshakeWatcher:
 		}
 	}()
-	defer close(handshakeDone)
+	defer stopHandshake()
 
 	if err := c.writeMessage(conn, HelloMessage{Type: "hello"}); err != nil {
 		return err
@@ -158,6 +169,7 @@ func (c *Controller) runSession(ctx context.Context) error {
 		}
 		return err
 	}
+	stopHandshake()
 
 	c.manager.SetCoordinationConnected(true)
 	c.syncMetrics()
