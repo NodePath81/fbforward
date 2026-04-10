@@ -49,12 +49,44 @@ interface StateResponse {
     upstream: string | null;
   };
   node_count: number;
+  counts: {
+    online: number;
+    offline: number;
+    aborted: number;
+    never_seen: number;
+  };
   nodes: Array<{
     node_id: string;
+    status: 'online' | 'offline' | 'aborted' | 'never_seen';
+    first_seen_at: number | null;
+    last_connected_at: number | null;
+    last_seen_at: number | null;
+    disconnected_at: number | null;
     upstreams: string[];
     active_upstream: string | null;
-    last_seen: number;
-    connected_at: number;
+  }>;
+}
+
+interface InternalStateResponse {
+  pick: {
+    version: number;
+    upstream: string | null;
+  };
+  node_count: number;
+  counts: {
+    online: number;
+    offline: number;
+    aborted: number;
+  };
+  nodes: Array<{
+    node_id: string;
+    status: 'online' | 'offline' | 'aborted';
+    first_seen_at: number;
+    last_connected_at: number;
+    last_seen_at: number;
+    disconnected_at: number | null;
+    upstreams: string[];
+    active_upstream: string | null;
   }>;
 }
 
@@ -211,7 +243,63 @@ async function revokeNodeToken(env: Env, nodeId: string): Promise<Response> {
 
 async function fetchState(env: Env): Promise<StateResponse> {
   const response = await stateStub(env).fetch('https://pool.internal/state');
-  return response.json() as Promise<StateResponse>;
+  const internal = await response.json() as InternalStateResponse;
+  const provisioned = await listNodeTokens(env);
+
+  const nodesById = new Map<string, StateResponse['nodes'][number]>();
+  for (const node of internal.nodes) {
+    nodesById.set(node.node_id, {
+      node_id: node.node_id,
+      status: node.status,
+      first_seen_at: node.first_seen_at,
+      last_connected_at: node.last_connected_at,
+      last_seen_at: node.last_seen_at,
+      disconnected_at: node.disconnected_at,
+      upstreams: node.upstreams,
+      active_upstream: node.active_upstream
+    });
+  }
+
+  for (const token of provisioned) {
+    if (nodesById.has(token.node_id)) {
+      continue;
+    }
+    nodesById.set(token.node_id, {
+      node_id: token.node_id,
+      status: 'never_seen',
+      first_seen_at: null,
+      last_connected_at: null,
+      last_seen_at: null,
+      disconnected_at: null,
+      upstreams: [],
+      active_upstream: null
+    });
+  }
+
+  const nodes = Array.from(nodesById.values()).sort((left, right) => left.node_id.localeCompare(right.node_id));
+  const counts = {
+    online: 0,
+    offline: 0,
+    aborted: 0,
+    never_seen: 0
+  };
+
+  for (const node of nodes) {
+    counts[node.status] += 1;
+  }
+
+  return {
+    pick: internal.pick,
+    node_count: counts.online,
+    counts,
+    nodes
+  };
+}
+
+async function removeNodeFromState(env: Env, nodeId: string): Promise<Response> {
+  return stateStub(env).fetch(new Request(`https://pool.internal/nodes/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE'
+  }));
 }
 
 async function checkKVBan(env: Env, scope: AuthScope, clientKey: string): Promise<{ blocked: boolean; retryAfterSeconds: number | null }> {
@@ -472,6 +560,10 @@ function createWorker() {
           if (!response.ok) {
             const errorBody = await parseJsonResponse<{ error?: string }>(response.clone());
             return json({ error: errorBody?.error ?? 'invalid node token request' }, response.status);
+          }
+          const cleanup = await removeNodeFromState(env, nodeId);
+          if (!cleanup.ok) {
+            return json({ error: 'node token revoked but state cleanup failed' }, 500);
           }
           return json({ ok: true });
         }

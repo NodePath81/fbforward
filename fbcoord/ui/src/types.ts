@@ -5,15 +5,24 @@ export interface PickInfo {
 
 export interface NodeDetail {
   node_id: string;
+  status: 'online' | 'offline' | 'aborted' | 'never_seen';
+  first_seen_at: number | null;
+  last_connected_at: number | null;
+  last_seen_at: number | null;
+  disconnected_at: number | null;
   upstreams: string[];
   active_upstream: string | null;
-  last_seen: number;
-  connected_at: number;
 }
 
 export interface CoordinationState {
   pick: PickInfo;
   node_count: number;
+  counts: {
+    online: number;
+    offline: number;
+    aborted: number;
+    never_seen: number;
+  };
   nodes: NodeDetail[];
 }
 

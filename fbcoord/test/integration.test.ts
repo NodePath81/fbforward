@@ -16,12 +16,20 @@ interface StatePayload {
     upstream: string | null;
   };
   node_count: number;
+  counts: {
+    online: number;
+    offline: number;
+    aborted: number;
+  };
   nodes: Array<{
     node_id: string;
+    status: 'online' | 'offline' | 'aborted';
+    first_seen_at: number;
+    last_connected_at: number;
+    last_seen_at: number;
+    disconnected_at: number | null;
     upstreams: string[];
     active_upstream: string | null;
-    last_seen: number;
-    connected_at: number;
   }>;
 }
 
@@ -32,6 +40,11 @@ function cookieHeader(response: Response): string {
 function createEnv(state: StatePayload = {
   pick: { version: 0, upstream: null },
   node_count: 0,
+  counts: {
+    online: 0,
+    offline: 0,
+    aborted: 0
+  },
   nodes: []
 }): {
   env: Env;
@@ -42,6 +55,17 @@ function createEnv(state: StatePayload = {
     const url = new URL(request.url);
     if (url.pathname === '/state') {
       return jsonResponse(state);
+    }
+    if (request.method === 'DELETE' && url.pathname.startsWith('/nodes/')) {
+      const nodeId = decodeURIComponent(url.pathname.slice('/nodes/'.length));
+      state.nodes = state.nodes.filter(node => node.node_id !== nodeId);
+      state.node_count = state.nodes.filter(node => node.status === 'online').length;
+      state.counts = {
+        online: state.nodes.filter(node => node.status === 'online').length,
+        offline: state.nodes.filter(node => node.status === 'offline').length,
+        aborted: state.nodes.filter(node => node.status === 'aborted').length
+      };
+      return jsonResponse({ ok: true, removed: true });
     }
     return new Response('proxied', { status: 200 });
   });
@@ -181,13 +205,21 @@ describe('worker fetch', () => {
     const { env } = createEnv({
       pick: { version: 3, upstream: 'us-a' },
       node_count: 1,
+      counts: {
+        online: 1,
+        offline: 0,
+        aborted: 0
+      },
       nodes: [
         {
           node_id: 'node-1',
+          status: 'online',
+          first_seen_at: 500,
+          last_connected_at: 500,
+          last_seen_at: 1_000,
+          disconnected_at: null,
           upstreams: ['us-a', 'us-b'],
-          active_upstream: 'us-a',
-          last_seen: 1_000,
-          connected_at: 500
+          active_upstream: 'us-a'
         }
       ]
     });
@@ -205,13 +237,61 @@ describe('worker fetch', () => {
     await expect(stateResponse.json()).resolves.toEqual({
       pick: { version: 3, upstream: 'us-a' },
       node_count: 1,
+      counts: {
+        online: 1,
+        offline: 0,
+        aborted: 0,
+        never_seen: 0
+      },
       nodes: [
         {
           node_id: 'node-1',
+          status: 'online',
+          first_seen_at: 500,
+          last_connected_at: 500,
+          last_seen_at: 1_000,
+          disconnected_at: null,
           upstreams: ['us-a', 'us-b'],
-          active_upstream: 'us-a',
-          last_seen: 1_000,
-          connected_at: 500
+          active_upstream: 'us-a'
+        }
+      ]
+    });
+  });
+
+  it('synthesizes never_seen entries for provisioned node tokens missing from the live roster', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const loginResponse = await login(worker, env);
+    const cookie = cookieHeader(loginResponse);
+    await createNodeToken(worker, env, cookie, 'node-1');
+
+    const response = await worker.fetch(new Request('https://example.com/api/state', {
+      headers: {
+        Cookie: cookie
+      }
+    }), env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      pick: { version: 0, upstream: null },
+      node_count: 0,
+      counts: {
+        online: 0,
+        offline: 0,
+        aborted: 0,
+        never_seen: 1
+      },
+      nodes: [
+        {
+          node_id: 'node-1',
+          status: 'never_seen',
+          first_seen_at: null,
+          last_connected_at: null,
+          last_seen_at: null,
+          disconnected_at: null,
+          upstreams: [],
+          active_upstream: null
         }
       ]
     });
@@ -238,7 +318,7 @@ describe('worker fetch', () => {
   });
 
   it('lists, mints, and revokes node tokens through the authenticated API', async () => {
-    const { env } = createEnv();
+    const { env, poolStub } = createEnv();
     const worker = createWorker();
 
     const loginResponse = await login(worker, env);
@@ -271,6 +351,7 @@ describe('worker fetch', () => {
       }
     }), env);
     expect(revokeResponse.status).toBe(200);
+    expect(poolStub.requests.some(request => new URL(request.url).pathname === '/nodes/node-1' && request.method === 'DELETE')).toBe(true);
 
     const nodeResponse = await worker.fetch(new Request('https://example.com/ws/node', {
       headers: {

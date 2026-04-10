@@ -181,7 +181,7 @@ async function renderRoute(): Promise<void> {
       await navigator.clipboard.writeText(appState.generatedNodeToken.token);
     },
     onRevokeNodeToken: async nodeId => {
-      if (!requiresConfirmation(`Revoke the node token for ${nodeId}? Existing live connections are not forced closed, but future reconnects will fail.`)) {
+      if (!requiresConfirmation(`Revoke the node token for ${nodeId}? Any live coordination session for this node will be closed immediately.`)) {
         return;
       }
       await revokeNodeToken(nodeId);

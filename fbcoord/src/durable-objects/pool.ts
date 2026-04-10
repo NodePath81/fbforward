@@ -1,10 +1,13 @@
 import { selectSharedUpstream, type NodePreference } from '../coordination/selector';
 import type {
+  ByeMessage,
+  ClosingMessage,
   ErrorMessage,
   HeartbeatMessage,
   HelloMessage,
   NodeInboundMessage,
-  PickMessage
+  PickMessage,
+  ReadyMessage
 } from '../protocol/types';
 import { MAX_UPSTREAMS, validateNodeId, validateUpstreamTag } from '../validation';
 
@@ -13,28 +16,79 @@ const DEFAULT_STALE_AFTER_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
 const MESSAGE_WINDOW_MS = 5_000;
 const MAX_MESSAGES_PER_WINDOW = 10;
 const RECONNECT_THROTTLE_MS = 5_000;
+const HELLO_TIMEOUT_MS = 5_000;
+const TEARDOWN_CLOSE_TIMEOUT_MS = 2_000;
+const ROSTER_KEY = 'roster';
 
 export const AUTHENTICATED_NODE_ID_HEADER = 'x-fbcoord-node-id';
 
 type ConnectionLike = Pick<WebSocket, 'close' | 'send'>;
+type SessionPhase = 'await_hello' | 'online' | 'teardown_accepted' | 'closed';
+type PoolNodeStatus = 'online' | 'offline' | 'aborted';
 
-interface PoolNodeState extends NodePreference {
+interface ActiveNodeState extends NodePreference {
   activeUpstream: string | null;
   lastSeen: number;
   connectedAt: number;
+  connection: ConnectionLike;
 }
+
+interface StoredRosterEntry {
+  status: PoolNodeStatus;
+  firstSeenAt: number;
+  lastConnectedAt: number;
+  lastSeenAt: number;
+  disconnectedAt: number | null;
+}
+
+type StoredRoster = Record<string, StoredRosterEntry>;
 
 export interface PoolNodeSnapshot {
   node_id: string;
+  status: PoolNodeStatus;
+  first_seen_at: number;
+  last_connected_at: number;
+  last_seen_at: number;
+  disconnected_at: number | null;
   upstreams: string[];
   active_upstream: string | null;
-  last_seen: number;
-  connected_at: number;
+}
+
+export interface PoolStatusCounts {
+  online: number;
+  offline: number;
+  aborted: number;
 }
 
 export interface PoolSnapshot {
   version: number;
   upstream: string | null;
+}
+
+export interface PoolStateResponse {
+  pick: PoolSnapshot;
+  node_count: number;
+  counts: PoolStatusCounts;
+  nodes: PoolNodeSnapshot[];
+}
+
+interface MutationResult {
+  changed: boolean;
+  rosterChanged: boolean;
+}
+
+interface RegisterConnectionResult extends MutationResult {
+  previous?: ConnectionLike;
+  throttled: boolean;
+}
+
+interface ReapResult extends MutationResult {
+  connectionsToClose: ConnectionLike[];
+}
+
+interface RevokeNodeResult extends MutationResult {
+  connection?: ConnectionLike;
+  removed: boolean;
 }
 
 export class ConnectionRateLimiter {
@@ -63,6 +117,21 @@ function parseString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+function cloneStoredRoster(roster: StoredRoster): StoredRoster {
+  return Object.fromEntries(
+    Object.entries(roster).map(([nodeId, entry]) => [
+      nodeId,
+      {
+        status: entry.status,
+        firstSeenAt: entry.firstSeenAt,
+        lastConnectedAt: entry.lastConnectedAt,
+        lastSeenAt: entry.lastSeenAt,
+        disconnectedAt: entry.disconnectedAt
+      } satisfies StoredRosterEntry
+    ])
+  );
+}
+
 export function parseNodeInboundMessage(raw: unknown): { message?: NodeInboundMessage; error?: string; close: boolean } {
   if (!raw || typeof raw !== 'object') {
     return { error: 'invalid message payload', close: true };
@@ -78,6 +147,15 @@ export function parseNodeInboundMessage(raw: unknown): { message?: NodeInboundMe
       message: {
         type: 'hello'
       } satisfies HelloMessage,
+      close: false
+    };
+  }
+
+  if (type === 'bye') {
+    return {
+      message: {
+        type: 'bye'
+      } satisfies ByeMessage,
       close: false
     };
   }
@@ -145,9 +223,9 @@ export function parseNodeInboundMessage(raw: unknown): { message?: NodeInboundMe
 }
 
 export class PoolState {
-  private readonly nodes = new Map<string, PoolNodeState>();
-  private readonly connections = new Map<string, ConnectionLike>();
+  private readonly activeNodes = new Map<string, ActiveNodeState>();
   private readonly lastReplacementAt = new Map<string, number>();
+  private roster: StoredRoster = {};
   private snapshot: PoolSnapshot = { version: 0, upstream: null };
 
   constructor(
@@ -155,119 +233,264 @@ export class PoolState {
     private readonly staleAfterMs: number = DEFAULT_STALE_AFTER_MS
   ) {}
 
+  hydrateRoster(roster: StoredRoster): void {
+    this.roster = cloneStoredRoster(roster);
+    this.snapshot = { version: 0, upstream: null };
+    this.recompute();
+  }
+
+  exportRoster(): StoredRoster {
+    return cloneStoredRoster(this.roster);
+  }
+
+  normalizeLoadedRoster(): boolean {
+    const now = this.now();
+    let changed = false;
+    for (const entry of Object.values(this.roster)) {
+      if (entry.status === 'online') {
+        entry.status = 'aborted';
+        entry.disconnectedAt = now;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   nodeCount(): number {
-    return this.nodes.size;
+    return this.activeNodes.size;
   }
 
   currentPick(): PoolSnapshot {
     return { ...this.snapshot };
   }
 
-  nodeSnapshot(): PoolNodeSnapshot[] {
-    return Array.from(this.nodes.values())
-      .map(node => ({
-        node_id: node.nodeId,
-        upstreams: [...node.upstreams],
-        active_upstream: node.activeUpstream,
-        last_seen: node.lastSeen,
-        connected_at: node.connectedAt
-      }))
+  stateSnapshot(): PoolStateResponse {
+    const counts: PoolStatusCounts = {
+      online: 0,
+      offline: 0,
+      aborted: 0
+    };
+
+    const nodes = Object.entries(this.roster)
+      .map(([nodeId, entry]) => {
+        counts[entry.status] += 1;
+        const active = this.activeNodes.get(nodeId);
+        return {
+          node_id: nodeId,
+          status: entry.status,
+          first_seen_at: entry.firstSeenAt,
+          last_connected_at: entry.lastConnectedAt,
+          last_seen_at: entry.lastSeenAt,
+          disconnected_at: entry.disconnectedAt,
+          upstreams: entry.status === 'online' && active ? [...active.upstreams] : [],
+          active_upstream: entry.status === 'online' && active ? active.activeUpstream : null
+        } satisfies PoolNodeSnapshot;
+      })
       .sort((left, right) => left.node_id.localeCompare(right.node_id));
+
+    return {
+      pick: this.currentPick(),
+      node_count: counts.online,
+      counts,
+      nodes
+    };
   }
 
-  registerConnection(
-    nodeId: string,
-    connection: ConnectionLike
-  ): { previous?: ConnectionLike; changed: boolean; throttled: boolean } {
-    const created = !this.nodes.has(nodeId);
-    const previous = this.connections.get(nodeId);
+  registerConnection(nodeId: string, connection: ConnectionLike): RegisterConnectionResult {
+    const current = this.activeNodes.get(nodeId);
     const now = this.now();
-    if (previous && previous !== connection) {
+
+    if (current && current.connection !== connection) {
       const lastReplacementAt = this.lastReplacementAt.get(nodeId);
       if (lastReplacementAt !== undefined && now - lastReplacementAt < RECONNECT_THROTTLE_MS) {
         return {
-          previous,
+          previous: current.connection,
           changed: false,
+          rosterChanged: false,
           throttled: true
         };
       }
       this.lastReplacementAt.set(nodeId, now);
     }
 
-    const node = this.ensureNode(nodeId);
-    node.connectedAt = now;
-    node.lastSeen = now;
-    this.connections.set(nodeId, connection);
+    const previous = current?.connection;
+    this.activeNodes.set(nodeId, {
+      nodeId,
+      upstreams: [],
+      activeUpstream: null,
+      lastSeen: now,
+      connectedAt: now,
+      connection
+    });
+
+    const existing = this.roster[nodeId];
+    this.roster[nodeId] = existing
+      ? {
+          ...existing,
+          status: 'online',
+          lastConnectedAt: now,
+          lastSeenAt: now,
+          disconnectedAt: null
+        }
+      : {
+          status: 'online',
+          firstSeenAt: now,
+          lastConnectedAt: now,
+          lastSeenAt: now,
+          disconnectedAt: null
+        };
+
     return {
       previous,
-      changed: created ? this.recompute() : false,
+      changed: this.recompute(),
+      rosterChanged: true,
       throttled: false
     };
   }
 
-  removeNode(nodeId: string): boolean {
-    const removedNode = this.nodes.delete(nodeId);
-    this.connections.delete(nodeId);
-    this.lastReplacementAt.delete(nodeId);
-    if (!removedNode) {
-      return false;
+  setPreferences(nodeId: string, connection: ConnectionLike, upstreams: string[], activeUpstream: string | null): MutationResult {
+    const current = this.activeNodes.get(nodeId);
+    if (!current || current.connection !== connection) {
+      return { changed: false, rosterChanged: false };
     }
-    return this.recompute();
+
+    const now = this.now();
+    current.upstreams = [...upstreams];
+    current.activeUpstream = activeUpstream;
+    current.lastSeen = now;
+
+    const entry = this.roster[nodeId];
+    if (entry) {
+      entry.lastSeenAt = now;
+    }
+
+    return {
+      changed: this.recompute(),
+      rosterChanged: true
+    };
   }
 
-  setPreferences(nodeId: string, upstreams: string[], activeUpstream: string | null): boolean {
-    const node = this.ensureNode(nodeId);
-    node.upstreams = [...upstreams];
-    node.activeUpstream = activeUpstream;
-    node.lastSeen = this.now();
-    return this.recompute();
+  heartbeat(nodeId: string, connection: ConnectionLike): MutationResult {
+    const current = this.activeNodes.get(nodeId);
+    if (!current || current.connection !== connection) {
+      return { changed: false, rosterChanged: false };
+    }
+
+    const now = this.now();
+    current.lastSeen = now;
+
+    const entry = this.roster[nodeId];
+    if (entry) {
+      entry.lastSeenAt = now;
+    }
+
+    return {
+      changed: false,
+      rosterChanged: true
+    };
   }
 
-  heartbeat(nodeId: string): boolean {
-    const node = this.ensureNode(nodeId);
-    node.lastSeen = this.now();
-    return this.reapStaleNodes();
+  acceptTeardown(nodeId: string, connection: ConnectionLike): MutationResult {
+    const current = this.activeNodes.get(nodeId);
+    if (!current || current.connection !== connection) {
+      return { changed: false, rosterChanged: false };
+    }
+
+    this.activeNodes.delete(nodeId);
+    this.lastReplacementAt.delete(nodeId);
+
+    const entry = this.roster[nodeId];
+    if (entry) {
+      entry.status = 'offline';
+      entry.disconnectedAt = this.now();
+    }
+
+    return {
+      changed: this.recompute(),
+      rosterChanged: true
+    };
   }
 
-  reapStaleNodes(): boolean {
+  abortConnection(nodeId: string, connection: ConnectionLike): MutationResult {
+    const current = this.activeNodes.get(nodeId);
+    if (!current || current.connection !== connection) {
+      return { changed: false, rosterChanged: false };
+    }
+
+    this.activeNodes.delete(nodeId);
+    this.lastReplacementAt.delete(nodeId);
+
+    const entry = this.roster[nodeId];
+    if (entry) {
+      entry.status = 'aborted';
+      entry.disconnectedAt = this.now();
+    }
+
+    return {
+      changed: this.recompute(),
+      rosterChanged: true
+    };
+  }
+
+  reapStaleNodes(): ReapResult {
     const cutoff = this.now() - this.staleAfterMs;
-    let removed = false;
-    for (const [nodeId, node] of this.nodes.entries()) {
-      if (node.lastSeen < cutoff) {
-        this.nodes.delete(nodeId);
-        this.connections.delete(nodeId);
-        this.lastReplacementAt.delete(nodeId);
-        removed = true;
+    const connectionsToClose: ConnectionLike[] = [];
+    let rosterChanged = false;
+
+    for (const [nodeId, current] of this.activeNodes.entries()) {
+      if (current.lastSeen >= cutoff) {
+        continue;
+      }
+
+      this.activeNodes.delete(nodeId);
+      this.lastReplacementAt.delete(nodeId);
+      connectionsToClose.push(current.connection);
+
+      const entry = this.roster[nodeId];
+      if (entry) {
+        entry.status = 'aborted';
+        entry.disconnectedAt = this.now();
+        rosterChanged = true;
       }
     }
-    if (!removed) {
-      return false;
+
+    return {
+      changed: connectionsToClose.length > 0 ? this.recompute() : false,
+      rosterChanged,
+      connectionsToClose
+    };
+  }
+
+  revokeNode(nodeId: string): RevokeNodeResult {
+    const current = this.activeNodes.get(nodeId);
+    if (current) {
+      this.activeNodes.delete(nodeId);
     }
-    return this.recompute();
+    this.lastReplacementAt.delete(nodeId);
+
+    const removed = delete this.roster[nodeId];
+    if (!removed && !current) {
+      return {
+        removed: false,
+        changed: false,
+        rosterChanged: false
+      };
+    }
+
+    return {
+      removed: true,
+      connection: current?.connection,
+      changed: this.recompute(),
+      rosterChanged: true
+    };
   }
 
   connectionsList(): ConnectionLike[] {
-    return Array.from(this.connections.values());
-  }
-
-  private ensureNode(nodeId: string): PoolNodeState {
-    const existing = this.nodes.get(nodeId);
-    if (existing) {
-      return existing;
-    }
-    const created: PoolNodeState = {
-      nodeId,
-      upstreams: [],
-      activeUpstream: null,
-      lastSeen: this.now(),
-      connectedAt: this.now()
-    };
-    this.nodes.set(nodeId, created);
-    return created;
+    return Array.from(this.activeNodes.values()).map(node => node.connection);
   }
 
   private recompute(): boolean {
-    const upstream = selectSharedUpstream(Array.from(this.nodes.values()));
+    const upstream = selectSharedUpstream(Array.from(this.activeNodes.values()));
     if (upstream === this.snapshot.upstream) {
       return false;
     }
@@ -279,18 +502,43 @@ export class PoolState {
   }
 }
 
+function sendJson(socket: WebSocket, payload: ReadyMessage | PickMessage | ClosingMessage | ErrorMessage): void {
+  socket.send(JSON.stringify(payload));
+}
+
 export class PoolDurableObject {
   private readonly state = new PoolState();
+  private readonly storage: DurableObjectStorage;
+  private loadPromise: Promise<void> | null = null;
+
+  constructor(state: DurableObjectState) {
+    this.storage = state.storage;
+  }
 
   async fetch(request: Request): Promise<Response> {
+    await this.ensureLoaded();
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/state') {
-      return Response.json({
-        pick: this.state.currentPick(),
-        node_count: this.state.nodeCount(),
-        nodes: this.state.nodeSnapshot()
-      });
+      await this.flushReapResult(this.state.reapStaleNodes());
+      return Response.json(this.state.stateSnapshot());
+    }
+
+    if (request.method === 'DELETE' && url.pathname.startsWith('/nodes/')) {
+      const nodeId = decodeURIComponent(url.pathname.slice('/nodes/'.length)).trim();
+      const nodeIdError = validateNodeId(nodeId);
+      if (nodeIdError) {
+        return Response.json({ error: nodeIdError }, { status: 400 });
+      }
+
+      const result = this.state.revokeNode(nodeId);
+      await this.persistIfNeeded(result.rosterChanged);
+      if (result.changed) {
+        this.broadcastPick();
+      }
+      result.connection?.close(1008, 'revoked');
+
+      return Response.json({ ok: true, removed: result.removed });
     }
 
     if (request.headers.get('upgrade') !== 'websocket') {
@@ -315,44 +563,106 @@ export class PoolDurableObject {
     } as ResponseInit & { webSocket: WebSocket });
   }
 
-  private attach(socket: WebSocket, authenticatedNodeId: string): void {
-    let nodeId: string | null = null;
-    const messageLimiter = new ConnectionRateLimiter();
+  private async ensureLoaded(): Promise<void> {
+    if (!this.loadPromise) {
+      this.loadPromise = (async () => {
+        const stored = await this.storage.get<StoredRoster>(ROSTER_KEY);
+        this.state.hydrateRoster(stored ?? {});
+        if (this.state.normalizeLoadedRoster()) {
+          await this.persistIfNeeded(true);
+        }
+      })();
+    }
+    await this.loadPromise;
+  }
 
-    const sendPick = (target: WebSocket): void => {
-      const snapshot = this.state.currentPick();
-      const payload: PickMessage = {
+  private async persistIfNeeded(changed: boolean): Promise<void> {
+    if (!changed) {
+      return;
+    }
+    await this.storage.put(ROSTER_KEY, this.state.exportRoster());
+  }
+
+  private broadcastPick(): void {
+    const snapshot = this.state.currentPick();
+    for (const connection of this.state.connectionsList()) {
+      connection.send(JSON.stringify({
         type: 'pick',
         version: snapshot.version,
         upstream: snapshot.upstream
-      };
-      target.send(JSON.stringify(payload));
-    };
+      } satisfies PickMessage));
+    }
+  }
 
-    const broadcastPick = (): void => {
-      const snapshot = this.state.currentPick();
-      for (const connection of this.state.connectionsList()) {
-        connection.send(JSON.stringify({
-          type: 'pick',
-          version: snapshot.version,
-          upstream: snapshot.upstream
-        } satisfies PickMessage));
+  private sendPick(socket: WebSocket): void {
+    const snapshot = this.state.currentPick();
+    sendJson(socket, {
+      type: 'pick',
+      version: snapshot.version,
+      upstream: snapshot.upstream
+    } satisfies PickMessage);
+  }
+
+  private async flushReapResult(result: ReapResult): Promise<void> {
+    await this.persistIfNeeded(result.rosterChanged);
+    if (result.changed) {
+      this.broadcastPick();
+    }
+    for (const connection of result.connectionsToClose) {
+      connection.close(1001, 'stale');
+    }
+  }
+
+  private attach(socket: WebSocket, authenticatedNodeId: string): void {
+    let phase: SessionPhase = 'await_hello';
+    const messageLimiter = new ConnectionRateLimiter();
+
+    const helloTimer = setTimeout(() => {
+      if (phase !== 'await_hello') {
+        return;
+      }
+      sendJson(socket, {
+        type: 'error',
+        code: 'missing_hello',
+        message: 'hello must be sent first'
+      } satisfies ErrorMessage);
+      phase = 'closed';
+      socket.close(1008, 'missing_hello');
+    }, HELLO_TIMEOUT_MS);
+
+    let teardownTimer: ReturnType<typeof setTimeout> | null = null;
+    let finalized = false;
+
+    const clearTimers = (): void => {
+      clearTimeout(helloTimer);
+      if (teardownTimer !== null) {
+        clearTimeout(teardownTimer);
+        teardownTimer = null;
       }
     };
 
     const sendError = (code: string, message: string): void => {
-      const payload: ErrorMessage = { type: 'error', code, message };
-      socket.send(JSON.stringify(payload));
+      sendJson(socket, { type: 'error', code, message } satisfies ErrorMessage);
     };
 
-    const closeNode = (): void => {
-      if (!nodeId) {
+    const finalize = async (): Promise<void> => {
+      if (finalized) {
         return;
       }
-      if (this.state.removeNode(nodeId)) {
-        broadcastPick();
+      finalized = true;
+      clearTimers();
+
+      if (phase !== 'online') {
+        phase = 'closed';
+        return;
       }
-      nodeId = null;
+
+      const result = this.state.abortConnection(authenticatedNodeId, socket);
+      phase = 'closed';
+      await this.persistIfNeeded(result.rosterChanged);
+      if (result.changed) {
+        this.broadcastPick();
+      }
     };
 
     socket.addEventListener('message', event => {
@@ -361,18 +671,25 @@ export class PoolDurableObject {
         authenticatedNodeId,
         socket,
         messageLimiter,
-        sendPick,
-        broadcastPick,
         sendError,
-        () => nodeId,
+        () => phase,
         value => {
-          nodeId = value;
+          phase = value;
+        },
+        () => {
+          teardownTimer = setTimeout(() => {
+            socket.close(1000, 'closing');
+          }, TEARDOWN_CLOSE_TIMEOUT_MS);
         }
       );
     });
 
-    socket.addEventListener('close', closeNode);
-    socket.addEventListener('error', closeNode);
+    socket.addEventListener('close', () => {
+      void finalize();
+    });
+    socket.addEventListener('error', () => {
+      void finalize();
+    });
   }
 
   private async handleMessage(
@@ -380,12 +697,13 @@ export class PoolDurableObject {
     authenticatedNodeId: string,
     socket: WebSocket,
     messageLimiter: ConnectionRateLimiter,
-    sendPick: (target: WebSocket) => void,
-    broadcastPick: () => void,
     sendError: (code: string, message: string) => void,
-    getNodeId: () => string | null,
-    setNodeId: (nodeId: string | null) => void
+    getPhase: () => SessionPhase,
+    setPhase: (phase: SessionPhase) => void,
+    armTeardownClose: () => void
   ): Promise<void> {
+    await this.flushReapResult(this.state.reapStaleNodes());
+
     if (!messageLimiter.allow()) {
       sendError('rate_limited', 'Too many messages');
       socket.close(1008, 'rate_limited');
@@ -410,46 +728,79 @@ export class PoolDurableObject {
       return;
     }
     const message = parsed.message;
+    const phase = getPhase();
 
     if (message.type === 'hello') {
-      const { previous: replaced, changed, throttled } = this.state.registerConnection(authenticatedNodeId, socket);
-      if (throttled) {
+      if (phase !== 'await_hello') {
+        sendError('invalid_message', 'hello may only be sent once');
+        socket.close(1008, 'invalid_message');
+        return;
+      }
+
+      const result = this.state.registerConnection(authenticatedNodeId, socket);
+      if (result.throttled) {
         sendError('reconnect_throttled', 'node reconnect is temporarily throttled');
         socket.close(1013, 'reconnect_throttled');
         return;
       }
-      setNodeId(authenticatedNodeId);
-      const reaped = this.state.reapStaleNodes();
 
-      if (replaced && replaced !== socket) {
-        replaced.close(1012, 'replaced');
+      await this.persistIfNeeded(result.rosterChanged);
+      setPhase('online');
+      sendJson(socket, {
+        type: 'ready',
+        node_id: authenticatedNodeId
+      } satisfies ReadyMessage);
+
+      if (result.changed) {
+        this.broadcastPick();
+      } else {
+        this.sendPick(socket);
       }
-      if (changed || reaped) {
-        broadcastPick();
+
+      if (result.previous && result.previous !== socket) {
+        result.previous.close(1012, 'replaced');
       }
-      sendPick(socket);
       return;
     }
 
-    const nodeId = getNodeId();
-    if (!nodeId) {
+    if (phase === 'await_hello') {
       sendError('missing_hello', 'hello must be sent first');
       socket.close(1008, 'missing_hello');
       return;
     }
 
+    if (phase !== 'online') {
+      sendError('invalid_message', 'session is closing');
+      socket.close(1008, 'invalid_message');
+      return;
+    }
+
     if (message.type === 'preferences') {
-      if (this.state.setPreferences(nodeId, message.upstreams, message.active_upstream ?? null)) {
-        broadcastPick();
+      const result = this.state.setPreferences(authenticatedNodeId, socket, message.upstreams, message.active_upstream ?? null);
+      await this.persistIfNeeded(result.rosterChanged);
+      if (result.changed) {
+        this.broadcastPick();
       }
       return;
     }
 
     if (message.type === 'heartbeat') {
-      const changed = this.state.heartbeat(nodeId);
-      if (changed) {
-        broadcastPick();
+      const result = this.state.heartbeat(authenticatedNodeId, socket);
+      await this.persistIfNeeded(result.rosterChanged);
+      return;
+    }
+
+    if (message.type === 'bye') {
+      const result = this.state.acceptTeardown(authenticatedNodeId, socket);
+      await this.persistIfNeeded(result.rosterChanged);
+      setPhase('teardown_accepted');
+      if (result.changed) {
+        this.broadcastPick();
       }
+      sendJson(socket, {
+        type: 'closing'
+      } satisfies ClosingMessage);
+      armTeardownClose();
     }
   }
 }

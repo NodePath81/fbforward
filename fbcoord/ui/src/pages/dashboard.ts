@@ -1,6 +1,9 @@
 import type { CoordinationState, NodeDetail } from '../types.js';
 
-function formatRelativeTime(timestamp: number): string {
+function formatRelativeTime(timestamp: number | null): string {
+  if (timestamp === null) {
+    return 'Never';
+  }
   const deltaSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (deltaSeconds < 60) {
     return `${deltaSeconds}s ago`;
@@ -12,20 +15,6 @@ function formatRelativeTime(timestamp: number): string {
     return `${Math.floor(deltaSeconds / 3600)}h ago`;
   }
   return `${Math.floor(deltaSeconds / 86400)}d ago`;
-}
-
-function formatDuration(fromTimestamp: number): string {
-  const deltaSeconds = Math.max(0, Math.floor((Date.now() - fromTimestamp) / 1000));
-  if (deltaSeconds < 60) {
-    return `${deltaSeconds}s`;
-  }
-  if (deltaSeconds < 3600) {
-    return `${Math.floor(deltaSeconds / 60)}m`;
-  }
-  if (deltaSeconds < 86400) {
-    return `${Math.floor(deltaSeconds / 3600)}h`;
-  }
-  return `${Math.floor(deltaSeconds / 86400)}d`;
 }
 
 function summaryCard(label: string, value: string, extra?: string): HTMLElement {
@@ -59,6 +48,14 @@ function summaryCard(label: string, value: string, extra?: string): HTMLElement 
 function renderUpstreams(node: NodeDetail, coordinatedPick: string | null): HTMLElement {
   const list = document.createElement('div');
   list.className = 'tag-list';
+  if (node.upstreams.length === 0) {
+    const empty = document.createElement('span');
+    empty.className = 'muted';
+    empty.textContent = 'none';
+    list.append(empty);
+    return list;
+  }
+
   for (const upstream of node.upstreams) {
     const tag = document.createElement('span');
     tag.className = `tag${coordinatedPick === upstream ? ' pick' : ''}`;
@@ -66,6 +63,30 @@ function renderUpstreams(node: NodeDetail, coordinatedPick: string | null): HTML
     list.append(tag);
   }
   return list;
+}
+
+function statusClass(status: NodeDetail['status']): string {
+  if (status === 'online') {
+    return 'status-good';
+  }
+  if (status === 'aborted') {
+    return 'status-warn';
+  }
+  return 'muted';
+}
+
+function formatDisconnected(node: NodeDetail): string {
+  if (node.status === 'online') {
+    return 'Active';
+  }
+  return formatRelativeTime(node.disconnected_at);
+}
+
+function activeUpstreamText(node: NodeDetail): string {
+  if (node.status !== 'online') {
+    return 'none';
+  }
+  return node.active_upstream ?? 'none';
 }
 
 export function renderDashboardPage(options: {
@@ -82,14 +103,17 @@ export function renderDashboardPage(options: {
     <div>
       <div class="kicker">fbcoord</div>
       <h1>Coordination Dashboard</h1>
-      <p>One global coordination state, one shared pick, and the live node preferences behind it.</p>
+      <p>One global coordination state, one shared pick, and a persisted roster of node coordination presence.</p>
     </div>
   `;
 
   const heroMeta = document.createElement('div');
   heroMeta.className = 'hero-meta';
   heroMeta.append(
-    summaryCard('Connected Nodes', String(options.state.node_count)),
+    summaryCard('Online', String(options.state.counts.online)),
+    summaryCard('Offline', String(options.state.counts.offline)),
+    summaryCard('Aborted', String(options.state.counts.aborted)),
+    summaryCard('Never Seen', String(options.state.counts.never_seen)),
     summaryCard(
       'Current Pick',
       options.state.pick.upstream ?? 'no consensus',
@@ -131,19 +155,17 @@ export function renderDashboardPage(options: {
   const heading = document.createElement('div');
   const kicker = document.createElement('div');
   kicker.className = 'kicker';
-  kicker.textContent = 'Global Coordination State';
+  kicker.textContent = 'Node Coordination Presence';
   const title = document.createElement('h2');
   title.textContent = options.state.pick.upstream ?? 'No consensus';
   const count = document.createElement('p');
   count.className = 'muted';
-  count.textContent = `${options.state.node_count} connected node${options.state.node_count === 1 ? '' : 's'}`;
+  count.textContent = `${options.state.node_count} online node${options.state.node_count === 1 ? '' : 's'}`;
   heading.append(kicker, title, count);
 
   const subtitle = document.createElement('div');
   subtitle.className = 'muted';
-  subtitle.textContent = options.state.pick.upstream
-    ? 'Nodes with a different active upstream are still converging or currently falling back locally.'
-    : 'No shared upstream is currently selected.';
+  subtitle.textContent = 'Only online nodes contribute to the coordinated pick. Offline, aborted, and never-seen nodes remain visible for operators.';
 
   header.append(heading, subtitle);
 
@@ -153,7 +175,7 @@ export function renderDashboardPage(options: {
   if (options.state.nodes.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.textContent = 'No nodes are currently connected.';
+    empty.textContent = 'No provisioned node tokens exist yet.';
     body.append(empty);
   } else {
     const table = document.createElement('table');
@@ -161,10 +183,12 @@ export function renderDashboardPage(options: {
     thead.innerHTML = `
       <tr>
         <th>Node ID</th>
+        <th>Status</th>
         <th>Submitted Upstreams</th>
         <th>Active Upstream</th>
         <th>Last Seen</th>
-        <th>Connection Age</th>
+        <th>Disconnected</th>
+        <th>First Seen</th>
       </tr>
     `;
     table.append(thead);
@@ -177,20 +201,27 @@ export function renderDashboardPage(options: {
       nodeId.className = 'inline-code';
       nodeId.textContent = node.node_id;
 
+      const status = document.createElement('td');
+      status.className = statusClass(node.status);
+      status.textContent = node.status;
+
       const upstreams = document.createElement('td');
       upstreams.append(renderUpstreams(node, options.state.pick.upstream));
 
       const active = document.createElement('td');
-      active.className = `inline-code${options.state.pick.upstream && node.active_upstream !== options.state.pick.upstream ? ' status-warn' : ''}`;
-      active.textContent = node.active_upstream ?? 'none';
+      active.className = `inline-code${node.status === 'online' && options.state.pick.upstream && node.active_upstream !== options.state.pick.upstream ? ' status-warn' : ''}`;
+      active.textContent = activeUpstreamText(node);
 
       const lastSeen = document.createElement('td');
-      lastSeen.textContent = formatRelativeTime(node.last_seen);
+      lastSeen.textContent = formatRelativeTime(node.last_seen_at);
 
-      const connectedAt = document.createElement('td');
-      connectedAt.textContent = formatDuration(node.connected_at);
+      const disconnected = document.createElement('td');
+      disconnected.textContent = formatDisconnected(node);
 
-      row.append(nodeId, upstreams, active, lastSeen, connectedAt);
+      const firstSeen = document.createElement('td');
+      firstSeen.textContent = formatRelativeTime(node.first_seen_at);
+
+      row.append(nodeId, status, upstreams, active, lastSeen, disconnected, firstSeen);
       tbody.append(row);
     }
     table.append(tbody);

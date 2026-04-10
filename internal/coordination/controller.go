@@ -3,6 +3,7 @@ package coordination
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -14,6 +15,16 @@ import (
 	"github.com/NodePath81/fbforward/internal/util"
 	"github.com/gorilla/websocket"
 )
+
+const (
+	handshakeTimeout        = 10 * time.Second
+	gracefulTeardownTimeout = 2 * time.Second
+)
+
+type incomingEvent struct {
+	pick    *PickMessage
+	closing bool
+}
 
 type Controller struct {
 	baseCtx context.Context
@@ -123,10 +134,30 @@ func (c *Controller) runSession(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close()
+
+	handshakeDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
+		select {
+		case <-ctx.Done():
+			select {
+			case <-handshakeDone:
+			default:
+				_ = conn.Close()
+			}
+		case <-handshakeDone:
+		}
 	}()
+	defer close(handshakeDone)
+
+	if err := c.writeMessage(conn, HelloMessage{Type: "hello"}); err != nil {
+		return err
+	}
+	if err := c.waitForReady(ctx, conn); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
 
 	c.manager.SetCoordinationConnected(true)
 	c.syncMetrics()
@@ -135,18 +166,13 @@ func (c *Controller) runSession(ctx context.Context) error {
 		c.syncMetrics()
 	}()
 
-	if err := c.writeMessage(conn, HelloMessage{
-		Type: "hello",
-	}); err != nil {
-		return err
-	}
+	incoming := make(chan incomingEvent, 4)
+	readErr := make(chan error, 1)
+	go c.readLoop(conn, incoming, readErr)
+
 	if err := c.writePreferences(conn); err != nil {
 		return err
 	}
-
-	incoming := make(chan PickMessage, 4)
-	readErr := make(chan error, 1)
-	go c.readLoop(conn, incoming, readErr)
 
 	ticker := time.NewTicker(c.cfg.HeartbeatInterval.Duration())
 	defer ticker.Stop()
@@ -154,25 +180,32 @@ func (c *Controller) runSession(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			c.gracefulTeardown(conn, incoming, readErr)
 			return nil
 		case err := <-readErr:
 			return err
-		case pick := <-incoming:
+		case event := <-incoming:
+			if event.closing {
+				return nil
+			}
+			if event.pick == nil {
+				continue
+			}
 			if c.metrics != nil {
 				c.metrics.IncCoordinationPicksReceived()
 			}
 			tag := ""
-			if pick.Upstream != nil {
-				tag = *pick.Upstream
+			if event.pick.Upstream != nil {
+				tag = *event.pick.Upstream
 			}
-			applied, err := c.manager.ApplyCoordinationPick(pick.Version, tag)
+			applied, err := c.manager.ApplyCoordinationPick(event.pick.Version, tag)
 			c.syncMetrics()
 			if err != nil {
 				if c.metrics != nil {
 					c.metrics.IncCoordinationPicksRejected()
 				}
 				util.Event(c.logger, slog.LevelWarn, "coordination.pick_rejected",
-					"version", pick.Version,
+					"version", event.pick.Version,
 					"upstream", tag,
 					"error", err,
 				)
@@ -192,6 +225,84 @@ func (c *Controller) runSession(ctx context.Context) error {
 	}
 }
 
+func (c *Controller) waitForReady(ctx context.Context, conn *websocket.Conn) error {
+	if err := conn.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return err
+		}
+
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return fmt.Errorf("decode coordination message: %w", err)
+		}
+
+		switch envelope.Type {
+		case "ready":
+			var ready ReadyMessage
+			if err := json.Unmarshal(data, &ready); err != nil {
+				return fmt.Errorf("decode coordination ready: %w", err)
+			}
+			if ready.NodeID == "" {
+				return errors.New("coordination ready missing node_id")
+			}
+			return nil
+		case "error":
+			var msg ErrorMessage
+			if err := json.Unmarshal(data, &msg); err != nil {
+				return fmt.Errorf("decode coordination error: %w", err)
+			}
+			return fmt.Errorf("fbcoord error %s: %s", msg.Code, msg.Message)
+		case "closing":
+			return errors.New("fbcoord closed the session during handshake")
+		case "pick":
+			return errors.New("fbcoord sent pick before ready")
+		default:
+			return fmt.Errorf("unexpected coordination message type %q during handshake", envelope.Type)
+		}
+	}
+}
+
+func (c *Controller) gracefulTeardown(
+	conn *websocket.Conn,
+	incoming <-chan incomingEvent,
+	readErr <-chan error,
+) {
+	if err := c.writeMessage(conn, ByeMessage{Type: "bye"}); err != nil {
+		_ = conn.Close()
+		return
+	}
+
+	timer := time.NewTimer(gracefulTeardownTimeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			_ = conn.Close()
+			return
+		case event := <-incoming:
+			if event.closing {
+				_ = conn.Close()
+				return
+			}
+		case <-readErr:
+			return
+		}
+	}
+}
+
 func (c *Controller) writePreferences(conn *websocket.Conn) error {
 	return c.writeMessage(conn, PreferencesMessage{
 		Type:           "preferences",
@@ -207,7 +318,7 @@ func (c *Controller) writeMessage(conn *websocket.Conn, message interface{}) err
 	return conn.WriteJSON(message)
 }
 
-func (c *Controller) readLoop(conn *websocket.Conn, incoming chan<- PickMessage, readErr chan<- error) {
+func (c *Controller) readLoop(conn *websocket.Conn, incoming chan<- incomingEvent, readErr chan<- error) {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -230,7 +341,15 @@ func (c *Controller) readLoop(conn *websocket.Conn, incoming chan<- PickMessage,
 				readErr <- fmt.Errorf("decode coordination pick: %w", err)
 				return
 			}
-			incoming <- pick
+			incoming <- incomingEvent{pick: &pick}
+		case "closing":
+			var closing ClosingMessage
+			if err := json.Unmarshal(data, &closing); err != nil {
+				readErr <- fmt.Errorf("decode coordination closing: %w", err)
+				return
+			}
+			incoming <- incomingEvent{closing: true}
+			return
 		case "error":
 			var msg ErrorMessage
 			if err := json.Unmarshal(data, &msg); err != nil {
@@ -238,6 +357,9 @@ func (c *Controller) readLoop(conn *websocket.Conn, incoming chan<- PickMessage,
 				return
 			}
 			readErr <- fmt.Errorf("fbcoord error %s: %s", msg.Code, msg.Message)
+			return
+		default:
+			readErr <- fmt.Errorf("unexpected coordination message type %q", envelope.Type)
 			return
 		}
 	}

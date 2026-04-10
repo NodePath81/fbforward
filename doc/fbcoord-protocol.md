@@ -86,8 +86,23 @@ Behavior:
 
 - if another connection with the same authenticated `node_id` is already
   active, the old connection is closed and replaced
-- fbcoord immediately sends the current `pick` snapshot after successful
-  `hello`
+- on successful handshake, fbcoord sends `ready` first, then the current
+  `pick`
+
+### `ready`
+
+Sent by fbcoord after it accepts `hello`.
+
+```json
+{
+  "type": "ready",
+  "node_id": "node-1"
+}
+```
+
+Fields:
+
+- `node_id`: the server-authenticated node identity derived from the node token
 
 ### `preferences`
 
@@ -124,7 +139,33 @@ Sent periodically to keep the node active.
 }
 ```
 
-Heartbeats update `last_seen` and prevent stale eviction.
+Heartbeats update `last_seen_at` and prevent stale eviction.
+
+### `bye`
+
+Sent by the node to exit coordination cleanly.
+
+```json
+{
+  "type": "bye"
+}
+```
+
+If fbcoord accepts `bye`, the node transitions to `offline`, receives
+`closing`, and is removed from the active selector.
+
+### `closing`
+
+Sent by fbcoord after it accepts `bye`.
+
+```json
+{
+  "type": "closing"
+}
+```
+
+After `closing`, either peer may close the WebSocket. If the socket stays open,
+fbcoord force-closes it after a short timeout.
 
 ### `pick`
 
@@ -191,12 +232,15 @@ Normal lifecycle:
 2. Worker validates the node token, derives the bound `node_id`, and upgrades
    the request.
 3. Client sends `hello`.
-4. Server registers the connection under the authenticated `node_id`.
+4. Server registers the connection under the authenticated `node_id` and sends
+   `ready`.
 5. Server sends the current `pick`.
 6. Client sends `preferences`.
 7. Server recomputes and broadcasts `pick` if the visible result changes.
 8. Client continues sending `heartbeat`.
-9. On disconnect or stale eviction, the node is removed from the global state.
+9. To exit cleanly, client sends `bye` and waits for `closing`.
+10. On disconnect or stale eviction without accepted teardown, the node moves to
+    `aborted`.
 
 If a node reconnects with the same token or another token bound to the same
 `node_id`, the old socket is closed with code `1012` and reason `replaced`.
@@ -257,21 +301,23 @@ same pick.
 
 The global coordination state tracks:
 
-- active nodes keyed by `node_id`
-- each node's last submitted `upstreams`
-- each node's `active_upstream`
-- `last_seen`
-- `connected_at`
+- active selector inputs for currently `online` nodes
+- a persisted node roster keyed by `node_id`
+- per-node status: `online`, `offline`, or `aborted`
+- per-node timestamps:
+  - `first_seen_at`
+  - `last_connected_at`
+  - `last_seen_at`
+  - `disconnected_at`
 - current visible `pick { version, upstream }`
 
 The admin UI reads this state through `GET /api/state`.
 
 ### Stale eviction
 
-If a node does not refresh `last_seen` within 30 seconds, it is evicted from
-state. Eviction removes:
+If a node does not refresh `last_seen_at` within 30 seconds, it is removed from
+the active selector and its roster status becomes `aborted`. Eviction removes:
 
-- the node snapshot
 - its live connection
 - its contribution to the selector
 
@@ -303,25 +349,43 @@ It does increment when the visible pick changes in either direction:
 Reconnect semantics:
 
 - same `node_id` replaces the older live connection
-- the replacement connection receives the current pick immediately after
-  `hello`
+- the replacement connection receives `ready`, then the current pick
+- the public roster remains `online`; superseded sockets do not create a
+  transient `aborted` state
 
 Redeploy semantics:
 
 - Worker redeploys drop live WebSocket sessions
 - nodes are expected to reconnect and resend `hello` plus `preferences`
+- persisted roster history survives Durable Object restart, and any previously
+  persisted `online` entries are normalized to `aborted` on reload
 - node tokens remain valid across redeploys unless they were explicitly revoked
 
 ### Admin API state shape
 
 Current admin HTTP state surface:
 
-- `GET /api/state` returns `pick`, `node_count`, and per-node detail with:
+- `GET /api/state` returns `pick`, `node_count`, `counts`, and per-node detail
+  for all provisioned node IDs with:
   - `node_id`
+  - `status`
+  - `first_seen_at`
+  - `last_connected_at`
+  - `last_seen_at`
+  - `disconnected_at`
   - `upstreams`
   - `active_upstream`
-  - `last_seen`
-  - `connected_at`
+
+`counts` includes:
+
+- `online`
+- `offline`
+- `aborted`
+- `never_seen`
+
+`never_seen` is synthesized by joining provisioned node tokens with the
+persisted/live roster. It means a node token exists, but no session has ever
+completed `hello`.
 
 Credential management is separate from the node WebSocket protocol:
 
@@ -330,3 +394,6 @@ Credential management is separate from the node WebSocket protocol:
 - `GET /api/node-tokens`
 - `POST /api/node-tokens`
 - `DELETE /api/node-tokens/:node_id`
+
+Revoking a node token removes the corresponding roster entry and closes any
+live session for that `node_id`.

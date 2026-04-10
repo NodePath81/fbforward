@@ -47,11 +47,13 @@ fbcoord runs as a Cloudflare Worker backed by Durable Objects:
 At a high level:
 
 1. A node opens `GET /ws/node` with `Authorization: Bearer <node-token>`.
-2. The node sends `hello`, then `preferences`, then periodic `heartbeat`
-   messages.
-3. fbcoord computes one coordinated pick across all connected nodes and
+2. The node sends `hello` and waits for `ready`.
+3. The node sends `preferences`, then periodic `heartbeat` messages.
+4. fbcoord computes one coordinated pick across all online nodes and
    broadcasts `pick` updates.
-4. If there is no shared candidate, fbcoord returns `upstream: null`.
+5. To exit coordination cleanly, the node sends `bye` and waits for
+   `closing`.
+6. If there is no shared candidate, fbcoord returns `upstream: null`.
 
 For the wire contract and selector details, see
 [fbcoord protocol reference](fbcoord-protocol.md).
@@ -233,9 +235,9 @@ The dashboard shows one deployment-wide state view:
 
 - current coordinated pick or `no consensus`
 - pick version
-- connected node count
-- per-node detail with `node_id`, submitted upstream list, `active_upstream`,
-  `last_seen`, and `connected_at`
+- status counts for `online`, `offline`, `aborted`, and `never_seen`
+- per-node detail with `node_id`, status, submitted upstream list,
+  `active_upstream`, `last_seen_at`, `disconnected_at`, and `first_seen_at`
 
 The UI is poll-based. It does not subscribe to a live stream.
 
@@ -253,8 +255,9 @@ Important behavior:
 - fbcoord does not provide a dedicated rotate operation for node tokens
 - replacing a node token is done by revoking the old token and minting a new
   one for the same `node_id`
-- revoking a node token blocks future authentication and reconnects, but does
-  not proactively close an already-established WebSocket
+- revoking a node token blocks future authentication and reconnects, closes any
+  already-established WebSocket for that node, and removes the node from the
+  roster entirely
 
 ### Operator-token rotation
 

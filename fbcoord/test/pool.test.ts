@@ -24,67 +24,189 @@ describe('PoolState', () => {
     expect(replaced).toBe(first);
   });
 
-  it('recomputes the pick when a stale node is evicted', () => {
+  it('recomputes the pick when stale nodes are evicted', () => {
     let now = 0;
     const state = new PoolState(() => now, 30_000);
+    const first = new FakeConnection();
+    const second = new FakeConnection();
 
-    state.setPreferences('node-1', ['a', 'b'], null);
-    state.setPreferences('node-2', ['b'], null);
-    expect(state.currentPick()).toEqual({ version: 2, upstream: 'b' });
+    state.registerConnection('node-1', first);
+    state.registerConnection('node-2', second);
+    state.setPreferences('node-1', first, ['a', 'b'], null);
+    state.setPreferences('node-2', second, ['b'], null);
+    expect(state.currentPick()).toEqual({ version: 1, upstream: 'b' });
 
     now = 31_000;
-    const changed = state.reapStaleNodes();
+    const result = state.reapStaleNodes();
 
-    expect(changed).toBe(true);
-    expect(state.currentPick()).toEqual({ version: 3, upstream: null });
+    expect(result.changed).toBe(true);
+    expect(result.connectionsToClose).toEqual([first, second]);
+    expect(state.currentPick()).toEqual({ version: 2, upstream: null });
   });
 
   it('increments version only when the visible pick changes', () => {
     const state = new PoolState();
+    const first = new FakeConnection();
+    const second = new FakeConnection();
 
-    expect(state.setPreferences('node-1', ['a', 'b'], null)).toBe(true);
+    state.registerConnection('node-1', first);
+    expect(state.setPreferences('node-1', first, ['a', 'b'], null).changed).toBe(true);
     expect(state.currentPick()).toEqual({ version: 1, upstream: 'a' });
 
-    expect(state.setPreferences('node-1', ['a', 'b'], null)).toBe(false);
+    expect(state.setPreferences('node-1', first, ['a', 'b'], null).changed).toBe(false);
     expect(state.currentPick()).toEqual({ version: 1, upstream: 'a' });
 
-    expect(state.setPreferences('node-2', ['a'], null)).toBe(false);
-    expect(state.currentPick()).toEqual({ version: 1, upstream: 'a' });
+    expect(state.registerConnection('node-2', second).changed).toBe(true);
+    expect(state.currentPick()).toEqual({ version: 2, upstream: null });
 
-    expect(state.setPreferences('node-2', ['b'], null)).toBe(true);
-    expect(state.currentPick()).toEqual({ version: 2, upstream: 'b' });
+    expect(state.setPreferences('node-2', second, ['a'], null).changed).toBe(true);
+    expect(state.currentPick()).toEqual({ version: 3, upstream: 'a' });
+
+    expect(state.setPreferences('node-2', second, ['a'], null).changed).toBe(false);
+    expect(state.currentPick()).toEqual({ version: 3, upstream: 'a' });
+
+    expect(state.setPreferences('node-2', second, ['b'], null).changed).toBe(true);
+    expect(state.currentPick()).toEqual({ version: 4, upstream: 'b' });
   });
 
-  it('exposes node snapshots with connection timestamps', () => {
+  it('exposes roster snapshots with status and timestamps', () => {
     let now = 1_000;
     const state = new PoolState(() => now);
+    const connection = new FakeConnection();
 
-    state.registerConnection('node-1', new FakeConnection());
-    state.setPreferences('node-1', ['a', 'b'], 'a');
+    state.registerConnection('node-1', connection);
+    state.setPreferences('node-1', connection, ['a', 'b'], 'a');
 
     now = 2_000;
-    state.heartbeat('node-1');
+    state.heartbeat('node-1', connection);
 
-    expect(state.nodeSnapshot()).toEqual([
+    expect(state.stateSnapshot()).toEqual({
+      pick: { version: 1, upstream: 'a' },
+      node_count: 1,
+      counts: {
+        online: 1,
+        offline: 0,
+        aborted: 0
+      },
+      nodes: [
+        {
+          node_id: 'node-1',
+          status: 'online',
+          first_seen_at: 1_000,
+          last_connected_at: 1_000,
+          last_seen_at: 2_000,
+          disconnected_at: null,
+          upstreams: ['a', 'b'],
+          active_upstream: 'a'
+        }
+      ]
+    });
+  });
+
+  it('records offline teardown without exposing active upstreams afterward', () => {
+    let now = 1_000;
+    const state = new PoolState(() => now);
+    const connection = new FakeConnection();
+
+    state.registerConnection('node-1', connection);
+    state.setPreferences('node-1', connection, ['a'], 'a');
+
+    now = 3_000;
+    expect(state.acceptTeardown('node-1', connection)).toEqual({
+      changed: true,
+      rosterChanged: true
+    });
+
+    expect(state.stateSnapshot().nodes).toEqual([
       {
         node_id: 'node-1',
-        upstreams: ['a', 'b'],
-        active_upstream: 'a',
-        last_seen: 2_000,
-        connected_at: 1_000
+        status: 'offline',
+        first_seen_at: 1_000,
+        last_connected_at: 1_000,
+        last_seen_at: 1_000,
+        disconnected_at: 3_000,
+        upstreams: [],
+        active_upstream: null
       }
     ]);
   });
 
-  it('resets connection age on reconnect', () => {
+  it('marks abrupt disconnects as aborted and preserves prior timestamps', () => {
     let now = 1_000;
     const state = new PoolState(() => now);
+    const connection = new FakeConnection();
 
-    state.registerConnection('node-1', new FakeConnection());
+    state.registerConnection('node-1', connection);
+    now = 2_000;
+    state.heartbeat('node-1', connection);
+
     now = 4_000;
-    state.registerConnection('node-1', new FakeConnection());
+    expect(state.abortConnection('node-1', connection)).toEqual({
+      changed: false,
+      rosterChanged: true
+    });
 
-    expect(state.nodeSnapshot()[0]?.connected_at).toBe(4_000);
+    expect(state.stateSnapshot().nodes[0]).toEqual({
+      node_id: 'node-1',
+      status: 'aborted',
+      first_seen_at: 1_000,
+      last_connected_at: 1_000,
+      last_seen_at: 2_000,
+      disconnected_at: 4_000,
+      upstreams: [],
+      active_upstream: null
+    });
+  });
+
+  it('resets last_connected_at on reconnect while preserving first_seen_at', () => {
+    let now = 1_000;
+    const state = new PoolState(() => now);
+    const first = new FakeConnection();
+    const second = new FakeConnection();
+
+    state.registerConnection('node-1', first);
+    now = 4_000;
+    state.abortConnection('node-1', first);
+
+    now = 9_000;
+    state.registerConnection('node-1', second);
+
+    expect(state.stateSnapshot().nodes[0]).toEqual({
+      node_id: 'node-1',
+      status: 'online',
+      first_seen_at: 1_000,
+      last_connected_at: 9_000,
+      last_seen_at: 9_000,
+      disconnected_at: null,
+      upstreams: [],
+      active_upstream: null
+    });
+  });
+
+  it('normalizes persisted online entries to aborted on load', () => {
+    const state = new PoolState(() => 7_000);
+
+    state.hydrateRoster({
+      'node-1': {
+        status: 'online',
+        firstSeenAt: 1_000,
+        lastConnectedAt: 2_000,
+        lastSeenAt: 3_000,
+        disconnectedAt: null
+      }
+    });
+
+    expect(state.normalizeLoadedRoster()).toBe(true);
+    expect(state.stateSnapshot().nodes[0]).toEqual({
+      node_id: 'node-1',
+      status: 'aborted',
+      first_seen_at: 1_000,
+      last_connected_at: 2_000,
+      last_seen_at: 3_000,
+      disconnected_at: 7_000,
+      upstreams: [],
+      active_upstream: null
+    });
   });
 
   it('throttles repeated same-node replacement churn', () => {
@@ -109,6 +231,17 @@ describe('parseNodeInboundMessage', () => {
     })).toEqual({
       message: {
         type: 'hello'
+      },
+      close: false
+    });
+  });
+
+  it('accepts a bye message', () => {
+    expect(parseNodeInboundMessage({
+      type: 'bye'
+    })).toEqual({
+      message: {
+        type: 'bye'
       },
       close: false
     });
