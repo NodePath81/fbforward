@@ -1,6 +1,14 @@
 # API reference
 
-This reference documents programmatic interfaces for fbforward and bwprobe. For CLI usage, see user guides ([fbforward](user-guide-fbforward.md), [bwprobe](user-guide-bwprobe.md)).
+This reference documents programmatic interfaces for fbforward and bwprobe. For
+CLI usage, see user guides ([fbforward](user-guide-fbforward.md),
+[bwprobe](user-guide-bwprobe.md)).
+
+fbcoord now has standalone product documentation under
+[doc/fbcoord/](fbcoord/index.md), including its
+[API reference](fbcoord/api.md),
+[user guide](fbcoord/user-guide.md), and
+[protocol reference](fbcoord/protocol.md).
 
 ---
 

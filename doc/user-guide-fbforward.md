@@ -72,7 +72,7 @@ Legacy `coordination.pool` and `coordination.node_id` are parsed for backward
 compatibility but ignored with warnings. Each fbforward node must use a
 per-node fbcoord token; the operator token is not valid for node connections.
 
-For deploying and operating the coordination service itself, see [fbcoord user guide](user-guide-fbcoord.md). For the node-to-coordinator wire contract and selector details, see [fbcoord protocol reference](fbcoord-protocol.md).
+For deploying and operating the coordination service itself, see [fbcoord user guide](fbcoord/user-guide.md). For the node-to-coordinator wire contract and selector details, see [fbcoord protocol reference](fbcoord/protocol.md).
 
 ### Fast failover
 

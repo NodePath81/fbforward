@@ -44,10 +44,13 @@ The [doc/](doc/) directory contains structured project documentation:
 
 - [doc/outline.md](doc/outline.md): Complete documentation outline with 8 major sections
 - [doc/user-guide-fbforward.md](doc/user-guide-fbforward.md): fbforward operation guide
-- [doc/user-guide-fbcoord.md](doc/user-guide-fbcoord.md): fbcoord deployment, operation, and security guidance
+- [doc/fbcoord/index.md](doc/fbcoord/index.md): canonical landing page for fbcoord docs
+- [doc/fbcoord/user-guide.md](doc/fbcoord/user-guide.md): fbcoord deployment, operation, and security guidance
+- [doc/fbcoord/api.md](doc/fbcoord/api.md): fbcoord HTTP/admin API reference
+- [doc/fbcoord/protocol.md](doc/fbcoord/protocol.md): fbcoord node wire contract and state semantics
 - [doc/user-guide-bwprobe.md](doc/user-guide-bwprobe.md): bwprobe operation guide
 - [doc/configuration-reference.md](doc/configuration-reference.md): Complete config schema
-- [doc/api-reference.md](doc/api-reference.md): bwprobe API and control plane API
+- [doc/api-reference.md](doc/api-reference.md): bwprobe API and fbforward control plane API
 - [doc/algorithm-specifications.md](doc/algorithm-specifications.md): Upstream selection, bandwidth measurement, RPC protocol
 - [doc/glossary.md](doc/glossary.md): Domain terminology definitions
 - [doc/diagrams.md](doc/diagrams.md): Diagram inventory with Mermaid templates
