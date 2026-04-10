@@ -9,6 +9,7 @@ from . import rpc
 
 POLL_INTERVAL_SEC = 0.5
 TIMEOUT_SEC = 30.0
+READINESS_TIMEOUT_SEC = TIMEOUT_SEC
 
 
 def wait_http_ok(url: str, *, timeout_sec: float = TIMEOUT_SEC, interval_sec: float = POLL_INTERVAL_SEC) -> httpx.Response:
@@ -91,3 +92,18 @@ def verify_fbnotify_api(base_url: str, operator_token: str) -> dict:
         if capture.status_code != 200:
             raise RuntimeError(f"fbnotify capture fetch failed: status={capture.status_code} body={capture.text.strip()}")
         return capture.json()
+
+
+def wait_for_condition(timeout_sec: float, poll_fn, failure_message: str, *, interval_sec: float = POLL_INTERVAL_SEC) -> None:
+    deadline = time.monotonic() + timeout_sec
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            if poll_fn():
+                return
+        except Exception as exc:
+            last_error = exc
+        time.sleep(interval_sec)
+    if last_error is not None:
+        raise RuntimeError(f"{failure_message}: {last_error}") from last_error
+    raise RuntimeError(failure_message)

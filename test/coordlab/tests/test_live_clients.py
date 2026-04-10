@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from coordlab import add_client, remove_client
+from lib.clients import add_client, remove_client
 from lib.netns import default_links
 from lib.state import (
     ClientInfo,
@@ -103,11 +103,10 @@ class LiveClientMutationTest(unittest.TestCase):
     def test_add_client_creates_client_edge_when_missing(self) -> None:
         state = sample_state(self.workdir, with_client=False)
         with (
-            mock.patch("coordlab.assert_host_ports_available", side_effect=AssertionError("startup port check should not run")),
-            mock.patch("coordlab.assert_bindings_available") as assert_bindings_available,
-            mock.patch("coordlab.start_terminal_process", return_value=(401, str(self.workdir / "logs/ttyd-client-2.log"))),
-            mock.patch("coordlab.save_state"),
-            mock.patch("coordlab.netns.create_client_edge", return_value=(
+            mock.patch("lib.clients.assert_bindings_available") as assert_bindings_available,
+            mock.patch("lib.clients.start_terminal_process", return_value=(401, str(self.workdir / "logs/ttyd-client-2.log"))),
+            mock.patch("lib.clients.save_current_state"),
+            mock.patch("lib.clients.netns.create_client_edge", return_value=(
                 mock.Mock(name="client-edge", pid=210, parent="hub", role="client-edge"),
                 mock.Mock(
                     left_ns="internet",
@@ -120,7 +119,7 @@ class LiveClientMutationTest(unittest.TestCase):
                 ),
                 8,
             )),
-            mock.patch("coordlab.netns.create_client_namespace", return_value=(
+            mock.patch("lib.clients.netns.create_client_namespace", return_value=(
                 mock.Mock(name="client-2", pid=211, parent="client-edge", role="client"),
                 mock.Mock(
                     left_ns="client-edge",
@@ -133,7 +132,7 @@ class LiveClientMutationTest(unittest.TestCase):
                 ),
                 9,
             )),
-            mock.patch("coordlab.netns.verify_connectivity"),
+            mock.patch("lib.clients.netns.verify_connectivity"),
         ):
             updated = add_client(state, "client-2", "203.0.113.20")
 
@@ -153,7 +152,7 @@ class LiveClientMutationTest(unittest.TestCase):
     def test_add_client_reports_only_ttyd_port_conflict(self) -> None:
         state = sample_state(self.workdir, with_client=False)
         with mock.patch(
-            "coordlab.assert_bindings_available",
+            "lib.clients.assert_bindings_available",
             side_effect=RuntimeError("coordlab ttyd ports are already in use: ttyd-client-2:127.0.0.1:18900"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
@@ -166,9 +165,9 @@ class LiveClientMutationTest(unittest.TestCase):
         state = sample_state(self.workdir, with_client=True)
         state.terminals["client-1"] = mock.Mock(host_port=18900, pid=300)
         with (
-            mock.patch("coordlab.save_state"),
-            mock.patch("coordlab.terminate_process_group") as terminate_process_group,
-            mock.patch("coordlab.netns.remove_client_namespace"),
+            mock.patch("lib.clients.save_current_state"),
+            mock.patch("lib.clients.terminate_process_group") as terminate_process_group,
+            mock.patch("lib.clients.netns.remove_client_namespace"),
         ):
             updated = remove_client(state, "client-1")
 

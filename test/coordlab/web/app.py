@@ -6,15 +6,17 @@ from pathlib import Path
 import httpx
 from flask import Flask, jsonify, render_template, request
 
-from coordlab import clear_ntfybox_messages, list_ntfybox_messages, run_locked_add_client, run_locked_remove_client
+from lib.clients import run_locked_add_client, run_locked_remove_client
+from lib.fbnotify import clear_ntfybox_messages, list_ntfybox_messages
+from lib.lab import build_link_state_controller_from_state, build_shaper_from_state, load_active_state
 from lib.output import proxy_url, status_payload
+from lib.paths import state_path_for
 from lib.process import is_alive
 from lib.rpc import get_status
 from lib.linkstate import LinkStateController
 from lib.shaping import TrafficShaper
 from lib.state import LabState, load_state
 
-STATE_FILENAME = "state.json"
 DEFAULT_LOG_LINES = 100
 MAX_LOG_LINES = 500
 MIN_LOG_LINES = 1
@@ -25,47 +27,15 @@ NODE_PROCESS_NAMES = {
 FBCOORD_PROCESS_NAME = "fbcoord"
 
 
-def state_path_for(workdir: Path) -> Path:
-    return workdir / STATE_FILENAME
-
-
 def load_lab_state(workdir: Path) -> LabState | None:
     return load_state(state_path_for(workdir))
 
 
 def load_active_state_or_error(workdir: Path) -> tuple[LabState | None, tuple[dict, int] | None]:
-    state = load_lab_state(workdir)
-    if state is None:
-        return None, ({"error": f"no coordlab state found at {state_path_for(workdir)}"}, 409)
-    if not state.active:
-        return None, ({"error": f"coordlab state is not active: {state_path_for(workdir)}"}, 409)
-    return state, None
-
-
-def build_shaper_from_state(state: LabState) -> TrafficShaper:
-    router_pids = resolve_target_router_pids(state, kind="shaping")
-    return TrafficShaper(router_pids, state.shaping)
-
-
-def build_link_state_controller_from_state(state: LabState) -> LinkStateController:
-    router_pids = resolve_target_router_pids(state, kind="link-state")
-    return LinkStateController(router_pids, state.shaping)
-
-
-def resolve_target_router_pids(state: LabState, *, kind: str) -> dict[str, int]:
-    if not state.shaping.targets:
-        raise RuntimeError("coordlab state does not contain target topology")
-    router_pids: dict[str, int] = {}
-    for target_name, target in sorted(state.shaping.targets.items()):
-        router_info = state.namespaces.get(target.router_ns)
-        if router_info is None:
-            raise RuntimeError(
-                f"coordlab state references unknown {kind} router namespace: {target.router_ns} for {target_name}"
-            )
-        if not is_alive(router_info.pid):
-            raise RuntimeError(f"{kind} router namespace is not alive: {target.router_ns} pid={router_info.pid}")
-        router_pids[target.router_ns] = router_info.pid
-    return router_pids
+    try:
+        return load_active_state(workdir), None
+    except RuntimeError as exc:
+        return None, ({"error": str(exc)}, 409)
 
 
 def shaping_payload(state: LabState, shaper: TrafficShaper | None = None) -> dict:

@@ -14,7 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from coordlab import cmd_add_client, cmd_exec, cmd_net_status, cmd_ntfybox_clear, cmd_ntfybox_list, cmd_remove_client, cmd_status
+from cli.clients import cmd_add_client, cmd_remove_client
+from cli.exec_ import cmd_exec
+from cli.lifecycle import cmd_status
+from cli.net import cmd_net_status
+from cli.ntfybox import cmd_ntfybox_clear, cmd_ntfybox_list
 from lib.locking import acquire_client_mutation_lock
 from lib.state import (
     ClientInfo,
@@ -131,7 +135,7 @@ class CliCommandsTest(unittest.TestCase):
     def test_status_json_returns_derived_payload(self) -> None:
         self.write_state(sample_state(self.workdir))
         args = argparse.Namespace(workdir=str(self.workdir), json=True)
-        with mock.patch("coordlab.is_alive", return_value=True):
+        with mock.patch("lib.output.is_alive", return_value=True):
             exit_code, output = self.capture_stdout(cmd_status, args)
 
         self.assertEqual(0, exit_code)
@@ -156,7 +160,7 @@ class CliCommandsTest(unittest.TestCase):
         updated = sample_state(self.workdir)
         updated.clients["client-2"] = ClientInfo(identity_ip="203.0.113.20")
         args = argparse.Namespace(workdir=str(self.workdir), client="client-2=203.0.113.20", json=True)
-        with mock.patch("coordlab.run_locked_add_client", return_value=updated):
+        with mock.patch("cli.clients.run_locked_add_client", return_value=updated):
             exit_code, output = self.capture_stdout(cmd_add_client, args)
 
         self.assertEqual(0, exit_code)
@@ -177,7 +181,7 @@ class CliCommandsTest(unittest.TestCase):
         updated = sample_state(self.workdir)
         updated.clients.pop("client-1")
         args = argparse.Namespace(workdir=str(self.workdir), name="client-1", json=True)
-        with mock.patch("coordlab.run_locked_remove_client", return_value=updated):
+        with mock.patch("cli.clients.run_locked_remove_client", return_value=updated):
             exit_code, output = self.capture_stdout(cmd_remove_client, args)
 
         self.assertEqual(0, exit_code)
@@ -188,10 +192,7 @@ class CliCommandsTest(unittest.TestCase):
         self.write_state(sample_state(self.workdir))
         args = argparse.Namespace(workdir=str(self.workdir), ns="client-1", json=True, command=["--", "echo", "ok"])
         completed = mock.Mock(returncode=7, stdout="out", stderr="err")
-        with (
-            mock.patch("coordlab.subprocess.run", return_value=completed) as run,
-            mock.patch("coordlab.is_alive", return_value=True),
-        ):
+        with mock.patch("cli.exec_.subprocess.run", return_value=completed) as run:
             exit_code, output = self.capture_stdout(cmd_exec, args)
 
         self.assertEqual(7, exit_code)
@@ -216,7 +217,7 @@ class CliCommandsTest(unittest.TestCase):
         self.write_state(sample_state(self.workdir))
         args = argparse.Namespace(workdir=str(self.workdir), json=True)
         with mock.patch(
-            "coordlab.list_ntfybox_messages",
+            "cli.ntfybox.list_ntfybox_messages",
             return_value=[{"event_name": "demo.test", "severity": "info"}],
         ):
             exit_code, output = self.capture_stdout(cmd_ntfybox_list, args)
@@ -230,7 +231,7 @@ class CliCommandsTest(unittest.TestCase):
     def test_ntfybox_clear_json_returns_ok(self) -> None:
         self.write_state(sample_state(self.workdir))
         args = argparse.Namespace(workdir=str(self.workdir), json=True)
-        with mock.patch("coordlab.clear_ntfybox_messages") as clear:
+        with mock.patch("cli.ntfybox.clear_ntfybox_messages") as clear:
             exit_code, output = self.capture_stdout(cmd_ntfybox_clear, args)
 
         self.assertEqual(0, exit_code)

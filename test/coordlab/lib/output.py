@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from .paths import (
+    VENV_PYTHON,
+    configs_dir_for,
+    data_dir_for,
+    fbnotify_runtime_dir_for,
+    logs_dir_for,
+    mmdb_dir_for,
+    runtime_dir_for,
+    state_path_for,
+)
 from .process import is_alive
 from .state import LabState
 
@@ -307,3 +318,105 @@ def render_summary(state: LabState, python_executable: str) -> str:
     lines.append(f"    {python_executable} {script} web --workdir {workdir}")
     lines.append(f"    {python_executable} {script} down --workdir {workdir}")
     return "\n".join(lines)
+
+
+def print_basic_status(state: LabState) -> None:
+    workdir = Path(state.work_dir)
+    print(f"coordlab phase={state.phase} active={state.active}")
+    print(f"work_dir={state.work_dir}")
+    print("namespaces:")
+    for name, info in sorted(state.namespaces.items()):
+        parent = info.parent or "-"
+        status = "alive" if is_alive(info.pid) else "dead"
+        print(f"  {name}: pid={info.pid} parent={parent} role={info.role} status={status}")
+    if state.processes:
+        print("processes:")
+        for name, info in sorted(state.processes.items(), key=lambda item: (item[1].order, item[0])):
+            status = "alive" if is_alive(info.pid) else "dead"
+            print(f"  {name}: pid={info.pid} ns={info.ns} order={info.order} status={status} log={info.log_path}")
+    print("links:")
+    for link in state.topology.links:
+        print(
+            f"  {link.left_ns}:{link.left_if} {link.left_ip} <-> "
+            f"{link.right_ns}:{link.right_if} {link.right_ip} subnet={link.subnet}"
+        )
+    if state.proxies:
+        print("proxies:")
+        for name, proxy in sorted(state.proxies.items()):
+            print(
+                f"  {name}: {proxy.listen_host}:{proxy.host_port} -> "
+                f"{proxy.target_ns}:{proxy.target_host}:{proxy.target_port}"
+            )
+    if state.clients:
+        print("clients:")
+        for name, info in sorted(state.clients.items()):
+            print(f"  {name}: identity_ip={info.identity_ip}")
+    if state.terminals:
+        print("terminals:")
+        for name, info in sorted(state.terminals.items()):
+            status = "alive" if is_alive(info.pid) else "dead"
+            print(f"  {name}: http://127.0.0.1:{info.host_port} pid={info.pid} status={status}")
+    if state.node_features:
+        print("node_features:")
+        for name, features in sorted(state.node_features.items()):
+            geoip_status = "enabled" if features.geoip.enabled else "disabled"
+            ip_log_status = "enabled" if features.ip_log.enabled else "disabled"
+            firewall_status = "enabled" if features.firewall.enabled else "disabled"
+            print(f"  {name}:")
+            print(
+                f"    geoip: {geoip_status} "
+                f"asn_db={features.geoip.asn_db_path} country_db={features.geoip.country_db_path}"
+            )
+            print(f"    ip_log: {ip_log_status} db={features.ip_log.db_path}")
+            print(f"    firewall: {firewall_status} default={features.firewall.default_policy}")
+    if state.tokens.control_token or state.tokens.operator_token or state.tokens.node_tokens:
+        print("tokens:")
+        if state.tokens.control_token:
+            print(f"  control_token={state.tokens.control_token}")
+        if state.tokens.operator_token:
+            print(f"  operator_token={state.tokens.operator_token}")
+        for node_id, token in sorted(state.tokens.node_tokens.items()):
+            print(f"  node_token[{node_id}]={token}")
+    if state.fbnotify.public_url or state.fbnotify.error:
+        status = "available" if state.fbnotify.available else "degraded"
+        print("fbnotify:")
+        print(f"  status={status}")
+        if state.fbnotify.public_url:
+            print(f"  public_url={state.fbnotify.public_url}")
+        if state.fbnotify.internal_base_url:
+            print(f"  internal_url={state.fbnotify.internal_base_url}")
+        if state.fbnotify.error:
+            print(f"  error={state.fbnotify.error}")
+    print("artifacts:")
+    print(f"  configs={configs_dir_for(workdir)}")
+    print(f"  data={data_dir_for(workdir)}")
+    print(f"  logs={logs_dir_for(workdir)}")
+    print(f"  mmdb={mmdb_dir_for(workdir)}")
+    print(f"  fbcoord_runtime={runtime_dir_for(workdir)}")
+    print(f"  fbnotify_runtime={fbnotify_runtime_dir_for(workdir)}")
+    print(f"  state={state_path_for(workdir)}")
+
+
+def print_json(payload: object) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def strip_remainder_command(command: list[str]) -> list[str]:
+    if command and command[0] == "--":
+        return command[1:]
+    return command
+
+
+def exception_message(exc: BaseException) -> str:
+    if getattr(exc, "args", None):
+        first = exc.args[0]
+        if isinstance(first, str):
+            return first
+    return str(exc)
+
+
+def emit_status_result(workdir: Path, state: LabState, *, json_output: bool) -> None:
+    if json_output:
+        print_json(status_payload(state, workdir))
+        return
+    print(render_summary(state, str(VENV_PYTHON)))

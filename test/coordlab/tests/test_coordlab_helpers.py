@@ -14,23 +14,21 @@ if str(ROOT) not in sys.path:
 
 from unittest import mock
 
-from coordlab import (
+from cli.net import cmd_net_up
+from lib.build import ensure_fbforward_binaries, ensure_fbnotify_assets, ensure_geoip_mmdbs
+from lib.env import parse_client_specs
+from lib.fbcoord import mint_fbcoord_node_tokens
+from lib.fbnotify import (
     FBNOTIFY_NODE_TOKEN_ENVS,
-    TTYD_BASE_PORT,
-    allocate_live_ttyd_port,
-    allocate_ttyd_ports,
-    assert_host_ports_available,
     bootstrap_fbnotify,
     build_fbnotify_ingress_headers,
+)
+from lib.output import print_basic_status
+from lib.ports import TTYD_BASE_PORT, assert_host_ports_available, fixed_proxy_bindings
+from lib.terminal import (
+    allocate_live_ttyd_port,
+    allocate_ttyd_ports,
     build_ttyd_command,
-    cmd_net_up,
-    ensure_geoip_mmdbs,
-    ensure_fbforward_binaries,
-    ensure_fbnotify_assets,
-    fixed_proxy_bindings,
-    mint_fbcoord_node_tokens,
-    print_basic_status,
-    parse_client_specs,
 )
 from lib.state import FirewallFeatureInfo, GeoIPFeatureInfo, IPLogFeatureInfo, LabState, NamespaceInfo, NodeFeatureInfo, TerminalInfo
 
@@ -101,8 +99,8 @@ class CoordlabHelpersTest(unittest.TestCase):
 
     def test_ensure_fbforward_binaries_always_builds_without_skip(self) -> None:
         with (
-            mock.patch("coordlab.require_tools") as require_tools,
-            mock.patch("coordlab.run_host") as run_host,
+            mock.patch("lib.build.require_tools") as require_tools,
+            mock.patch("lib.build.run_host") as run_host,
             mock.patch("pathlib.Path.exists", return_value=True),
         ):
             ensure_fbforward_binaries(skip_build=False)
@@ -112,8 +110,8 @@ class CoordlabHelpersTest(unittest.TestCase):
 
     def test_ensure_fbnotify_assets_builds_without_skip(self) -> None:
         with (
-            mock.patch("coordlab.require_tools") as require_tools,
-            mock.patch("coordlab.run_host") as run_host,
+            mock.patch("lib.build.require_tools") as require_tools,
+            mock.patch("lib.build.run_host") as run_host,
             mock.patch("pathlib.Path.exists", return_value=True),
         ):
             ensure_fbnotify_assets(skip_build=False)
@@ -123,7 +121,7 @@ class CoordlabHelpersTest(unittest.TestCase):
 
     def test_assert_host_ports_available_checks_proxy_and_extra_bindings(self) -> None:
         extra = [("ttyd-client-2", "127.0.0.1", TTYD_BASE_PORT)]
-        with mock.patch("coordlab.assert_bindings_available") as assert_bindings_available:
+        with mock.patch("lib.ports.assert_bindings_available") as assert_bindings_available:
             assert_host_ports_available(extra_bindings=extra)
 
         assert_bindings_available.assert_called_once()
@@ -134,7 +132,7 @@ class CoordlabHelpersTest(unittest.TestCase):
     def test_ensure_geoip_mmdbs_downloads_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch(
-                "coordlab.urllib.request.urlopen",
+                "lib.build.urllib.request.urlopen",
                 side_effect=[FakeHTTPResponse(b"asn"), FakeHTTPResponse(b"country")],
             ) as urlopen:
                 paths = ensure_geoip_mmdbs(Path(tmpdir))
@@ -151,7 +149,7 @@ class CoordlabHelpersTest(unittest.TestCase):
             (mmdb_dir / "GeoLite2-ASN.mmdb").write_bytes(b"cached-asn")
             (mmdb_dir / "Country-without-asn.mmdb").write_bytes(b"cached-country")
 
-            with mock.patch("coordlab.urllib.request.urlopen") as urlopen:
+            with mock.patch("lib.build.urllib.request.urlopen") as urlopen:
                 paths = ensure_geoip_mmdbs(workdir)
 
             urlopen.assert_not_called()
@@ -166,7 +164,7 @@ class CoordlabHelpersTest(unittest.TestCase):
             (mmdb_dir / "GeoLite2-ASN.mmdb").write_bytes(b"cached-asn")
 
             with mock.patch(
-                "coordlab.urllib.request.urlopen",
+                "lib.build.urllib.request.urlopen",
                 return_value=FakeHTTPResponse(b"country"),
             ) as urlopen:
                 paths = ensure_geoip_mmdbs(workdir)
@@ -178,7 +176,7 @@ class CoordlabHelpersTest(unittest.TestCase):
     def test_ensure_geoip_mmdbs_fails_on_non_200_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch(
-                "coordlab.urllib.request.urlopen",
+                "lib.build.urllib.request.urlopen",
                 return_value=FakeHTTPResponse(b"", status=503),
             ):
                 with self.assertRaises(RuntimeError):
@@ -194,15 +192,15 @@ class CoordlabHelpersTest(unittest.TestCase):
             namespaces={"hub": NamespaceInfo(pid=1, parent=None, role="hub")},
         )
         with (
-            mock.patch("coordlab.load_state", return_value=None),
-            mock.patch("coordlab.require_tools"),
-            mock.patch("coordlab.parse_client_specs", return_value={}),
-            mock.patch("coordlab.netns.build_topology", return_value=mock.Mock()),
-            mock.patch("coordlab.netns.verify_connectivity"),
-            mock.patch("coordlab.build_state", return_value=state),
-            mock.patch("coordlab.save_state"),
-            mock.patch("coordlab.print_basic_status"),
-            mock.patch("coordlab.ensure_geoip_mmdbs") as ensure_geoip_mmdbs_mock,
+            mock.patch("cli.net.load_state", return_value=None),
+            mock.patch("cli.net.require_tools"),
+            mock.patch("cli.net.parse_client_specs", return_value={}),
+            mock.patch("cli.net.netns.build_topology", return_value=mock.Mock()),
+            mock.patch("cli.net.netns.verify_connectivity"),
+            mock.patch("cli.net.build_state", return_value=state),
+            mock.patch("cli.net.save_state"),
+            mock.patch("cli.net.print_basic_status"),
+            mock.patch("lib.build.ensure_geoip_mmdbs") as ensure_geoip_mmdbs_mock,
         ):
             self.assertEqual(0, cmd_net_up(args))
 
@@ -241,7 +239,7 @@ class CoordlabHelpersTest(unittest.TestCase):
         )
 
         with (
-            mock.patch("coordlab.is_alive", return_value=True),
+            mock.patch("lib.output.is_alive", return_value=True),
             io.StringIO() as buffer,
             redirect_stdout(buffer),
         ):
@@ -257,7 +255,7 @@ class CoordlabHelpersTest(unittest.TestCase):
     def test_mint_fbcoord_node_tokens_logs_in_and_records_returned_tokens(self) -> None:
         with (
             mock.patch(
-                "coordlab.ns_http_request_with_headers",
+                "lib.fbcoord.ns_http_request_with_headers",
                 return_value=(
                     200,
                     {"Set-Cookie": "fbcoord_session=test-session; Max-Age=86400; HttpOnly; Secure"},
@@ -265,7 +263,7 @@ class CoordlabHelpersTest(unittest.TestCase):
                 ),
             ) as login_request,
             mock.patch(
-                "coordlab.ns_http_request",
+                "lib.fbcoord.ns_http_request",
                 side_effect=[
                     (200, '{"token":"node-1-token","info":{"node_id":"node-1"}}'),
                     (200, '{"token":"node-2-token","info":{"node_id":"node-2"}}'),
@@ -311,7 +309,7 @@ class CoordlabHelpersTest(unittest.TestCase):
     def test_bootstrap_fbnotify_creates_capture_route_and_emitter_tokens(self) -> None:
         with (
             mock.patch(
-                "coordlab.ns_http_request_with_headers",
+                "lib.fbnotify.ns_http_request_with_headers",
                 return_value=(
                     200,
                     {"Set-Cookie": "fbnotify_session=test-session; Max-Age=86400; HttpOnly; Secure"},
@@ -319,7 +317,7 @@ class CoordlabHelpersTest(unittest.TestCase):
                 ),
             ) as login_request,
             mock.patch(
-                "coordlab.ns_http_request",
+                "lib.fbnotify.ns_http_request",
                 side_effect=[
                     (200, '{"id":"tgt_capture"}'),
                     (200, '{"id":"route_default"}'),
