@@ -1,0 +1,23 @@
+name = "fbnotify"
+main = "src/worker.ts"
+compatibility_date = "2026-04-09"
+
+[[durable_objects.bindings]]
+name = "FBNOTIFY_CONFIG"
+class_name = "ConfigDurableObject"
+
+[[durable_objects.bindings]]
+name = "FBNOTIFY_TOKEN_STORE"
+class_name = "TokenDurableObject"
+
+[[durable_objects.bindings]]
+name = "FBNOTIFY_CAPTURE"
+class_name = "CaptureDurableObject"
+
+[assets]
+directory = "./ui/dist"
+binding = "ASSETS"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ConfigDurableObject", "TokenDurableObject", "CaptureDurableObject"]
