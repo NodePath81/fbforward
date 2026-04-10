@@ -18,6 +18,8 @@ Use these documents by purpose:
 - [api.md](api.md): HTTP/admin API reference and auth/session model
 - [protocol.md](protocol.md): node WebSocket contract, selector, and state
   semantics
+- [../notification-events.md](../notification-events.md): notification events
+  emitted toward `fbnotify`
 
 Legacy top-level docs such as
 [../user-guide-fbcoord.md](../user-guide-fbcoord.md) and

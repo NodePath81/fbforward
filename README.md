@@ -26,7 +26,7 @@ to provide targeted TCP/UDP measurement endpoints.
 Coordination mode is optional and depends on a separate `fbcoord` service
 deployed on Workers with Durable Objects.
 
-Docs: `doc/` (start with `doc/project-overview.md`, `doc/user-guide-fbforward.md`, and `doc/configuration-reference.md`).
+Docs: `doc/` (start with `doc/project-overview.md`, `doc/user-guide-fbforward.md`, `doc/configuration-reference.md`, and `doc/notification-events.md`).
 
 ## bwprobe
 
@@ -41,7 +41,7 @@ Standalone Cloudflare Worker notification bridge with an operator UI and admin
 API for provider targets, routing, node tokens, operator-token rotation,
 provider test-send flows, and a built-in capture inbox.
 
-Docs: `doc/fbnotify/index.md`.
+Docs: `doc/fbnotify/index.md` and `doc/notification-events.md`.
 
 ## Requirements
 

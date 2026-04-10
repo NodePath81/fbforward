@@ -23,8 +23,10 @@ The current implementation also includes a built-in admin UI and admin API for:
 - provider test-send workflows
 - capture-inbox inspection and clearing
 
-fbnotify is currently implemented as a standalone service. It does not yet
-modify `fbforward`, `fbcoord`, or coordlab in this repository.
+Current repository integrations emit notification events from `fbforward` and
+`fbcoord`, and coordlab can bootstrap `fbnotify` for manual testing. The
+current emitted event set is documented in the
+[notification event reference](../notification-events.md).
 
 ### Authentication model
 

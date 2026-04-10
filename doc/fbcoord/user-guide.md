@@ -69,6 +69,12 @@ The built-in admin UI provides:
 
 The UI does not override picks, evict nodes, or push configuration.
 
+### Notification integration
+
+fbcoord can optionally emit outbound notification events to `fbnotify` when
+the `FBNOTIFY_*` Worker bindings are configured. The current emitted event set
+is documented in the [notification event reference](../notification-events.md).
+
 ---
 
 ## 3.4.2 Deployment and configuration

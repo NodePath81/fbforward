@@ -92,6 +92,12 @@ An upstream becomes unusable when:
 
 Unusable upstreams are excluded from selection. When probes succeed again, the upstream automatically returns to usable state and becomes eligible for selection.
 
+### Notification integration
+
+fbforward can optionally emit outbound notification events to `fbnotify` when
+the `notify` section is configured. The current emitted event set is documented
+in the [notification event reference](notification-events.md).
+
 ### Command-line interface
 
 fbforward provides the following commands:

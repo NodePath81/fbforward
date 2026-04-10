@@ -17,6 +17,8 @@ Use these documents by purpose:
   troubleshooting
 - [api.md](api.md): HTTP route reference, auth/session model, event-ingress
   contract, and response shapes
+- [../notification-events.md](../notification-events.md): current event names
+  and trigger semantics emitted by `fbforward` and `fbcoord`
 
 Legacy top-level docs such as
 [../user-guide-fbnotify.md](../user-guide-fbnotify.md) remain as short
