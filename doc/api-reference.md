@@ -10,6 +10,11 @@ fbcoord now has standalone product documentation under
 [user guide](fbcoord/user-guide.md), and
 [protocol reference](fbcoord/protocol.md).
 
+fbnotify now has standalone product documentation under
+[doc/fbnotify/](fbnotify/index.md), including its
+[API reference](fbnotify/api.md) and
+[user guide](fbnotify/user-guide.md).
+
 ---
 
 ## 5.1 bwprobe public API
