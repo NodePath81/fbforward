@@ -41,8 +41,8 @@ describe('createNotifier', () => {
       FBNOTIFY_SOURCE_INSTANCE: 'coord-1'
     }, 'fbcoord', fetchMock as typeof fetch);
 
-    await notifier.send('operator.login', 'info', {
-      'client.ip': '203.0.113.8'
+    await notifier.send('operator.token_rotated', 'warn', {
+      reason: 'manual'
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -63,15 +63,15 @@ describe('createNotifier', () => {
     expect(headers.get('x-fbnotify-signature')).toBe(expectedSignature);
     expect(JSON.parse(rawBody)).toEqual({
       schema_version: 1,
-      event_name: 'operator.login',
-      severity: 'info',
+      event_name: 'operator.token_rotated',
+      severity: 'warn',
       timestamp: '2026-04-10T00:00:00.000Z',
       source: {
         service: 'fbcoord',
         instance: 'coord-1'
       },
       attributes: {
-        'client.ip': '203.0.113.8'
+        reason: 'manual'
       }
     });
   });
@@ -95,7 +95,7 @@ describe('createNotifier', () => {
       updated_at: null,
       missing: ['token']
     });
-    await notifier.send('operator.login', 'info');
+    await notifier.send('operator.token_rotated', 'warn');
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -109,7 +109,7 @@ describe('createNotifier', () => {
       FBNOTIFY_SOURCE_INSTANCE: 'coord-1'
     }, 'fbcoord', vi.fn(async () => new Response('signature mismatch', { status: 401 })) as typeof fetch);
 
-    await notifier.send('operator.login', 'info');
+    await notifier.send('operator.token_rotated', 'warn');
 
     expect(warnSpy).toHaveBeenCalledWith(
       'fbcoord notification',

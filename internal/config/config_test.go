@@ -96,6 +96,67 @@ func TestNotifyConfigResolvesTokenAndSourceInstance(t *testing.T) {
 	if cfg.Notify.SourceInstance != hostname {
 		t.Fatalf("expected notify source instance %q, got %q", hostname, cfg.Notify.SourceInstance)
 	}
+	if got := cfg.Notify.StartupGracePeriod.Duration(); got != defaultNotifyStartupGrace {
+		t.Fatalf("expected default notify.startup_grace_period %s, got %s", defaultNotifyStartupGrace, got)
+	}
+	if got := cfg.Notify.UnusableInterval.Duration(); got != defaultNotifyUnusableDelay {
+		t.Fatalf("expected default notify.unusable_interval %s, got %s", defaultNotifyUnusableDelay, got)
+	}
+	if got := cfg.Notify.NotifyInterval.Duration(); got != defaultNotifyInterval {
+		t.Fatalf("expected default notify.notify_interval %s, got %s", defaultNotifyInterval, got)
+	}
+}
+
+func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{
+			name: "startup grace",
+			mut: func(cfg *Config) {
+				cfg.Notify.StartupGracePeriod = Duration(-time.Second)
+			},
+			want: "notify.startup_grace_period must be > 0",
+		},
+		{
+			name: "unusable interval",
+			mut: func(cfg *Config) {
+				cfg.Notify.UnusableInterval = Duration(0)
+			},
+			want: "notify.unusable_interval must be > 0",
+		},
+		{
+			name: "notify interval",
+			mut: func(cfg *Config) {
+				cfg.Notify.NotifyInterval = Duration(-time.Second)
+			},
+			want: "notify.notify_interval must be > 0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Notify = NotifyConfig{
+				Enabled:  true,
+				Endpoint: "https://notify.example/v1/events",
+				KeyID:    "key-1",
+				TokenEnv: "FBNOTIFY_TOKEN",
+			}
+			t.Setenv("FBNOTIFY_TOKEN", "node-token-abcdefghijklmnopqrstuvwxyz123456")
+			cfg.setDefaults()
+			tc.mut(&cfg)
+			err := cfg.validate()
+			if err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q in error, got %v", tc.want, err)
+			}
+		})
+	}
 }
 
 func TestGeoIPConfigRequiresOneCompletePairWhenEnabled(t *testing.T) {

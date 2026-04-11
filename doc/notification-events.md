@@ -3,14 +3,15 @@
 This document describes the current outbound notification events emitted by
 `fbforward` and `fbcoord` toward `fbnotify`.
 
-These events are emitted only when notification delivery is configured for the
-service. They are not derived by parsing logs. The event names listed here are
-the canonical `event_name` values sent to `fbnotify`.
+Events are emitted only when notification delivery is configured for the
+service. They are generated from runtime state transitions, not from log
+parsing. The names listed here are the canonical `event_name` values sent to
+`fbnotify`.
 
 Current event set:
 
-- `fbforward`: 4 events
-- `fbcoord`: 3 events
+- `fbforward`: 2 events
+- `fbcoord`: 2 events
 
 ---
 
@@ -20,33 +21,7 @@ Current event set:
 `source.instance` taken from `notify.source_instance` or the resolved host
 name.
 
-### `upstream.active_cleared`
-
-Severity:
-
-- `critical` when the sustained outage starts
-- `info` when the outage resolves
-
-Trigger:
-
-- `activeTag` becomes empty and stays empty for at least 30 seconds
-- the process must have been up for at least 5 minutes before the outage alert
-  can fire
-- the recovery notification is emitted on the first transition back to any
-  usable upstream after the alert has fired
-
-Attributes:
-
-- `notification.state = "active"` on alert onset
-- `notification.state = "resolved"` on recovery
-
-Notes:
-
-- the same event name is reused for onset and recovery
-- transient empty-active periods shorter than 30 seconds do not emit a
-  notification
-
-### `upstream.active_changed`
+### `upstream.unusable`
 
 Severity:
 
@@ -54,19 +29,66 @@ Severity:
 
 Trigger:
 
-- emitted only when the upstream switch reason is one of:
-  - `failover_loss`
-  - `failover_retrans`
-  - `failover_dial`
-  - `coordination_fallback`
+- emitted per upstream, not as a global outage event
+- the same upstream must remain continuously unusable for at least
+  `notify.unusable_interval`
+- the process must also have been up for at least
+  `notify.startup_grace_period`
+- the first notification fires only after both timing conditions are satisfied
 
-It is not emitted for routine score-driven or warmup-driven switches.
+Repeat behavior:
+
+- while the upstream remains unusable, reminder notifications may repeat
+- reminders are rate-limited to at most once per `notify.notify_interval`
+- when the upstream becomes usable again, its pending timer and repeat
+  suppression state are cleared
+- a later unusable period starts a new alert episode
 
 Attributes:
 
-- `switch.from`
-- `switch.to`
-- `switch.reason`
+- `upstream.tag`
+- `upstream.reason`
+
+Notes:
+
+- there is no recovery event for `upstream.unusable`
+- defaults:
+  - `notify.startup_grace_period = 5m`
+  - `notify.unusable_interval = 30s`
+  - `notify.notify_interval = 30m`
+
+Example payload:
+
+```json
+{
+  "schema_version": 1,
+  "event_name": "upstream.unusable",
+  "severity": "warn",
+  "timestamp": "2026-04-10T12:00:30Z",
+  "source": {
+    "service": "fbforward",
+    "instance": "node-1"
+  },
+  "attributes": {
+    "upstream.tag": "us-1",
+    "upstream.reason": "failover_loss"
+  }
+}
+```
+
+Example config:
+
+```yaml
+notify:
+  enabled: true
+  endpoint: http://10.99.0.30:8787/v1/events
+  key_id: notify-key
+  token_env: FBNOTIFY_TOKEN_NODE_1
+  source_instance: node-1
+  startup_grace_period: 5m
+  unusable_interval: 30s
+  notify_interval: 30m
+```
 
 ### `coordination.session_ended`
 
@@ -88,39 +110,30 @@ Notes:
 - this event is emitted only after a real connected session has been observed
 - there is no recovery notification for reconnect in the current implementation
 
-### `coordination.authority_lost`
+Example payload:
 
-Severity:
-
-- `warn` when sustained authority loss starts
-- `info` when authority is restored
-
-Trigger:
-
-- coordination has previously established a real session with `fbcoord`
-- effective coordination authority stays false for at least 30 seconds
-- `coordination.connected` remains transport-level; this event follows the
-  effective health signal instead
-
-Attributes:
-
-- `coordination.endpoint`
-- `notification.state = "active"` on alert onset
-- `notification.state = "resolved"` on recovery
-
-Notes:
-
-- authority is currently computed as `connected && !fallback_active &&
-  selected_upstream != ""`
-- this event can fire while transport remains connected if coordination is
-  stuck in fallback or has no usable coordinated pick
+```json
+{
+  "schema_version": 1,
+  "event_name": "coordination.session_ended",
+  "severity": "warn",
+  "timestamp": "2026-04-10T12:05:30Z",
+  "source": {
+    "service": "fbforward",
+    "instance": "node-1"
+  },
+  "attributes": {
+    "coordination.endpoint": "https://fbcoord.example"
+  }
+}
+```
 
 ---
 
 ## fbcoord
 
 `fbcoord` emits events with `source.service = "fbcoord"` and
-`source.instance = FBNOTIFY_SOURCE_INSTANCE`.
+`source.instance` taken from its effective `fbnotify` sender configuration.
 
 ### `pool.node_aborted`
 
@@ -149,30 +162,25 @@ Current `cause` values:
 - `disconnect`
 - `load-normalization`
 
-### `operator.login`
+Example payload:
 
-Severity:
-
-- `info`
-
-Trigger:
-
-- successful `POST /api/auth/login` after operator-token validation and session
-  creation
-
-Attributes:
-
-- `session_id` for the newly created operator session
-- `client.ip` from the raw `cf-connecting-ip` header when present
-- `client.country` from `request.cf.country` when present
-- `client.city` from `request.cf.city` when present
-- `client.region` from `request.cf.region` when present
-
-Notes:
-
-- failed login attempts do not emit this event
-- the emitted IP is the raw client IP header value, not a normalized
-  rate-limit key
+```json
+{
+  "schema_version": 1,
+  "event_name": "pool.node_aborted",
+  "severity": "warn",
+  "timestamp": "2026-04-10T12:00:00Z",
+  "source": {
+    "service": "fbcoord",
+    "instance": "fbcoord"
+  },
+  "attributes": {
+    "pool.name": "global",
+    "node.id": "node-1",
+    "cause": "timeout"
+  }
+}
+```
 
 ### `operator.token_rotated`
 
@@ -193,3 +201,19 @@ Notes:
 - this reflects operator-token rotation only
 - it does not revoke existing operator sessions
 - it does not rotate or revoke node tokens
+
+Example payload:
+
+```json
+{
+  "schema_version": 1,
+  "event_name": "operator.token_rotated",
+  "severity": "warn",
+  "timestamp": "2026-04-10T12:15:00Z",
+  "source": {
+    "service": "fbcoord",
+    "instance": "fbcoord"
+  },
+  "attributes": {}
+}
+```

@@ -48,8 +48,9 @@ func TestClientSignsAndSendsEvent(t *testing.T) {
 		t.Fatalf("NewClient error: %v", err)
 	}
 
-	if !client.Emit("upstream.active_changed", SeverityWarn, map[string]any{
-		"switch.reason": "failover_loss",
+	if !client.Emit("upstream.unusable", SeverityWarn, map[string]any{
+		"upstream.tag":    "us-1",
+		"upstream.reason": "failover_loss",
 	}) {
 		t.Fatalf("expected emit to succeed")
 	}
@@ -70,7 +71,7 @@ func TestClientSignsAndSendsEvent(t *testing.T) {
 	if gotSignature != wantSignature {
 		t.Fatalf("unexpected signature %q want %q", gotSignature, wantSignature)
 	}
-	if want := `"event_name":"upstream.active_changed"`; !contains(gotBody, want) {
+	if want := `"event_name":"upstream.unusable"`; !contains(gotBody, want) {
 		t.Fatalf("expected body to contain %s, got %s", want, gotBody)
 	}
 }

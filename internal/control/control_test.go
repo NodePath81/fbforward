@@ -921,12 +921,15 @@ func TestRuntimeConfigIncludesIPLogTuning(t *testing.T) {
 func TestRuntimeConfigSanitizesNotifyConfig(t *testing.T) {
 	server := newTestControlServer(t)
 	server.fullCfg.Notify = config.NotifyConfig{
-		Enabled:        true,
-		Endpoint:       "https://notify.example/v1/events",
-		KeyID:          "key-1",
-		TokenEnv:       "FBNOTIFY_TOKEN",
-		SourceInstance: "node-1",
-		Token:          "secret-node-token",
+		Enabled:            true,
+		Endpoint:           "https://notify.example/v1/events",
+		KeyID:              "key-1",
+		TokenEnv:           "FBNOTIFY_TOKEN",
+		SourceInstance:     "node-1",
+		StartupGracePeriod: config.Duration(10 * time.Minute),
+		UnusableInterval:   config.Duration(45 * time.Second),
+		NotifyInterval:     config.Duration(2 * time.Hour),
+		Token:              "secret-node-token",
 	}
 
 	cfg := server.getRuntimeConfig()
@@ -936,6 +939,15 @@ func TestRuntimeConfigSanitizesNotifyConfig(t *testing.T) {
 	}
 	if notifyCfg["endpoint"] != "https://notify.example/v1/events" {
 		t.Fatalf("unexpected notify endpoint: %#v", notifyCfg["endpoint"])
+	}
+	if notifyCfg["startup_grace_period"] != "10m0s" {
+		t.Fatalf("unexpected startup_grace_period: %#v", notifyCfg["startup_grace_period"])
+	}
+	if notifyCfg["unusable_interval"] != "45s" {
+		t.Fatalf("unexpected unusable_interval: %#v", notifyCfg["unusable_interval"])
+	}
+	if notifyCfg["notify_interval"] != "2h0m0s" {
+		t.Fatalf("unexpected notify_interval: %#v", notifyCfg["notify_interval"])
 	}
 	if _, exists := notifyCfg["token"]; exists {
 		t.Fatalf("unexpected notify token in runtime config: %#v", notifyCfg)

@@ -146,15 +146,15 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		rt.notifyPolicy = notify.NewPolicy(notifier, notify.PolicyConfig{
 			StartTime:            time.Now(),
 			CoordinationEndpoint: cfg.Coordination.Endpoint,
+			StartupGracePeriod:   cfg.Notify.StartupGracePeriod.Duration(),
+			UnusableInterval:     cfg.Notify.UnusableInterval.Duration(),
+			NotifyInterval:       cfg.Notify.NotifyInterval.Duration(),
 		})
 	}
 
 	manager.SetCallbacks(func(change upstream.ActiveChange) {
 		if change.OldTag != change.NewTag {
 			metrics.SetActive(change.NewTag)
-		}
-		if rt.notifyPolicy != nil {
-			rt.notifyPolicy.HandleActiveChange(change.OldTag, change.NewTag, change.Reason, change.PreviousScore, change.NextScore)
 		}
 	}, func(change upstream.UsabilityChange) {
 		if !change.Usable && cfg.Switching.CloseFlowsOnFailover {
@@ -164,11 +164,6 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 			rt.notifyPolicy.HandleUsabilityChange(change.Tag, change.Usable, change.Reason)
 		}
 	})
-	if rt.notifyPolicy != nil {
-		manager.SetCoordinationStateCallback(func(state upstream.CoordinationState) {
-			rt.notifyPolicy.HandleCoordinationAuthority(state.Authoritative)
-		})
-	}
 
 	metrics.SetMode(upstream.ModeAuto)
 	metrics.SetCoordinationState(manager.CoordinationState())

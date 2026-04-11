@@ -1082,10 +1082,13 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			},
 		},
 		"notify": map[string]interface{}{
-			"enabled":         cfg.Notify.Enabled,
-			"endpoint":        cfg.Notify.Endpoint,
-			"key_id":          cfg.Notify.KeyID,
-			"source_instance": cfg.Notify.SourceInstance,
+			"enabled":              cfg.Notify.Enabled,
+			"endpoint":             cfg.Notify.Endpoint,
+			"key_id":               cfg.Notify.KeyID,
+			"source_instance":      cfg.Notify.SourceInstance,
+			"startup_grace_period": cfg.Notify.StartupGracePeriod.Duration().String(),
+			"unusable_interval":    cfg.Notify.UnusableInterval.Duration().String(),
+			"notify_interval":      cfg.Notify.NotifyInterval.Duration().String(),
 		},
 		"coordination": map[string]interface{}{
 			"endpoint":           cfg.Coordination.Endpoint,

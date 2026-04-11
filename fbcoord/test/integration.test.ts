@@ -528,70 +528,6 @@ describe('worker fetch', () => {
     expect(nodeTokenResponse.status).toBe(200);
   });
 
-  it('emits operator login notifications with raw client location fields', async () => {
-    const { env } = createEnv();
-    env.FBNOTIFY_URL = 'https://notify.example/v1/events';
-    env.FBNOTIFY_KEY_ID = 'notify-key';
-    env.FBNOTIFY_TOKEN = 'notify-token-abcdefghijklmnopqrstuvwxyz123456';
-    env.FBNOTIFY_SOURCE_INSTANCE = 'coord-1';
-    const worker = createWorker();
-    const fetchMock = vi.fn(async () => new Response('ok', { status: 202 }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const request = new Request('https://example.com/api/auth/login', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'cf-connecting-ip': '203.0.113.20'
-      },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
-    });
-    Object.defineProperty(request, 'cf', {
-      value: {
-        country: 'US',
-        city: 'Seattle',
-        region: 'Washington'
-      },
-      configurable: true
-    });
-
-    const ctx = createExecutionContext();
-    const response = await worker.fetch(request, env, ctx.ctx);
-    expect(response.status).toBe(200);
-    const cookie = cookieHeader(response);
-    await ctx.flush();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0] as unknown[] | undefined;
-    expect(call).toBeDefined();
-    const init = call?.[1] as RequestInit;
-    const payload = JSON.parse(String(init.body));
-    expect(payload).toMatchObject({
-      event_name: 'operator.login',
-      severity: 'info',
-      source: {
-        service: 'fbcoord',
-        instance: 'coord-1'
-      },
-      attributes: {
-        'client.ip': '203.0.113.20',
-        'client.country': 'US',
-        'client.city': 'Seattle',
-        'client.region': 'Washington'
-      }
-    });
-    expect(payload.attributes.session_id).toEqual(expect.any(String));
-
-    const authCheck = await worker.fetch(new Request('https://example.com/api/auth/check', {
-      headers: {
-        Cookie: cookie
-      }
-    }), env);
-    expect(authCheck.status).toBe(200);
-    await ctx.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
   it('reports bootstrap fbnotify config through the authenticated API', async () => {
     const { env } = createEnv(undefined, {
       FBNOTIFY_URL: 'https://notify.example/v1/events',
@@ -673,14 +609,15 @@ describe('worker fetch', () => {
     });
 
     const ctx = createExecutionContext();
-    const secondLogin = await worker.fetch(new Request('https://example.com/api/auth/login', {
+    const rotateResponse = await worker.fetch(new Request('https://example.com/api/token/rotate', {
       method: 'POST',
       headers: {
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        Cookie: cookie
       },
-      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+      body: JSON.stringify({ current_token: BOOTSTRAP_TOKEN, token: ROTATED_TOKEN })
     }), env, ctx.ctx);
-    expect(secondLogin.status).toBe(200);
+    expect(rotateResponse.status).toBe(200);
     await ctx.flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -692,7 +629,7 @@ describe('worker fetch', () => {
     const headers = new Headers(init.headers);
     expect(headers.get('x-fbnotify-key-id')).toBe('stored-key');
     expect(JSON.parse(String(init.body))).toMatchObject({
-      event_name: 'operator.login',
+      event_name: 'operator.token_rotated',
       source: {
         service: 'fbcoord',
         instance: 'coord-stored'

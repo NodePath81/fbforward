@@ -443,25 +443,6 @@ function noOpContext(): ExecutionContextLike {
   };
 }
 
-function loginNotificationAttributes(request: Request, sessionId: string): Record<string, unknown> {
-  const attributes: Record<string, unknown> = {};
-  attributes.session_id = sessionId;
-  const clientIp = request.headers.get('cf-connecting-ip')?.trim();
-  if (clientIp) {
-    attributes['client.ip'] = clientIp;
-  }
-  if (request.cf?.country) {
-    attributes['client.country'] = request.cf.country;
-  }
-  if (request.cf?.city) {
-    attributes['client.city'] = request.cf.city;
-  }
-  if (request.cf?.region) {
-    attributes['client.region'] = request.cf.region;
-  }
-  return attributes;
-}
-
 function logNotificationTrigger(
   eventName: string,
   notifyConfig: NotifyConfigResponse,
@@ -530,12 +511,6 @@ function createWorker() {
 
         const sessionSecret = await getSessionSecret(env);
         const session = await createSessionRecord(sessionSecret);
-        const notifyConfig = await notifier.status();
-        logNotificationTrigger('operator.login', notifyConfig, {
-          session_id: session.sessionId,
-          has_client_ip: Boolean(request.headers.get('cf-connecting-ip')?.trim())
-        });
-        ctx.waitUntil(notifier.send('operator.login', 'info', loginNotificationAttributes(request, session.sessionId)));
         return json({ ok: true }, 200, {
           'Set-Cookie': createSessionCookie(session.token, undefined, secureCookiesFor(request))
         });

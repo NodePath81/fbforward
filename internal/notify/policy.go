@@ -6,13 +6,18 @@ import (
 )
 
 const (
-	sustainedAlertDelay = 30 * time.Second
-	startupQuietPeriod  = 5 * time.Minute
+	defaultStartupGracePeriod        = 5 * time.Minute
+	defaultUnusableInterval          = 30 * time.Second
+	defaultNotifyInterval            = 30 * time.Minute
+	coordinationDisconnectAlertDelay = 30 * time.Second
 )
 
 type PolicyConfig struct {
 	StartTime            time.Time
 	CoordinationEndpoint string
+	StartupGracePeriod   time.Duration
+	UnusableInterval     time.Duration
+	NotifyInterval       time.Duration
 	Now                  func() time.Time
 	AfterFunc            func(time.Duration, func()) timer
 }
@@ -37,20 +42,24 @@ type Policy struct {
 	now     func() time.Time
 	after   func(time.Duration, func()) timer
 
+	startupGracePeriod time.Duration
+	unusableInterval   time.Duration
+	notifyInterval     time.Duration
+
 	mu                   sync.Mutex
 	closed               bool
 	startTime            time.Time
 	coordinationEndpoint string
-	activeEmpty          bool
-	outageAlerted        bool
-	outageTimer          timer
+	unusable             map[string]*unusableAlertState
 	coordEverConnected   bool
 	coordConnected       bool
 	coordAlerted         bool
 	coordTimer           timer
-	coordAuthoritative   bool
-	authorityAlerted     bool
-	authorityTimer       timer
+}
+
+type unusableAlertState struct {
+	reason string
+	timer  timer
 }
 
 func NewPolicy(emitter Emitter, cfg PolicyConfig) *Policy {
@@ -68,12 +77,28 @@ func NewPolicy(emitter Emitter, cfg PolicyConfig) *Policy {
 	if startTime.IsZero() {
 		startTime = nowFn()
 	}
+	startupGracePeriod := cfg.StartupGracePeriod
+	if startupGracePeriod <= 0 {
+		startupGracePeriod = defaultStartupGracePeriod
+	}
+	unusableInterval := cfg.UnusableInterval
+	if unusableInterval <= 0 {
+		unusableInterval = defaultUnusableInterval
+	}
+	notifyInterval := cfg.NotifyInterval
+	if notifyInterval <= 0 {
+		notifyInterval = defaultNotifyInterval
+	}
 	return &Policy{
 		emitter:              emitter,
 		now:                  nowFn,
 		after:                afterFn,
+		startupGracePeriod:   startupGracePeriod,
+		unusableInterval:     unusableInterval,
+		notifyInterval:       notifyInterval,
 		startTime:            startTime,
 		coordinationEndpoint: cfg.CoordinationEndpoint,
+		unusable:             make(map[string]*unusableAlertState),
 	}
 }
 
@@ -81,51 +106,40 @@ func (p *Policy) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closed = true
-	p.stopOutageTimerLocked()
+	for _, state := range p.unusable {
+		if state.timer != nil {
+			state.timer.Stop()
+			state.timer = nil
+		}
+	}
 	p.stopCoordTimerLocked()
-	p.stopAuthorityTimerLocked()
 }
 
-func (p *Policy) HandleActiveChange(oldTag, newTag, reason string, previousScore, nextScore float64) {
+func (p *Policy) HandleUsabilityChange(tag string, usable bool, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return
 	}
 
-	if newTag == "" {
-		p.activeEmpty = true
-		p.scheduleOutageLocked()
+	if usable {
+		p.clearUnusableLocked(tag)
 		return
 	}
 
-	p.activeEmpty = false
-	p.stopOutageTimerLocked()
-
-	switch reason {
-	case "failover_loss", "failover_retrans", "failover_dial", "coordination_fallback":
-		p.emitLocked("upstream.active_changed", SeverityWarn, map[string]any{
-			"switch.from":   oldTag,
-			"switch.to":     newTag,
-			"switch.reason": reason,
-		})
+	state := p.unusable[tag]
+	if state == nil {
+		state = &unusableAlertState{}
+		p.unusable[tag] = state
 	}
-}
-
-func (p *Policy) HandleUsabilityChange(_ string, usable bool, _ string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed || !usable {
+	state.reason = reason
+	if state.timer != nil {
 		return
 	}
-
-	p.stopOutageTimerLocked()
-	if p.outageAlerted {
-		p.emitLocked("upstream.active_cleared", SeverityInfo, map[string]any{
-			"notification.state": "resolved",
-		})
-		p.outageAlerted = false
-	}
+	delay := p.initialUnusableDelayLocked()
+	state.timer = p.after(delay, func() {
+		p.fireUnusableAlert(tag)
+	})
 }
 
 func (p *Policy) HandleCoordinationConnection(connected bool) {
@@ -140,9 +154,6 @@ func (p *Policy) HandleCoordinationConnection(connected bool) {
 		p.coordConnected = true
 		p.coordAlerted = false
 		p.stopCoordTimerLocked()
-		if !p.coordAuthoritative && !p.authorityAlerted && p.authorityTimer == nil {
-			p.scheduleAuthorityLocked()
-		}
 		return
 	}
 
@@ -151,60 +162,37 @@ func (p *Policy) HandleCoordinationConnection(connected bool) {
 	if !p.coordEverConnected || p.coordAlerted {
 		return
 	}
-	p.coordTimer = p.after(sustainedAlertDelay, func() {
+	p.coordTimer = p.after(coordinationDisconnectAlertDelay, func() {
 		p.fireCoordinationAlert()
 	})
 }
 
-func (p *Policy) HandleCoordinationAuthority(authoritative bool) {
+func (p *Policy) fireUnusableAlert(tag string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return
 	}
-
-	p.coordAuthoritative = authoritative
-	if authoritative {
-		p.stopAuthorityTimerLocked()
-		if p.authorityAlerted {
-			p.emitLocked("coordination.authority_lost", SeverityInfo, map[string]any{
-				"coordination.endpoint": p.coordinationEndpoint,
-				"notification.state":    "resolved",
-			})
-			p.authorityAlerted = false
-		}
+	state := p.unusable[tag]
+	if state == nil {
 		return
 	}
-
-	if !p.coordEverConnected || p.authorityAlerted || p.authorityTimer != nil {
-		return
-	}
-	p.scheduleAuthorityLocked()
-}
-
-func (p *Policy) fireOutageAlert() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		return
-	}
-	p.outageTimer = nil
-	if !p.activeEmpty || p.outageAlerted {
-		return
-	}
+	state.timer = nil
 
 	uptime := p.now().Sub(p.startTime)
-	if uptime < startupQuietPeriod {
-		p.outageTimer = p.after(startupQuietPeriod-uptime, func() {
-			p.fireOutageAlert()
+	if uptime < p.startupGracePeriod {
+		state.timer = p.after(p.startupGracePeriod-uptime, func() {
+			p.fireUnusableAlert(tag)
 		})
 		return
 	}
-
-	p.emitLocked("upstream.active_cleared", SeverityCritical, map[string]any{
-		"notification.state": "active",
+	p.emitLocked("upstream.unusable", SeverityWarn, map[string]any{
+		"upstream.tag":    tag,
+		"upstream.reason": state.reason,
 	})
-	p.outageAlerted = true
+	state.timer = p.after(p.notifyInterval, func() {
+		p.fireUnusableAlert(tag)
+	})
 }
 
 func (p *Policy) fireCoordinationAlert() {
@@ -223,65 +211,34 @@ func (p *Policy) fireCoordinationAlert() {
 	p.coordAlerted = true
 }
 
-func (p *Policy) fireAuthorityAlert() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		return
-	}
-	p.authorityTimer = nil
-	if p.coordAuthoritative || !p.coordEverConnected || p.authorityAlerted {
-		return
-	}
-	p.emitLocked("coordination.authority_lost", SeverityWarn, map[string]any{
-		"coordination.endpoint": p.coordinationEndpoint,
-		"notification.state":    "active",
-	})
-	p.authorityAlerted = true
-}
-
-func (p *Policy) scheduleOutageLocked() {
-	if p.outageAlerted {
-		return
-	}
-	p.stopOutageTimerLocked()
-	delay := sustainedAlertDelay
+func (p *Policy) initialUnusableDelayLocked() time.Duration {
+	delay := p.unusableInterval
 	uptime := p.now().Sub(p.startTime)
-	if uptime < startupQuietPeriod {
-		remainingQuiet := startupQuietPeriod - uptime
-		if remainingQuiet > delay {
-			delay = remainingQuiet
+	if uptime < p.startupGracePeriod {
+		remainingGrace := p.startupGracePeriod - uptime
+		if remainingGrace > delay {
+			delay = remainingGrace
 		}
 	}
-	p.outageTimer = p.after(delay, func() {
-		p.fireOutageAlert()
-	})
+	return delay
 }
 
-func (p *Policy) stopOutageTimerLocked() {
-	if p.outageTimer != nil {
-		p.outageTimer.Stop()
-		p.outageTimer = nil
+func (p *Policy) clearUnusableLocked(tag string) {
+	state := p.unusable[tag]
+	if state == nil {
+		return
 	}
+	if state.timer != nil {
+		state.timer.Stop()
+		state.timer = nil
+	}
+	delete(p.unusable, tag)
 }
 
 func (p *Policy) stopCoordTimerLocked() {
 	if p.coordTimer != nil {
 		p.coordTimer.Stop()
 		p.coordTimer = nil
-	}
-}
-
-func (p *Policy) scheduleAuthorityLocked() {
-	p.authorityTimer = p.after(sustainedAlertDelay, func() {
-		p.fireAuthorityAlert()
-	})
-}
-
-func (p *Policy) stopAuthorityTimerLocked() {
-	if p.authorityTimer != nil {
-		p.authorityTimer.Stop()
-		p.authorityTimer = nil
 	}
 }
 

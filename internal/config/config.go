@@ -68,6 +68,9 @@ const (
 	defaultControlWebUIEnabled   = true
 	defaultControlMetricsEnabled = true
 	defaultCoordinationHeartbeat = 10 * time.Second
+	defaultNotifyStartupGrace    = 5 * time.Minute
+	defaultNotifyUnusableDelay   = 30 * time.Second
+	defaultNotifyInterval        = 30 * time.Minute
 	defaultLoggingLevel          = "info"
 	defaultLoggingFormat         = "text"
 	defaultGeoIPRefreshInterval  = 24 * time.Hour
@@ -340,12 +343,15 @@ type ControlMetricsConfig struct {
 }
 
 type NotifyConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	Endpoint       string `yaml:"endpoint"`
-	KeyID          string `yaml:"key_id"`
-	TokenEnv       string `yaml:"token_env"`
-	SourceInstance string `yaml:"source_instance"`
-	Token          string `yaml:"-"`
+	Enabled            bool     `yaml:"enabled"`
+	Endpoint           string   `yaml:"endpoint"`
+	KeyID              string   `yaml:"key_id"`
+	TokenEnv           string   `yaml:"token_env"`
+	SourceInstance     string   `yaml:"source_instance"`
+	StartupGracePeriod Duration `yaml:"startup_grace_period"`
+	UnusableInterval   Duration `yaml:"unusable_interval"`
+	NotifyInterval     Duration `yaml:"notify_interval"`
+	Token              string   `yaml:"-"`
 }
 
 type CoordinationConfig struct {
@@ -685,6 +691,15 @@ func (c *Config) setDefaults() {
 		enabled := defaultControlMetricsEnabled
 		c.Control.Metrics.Enabled = &enabled
 	}
+	if c.Notify.StartupGracePeriod == 0 {
+		c.Notify.StartupGracePeriod = Duration(defaultNotifyStartupGrace)
+	}
+	if c.Notify.UnusableInterval == 0 {
+		c.Notify.UnusableInterval = Duration(defaultNotifyUnusableDelay)
+	}
+	if c.Notify.NotifyInterval == 0 {
+		c.Notify.NotifyInterval = Duration(defaultNotifyInterval)
+	}
 	if c.Coordination.HasAnyField() && c.Coordination.HeartbeatInterval == 0 {
 		c.Coordination.HeartbeatInterval = Duration(defaultCoordinationHeartbeat)
 	}
@@ -878,6 +893,15 @@ func (c *Config) validate() error {
 	c.Notify.SourceInstance = strings.TrimSpace(c.Notify.SourceInstance)
 	c.Notify.Token = ""
 	if c.Notify.Enabled {
+		if c.Notify.StartupGracePeriod.Duration() <= 0 {
+			return errors.New("notify.startup_grace_period must be > 0")
+		}
+		if c.Notify.UnusableInterval.Duration() <= 0 {
+			return errors.New("notify.unusable_interval must be > 0")
+		}
+		if c.Notify.NotifyInterval.Duration() <= 0 {
+			return errors.New("notify.notify_interval must be > 0")
+		}
 		if c.Notify.Endpoint == "" {
 			return errors.New("notify.endpoint is required when notify.enabled is true")
 		}
