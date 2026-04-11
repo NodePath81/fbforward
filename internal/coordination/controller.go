@@ -20,6 +20,7 @@ import (
 const (
 	handshakeTimeout        = 10 * time.Second
 	gracefulTeardownTimeout = 2 * time.Second
+	pongTimeoutMultiplier   = 3
 )
 
 type incomingEvent struct {
@@ -181,6 +182,18 @@ func (c *Controller) runSession(ctx context.Context) error {
 	}
 	stopHandshake()
 
+	heartbeatInterval := c.cfg.HeartbeatInterval.Duration()
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 10 * time.Second
+	}
+	pongTimeout := heartbeatInterval * pongTimeoutMultiplier
+	if err := conn.SetReadDeadline(time.Now().Add(pongTimeout)); err != nil {
+		return err
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	})
+
 	c.manager.SetCoordinationConnected(true)
 	c.callConnectionCallback(true)
 	c.syncMetrics()
@@ -198,7 +211,7 @@ func (c *Controller) runSession(ctx context.Context) error {
 		return err
 	}
 
-	ticker := time.NewTicker(c.cfg.HeartbeatInterval.Duration())
+	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
@@ -239,6 +252,9 @@ func (c *Controller) runSession(ctx context.Context) error {
 				c.metrics.IncCoordinationPicksApplied()
 			}
 		case <-ticker.C:
+			if err := c.writePing(conn); err != nil {
+				return err
+			}
 			if err := c.writeMessage(conn, HeartbeatMessage{Type: "heartbeat"}); err != nil {
 				return err
 			}
@@ -349,6 +365,10 @@ func (c *Controller) writeMessage(conn *websocket.Conn, message interface{}) err
 		return err
 	}
 	return conn.WriteJSON(message)
+}
+
+func (c *Controller) writePing(conn *websocket.Conn) error {
+	return conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(10*time.Second))
 }
 
 func (c *Controller) readLoop(conn *websocket.Conn, incoming chan<- incomingEvent, readErr chan<- error) {

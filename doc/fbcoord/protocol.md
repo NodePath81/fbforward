@@ -60,9 +60,20 @@ and the socket is closed with code `1008`.
 
 ### Liveness expectation
 
+The protocol uses two separate liveness mechanisms:
+
+- JSON `heartbeat` messages keep the node active in fbcoord's coordination
+  roster
+- WebSocket `Ping` and `Pong` control frames keep the transport session alive
+
 The current server implementation evicts stale nodes after 30 seconds without a
-heartbeat. That matches three 10-second heartbeat intervals, which is the
+JSON heartbeat. That matches three 10-second heartbeat intervals, which is the
 default fbforward coordination heartbeat.
+
+fbforward also sends WebSocket `Ping` frames periodically and expects `Pong`
+responses from fbcoord through normal WebSocket transport behavior. If pong
+liveness fails, fbforward must treat the coordination session as dead, close
+the socket, and reconnect.
 
 ---
 
@@ -141,6 +152,23 @@ Sent periodically to keep the node active.
 ```
 
 Heartbeats update `last_seen_at` and prevent stale eviction.
+
+They are application-level coordination liveness messages, not transport-level
+WebSocket liveness probes.
+
+### WebSocket `Ping` / `Pong`
+
+Transport-level liveness uses standard WebSocket control frames.
+
+Behavior:
+
+- fbforward sends periodic `Ping` frames on the node coordination socket
+- fbcoord responds with `Pong` through standard WebSocket transport handling
+- missing pong means the transport session is no longer trusted, even if the
+  last JSON `heartbeat` was accepted earlier
+
+`Ping` and `Pong` are not JSON protocol messages and do not appear in the
+message reference payloads below.
 
 ### `bye`
 

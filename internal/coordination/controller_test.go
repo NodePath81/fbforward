@@ -28,9 +28,14 @@ type testCoordServer struct {
 	closedBeforeBye bool
 	sendReady       bool
 	sendClosing     bool
+	disablePong     bool
 }
 
 func newTestCoordServer(t *testing.T, sendReady bool, sendClosing bool) *testCoordServer {
+	return newTestCoordServerWithOptions(t, sendReady, sendClosing, false)
+}
+
+func newTestCoordServerWithOptions(t *testing.T, sendReady bool, sendClosing bool, disablePong bool) *testCoordServer {
 	t.Helper()
 
 	ts := &testCoordServer{
@@ -40,6 +45,7 @@ func newTestCoordServer(t *testing.T, sendReady bool, sendClosing bool) *testCoo
 		clientClosed:        make(chan struct{}, 1),
 		sendReady:           sendReady,
 		sendClosing:         sendClosing,
+		disablePong:         disablePong,
 	}
 
 	upgrader := websocket.Upgrader{}
@@ -62,6 +68,12 @@ func newTestCoordServer(t *testing.T, sendReady bool, sendClosing bool) *testCoo
 
 func (ts *testCoordServer) serveConn(t *testing.T, conn *websocket.Conn) {
 	defer conn.Close()
+
+	if ts.disablePong {
+		conn.SetPingHandler(func(string) error {
+			return nil
+		})
+	}
 
 	type envelope struct {
 		Type string `json:"type"`
@@ -155,6 +167,10 @@ func (ts *testCoordServer) closedBeforeByeObserved() bool {
 }
 
 func newTestController(t *testing.T, endpoint string) *Controller {
+	return newTestControllerWithInterval(t, endpoint, time.Hour)
+}
+
+func newTestControllerWithInterval(t *testing.T, endpoint string, heartbeatInterval time.Duration) *Controller {
 	t.Helper()
 
 	manager := upstream.NewUpstreamManager(nil, rand.New(rand.NewSource(1)), nil)
@@ -165,7 +181,7 @@ func newTestController(t *testing.T, endpoint string) *Controller {
 		config.CoordinationConfig{
 			Endpoint:          endpoint,
 			Token:             "node-token-for-tests",
-			HeartbeatInterval: config.Duration(time.Hour),
+			HeartbeatInterval: config.Duration(heartbeatInterval),
 		},
 		manager,
 		nil,
@@ -190,6 +206,21 @@ func waitForPreferences(t *testing.T, ch <-chan PreferencesMessage) PreferencesM
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for preferences")
 		return PreferencesMessage{}
+	}
+}
+
+func waitForConnectionState(t *testing.T, ch <-chan bool, want bool, label string) {
+	t.Helper()
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case state := <-ch:
+			if state == want {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for %s", label)
+		}
 	}
 }
 
@@ -261,4 +292,21 @@ func TestControllerCloseDuringHandshakeClosesSocketPromptly(t *testing.T) {
 	if elapsed > time.Second {
 		t.Fatalf("controller close during handshake took too long: %s", elapsed)
 	}
+}
+
+func TestControllerMissedPongMarksSessionDisconnected(t *testing.T) {
+	server := newTestCoordServerWithOptions(t, true, false, true)
+	controller := newTestControllerWithInterval(t, server.server.URL, 100*time.Millisecond)
+
+	connectedStates := make(chan bool, 8)
+	controller.SetConnectionCallback(func(connected bool) {
+		connectedStates <- connected
+	})
+
+	controller.Enable()
+	waitForPreferences(t, server.preferencesReceived)
+	waitForConnectionState(t, connectedStates, true, "initial connected callback")
+	waitForConnectionState(t, connectedStates, false, "disconnect after missed pong")
+
+	controller.Close()
 }
