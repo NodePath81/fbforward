@@ -36,6 +36,13 @@ def fbnotify_emitters_payload(state: LabState) -> dict[str, dict]:
     }
 
 
+def fbcoord_notify_token(state: LabState) -> str:
+    emitter = state.fbnotify.emitters.get("fbcoord")
+    if emitter is not None and emitter.token:
+        return emitter.token
+    return state.fbnotify.fbcoord_notify.masked_prefix
+
+
 def proxy_url(state: LabState, name: str) -> str | None:
     proxy = state.proxies.get(name)
     if proxy is None:
@@ -300,7 +307,7 @@ def render_summary(state: LabState, python_executable: str) -> str:
                     "      "
                     f"{name}: key_id={info.key_id} "
                     f"source={info.source_service}/{info.source_instance} "
-                    f"token={mask_secret(info.token)}"
+                    f"token={info.token}"
                 )
         if (
             state.fbnotify.fbcoord_notify.verified
@@ -319,8 +326,9 @@ def render_summary(state: LabState, python_executable: str) -> str:
                 lines.append(f"      key_id: {state.fbnotify.fbcoord_notify.key_id}")
             if state.fbnotify.fbcoord_notify.source_instance:
                 lines.append(f"      source_instance: {state.fbnotify.fbcoord_notify.source_instance}")
-            if state.fbnotify.fbcoord_notify.masked_prefix:
-                lines.append(f"      token: {state.fbnotify.fbcoord_notify.masked_prefix}")
+            token = fbcoord_notify_token(state)
+            if token:
+                lines.append(f"      token: {token}")
             if state.fbnotify.fbcoord_notify.updated_at is not None:
                 lines.append(f"      updated_at: {state.fbnotify.fbcoord_notify.updated_at}")
             if state.fbnotify.fbcoord_notify.error:
@@ -494,8 +502,9 @@ def print_basic_status(state: LabState) -> None:
                 print(f"    key_id={state.fbnotify.fbcoord_notify.key_id}")
             if state.fbnotify.fbcoord_notify.source_instance:
                 print(f"    source_instance={state.fbnotify.fbcoord_notify.source_instance}")
-            if state.fbnotify.fbcoord_notify.masked_prefix:
-                print(f"    token={state.fbnotify.fbcoord_notify.masked_prefix}")
+            token = fbcoord_notify_token(state)
+            if token:
+                print(f"    token={token}")
             if state.fbnotify.fbcoord_notify.updated_at is not None:
                 print(f"    updated_at={state.fbnotify.fbcoord_notify.updated_at}")
             if state.fbnotify.fbcoord_notify.error:

@@ -115,6 +115,12 @@ class OutputSummaryTest(unittest.TestCase):
                 internal_ingest_url="http://10.99.0.30:8787/v1/events",
                 operator_token="fbnotify-operator-token",
                 emitters={
+                    "fbcoord": FBNotifyEmitterInfo(
+                        key_id="fbcoord-key",
+                        token="fbcoord-secret",
+                        source_service="fbcoord",
+                        source_instance="fbcoord",
+                    ),
                     "node-1": FBNotifyEmitterInfo(
                         key_id="notify-key-1",
                         token="fbnotify-secret-node-1",
@@ -160,11 +166,11 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertIn("fbcoord_notify:", summary)
         self.assertIn("verified: yes", summary)
         self.assertIn("key_id=notify-key-1", summary)
-        self.assertIn("token=fbnotify...", summary)
+        self.assertIn("token=fbnotify-secret-node-1", summary)
+        self.assertIn("token: fbcoord-secret", summary)
         self.assertIn("/tmp/coordlab-phase3/mmdb", summary)
         self.assertIn("/tmp/coordlab-phase3/data", summary)
         self.assertIn(" web --workdir ", summary)
-        self.assertNotIn("fbnotify-secret-node-1", summary)
         self.assertNotIn("fbnotify-operator-token", summary)
 
     def test_render_summary_hides_fbnotify_link_when_proxy_is_missing(self) -> None:
