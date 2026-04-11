@@ -2,12 +2,14 @@ import {
   ApiError,
   checkAuth,
   createNodeToken,
+  getNotifyConfig,
   getState,
   getTokenInfo,
   listNodeTokens,
   login,
   revokeNodeToken,
-  rotateToken
+  rotateToken,
+  updateNotifyConfig
 } from './api.js';
 import { renderDashboardPage } from './pages/dashboard.js';
 import { renderLoginPage } from './pages/login.js';
@@ -132,9 +134,10 @@ async function renderRoute(): Promise<void> {
     return;
   }
 
-  const [info, nodeTokens] = await Promise.all([
+  const [info, nodeTokens, notifyConfig] = await Promise.all([
     getTokenInfo(),
-    listNodeTokens()
+    listNodeTokens(),
+    getNotifyConfig()
   ]);
   if (renderId !== appState.renderNonce) {
     return;
@@ -142,6 +145,7 @@ async function renderRoute(): Promise<void> {
   setContent(renderTokenPage({
     info,
     nodeTokens,
+    notifyConfig,
     generatedToken: appState.generatedToken,
     generatedNodeToken: appState.generatedNodeToken,
     onGenerate: async currentToken => {
@@ -188,6 +192,13 @@ async function renderRoute(): Promise<void> {
       if (appState.generatedNodeToken?.node_id === nodeId) {
         appState.generatedNodeToken = null;
       }
+      await renderRoute();
+    },
+    onUpdateNotifyConfig: async payload => {
+      if (!requiresConfirmation('Replace the fbnotify delivery config now? New notifications will use the updated endpoint, key ID, source instance, and signing token immediately.')) {
+        return;
+      }
+      await updateNotifyConfig(payload);
       await renderRoute();
     }
   }));

@@ -120,6 +120,101 @@ describe('TokenStore', () => {
       node_id: 'node-1'
     });
   });
+
+  it('bootstraps notify config from env and exposes masked metadata only', async () => {
+    const store = new TokenStore(
+      new MemoryStorage(),
+      BOOTSTRAP_TOKEN,
+      PEPPER,
+      {
+        endpoint: 'https://notify.example/v1/events',
+        key_id: 'notify-key',
+        token: 'notify-token-abcdefghijklmnopqrstuvwxyz123456',
+        source_instance: 'coord-1',
+      },
+      () => 9_000
+    );
+
+    await expect(store.notifyConfigInfo()).resolves.toEqual({
+      configured: true,
+      source: 'bootstrap-env',
+      endpoint: 'https://notify.example/v1/events',
+      key_id: 'notify-key',
+      source_instance: 'coord-1',
+      masked_prefix: 'notify-t...',
+      updated_at: 9_000,
+      missing: []
+    });
+    await expect(store.internalNotifyConfig()).resolves.toEqual({
+      configured: true,
+      source: 'bootstrap-env',
+      endpoint: 'https://notify.example/v1/events',
+      key_id: 'notify-key',
+      source_instance: 'coord-1',
+      masked_prefix: 'notify-t...',
+      updated_at: 9_000,
+      missing: [],
+      token: 'notify-token-abcdefghijklmnopqrstuvwxyz123456'
+    });
+  });
+
+  it('stores and returns updated notify config independently from bootstrap env', async () => {
+    const store = new TokenStore(
+      new MemoryStorage(),
+      BOOTSTRAP_TOKEN,
+      PEPPER,
+      {
+        endpoint: 'https://notify.example/v1/events',
+        key_id: 'bootstrap-key',
+        token: 'bootstrap-token-abcdefghijklmnopqrstuvwxyz123456',
+        source_instance: 'coord-bootstrap',
+      },
+      () => 10_000
+    );
+
+    await expect(store.updateNotifyConfig({
+      endpoint: 'https://notify-2.example/v1/events',
+      key_id: 'stored-key',
+      token: 'stored-token-abcdefghijklmnopqrstuvwxyz123456',
+      source_instance: 'coord-stored',
+    })).resolves.toEqual({
+      configured: true,
+      source: 'stored',
+      endpoint: 'https://notify-2.example/v1/events',
+      key_id: 'stored-key',
+      source_instance: 'coord-stored',
+      masked_prefix: 'stored-t...',
+      updated_at: 10_000,
+      missing: []
+    });
+
+    await expect(store.internalNotifyConfig()).resolves.toEqual({
+      configured: true,
+      source: 'stored',
+      endpoint: 'https://notify-2.example/v1/events',
+      key_id: 'stored-key',
+      source_instance: 'coord-stored',
+      masked_prefix: 'stored-t...',
+      updated_at: 10_000,
+      missing: [],
+      token: 'stored-token-abcdefghijklmnopqrstuvwxyz123456'
+    });
+  });
+
+  it('reports missing notify-config fields when env bootstrap is incomplete', async () => {
+    const store = new TokenStore(new MemoryStorage(), BOOTSTRAP_TOKEN, PEPPER, {}, () => 11_000);
+
+    await expect(store.notifyConfigInfo()).resolves.toEqual({
+      configured: false,
+      source: 'none',
+      endpoint: '',
+      key_id: '',
+      source_instance: '',
+      masked_prefix: '',
+      updated_at: null,
+      missing: ['endpoint', 'key_id', 'token', 'source_instance']
+    });
+  });
 });
 
 describe('validateSharedTokenFormat', () => {

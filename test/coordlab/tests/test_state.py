@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from lib.state import (
     ClientInfo,
     DesiredTargetState,
+    FBCoordNotifyConfigInfo,
     FBNotifyEmitterInfo,
     FBNotifyInfo,
     FirewallFeatureInfo,
@@ -145,6 +146,17 @@ class StateRoundTripTest(unittest.TestCase):
                         source_instance="fbcoord",
                     ),
                 },
+                fbcoord_notify=FBCoordNotifyConfigInfo(
+                    verified=True,
+                    configured=True,
+                    source="bootstrap-env",
+                    endpoint="http://10.99.0.30:8787/v1/events",
+                    key_id="key-fbcoord",
+                    source_instance="fbcoord",
+                    masked_prefix="token-fb...",
+                    updated_at=1234,
+                    error="",
+                ),
             ),
             topology=TopologyInfo(
                 base_cidr="10.99.0.0/24",
@@ -191,6 +203,8 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:18703", loaded.fbnotify.public_url)
         self.assertEqual("key-node-1", loaded.fbnotify.emitters["node-1"].key_id)
         self.assertEqual("fbcoord", loaded.fbnotify.emitters["fbcoord"].source_service)
+        self.assertTrue(loaded.fbnotify.fbcoord_notify.verified)
+        self.assertEqual("key-fbcoord", loaded.fbnotify.fbcoord_notify.key_id)
         self.assertEqual(state.topology.links[0].right_if, loaded.topology.links[0].right_if)
         self.assertEqual(state.topology.next_subnet_index, loaded.topology.next_subnet_index)
         self.assertEqual(state.node_features["node-1"].geoip.asn_db_path, loaded.node_features["node-1"].geoip.asn_db_path)

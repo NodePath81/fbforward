@@ -1,4 +1,4 @@
-import type { NodeTokenInfo, TokenInfo } from '../types.js';
+import type { NodeTokenInfo, NotifyConfigInfo, TokenInfo } from '../types.js';
 
 function formatTimestamp(timestamp: number | null): string {
   if (timestamp === null) {
@@ -13,6 +13,7 @@ function formatTimestamp(timestamp: number | null): string {
 export function renderTokenPage(options: {
   info: TokenInfo;
   nodeTokens: NodeTokenInfo[];
+  notifyConfig: NotifyConfigInfo;
   generatedToken: string | null;
   generatedNodeToken: { node_id: string; token: string } | null;
   onGenerate: (currentToken: string) => Promise<void>;
@@ -21,6 +22,12 @@ export function renderTokenPage(options: {
   onCreateNodeToken: (nodeId: string) => Promise<void>;
   onCopyGeneratedNodeToken: () => Promise<void>;
   onRevokeNodeToken: (nodeId: string) => Promise<void>;
+  onUpdateNotifyConfig: (payload: {
+    endpoint: string;
+    key_id: string;
+    token: string;
+    source_instance: string;
+  }) => Promise<void>;
 }): HTMLElement {
   const shell = document.createElement('main');
   shell.className = 'shell';
@@ -323,7 +330,124 @@ export function renderTokenPage(options: {
 
   nodePanel.append(nodeHeader, nodeBody);
 
-  grid.append(currentPanel, rotatePanel, nodePanel);
+  const notifyPanel = document.createElement('div');
+  notifyPanel.className = 'panel';
+  const notifyHeader = document.createElement('div');
+  notifyHeader.className = 'panel-header';
+  notifyHeader.innerHTML = `
+    <div class="kicker">fbnotify Delivery Config</div>
+    <h2>Manage outbound notification delivery</h2>
+    <p class="muted">This sender config controls how fbcoord signs and posts events to fbnotify. The token is write-only and is never shown after save.</p>
+  `;
+
+  const notifyBody = document.createElement('div');
+  notifyBody.className = 'panel-body stack';
+
+  const notifySummary = document.createElement('div');
+  notifySummary.className = 'stack';
+  const summaryStatus = document.createElement('div');
+  summaryStatus.className = options.notifyConfig.configured ? 'status-good' : 'status-warn';
+  summaryStatus.textContent = options.notifyConfig.configured
+    ? `Configured via ${options.notifyConfig.source}`
+    : `Not configured${options.notifyConfig.missing.length > 0 ? ` (${options.notifyConfig.missing.join(', ')} missing)` : ''}`;
+  const summaryMeta = document.createElement('div');
+  summaryMeta.className = 'muted';
+  summaryMeta.textContent = [
+    options.notifyConfig.endpoint ? `Endpoint ${options.notifyConfig.endpoint}` : null,
+    options.notifyConfig.key_id ? `Key ID ${options.notifyConfig.key_id}` : null,
+    options.notifyConfig.source_instance ? `Source instance ${options.notifyConfig.source_instance}` : null,
+    options.notifyConfig.masked_prefix ? `Token ${options.notifyConfig.masked_prefix}` : null,
+    options.notifyConfig.updated_at !== null ? `Updated ${formatTimestamp(options.notifyConfig.updated_at)}` : null
+  ].filter(Boolean).join(' | ') || 'No sender config is currently stored.';
+  notifySummary.append(summaryStatus, summaryMeta);
+
+  const notifyNotice = document.createElement('div');
+  notifyNotice.className = 'notice';
+  notifyNotice.hidden = true;
+
+  const notifyForm = document.createElement('form');
+  notifyForm.className = 'stack';
+
+  const endpointLabel = document.createElement('label');
+  endpointLabel.className = 'stack';
+  const endpointText = document.createElement('span');
+  endpointText.className = 'field-label';
+  endpointText.textContent = 'Endpoint';
+  const endpointInput = document.createElement('input');
+  endpointInput.className = 'text-input';
+  endpointInput.type = 'url';
+  endpointInput.placeholder = 'https://fbnotify.example/v1/events';
+  endpointInput.value = options.notifyConfig.endpoint;
+  endpointLabel.append(endpointText, endpointInput);
+
+  const keyIdLabel = document.createElement('label');
+  keyIdLabel.className = 'stack';
+  const keyIdText = document.createElement('span');
+  keyIdText.className = 'field-label';
+  keyIdText.textContent = 'Key ID';
+  const keyIdInput = document.createElement('input');
+  keyIdInput.className = 'text-input';
+  keyIdInput.type = 'text';
+  keyIdInput.placeholder = 'fbcoord-key-id';
+  keyIdInput.value = options.notifyConfig.key_id;
+  keyIdLabel.append(keyIdText, keyIdInput);
+
+  const sourceInstanceLabel = document.createElement('label');
+  sourceInstanceLabel.className = 'stack';
+  const sourceInstanceText = document.createElement('span');
+  sourceInstanceText.className = 'field-label';
+  sourceInstanceText.textContent = 'Source instance';
+  const sourceInstanceInput = document.createElement('input');
+  sourceInstanceInput.className = 'text-input';
+  sourceInstanceInput.type = 'text';
+  sourceInstanceInput.placeholder = 'fbcoord';
+  sourceInstanceInput.value = options.notifyConfig.source_instance;
+  sourceInstanceLabel.append(sourceInstanceText, sourceInstanceInput);
+
+  const tokenLabel = document.createElement('label');
+  tokenLabel.className = 'stack';
+  const tokenText = document.createElement('span');
+  tokenText.className = 'field-label';
+  tokenText.textContent = 'Signing token';
+  const tokenInput = document.createElement('input');
+  tokenInput.className = 'text-input';
+  tokenInput.type = 'password';
+  tokenInput.placeholder = options.notifyConfig.configured ? 'Enter a replacement signing token' : 'Enter the fbnotify signing token';
+  tokenLabel.append(tokenText, tokenInput);
+
+  const notifySubmit = document.createElement('button');
+  notifySubmit.className = 'button';
+  notifySubmit.type = 'submit';
+  notifySubmit.textContent = 'Save fbnotify config';
+
+  notifyForm.append(endpointLabel, keyIdLabel, sourceInstanceLabel, tokenLabel, notifyNotice, notifySubmit);
+  notifyForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const endpoint = endpointInput.value.trim();
+    const keyId = keyIdInput.value.trim();
+    const sourceInstance = sourceInstanceInput.value.trim();
+    const token = tokenInput.value.trim();
+    if (!endpoint || !keyId || !sourceInstance || !token) {
+      notifyNotice.hidden = false;
+      notifyNotice.textContent = 'Endpoint, key ID, source instance, and token are all required.';
+      return;
+    }
+    notifyNotice.hidden = true;
+    void options.onUpdateNotifyConfig({
+      endpoint,
+      key_id: keyId,
+      token,
+      source_instance: sourceInstance,
+    }).catch(error => {
+      notifyNotice.hidden = false;
+      notifyNotice.textContent = error instanceof Error ? error.message : 'fbnotify config update failed';
+    });
+  });
+
+  notifyBody.append(notifySummary, notifyForm);
+  notifyPanel.append(notifyHeader, notifyBody);
+
+  grid.append(currentPanel, rotatePanel, nodePanel, notifyPanel);
   shell.append(toolbar, grid);
   return shell;
 }

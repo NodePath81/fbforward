@@ -568,7 +568,7 @@ class CoordlabHelpersTest(unittest.TestCase):
             )
             stack.enter_context(mock.patch("cli.lifecycle.verify_fbnotify_health_in_namespace"))
             stack.enter_context(mock.patch("cli.lifecycle.bootstrap_fbnotify", return_value=emitters))
-            stack.enter_context(
+            prepare_fbcoord_runtime = stack.enter_context(
                 mock.patch("cli.lifecycle.coordconfig.prepare_fbcoord_runtime", return_value=workdir / "fbcoord-runtime")
             )
             stack.enter_context(mock.patch("cli.lifecycle.verify_fbcoord_health_in_namespace"))
@@ -603,6 +603,20 @@ class CoordlabHelpersTest(unittest.TestCase):
             )
             stack.enter_context(mock.patch("cli.lifecycle.apply_coordination_mode"))
             stack.enter_context(mock.patch("cli.lifecycle.readiness.verify_fbcoord_api"))
+            stack.enter_context(
+                mock.patch(
+                    "cli.lifecycle.readiness.verify_fbcoord_notify_config",
+                    return_value={
+                        "configured": True,
+                        "source": "bootstrap-env",
+                        "endpoint": "http://10.99.0.30:8787/v1/events",
+                        "key_id": "fbcoord-key",
+                        "source_instance": "fbcoord",
+                        "masked_prefix": "fbcoord-...",
+                        "updated_at": 1234,
+                    },
+                )
+            )
             stack.enter_context(mock.patch("cli.lifecycle.start_ttyd_terminals", return_value={}))
             stack.enter_context(mock.patch("cli.lifecycle.render_summary", return_value="ok"))
             with io.StringIO() as buffer, redirect_stdout(buffer):
@@ -618,7 +632,167 @@ class CoordlabHelpersTest(unittest.TestCase):
         self.assertIn(f"runtime={workdir / 'fbcoord-runtime'}", output)
         self.assertIn("FBNOTIFY_URL=set", output)
         self.assertIn("FBNOTIFY_KEY_ID=set", output)
+        self.assertIn("FBNOTIFY_TOKEN=set", output)
         self.assertIn("FBNOTIFY_SOURCE_INSTANCE=set", output)
+        self.assertTrue(final_state.fbnotify.fbcoord_notify.verified)
+        self.assertEqual("fbcoord-key", final_state.fbnotify.fbcoord_notify.key_id)
+        prepare_fbcoord_runtime.assert_called_once()
+        self.assertEqual(workdir, prepare_fbcoord_runtime.call_args.args[0])
+        self.assertEqual("operator-token", prepare_fbcoord_runtime.call_args.args[1])
+        self.assertEqual("operator-pepper", prepare_fbcoord_runtime.call_args.args[2])
+        notify_bootstrap = prepare_fbcoord_runtime.call_args.kwargs["fbnotify"]
+        self.assertEqual("http://10.99.0.30:8787/v1/events", notify_bootstrap.endpoint)
+        self.assertEqual("fbcoord-key", notify_bootstrap.key_id)
+        self.assertEqual("fbcoord-secret", notify_bootstrap.token)
+        self.assertEqual("fbcoord", notify_bootstrap.source_instance)
+
+    def test_cmd_up_omits_fbcoord_notify_bootstrap_when_fbnotify_setup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            args = argparse.Namespace(workdir=str(workdir), skip_build=False, skip_connectivity_check=False, client=[])
+            saved_states: list[LabState] = []
+
+            class FakeProcessManager:
+                def __init__(self, _logs_dir):
+                    self._infos: dict[str, ProcessInfo] = {}
+
+                def start(self, _ns_pid, ns_name, _cmd, name, **_kwargs):
+                    self._infos[name] = ProcessInfo(
+                        pid=1000 + len(self._infos),
+                        ns=ns_name,
+                        log_path=f"/tmp/{name}.log",
+                        order=len(self._infos),
+                    )
+                    return mock.Mock(pid=self._infos[name].pid)
+
+                def start_host(self, _cmd, name, **_kwargs):
+                    self._infos[name] = ProcessInfo(
+                        pid=2000 + len(self._infos),
+                        ns="host",
+                        log_path=f"/tmp/{name}.log",
+                        order=len(self._infos),
+                    )
+                    return mock.Mock(pid=self._infos[name].pid)
+
+                def stop(self, name, timeout_sec=5.0):
+                    self._infos.pop(name, None)
+
+                def stop_all(self, timeout_sec=5.0):
+                    self._infos.clear()
+
+                def infos(self):
+                    return dict(self._infos)
+
+            def fake_load_state(_path: Path):
+                if not saved_states:
+                    return None
+                return saved_states[-1]
+
+            def fake_save_state(_path: Path, state: LabState) -> None:
+                saved_states.append(state)
+
+            def fake_build_state(workdir_arg, topology_arg, phase, **kwargs) -> LabState:
+                return LabState(
+                    phase=5,
+                    active=True,
+                    created_at="2026-04-10T00:00:00+00:00",
+                    work_dir=str(workdir_arg),
+                    namespaces={},
+                    processes=kwargs["processes"],
+                    proxies=kwargs["proxies"],
+                    terminals=kwargs.get("terminals", {}),
+                    node_features={},
+                    tokens=kwargs["tokens"],
+                    fbnotify=kwargs["fbnotify"],
+                    topology=topology_arg,
+                    clients={},
+                )
+
+            topology = mock.Mock(
+                namespaces={
+                    "fbnotify": NamespaceInfo(pid=30, parent="hub", role="fbnotify"),
+                    "fbcoord": NamespaceInfo(pid=10, parent="hub", role="fbcoord"),
+                    "node-1": NamespaceInfo(pid=11, parent="hub", role="node"),
+                    "node-2": NamespaceInfo(pid=12, parent="hub", role="node"),
+                    "upstream-1": NamespaceInfo(pid=20, parent="hub-up", role="upstream"),
+                    "upstream-2": NamespaceInfo(pid=21, parent="hub-up", role="upstream"),
+                },
+                links=[],
+                clients={},
+            )
+
+            generated_tokens = mock.Mock(
+                tokens=TokenInfo(control_token="control-token", operator_token="operator-token", node_tokens={}),
+                operator_pepper="operator-pepper",
+            )
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch("cli.lifecycle.load_state", side_effect=fake_load_state))
+                stack.enter_context(mock.patch("cli.lifecycle.save_state", side_effect=fake_save_state))
+                stack.enter_context(mock.patch("cli.lifecycle.parse_client_specs", return_value={}))
+                stack.enter_context(mock.patch("cli.lifecycle.require_tools"))
+                stack.enter_context(mock.patch("cli.lifecycle.assert_host_ports_available"))
+                stack.enter_context(mock.patch("cli.lifecycle.ensure_fbforward_binaries"))
+                stack.enter_context(mock.patch("cli.lifecycle.ensure_fbcoord_assets"))
+                stack.enter_context(mock.patch("cli.lifecycle.ensure_geoip_mmdbs"))
+                stack.enter_context(mock.patch("cli.lifecycle.build_node_feature_summary", return_value={}))
+                stack.enter_context(mock.patch("cli.lifecycle.netns.build_topology", return_value=topology))
+                stack.enter_context(mock.patch("cli.lifecycle.netns.verify_connectivity"))
+                stack.enter_context(mock.patch("cli.lifecycle.netns.destroy_topology"))
+                stack.enter_context(mock.patch("cli.lifecycle.build_state", side_effect=fake_build_state))
+                stack.enter_context(mock.patch("cli.lifecycle.coordconfig.generate_tokens", return_value=generated_tokens))
+                stack.enter_context(mock.patch("cli.lifecycle.ProcessManager", FakeProcessManager))
+                stack.enter_context(
+                    mock.patch("cli.lifecycle.ensure_fbnotify_assets", side_effect=RuntimeError("fbnotify build failed"))
+                )
+                prepare_fbcoord_runtime = stack.enter_context(
+                    mock.patch("cli.lifecycle.coordconfig.prepare_fbcoord_runtime", return_value=workdir / "fbcoord-runtime")
+                )
+                stack.enter_context(mock.patch("cli.lifecycle.verify_fbcoord_health_in_namespace"))
+                stack.enter_context(
+                    mock.patch(
+                        "cli.lifecycle.mint_fbcoord_node_tokens",
+                        return_value={"node-1": "node-token-1", "node-2": "node-token-2"},
+                    )
+                )
+                stack.enter_context(
+                    mock.patch(
+                        "cli.lifecycle.coordconfig.generate_fbforward_config",
+                        side_effect=[workdir / "node-1.yml", workdir / "node-2.yml"],
+                    )
+                )
+                stack.enter_context(mock.patch("cli.lifecycle.validate_fbforward_config"))
+                stack.enter_context(mock.patch("cli.lifecycle.verify_fbforward_rpc_in_namespace"))
+                stack.enter_context(mock.patch("cli.lifecycle.fbnotify_namespace_base_url", return_value="http://10.99.0.30:8787"))
+                stack.enter_context(
+                    mock.patch("cli.lifecycle.fbnotify_ingest_url", return_value="http://10.99.0.30:8787/v1/events")
+                )
+                stack.enter_context(mock.patch("cli.lifecycle.fbcoord_namespace_base_url", return_value="http://10.99.0.10:8787"))
+                stack.enter_context(mock.patch("cli.lifecycle.readiness.wait_http_ok"))
+                stack.enter_context(
+                    mock.patch(
+                        "cli.lifecycle.readiness.wait_for_status",
+                        return_value={"mode": "coordination", "coordination": {"connected": True}},
+                    )
+                )
+                stack.enter_context(mock.patch("cli.lifecycle.apply_coordination_mode"))
+                stack.enter_context(mock.patch("cli.lifecycle.readiness.verify_fbcoord_api"))
+                stack.enter_context(mock.patch("cli.lifecycle.start_ttyd_terminals", return_value={}))
+                stack.enter_context(mock.patch("cli.lifecycle.render_summary", return_value="ok"))
+                with io.StringIO() as buffer, redirect_stdout(buffer):
+                    self.assertEqual(0, cmd_up(args))
+                    output = buffer.getvalue()
+
+            self.assertGreaterEqual(len(saved_states), 1)
+            final_state = saved_states[-1]
+            self.assertFalse(final_state.fbnotify.available)
+            self.assertEqual("fbnotify build failed", final_state.fbnotify.error)
+            prepare_fbcoord_runtime.assert_called_once()
+            self.assertIsNone(prepare_fbcoord_runtime.call_args.kwargs["fbnotify"])
+            self.assertIn("FBNOTIFY_URL=unset", output)
+            self.assertIn("FBNOTIFY_KEY_ID=unset", output)
+            self.assertIn("FBNOTIFY_TOKEN=unset", output)
+            self.assertIn("FBNOTIFY_SOURCE_INSTANCE=unset", output)
 
 
 if __name__ == "__main__":

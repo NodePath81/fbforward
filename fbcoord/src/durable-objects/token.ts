@@ -3,6 +3,7 @@ import { validateNodeId } from '../validation';
 const TOKEN_RECORD_KEY = 'token_record';
 const NODE_TOKEN_RECORDS_KEY = 'node_token_records';
 const NODE_TOKEN_LOOKUP_KEY = 'node_token_lookup';
+const NOTIFY_CONFIG_RECORD_KEY = 'notify_config_record';
 const MASK_PREFIX_LENGTH = 8;
 const MIN_TOKEN_LENGTH = 32;
 const PBKDF2_ITERATIONS = 50_000;
@@ -20,6 +21,19 @@ export interface NodeTokenInfo {
   last_used_at: number | null;
 }
 
+export type NotifyConfigSource = 'stored' | 'bootstrap-env' | 'none';
+
+export interface NotifyConfigInfo {
+  configured: boolean;
+  source: NotifyConfigSource;
+  endpoint: string;
+  key_id: string;
+  source_instance: string;
+  masked_prefix: string;
+  updated_at: number | null;
+  missing: string[];
+}
+
 interface ValidateBody {
   token?: string;
 }
@@ -31,6 +45,13 @@ interface RotateBody {
 
 interface CreateNodeTokenBody {
   node_id?: string;
+}
+
+interface NotifyConfigBody {
+  endpoint?: string;
+  key_id?: string;
+  token?: string;
+  source_instance?: string;
 }
 
 interface LegacyTokenRecord {
@@ -59,6 +80,16 @@ interface StoredNodeTokenRecord {
   maskedPrefix: string;
   createdAt: number;
   lastUsedAt: number | null;
+}
+
+interface NotifyConfigRecord {
+  endpoint: string;
+  keyId: string;
+  token: string;
+  maskedPrefix: string;
+  sourceInstance: string;
+  updatedAt: number;
+  source: Exclude<NotifyConfigSource, 'none'>;
 }
 
 type NodeTokenRecords = Record<string, StoredNodeTokenRecord>;
@@ -144,6 +175,29 @@ function maskToken(token: string): string {
   return `${token.slice(0, MASK_PREFIX_LENGTH)}...`;
 }
 
+function validateNotifyIdentifier(value: string, label: string): string | null {
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(value)) {
+    return `${label} contains unsupported characters`;
+  }
+  return null;
+}
+
+function validateNotifyEndpoint(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return 'endpoint must be a valid URL';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return 'endpoint must use http or https';
+  }
+  if (!parsed.host) {
+    return 'endpoint must include a host';
+  }
+  return null;
+}
+
 function repeatedPatternLength(value: string): number | null {
   for (let size = 1; size <= Math.min(12, Math.floor(value.length / 2)); size += 1) {
     if (value.length % size !== 0) {
@@ -211,12 +265,30 @@ function nodeTokenInfo(nodeId: string, record: StoredNodeTokenRecord): NodeToken
 }
 
 export class TokenStore {
+  private readonly storage: DurableObjectStorage;
+  private readonly bootstrapToken: string;
+  private readonly pepper: string;
+  private readonly bootstrapNotifyConfig: NotifyConfigBody;
+  private readonly now: () => number;
+
   constructor(
-    private readonly storage: DurableObjectStorage,
-    private readonly bootstrapToken: string,
-    private readonly pepper: string,
-    private readonly now: () => number = () => Date.now()
-  ) {}
+    storage: DurableObjectStorage,
+    bootstrapToken: string,
+    pepper: string,
+    bootstrapNotifyConfigOrNow: NotifyConfigBody | (() => number) = {},
+    now: () => number = () => Date.now()
+  ) {
+    this.storage = storage;
+    this.bootstrapToken = bootstrapToken;
+    this.pepper = pepper;
+    if (typeof bootstrapNotifyConfigOrNow === 'function') {
+      this.bootstrapNotifyConfig = {};
+      this.now = bootstrapNotifyConfigOrNow;
+    } else {
+      this.bootstrapNotifyConfig = bootstrapNotifyConfigOrNow;
+      this.now = now;
+    }
+  }
 
   async validateOperator(candidate: string): Promise<boolean> {
     const record = await this.ensureRecord();
@@ -369,6 +441,73 @@ export class TokenStore {
     await this.storage.put(NODE_TOKEN_LOOKUP_KEY, lookup);
   }
 
+  async notifyConfigInfo(): Promise<NotifyConfigInfo> {
+    const record = await this.notifyConfigRecord();
+    if (record) {
+      return notifyConfigInfo(record);
+    }
+
+    const candidate = this.trimmedNotifyConfig(this.bootstrapNotifyConfig);
+    return {
+      configured: false,
+      source: 'none',
+      endpoint: candidate.endpoint,
+      key_id: candidate.key_id,
+      source_instance: candidate.source_instance,
+      masked_prefix: candidate.token ? maskToken(candidate.token) : '',
+      updated_at: null,
+      missing: notifyConfigMissingFields(candidate),
+    };
+  }
+
+  async internalNotifyConfig(): Promise<(NotifyConfigInfo & { token?: string })> {
+    const record = await this.notifyConfigRecord();
+    if (!record) {
+      const info = await this.notifyConfigInfo();
+      return info;
+    }
+    return {
+      ...notifyConfigInfo(record),
+      token: record.token,
+    };
+  }
+
+  async updateNotifyConfig(body: NotifyConfigBody): Promise<NotifyConfigInfo> {
+    const candidate = this.trimmedNotifyConfig(body);
+    const missing = notifyConfigMissingFields(candidate);
+    if (missing.length > 0) {
+      throw new Error(`missing required fields: ${missing.join(', ')}`);
+    }
+    const endpointError = validateNotifyEndpoint(candidate.endpoint);
+    if (endpointError) {
+      throw new Error(endpointError);
+    }
+    const keyIDError = validateNotifyIdentifier(candidate.key_id, 'key_id');
+    if (keyIDError) {
+      throw new Error(keyIDError);
+    }
+    const sourceInstanceError = validateNotifyIdentifier(candidate.source_instance, 'source_instance');
+    if (sourceInstanceError) {
+      throw new Error(sourceInstanceError);
+    }
+    const tokenError = validateSharedTokenFormat(candidate.token);
+    if (tokenError) {
+      throw new Error(tokenError);
+    }
+
+    const record: NotifyConfigRecord = {
+      endpoint: candidate.endpoint,
+      keyId: candidate.key_id,
+      token: candidate.token,
+      maskedPrefix: maskToken(candidate.token),
+      sourceInstance: candidate.source_instance,
+      updatedAt: this.now(),
+      source: 'stored',
+    };
+    await this.storage.put(NOTIFY_CONFIG_RECORD_KEY, record);
+    return notifyConfigInfo(record);
+  }
+
   private async ensureRecord(): Promise<LegacyTokenRecord | TokenRecord> {
     const existing = await this.storage.get<LegacyTokenRecord | TokenRecord>(TOKEN_RECORD_KEY);
     if (existing) {
@@ -411,13 +550,104 @@ export class TokenStore {
   private async nodeTokenLookup(): Promise<NodeTokenLookup> {
     return await this.storage.get<NodeTokenLookup>(NODE_TOKEN_LOOKUP_KEY) ?? {};
   }
+
+  private trimmedNotifyConfig(body: NotifyConfigBody): Required<NotifyConfigBody> {
+    return {
+      endpoint: body.endpoint?.trim() ?? '',
+      key_id: body.key_id?.trim() ?? '',
+      token: body.token?.trim() ?? '',
+      source_instance: body.source_instance?.trim() ?? '',
+    };
+  }
+
+  private async notifyConfigRecord(): Promise<NotifyConfigRecord | null> {
+    const existing = await this.storage.get<NotifyConfigRecord>(NOTIFY_CONFIG_RECORD_KEY);
+    if (existing) {
+      return existing;
+    }
+
+    const candidate = this.trimmedNotifyConfig(this.bootstrapNotifyConfig);
+    if (notifyConfigMissingFields(candidate).length > 0) {
+      return null;
+    }
+
+    const endpointError = validateNotifyEndpoint(candidate.endpoint);
+    const keyIDError = validateNotifyIdentifier(candidate.key_id, 'key_id');
+    const sourceInstanceError = validateNotifyIdentifier(candidate.source_instance, 'source_instance');
+    const tokenError = validateSharedTokenFormat(candidate.token);
+    if (endpointError || keyIDError || sourceInstanceError || tokenError) {
+      return null;
+    }
+
+    const record: NotifyConfigRecord = {
+      endpoint: candidate.endpoint,
+      keyId: candidate.key_id,
+      token: candidate.token,
+      maskedPrefix: maskToken(candidate.token),
+      sourceInstance: candidate.source_instance,
+      updatedAt: this.now(),
+      source: 'bootstrap-env',
+    };
+    await this.storage.put(NOTIFY_CONFIG_RECORD_KEY, record);
+    return record;
+  }
+}
+
+function notifyConfigMissingFields(body: Required<NotifyConfigBody>): string[] {
+  const missing: string[] = [];
+  if (!body.endpoint) {
+    missing.push('endpoint');
+  }
+  if (!body.key_id) {
+    missing.push('key_id');
+  }
+  if (!body.token) {
+    missing.push('token');
+  }
+  if (!body.source_instance) {
+    missing.push('source_instance');
+  }
+  return missing;
+}
+
+function notifyConfigInfo(record: NotifyConfigRecord): NotifyConfigInfo {
+  return {
+    configured: true,
+    source: record.source,
+    endpoint: record.endpoint,
+    key_id: record.keyId,
+    source_instance: record.sourceInstance,
+    masked_prefix: record.maskedPrefix,
+    updated_at: record.updatedAt,
+    missing: [],
+  };
 }
 
 export class TokenDurableObject {
   private readonly store: TokenStore;
 
-  constructor(state: DurableObjectState, env: { FBCOORD_TOKEN: string; FBCOORD_TOKEN_PEPPER: string }) {
-    this.store = new TokenStore(state.storage, env.FBCOORD_TOKEN, env.FBCOORD_TOKEN_PEPPER);
+  constructor(
+    state: DurableObjectState,
+    env: {
+      FBCOORD_TOKEN: string;
+      FBCOORD_TOKEN_PEPPER: string;
+      FBNOTIFY_URL?: string;
+      FBNOTIFY_KEY_ID?: string;
+      FBNOTIFY_TOKEN?: string;
+      FBNOTIFY_SOURCE_INSTANCE?: string;
+    }
+  ) {
+    this.store = new TokenStore(
+      state.storage,
+      env.FBCOORD_TOKEN,
+      env.FBCOORD_TOKEN_PEPPER,
+      {
+        endpoint: env.FBNOTIFY_URL,
+        key_id: env.FBNOTIFY_KEY_ID,
+        token: env.FBNOTIFY_TOKEN,
+        source_instance: env.FBNOTIFY_SOURCE_INSTANCE,
+      }
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -445,6 +675,14 @@ export class TokenDurableObject {
       return json(await this.store.info());
     }
 
+    if (request.method === 'GET' && url.pathname === '/notify-config') {
+      return json(await this.store.notifyConfigInfo());
+    }
+
+    if (request.method === 'GET' && url.pathname === '/notify-config/internal') {
+      return json(await this.store.internalNotifyConfig());
+    }
+
     if (request.method === 'GET' && url.pathname === '/session-secret') {
       return json({ session_secret: await this.store.sessionSecret() });
     }
@@ -454,6 +692,14 @@ export class TokenDurableObject {
         return json(await this.store.rotate(await request.json() as RotateBody));
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : 'invalid token' }, 400);
+      }
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/notify-config') {
+      try {
+        return json(await this.store.updateNotifyConfig(await request.json() as NotifyConfigBody));
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : 'invalid notify config' }, 400);
       }
     }
 

@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from lib.output import render_summary
 from lib.state import (
     ClientInfo,
+    FBCoordNotifyConfigInfo,
     FBNotifyEmitterInfo,
     FBNotifyInfo,
     FirewallFeatureInfo,
@@ -121,6 +122,17 @@ class OutputSummaryTest(unittest.TestCase):
                         source_instance="node-1",
                     )
                 },
+                fbcoord_notify=FBCoordNotifyConfigInfo(
+                    verified=True,
+                    configured=True,
+                    source="bootstrap-env",
+                    endpoint="http://10.99.0.30:8787/v1/events",
+                    key_id="fbcoord-key",
+                    source_instance="fbcoord",
+                    masked_prefix="fbcoord-...",
+                    updated_at=1234,
+                    error="",
+                ),
             ),
             topology=TopologyInfo(base_cidr="10.99.0.0/24"),
         )
@@ -145,6 +157,10 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertIn("operator:", summary)
         self.assertIn("node[node-1]:", summary)
         self.assertIn("fbnotify:", summary)
+        self.assertIn("fbcoord_notify:", summary)
+        self.assertIn("verified: yes", summary)
+        self.assertIn("key_id=notify-key-1", summary)
+        self.assertIn("token=fbnotify...", summary)
         self.assertIn("/tmp/coordlab-phase3/mmdb", summary)
         self.assertIn("/tmp/coordlab-phase3/data", summary)
         self.assertIn(" web --workdir ", summary)

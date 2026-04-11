@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from lib.netns import default_links
 from lib.state import (
     ClientInfo,
+    FBCoordNotifyConfigInfo,
     FBNotifyEmitterInfo,
     FBNotifyInfo,
     FirewallFeatureInfo,
@@ -257,6 +258,17 @@ def sample_state(workdir: Path) -> LabState:
                     source_instance="node-1",
                 ),
             },
+            fbcoord_notify=FBCoordNotifyConfigInfo(
+                verified=True,
+                configured=True,
+                source="bootstrap-env",
+                endpoint="http://10.99.0.30:8787/v1/events",
+                key_id="fbcoord-key",
+                source_instance="fbcoord",
+                masked_prefix="fbcoord-...",
+                updated_at=1234,
+                error="",
+            ),
         ),
         topology=TopologyInfo(
             base_cidr="10.99.0.0/24",
@@ -314,6 +326,9 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("fbcoord", payload["service_links"])
         self.assertIn("fbnotify", payload["service_links"])
         self.assertTrue(payload["fbnotify"]["available"])
+        self.assertTrue(payload["fbnotify"]["fbcoord_notify"]["verified"])
+        self.assertEqual("fbcoord-key", payload["fbnotify"]["fbcoord_notify"]["key_id"])
+        self.assertEqual("fbnotify...", payload["fbnotify"]["emitters"]["node-1"]["masked_prefix"])
         self.assertNotIn("client-1", payload["service_links"])
         self.assertEqual("198.51.100.10", payload["clients"]["client-1"]["identity_ip"])
         self.assertEqual("http://127.0.0.1:18900", payload["terminals"]["client-1"]["url"])

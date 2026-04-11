@@ -9,7 +9,7 @@ import type {
   PickMessage,
   ReadyMessage
 } from '../protocol/types';
-import { createNotifier, type Notifier, type NotifyEnv } from '../notify';
+import { createNotifier, type Notifier, type NotifyEnv, type ResolvedNotifyConfig, resolveEnvNotifyConfig } from '../notify';
 import { MAX_UPSTREAMS, validateNodeId, validateUpstreamTag } from '../validation';
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -542,12 +542,21 @@ function sendJson(socket: WebSocket, payload: ReadyMessage | PickMessage | Closi
   socket.send(JSON.stringify(payload));
 }
 
-function logAbortedNotificationTrigger(abortedNodes: AbortedNodeNotification[], notifierEnabled: boolean): void {
+function logAbortedNotificationTrigger(
+  abortedNodes: AbortedNodeNotification[],
+  notifyConfig: {
+    configured: boolean;
+    source: string;
+    missing: string[];
+  }
+): void {
   console.info('fbcoord notification trigger', {
     component: 'notify',
     service: 'fbcoord',
     event_name: 'pool.node_aborted',
-    notifier_enabled: notifierEnabled,
+    notifier_enabled: notifyConfig.configured,
+    notify_source: notifyConfig.source,
+    notify_missing: notifyConfig.missing,
     aborted_nodes: abortedNodes.map(node => ({
       node_id: node.node_id,
       cause: node.cause
@@ -555,17 +564,37 @@ function logAbortedNotificationTrigger(abortedNodes: AbortedNodeNotification[], 
   });
 }
 
+interface PoolEnv extends NotifyEnv {
+  FBCOORD_TOKEN_STORE?: DurableObjectNamespace;
+}
+
 export class PoolDurableObject {
   private readonly state = new PoolState();
   private readonly durableState: DurableObjectState;
   private readonly storage: DurableObjectStorage;
   private readonly notifier: Notifier;
+  private readonly tokenStore: DurableObjectStub | null;
+  private readonly fallbackNotifyEnv: NotifyEnv;
   private loadPromise: Promise<void> | null = null;
 
-  constructor(state: DurableObjectState, env: NotifyEnv) {
+  constructor(state: DurableObjectState, env: PoolEnv) {
     this.durableState = state;
     this.storage = state.storage;
-    this.notifier = createNotifier(env, 'fbcoord');
+    this.fallbackNotifyEnv = {
+      FBNOTIFY_URL: env.FBNOTIFY_URL,
+      FBNOTIFY_KEY_ID: env.FBNOTIFY_KEY_ID,
+      FBNOTIFY_TOKEN: env.FBNOTIFY_TOKEN,
+      FBNOTIFY_SOURCE_INSTANCE: env.FBNOTIFY_SOURCE_INSTANCE,
+    };
+    this.tokenStore = env.FBCOORD_TOKEN_STORE
+      ? env.FBCOORD_TOKEN_STORE.get(env.FBCOORD_TOKEN_STORE.idFromName('global'))
+      : null;
+    this.notifier = createNotifier(
+      env,
+      'fbcoord',
+      fetch,
+      this.tokenStore ? async () => await this.loadNotifyConfig() : null
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -676,18 +705,34 @@ export class PoolDurableObject {
     if (abortedNodes.length === 0) {
       return;
     }
-    logAbortedNotificationTrigger(abortedNodes, this.notifier.enabled());
-    if (!this.notifier.enabled()) {
+    this.durableState.waitUntil(this.dispatchAbortedNotifications(abortedNodes));
+  }
+
+  private async dispatchAbortedNotifications(abortedNodes: AbortedNodeNotification[]): Promise<void> {
+    const notifyConfig = await this.notifier.status();
+    logAbortedNotificationTrigger(abortedNodes, notifyConfig);
+    if (!notifyConfig.configured) {
       return;
     }
-    for (const node of abortedNodes) {
-      const task = this.notifier.send('pool.node_aborted', 'warn', {
+    await Promise.all(abortedNodes.map(async node => {
+      await this.notifier.send('pool.node_aborted', 'warn', {
         'pool.name': 'global',
         'node.id': node.node_id,
         cause: node.cause
       });
-      this.durableState.waitUntil(task);
+    }));
+  }
+
+  private async loadNotifyConfig(): Promise<ResolvedNotifyConfig> {
+    if (!this.tokenStore) {
+      return resolveEnvNotifyConfig(this.fallbackNotifyEnv);
     }
+    const response = await this.tokenStore.fetch('https://token.internal/notify-config/internal');
+    const config = await response.json() as ResolvedNotifyConfig;
+    if (config.configured) {
+      return config;
+    }
+    return resolveEnvNotifyConfig(this.fallbackNotifyEnv);
   }
 
   private attach(socket: WebSocket, authenticatedNodeId: string): void {

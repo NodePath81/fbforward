@@ -51,7 +51,7 @@ function createEnv(state: StatePayload = {
     aborted: 0
   },
   nodes: []
-}): {
+}, notifyEnv: Partial<Pick<Env, 'FBNOTIFY_URL' | 'FBNOTIFY_KEY_ID' | 'FBNOTIFY_TOKEN' | 'FBNOTIFY_SOURCE_INSTANCE'>> = {}): {
   env: Env;
   poolStub: RecordingStub;
   authKv: MemoryKV;
@@ -81,7 +81,14 @@ function createEnv(state: StatePayload = {
 
   const tokenStore = new TokenDurableObject(
     { storage: new MemoryStorage() } as unknown as DurableObjectState,
-    { FBCOORD_TOKEN: BOOTSTRAP_TOKEN, FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER }
+    {
+      FBCOORD_TOKEN: BOOTSTRAP_TOKEN,
+      FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER,
+      FBNOTIFY_URL: notifyEnv.FBNOTIFY_URL,
+      FBNOTIFY_KEY_ID: notifyEnv.FBNOTIFY_KEY_ID,
+      FBNOTIFY_TOKEN: notifyEnv.FBNOTIFY_TOKEN,
+      FBNOTIFY_SOURCE_INSTANCE: notifyEnv.FBNOTIFY_SOURCE_INSTANCE
+    }
   );
   const authKv = new MemoryKV();
 
@@ -108,10 +115,10 @@ function createEnv(state: StatePayload = {
       FBCOORD_AUTH_KV: authKv,
       FBCOORD_TOKEN: BOOTSTRAP_TOKEN,
       FBCOORD_TOKEN_PEPPER: TOKEN_PEPPER,
-      FBNOTIFY_URL: '',
-      FBNOTIFY_KEY_ID: '',
-      FBNOTIFY_TOKEN: '',
-      FBNOTIFY_SOURCE_INSTANCE: ''
+      FBNOTIFY_URL: notifyEnv.FBNOTIFY_URL ?? '',
+      FBNOTIFY_KEY_ID: notifyEnv.FBNOTIFY_KEY_ID ?? '',
+      FBNOTIFY_TOKEN: notifyEnv.FBNOTIFY_TOKEN ?? '',
+      FBNOTIFY_SOURCE_INSTANCE: notifyEnv.FBNOTIFY_SOURCE_INSTANCE ?? ''
     },
     poolStub,
     authKv
@@ -583,6 +590,140 @@ describe('worker fetch', () => {
     expect(authCheck.status).toBe(200);
     await ctx.flush();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports bootstrap fbnotify config through the authenticated API', async () => {
+    const { env } = createEnv(undefined, {
+      FBNOTIFY_URL: 'https://notify.example/v1/events',
+      FBNOTIFY_KEY_ID: 'notify-key',
+      FBNOTIFY_TOKEN: 'notify-token-abcdefghijklmnopqrstuvwxyz123456',
+      FBNOTIFY_SOURCE_INSTANCE: 'coord-1'
+    });
+    const worker = createWorker();
+
+    const loginResponse = await login(worker, env);
+    const cookie = cookieHeader(loginResponse);
+
+    const response = await worker.fetch(new Request('https://example.com/api/notify/config', {
+      headers: {
+        Cookie: cookie
+      }
+    }), env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      configured: true,
+      source: 'bootstrap-env',
+      endpoint: 'https://notify.example/v1/events',
+      key_id: 'notify-key',
+      source_instance: 'coord-1',
+      masked_prefix: 'notify-t...',
+      updated_at: expect.any(Number),
+      missing: []
+    });
+  });
+
+  it('updates fbnotify config through the authenticated API and uses stored values for delivery', async () => {
+    const { env } = createEnv(undefined, {
+      FBNOTIFY_URL: 'https://notify.example/v1/events',
+      FBNOTIFY_KEY_ID: 'bootstrap-key',
+      FBNOTIFY_TOKEN: 'bootstrap-token-abcdefghijklmnopqrstuvwxyz123456',
+      FBNOTIFY_SOURCE_INSTANCE: 'coord-bootstrap'
+    });
+    const worker = createWorker();
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const loginCtx = createExecutionContext();
+    const loginResponse = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env, loginCtx.ctx);
+    const cookie = cookieHeader(loginResponse);
+    await loginCtx.flush();
+    fetchMock.mockClear();
+
+    const updateResponse = await worker.fetch(new Request('https://example.com/api/notify/config', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: cookie
+      },
+      body: JSON.stringify({
+        endpoint: 'https://notify-2.example/v1/events',
+        key_id: 'stored-key',
+        token: 'stored-token-abcdefghijklmnopqrstuvwxyz123456',
+        source_instance: 'coord-stored'
+      })
+    }), env);
+
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toEqual({
+      configured: true,
+      source: 'stored',
+      endpoint: 'https://notify-2.example/v1/events',
+      key_id: 'stored-key',
+      source_instance: 'coord-stored',
+      masked_prefix: 'stored-t...',
+      updated_at: expect.any(Number),
+      missing: []
+    });
+
+    const ctx = createExecutionContext();
+    const secondLogin = await worker.fetch(new Request('https://example.com/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ token: BOOTSTRAP_TOKEN })
+    }), env, ctx.ctx);
+    expect(secondLogin.status).toBe(200);
+    await ctx.flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0] as unknown[] | undefined;
+    expect(call).toBeDefined();
+    const url = call?.[0] as string;
+    const init = call?.[1] as RequestInit;
+    expect(url).toBe('https://notify-2.example/v1/events');
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-fbnotify-key-id')).toBe('stored-key');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      event_name: 'operator.login',
+      source: {
+        service: 'fbcoord',
+        instance: 'coord-stored'
+      }
+    });
+  });
+
+  it('returns missing-field details for incomplete fbnotify config', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+
+    const loginResponse = await login(worker, env);
+    const cookie = cookieHeader(loginResponse);
+
+    const response = await worker.fetch(new Request('https://example.com/api/notify/config', {
+      headers: {
+        Cookie: cookie
+      }
+    }), env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      configured: false,
+      source: 'none',
+      endpoint: '',
+      key_id: '',
+      source_instance: '',
+      masked_prefix: '',
+      updated_at: null,
+      missing: ['endpoint', 'key_id', 'token', 'source_instance']
+    });
   });
 
   it('emits operator token rotation notifications on success', async () => {

@@ -46,3 +46,14 @@ export interface CreateNodeTokenResponse {
   token: string;
   info: NodeTokenInfo;
 }
+
+export interface NotifyConfigInfo {
+  configured: boolean;
+  source: 'stored' | 'bootstrap-env' | 'none';
+  endpoint: string;
+  key_id: string;
+  source_instance: string;
+  masked_prefix: string;
+  updated_at: number | null;
+  missing: string[];
+}

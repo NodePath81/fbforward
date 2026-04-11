@@ -85,9 +85,39 @@ describe('createNotifier', () => {
       FBNOTIFY_SOURCE_INSTANCE: 'coord-1'
     }, 'fbcoord', fetchMock as typeof fetch);
 
-    expect(notifier.enabled()).toBe(false);
+    await expect(notifier.status()).resolves.toEqual({
+      configured: false,
+      source: 'none',
+      endpoint: 'https://notify.example/v1/events',
+      key_id: 'key-1',
+      source_instance: 'coord-1',
+      masked_prefix: '',
+      updated_at: null,
+      missing: ['token']
+    });
     await notifier.send('operator.login', 'info');
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('logs the bounded response body when fbnotify rejects delivery', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const notifier = createNotifier({
+      FBNOTIFY_URL: 'https://notify.example/v1/events',
+      FBNOTIFY_KEY_ID: 'key-1',
+      FBNOTIFY_TOKEN: 'node-token-abcdefghijklmnopqrstuvwxyz123456',
+      FBNOTIFY_SOURCE_INSTANCE: 'coord-1'
+    }, 'fbcoord', vi.fn(async () => new Response('signature mismatch', { status: 401 })) as typeof fetch);
+
+    await notifier.send('operator.login', 'info');
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      'fbcoord notification',
+      expect.objectContaining({
+        action: 'delivery_failed',
+        http_status: 401,
+        response_body: 'signature mismatch'
+      })
+    );
   });
 });

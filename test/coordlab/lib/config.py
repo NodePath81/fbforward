@@ -49,6 +49,14 @@ class FBNotifyNodeConfig:
     source_instance: str
 
 
+@dataclass(slots=True)
+class FBCoordNotifyBootstrapConfig:
+    endpoint: str
+    key_id: str
+    token: str
+    source_instance: str
+
+
 def mmdb_dir_for(work_dir: str | Path) -> Path:
     return Path(work_dir) / MMDB_DIRNAME
 
@@ -244,7 +252,12 @@ def generate_fbforward_config(
     return target
 
 
-def prepare_fbcoord_runtime(work_dir: str | Path, operator_token: str, operator_pepper: str) -> Path:
+def prepare_fbcoord_runtime(
+    work_dir: str | Path,
+    operator_token: str,
+    operator_pepper: str,
+    fbnotify: FBCoordNotifyBootstrapConfig | None = None,
+) -> Path:
     work_path = Path(work_dir)
     runtime_dir = work_path / FBCOORD_RUNTIME_DIR
     if runtime_dir.exists():
@@ -261,8 +274,21 @@ def prepare_fbcoord_runtime(work_dir: str | Path, operator_token: str, operator_
     if node_modules_src.exists():
         (runtime_dir / "node_modules").symlink_to(node_modules_src)
 
+    dev_vars = [
+        f"FBCOORD_TOKEN={operator_token}",
+        f"FBCOORD_TOKEN_PEPPER={operator_pepper}",
+    ]
+    if fbnotify is not None:
+        dev_vars.extend(
+            [
+                f"FBNOTIFY_URL={fbnotify.endpoint}",
+                f"FBNOTIFY_KEY_ID={fbnotify.key_id}",
+                f"FBNOTIFY_TOKEN={fbnotify.token}",
+                f"FBNOTIFY_SOURCE_INSTANCE={fbnotify.source_instance}",
+            ]
+        )
     (runtime_dir / ".dev.vars").write_text(
-        f"FBCOORD_TOKEN={operator_token}\nFBCOORD_TOKEN_PEPPER={operator_pepper}\n",
+        "\n".join(dev_vars) + "\n",
         encoding="utf-8",
     )
     return runtime_dir

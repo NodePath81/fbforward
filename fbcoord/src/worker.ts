@@ -3,7 +3,7 @@ import { AuthGuardDurableObject, activeBanKey, manualDenyKey, type AuthScope, ty
 import { AUTHENTICATED_NODE_ID_HEADER, PoolDurableObject } from './durable-objects/pool';
 import { RegistryDurableObject } from './durable-objects/registry';
 import { TokenDurableObject } from './durable-objects/token';
-import { createNotifier } from './notify';
+import { createNotifier, resolveEnvNotifyConfig } from './notify';
 import { clearSessionCookie, createSessionCookie, createSessionRecord, SESSION_COOKIE_NAME, validateSession } from './session';
 
 export interface Env {
@@ -97,6 +97,21 @@ interface InternalStateResponse {
 
 interface RotateTokenResponse {
   info: TokenInfoResponse;
+  token?: string;
+}
+
+interface NotifyConfigResponse {
+  configured: boolean;
+  source: 'stored' | 'bootstrap-env' | 'none';
+  endpoint: string;
+  key_id: string;
+  source_instance: string;
+  masked_prefix: string;
+  updated_at: number | null;
+  missing: string[];
+}
+
+interface InternalNotifyConfigResponse extends NotifyConfigResponse {
   token?: string;
 }
 
@@ -305,6 +320,34 @@ async function fetchState(env: Env): Promise<StateResponse> {
   };
 }
 
+async function getNotifyConfig(env: Env): Promise<NotifyConfigResponse> {
+  const response = await tokenStoreStub(env).fetch('https://token.internal/notify-config');
+  return response.json() as Promise<NotifyConfigResponse>;
+}
+
+async function getInternalNotifyConfig(env: Env): Promise<InternalNotifyConfigResponse> {
+  const response = await tokenStoreStub(env).fetch('https://token.internal/notify-config/internal');
+  return response.json() as Promise<InternalNotifyConfigResponse>;
+}
+
+async function resolveWorkerNotifyConfig(env: Env): Promise<InternalNotifyConfigResponse> {
+  const config = await getInternalNotifyConfig(env);
+  if (config.configured) {
+    return config;
+  }
+  return resolveEnvNotifyConfig(env);
+}
+
+async function updateNotifyConfig(env: Env, body: unknown): Promise<Response> {
+  return tokenStoreStub(env).fetch(new Request('https://token.internal/notify-config', {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  }));
+}
+
 async function removeNodeFromState(env: Env, nodeId: string): Promise<Response> {
   return stateStub(env).fetch(new Request(`https://pool.internal/nodes/${encodeURIComponent(nodeId)}`, {
     method: 'DELETE'
@@ -421,14 +464,16 @@ function loginNotificationAttributes(request: Request, sessionId: string): Recor
 
 function logNotificationTrigger(
   eventName: string,
-  notifierEnabled: boolean,
+  notifyConfig: NotifyConfigResponse,
   details: Record<string, unknown> = {}
 ): void {
   console.info('fbcoord notification trigger', {
     component: 'notify',
     service: 'fbcoord',
     event_name: eventName,
-    notifier_enabled: notifierEnabled,
+    notifier_enabled: notifyConfig.configured,
+    notify_source: notifyConfig.source,
+    notify_missing: notifyConfig.missing,
     ...details
   });
 }
@@ -438,7 +483,7 @@ function createWorker() {
     async fetch(request: Request, env: Env, ctx: ExecutionContextLike = noOpContext()): Promise<Response> {
       const url = new URL(request.url);
       const clientKey = extractClientKey(request);
-      const notifier = createNotifier(env, 'fbcoord');
+      const notifier = createNotifier(env, 'fbcoord', fetch, async () => await resolveWorkerNotifyConfig(env));
 
       if (url.pathname === '/healthz') {
         return new Response('ok', { status: 200 });
@@ -485,7 +530,8 @@ function createWorker() {
 
         const sessionSecret = await getSessionSecret(env);
         const session = await createSessionRecord(sessionSecret);
-        logNotificationTrigger('operator.login', notifier.enabled(), {
+        const notifyConfig = await notifier.status();
+        logNotificationTrigger('operator.login', notifyConfig, {
           session_id: session.sessionId,
           has_client_ip: Boolean(request.headers.get('cf-connecting-ip')?.trim())
         });
@@ -540,6 +586,34 @@ function createWorker() {
           return json(await getTokenInfo(env));
         }
 
+        if (url.pathname === '/api/notify/config') {
+          if (request.method === 'GET') {
+            return json(await getNotifyConfig(env));
+          }
+          if (request.method === 'PUT') {
+            const originError = requireSameOrigin(request);
+            if (originError) {
+              return originError;
+            }
+            const body = await parseJsonBody<{
+              endpoint?: string;
+              key_id?: string;
+              token?: string;
+              source_instance?: string;
+            }>(request);
+            if (!body) {
+              return json({ error: 'invalid json' }, 400);
+            }
+            const response = await updateNotifyConfig(env, body);
+            if (!response.ok) {
+              const errorBody = await parseJsonResponse<{ error?: string }>(response.clone());
+              return json({ error: errorBody?.error ?? 'invalid notify config' }, response.status);
+            }
+            return json(await response.json() as NotifyConfigResponse);
+          }
+          return methodNotAllowed('GET, PUT');
+        }
+
         if (url.pathname === '/api/token/rotate') {
           if (request.method !== 'POST') {
             return methodNotAllowed('POST');
@@ -569,6 +643,8 @@ function createWorker() {
           }
 
           const result = await response.json() as RotateTokenResponse;
+          const notifyConfig = await notifier.status();
+          logNotificationTrigger('operator.token_rotated', notifyConfig);
           ctx.waitUntil(notifier.send('operator.token_rotated', 'warn'));
           return json({
             ...result.info,

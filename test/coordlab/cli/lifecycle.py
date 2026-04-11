@@ -55,7 +55,7 @@ from lib.paths import (
 )
 from lib.ports import PROXY_PROCESS_NAME, assert_host_ports_available, build_proxy_infos
 from lib.process import ProcessManager, terminate_pid, terminate_process_group
-from lib.state import FBNotifyInfo, load_state, save_state
+from lib.state import FBCoordNotifyConfigInfo, FBNotifyInfo, load_state, save_state
 from lib.terminal import allocate_ttyd_ports, start_ttyd_terminals
 
 
@@ -162,31 +162,32 @@ def cmd_up(args: argparse.Namespace) -> int:
             "fbmeasure-upstream-2",
         )
 
+        fbcoord_notify_bootstrap = None
+        if fbnotify_internal_ready:
+            fbcoord_notify = fbnotify_info.emitters["fbcoord"]
+            fbcoord_notify_bootstrap = coordconfig.FBCoordNotifyBootstrapConfig(
+                endpoint=fbnotify_info.internal_ingest_url,
+                key_id=fbcoord_notify.key_id,
+                token=fbcoord_notify.token,
+                source_instance=fbcoord_notify.source_instance,
+            )
         runtime_dir = coordconfig.prepare_fbcoord_runtime(
             workdir,
             tokens.operator_token,
             generated_tokens.operator_pepper,
+            fbnotify=fbcoord_notify_bootstrap,
         )
         fbcoord_env = {
             "FBCOORD_TOKEN": tokens.operator_token,
             "FBCOORD_TOKEN_PEPPER": generated_tokens.operator_pepper,
         }
-        if fbnotify_internal_ready:
-            fbcoord_notify = fbnotify_info.emitters["fbcoord"]
-            fbcoord_env.update(
-                {
-                    "FBNOTIFY_URL": fbnotify_info.internal_ingest_url,
-                    "FBNOTIFY_KEY_ID": fbcoord_notify.key_id,
-                    "FBNOTIFY_TOKEN": fbcoord_notify.token,
-                    "FBNOTIFY_SOURCE_INSTANCE": fbcoord_notify.source_instance,
-                }
-            )
         print(
             "coordlab fbcoord launch:"
             f" runtime={runtime_dir}"
-            f" FBNOTIFY_URL={'set' if fbcoord_env.get('FBNOTIFY_URL') else 'unset'}"
-            f" FBNOTIFY_KEY_ID={'set' if fbcoord_env.get('FBNOTIFY_KEY_ID') else 'unset'}"
-            f" FBNOTIFY_SOURCE_INSTANCE={'set' if fbcoord_env.get('FBNOTIFY_SOURCE_INSTANCE') else 'unset'}"
+            f" FBNOTIFY_URL={'set' if fbcoord_notify_bootstrap else 'unset'}"
+            f" FBNOTIFY_KEY_ID={'set' if fbcoord_notify_bootstrap else 'unset'}"
+            f" FBNOTIFY_TOKEN={'set' if fbcoord_notify_bootstrap else 'unset'}"
+            f" FBNOTIFY_SOURCE_INSTANCE={'set' if fbcoord_notify_bootstrap else 'unset'}"
         )
         manager.start(
             topology.namespaces["fbcoord"].pid,
@@ -308,6 +309,33 @@ def cmd_up(args: argparse.Namespace) -> int:
         readiness.wait_for_status(node1_url, tokens.control_token, predicate=coordination_connected)
         readiness.wait_for_status(node2_url, tokens.control_token, predicate=coordination_connected)
         readiness.verify_fbcoord_api(fbcoord_url, tokens.operator_token, expected_node_ids=("node-1", "node-2"))
+        if fbnotify_internal_ready:
+            try:
+                fbcoord_notify_payload = readiness.verify_fbcoord_notify_config(
+                    fbcoord_url,
+                    tokens.operator_token,
+                    expected_endpoint=fbnotify_info.internal_ingest_url,
+                    expected_key_id=fbnotify_info.emitters["fbcoord"].key_id,
+                    expected_source_instance=fbnotify_info.emitters["fbcoord"].source_instance,
+                )
+                fbnotify_info.fbcoord_notify = FBCoordNotifyConfigInfo(
+                    verified=True,
+                    configured=bool(fbcoord_notify_payload.get("configured")),
+                    source=str(fbcoord_notify_payload.get("source", "none")),
+                    endpoint=str(fbcoord_notify_payload.get("endpoint", "")),
+                    key_id=str(fbcoord_notify_payload.get("key_id", "")),
+                    source_instance=str(fbcoord_notify_payload.get("source_instance", "")),
+                    masked_prefix=str(fbcoord_notify_payload.get("masked_prefix", "")),
+                    updated_at=fbcoord_notify_payload.get("updated_at"),
+                    error="",
+                )
+            except Exception as exc:
+                fbnotify_info.fbcoord_notify = FBCoordNotifyConfigInfo(
+                    verified=False,
+                    configured=False,
+                    source="none",
+                    error=exception_message(exc),
+                )
 
         terminals = start_ttyd_terminals(manager, topology, ttyd_ports)
         save_runtime_state(proxies=proxies, terminals=terminals)

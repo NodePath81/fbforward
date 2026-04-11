@@ -81,6 +81,32 @@ class ReadinessHelpersTest(unittest.TestCase):
         self.assertEqual([], payload["messages"])
         self.assertEqual({"Cookie": "fbnotify_session=test-session"}, client.last_get_headers)
 
+    def test_verify_fbcoord_notify_config_confirms_expected_sender_fields(self) -> None:
+        login = mock.Mock(status_code=200, text='{"ok":true}')
+        login.headers = {"set-cookie": "fbcoord_session=test-session; Max-Age=86400; HttpOnly; Secure"}
+        config = mock.Mock(status_code=200)
+        config.json.return_value = {
+            "configured": True,
+            "source": "bootstrap-env",
+            "endpoint": "http://10.99.0.30:8787/v1/events",
+            "key_id": "fbcoord-key",
+            "source_instance": "fbcoord",
+            "masked_prefix": "fbcoord-...",
+            "updated_at": 1234,
+            "missing": [],
+        }
+        client = FakeClient(get_responses=[config], post_responses=[login])
+        with mock.patch("lib.readiness.httpx.Client", return_value=client):
+            payload = readiness.verify_fbcoord_notify_config(
+                "http://127.0.0.1:18700",
+                "operator-token",
+                expected_endpoint="http://10.99.0.30:8787/v1/events",
+                expected_key_id="fbcoord-key",
+                expected_source_instance="fbcoord",
+            )
+        self.assertTrue(payload["configured"])
+        self.assertEqual({"Cookie": "fbcoord_session=test-session"}, client.last_get_headers)
+
     def test_verify_fbnotify_public_waits_for_health_then_fetches_api(self) -> None:
         with (
             mock.patch("lib.readiness.wait_http_ok") as wait_http_ok,

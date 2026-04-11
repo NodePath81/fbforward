@@ -1,3 +1,5 @@
+import type { NotifyConfigInfo, NotifyConfigSource } from './durable-objects/token';
+
 const encoder = new TextEncoder();
 
 export interface NotifyEnv {
@@ -21,8 +23,12 @@ interface NotificationEvent {
   attributes: Record<string, unknown>;
 }
 
+export interface ResolvedNotifyConfig extends NotifyConfigInfo {
+  token?: string;
+}
+
 export interface Notifier {
-  enabled(): boolean;
+  status(): Promise<NotifyConfigInfo>;
   send(eventName: string, severity: NotifySeverity, attributes?: Record<string, unknown>): Promise<void>;
 }
 
@@ -48,6 +54,59 @@ function trim(value: string | undefined): string {
   return value?.trim() ?? '';
 }
 
+export function resolveEnvNotifyConfig(env: NotifyEnv): ResolvedNotifyConfig {
+  const endpoint = trim(env.FBNOTIFY_URL);
+  const keyId = trim(env.FBNOTIFY_KEY_ID);
+  const token = trim(env.FBNOTIFY_TOKEN);
+  const sourceInstance = trim(env.FBNOTIFY_SOURCE_INSTANCE);
+  const missing: string[] = [];
+  if (endpoint === '') {
+    missing.push('endpoint');
+  }
+  if (keyId === '') {
+    missing.push('key_id');
+  }
+  if (token === '') {
+    missing.push('token');
+  }
+  if (sourceInstance === '') {
+    missing.push('source_instance');
+  }
+
+  return {
+    configured: missing.length === 0,
+    source: missing.length === 0 ? 'bootstrap-env' : 'none',
+    endpoint,
+    key_id: keyId,
+    source_instance: sourceInstance,
+    masked_prefix: token ? `${token.slice(0, 8)}...` : '',
+    updated_at: null,
+    missing,
+    token,
+  };
+}
+
+function summarizeNotifyConfig(config: ResolvedNotifyConfig): NotifyConfigInfo {
+  return {
+    configured: config.configured,
+    source: config.source,
+    endpoint: config.endpoint,
+    key_id: config.key_id,
+    source_instance: config.source_instance,
+    masked_prefix: config.masked_prefix,
+    updated_at: config.updated_at,
+    missing: [...config.missing],
+  };
+}
+
+function trimResponseBody(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length <= 256) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 256)}...`;
+}
+
 function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) {
@@ -68,20 +127,27 @@ async function sign(secret: string, payload: string): Promise<string> {
   return bytesToBase64Url(new Uint8Array(signature));
 }
 
-export function createNotifier(env: NotifyEnv, sourceService: string, fetchImpl: typeof fetch = fetch): Notifier {
-  const url = trim(env.FBNOTIFY_URL);
-  const keyId = trim(env.FBNOTIFY_KEY_ID);
-  const token = trim(env.FBNOTIFY_TOKEN);
-  const sourceInstance = trim(env.FBNOTIFY_SOURCE_INSTANCE);
-  const active = url !== '' && keyId !== '' && token !== '' && sourceInstance !== '';
-
+export function createNotifier(
+  env: NotifyEnv,
+  sourceService: string,
+  fetchImpl: typeof fetch = fetch,
+  resolveConfig: (() => Promise<ResolvedNotifyConfig>) | null = null
+): Notifier {
+  const loadConfig = resolveConfig ?? (async () => resolveEnvNotifyConfig(env));
   return {
-    enabled(): boolean {
-      return active;
+    async status(): Promise<NotifyConfigInfo> {
+      return summarizeNotifyConfig(await loadConfig());
     },
 
     async send(eventName: string, severity: NotifySeverity, attributes: Record<string, unknown> = {}): Promise<void> {
-      if (!active) {
+      const config = await loadConfig();
+      if (!config.configured || !config.token) {
+        logNotification('warn', 'delivery_failed', {
+          event_name: eventName,
+          severity,
+          source: config.source,
+          missing: config.missing,
+        });
         return;
       }
 
@@ -92,7 +158,7 @@ export function createNotifier(env: NotifyEnv, sourceService: string, fetchImpl:
         timestamp: new Date().toISOString(),
         source: {
           service: sourceService,
-          instance: sourceInstance
+          instance: config.source_instance
         },
         attributes
       };
@@ -104,16 +170,18 @@ export function createNotifier(env: NotifyEnv, sourceService: string, fetchImpl:
         logNotification('info', 'attempt', {
           event_name: eventName,
           severity,
-          endpoint: url,
-          source_instance: sourceInstance,
-          attribute_keys: Object.keys(attributes).sort()
+          endpoint: config.endpoint,
+          key_id: config.key_id,
+          source: config.source as NotifyConfigSource,
+          source_instance: config.source_instance,
+          attribute_keys: Object.keys(attributes).sort(),
         });
-        const signature = await sign(token, `${headerTimestamp}.${rawBody}`);
-        const response = await fetchImpl(url, {
+        const signature = await sign(config.token, `${headerTimestamp}.${rawBody}`);
+        const response = await fetchImpl(config.endpoint, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-fbnotify-key-id': keyId,
+            'x-fbnotify-key-id': config.key_id,
             'x-fbnotify-timestamp': headerTimestamp,
             'x-fbnotify-signature': signature
           },
@@ -123,26 +191,34 @@ export function createNotifier(env: NotifyEnv, sourceService: string, fetchImpl:
           logNotification('info', 'delivered', {
             event_name: eventName,
             severity,
-            endpoint: url,
-            source_instance: sourceInstance,
+            endpoint: config.endpoint,
+            key_id: config.key_id,
+            source: config.source as NotifyConfigSource,
+            source_instance: config.source_instance,
             http_status: response.status
           });
           return;
         }
+        const responseBody = trimResponseBody(await response.text());
         logNotification('warn', 'delivery_failed', {
           event_name: eventName,
           severity,
-          endpoint: url,
-          source_instance: sourceInstance,
-          http_status: response.status
+          endpoint: config.endpoint,
+          key_id: config.key_id,
+          source: config.source as NotifyConfigSource,
+          source_instance: config.source_instance,
+          http_status: response.status,
+          response_body: responseBody
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logNotification('warn', 'delivery_failed', {
           event_name: eventName,
           severity,
-          endpoint: url,
-          source_instance: sourceInstance,
+          endpoint: config.endpoint,
+          key_id: config.key_id,
+          source: config.source as NotifyConfigSource,
+          source_instance: config.source_instance,
           error: message
         });
         // Best-effort notification delivery must never affect caller behavior.

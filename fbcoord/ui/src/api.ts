@@ -1,6 +1,7 @@
 import type {
   CoordinationState,
   CreateNodeTokenResponse,
+  NotifyConfigInfo,
   NodeTokenInfo,
   TokenInfo,
   TokenRotateResponse
@@ -67,6 +68,22 @@ export async function getState(): Promise<CoordinationState> {
 
 export async function getTokenInfo(): Promise<TokenInfo> {
   return request<TokenInfo>('/api/token/info');
+}
+
+export async function getNotifyConfig(): Promise<NotifyConfigInfo> {
+  return request<NotifyConfigInfo>('/api/notify/config');
+}
+
+export async function updateNotifyConfig(payload: {
+  endpoint: string;
+  key_id: string;
+  token: string;
+  source_instance: string;
+}): Promise<NotifyConfigInfo> {
+  return request<NotifyConfigInfo>('/api/notify/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
 }
 
 export async function rotateToken(payload: {

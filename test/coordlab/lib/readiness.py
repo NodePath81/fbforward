@@ -77,6 +77,48 @@ def verify_fbcoord_api(base_url: str, operator_token: str, *, expected_node_ids:
         return payload
 
 
+def verify_fbcoord_notify_config(
+    base_url: str,
+    operator_token: str,
+    *,
+    expected_endpoint: str,
+    expected_key_id: str,
+    expected_source_instance: str,
+) -> dict:
+    with httpx.Client(timeout=5.0, follow_redirects=True) as client:
+        login = client.post(f"{base_url.rstrip('/')}/api/auth/login", json={"token": operator_token})
+        if login.status_code != 200:
+            raise RuntimeError(f"fbcoord login failed: status={login.status_code} body={login.text.strip()}")
+        session_cookie = login.headers.get("set-cookie", "").split(";", 1)[0].strip()
+        if not session_cookie:
+            raise RuntimeError("fbcoord login did not return a session cookie")
+        response = client.get(
+            f"{base_url.rstrip('/')}/api/notify/config",
+            headers={"Cookie": session_cookie},
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"fbcoord notify config fetch failed: status={response.status_code} body={response.text.strip()}"
+            )
+        payload = response.json()
+        if not payload.get("configured"):
+            raise RuntimeError(f"fbcoord notify config is not configured: {payload!r}")
+        if payload.get("endpoint") != expected_endpoint:
+            raise RuntimeError(
+                f"fbcoord notify endpoint mismatch: expected {expected_endpoint!r}, got {payload.get('endpoint')!r}"
+            )
+        if payload.get("key_id") != expected_key_id:
+            raise RuntimeError(
+                f"fbcoord notify key_id mismatch: expected {expected_key_id!r}, got {payload.get('key_id')!r}"
+            )
+        if payload.get("source_instance") != expected_source_instance:
+            raise RuntimeError(
+                "fbcoord notify source_instance mismatch: "
+                f"expected {expected_source_instance!r}, got {payload.get('source_instance')!r}"
+            )
+        return payload
+
+
 def verify_fbnotify_api(base_url: str, operator_token: str) -> dict:
     with httpx.Client(timeout=5.0, follow_redirects=True) as client:
         login = client.post(f"{base_url.rstrip('/')}/api/auth/login", json={"token": operator_token})

@@ -136,6 +136,19 @@ class FBNotifyEmitterInfo:
 
 
 @dataclass(slots=True)
+class FBCoordNotifyConfigInfo:
+    verified: bool = False
+    configured: bool = False
+    source: str = "none"
+    endpoint: str = ""
+    key_id: str = ""
+    source_instance: str = ""
+    masked_prefix: str = ""
+    updated_at: int | None = None
+    error: str = ""
+
+
+@dataclass(slots=True)
 class FBNotifyInfo:
     available: bool = False
     error: str = ""
@@ -144,6 +157,7 @@ class FBNotifyInfo:
     internal_ingest_url: str = ""
     operator_token: str = ""
     emitters: dict[str, FBNotifyEmitterInfo] = field(default_factory=dict)
+    fbcoord_notify: FBCoordNotifyConfigInfo = field(default_factory=FBCoordNotifyConfigInfo)
 
 
 @dataclass(slots=True)
@@ -234,6 +248,7 @@ class LabState:
                 name: FBNotifyEmitterInfo(**info)
                 for name, info in fbnotify_raw.get("emitters", {}).items()
             },
+            fbcoord_notify=FBCoordNotifyConfigInfo(**fbnotify_raw.get("fbcoord_notify", {})),
         )
         topology_raw = data.get("topology", {})
         topology = TopologyInfo(

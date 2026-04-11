@@ -17,6 +17,25 @@ from .process import is_alive
 from .state import LabState
 
 
+def mask_secret(value: str) -> str:
+    trimmed = value.strip()
+    if not trimmed:
+        return ""
+    return f"{trimmed[:8]}..."
+
+
+def fbnotify_emitters_payload(state: LabState) -> dict[str, dict]:
+    return {
+        name: {
+            "key_id": info.key_id,
+            "source_service": info.source_service,
+            "source_instance": info.source_instance,
+            "masked_prefix": mask_secret(info.token),
+        }
+        for name, info in sorted(state.fbnotify.emitters.items())
+    }
+
+
 def proxy_url(state: LabState, name: str) -> str | None:
     proxy = state.proxies.get(name)
     if proxy is None:
@@ -135,6 +154,18 @@ def inactive_status_payload(workdir: Path, error: str) -> dict:
             "public_url": "",
             "internal_base_url": "",
             "internal_ingest_url": "",
+            "emitters": {},
+            "fbcoord_notify": {
+                "verified": False,
+                "configured": False,
+                "source": "none",
+                "endpoint": "",
+                "key_id": "",
+                "source_instance": "",
+                "masked_prefix": "",
+                "updated_at": None,
+                "error": "",
+            },
         },
         "shaping_targets": [],
         "topology_links": [],
@@ -187,6 +218,18 @@ def status_payload(state: LabState | None, workdir: Path) -> dict:
             "public_url": state.fbnotify.public_url,
             "internal_base_url": state.fbnotify.internal_base_url,
             "internal_ingest_url": state.fbnotify.internal_ingest_url,
+            "emitters": fbnotify_emitters_payload(state),
+            "fbcoord_notify": {
+                "verified": state.fbnotify.fbcoord_notify.verified,
+                "configured": state.fbnotify.fbcoord_notify.configured,
+                "source": state.fbnotify.fbcoord_notify.source,
+                "endpoint": state.fbnotify.fbcoord_notify.endpoint,
+                "key_id": state.fbnotify.fbcoord_notify.key_id,
+                "source_instance": state.fbnotify.fbcoord_notify.source_instance,
+                "masked_prefix": state.fbnotify.fbcoord_notify.masked_prefix,
+                "updated_at": state.fbnotify.fbcoord_notify.updated_at,
+                "error": state.fbnotify.fbcoord_notify.error,
+            },
         },
         "shaping_targets": [
             {
@@ -250,6 +293,38 @@ def render_summary(state: LabState, python_executable: str) -> str:
             lines.append(f"    internal_url: {state.fbnotify.internal_base_url}")
         if state.fbnotify.error:
             lines.append(f"    error: {state.fbnotify.error}")
+        if state.fbnotify.emitters:
+            lines.append("    emitters:")
+            for name, info in sorted(state.fbnotify.emitters.items()):
+                lines.append(
+                    "      "
+                    f"{name}: key_id={info.key_id} "
+                    f"source={info.source_service}/{info.source_instance} "
+                    f"token={mask_secret(info.token)}"
+                )
+        if (
+            state.fbnotify.fbcoord_notify.verified
+            or state.fbnotify.fbcoord_notify.error
+            or state.fbnotify.fbcoord_notify.key_id
+            or state.fbnotify.fbcoord_notify.endpoint
+        ):
+            lines.append("    fbcoord_notify:")
+            lines.append(f"      verified: {'yes' if state.fbnotify.fbcoord_notify.verified else 'no'}")
+            lines.append(f"      configured: {'yes' if state.fbnotify.fbcoord_notify.configured else 'no'}")
+            if state.fbnotify.fbcoord_notify.source:
+                lines.append(f"      source: {state.fbnotify.fbcoord_notify.source}")
+            if state.fbnotify.fbcoord_notify.endpoint:
+                lines.append(f"      endpoint: {state.fbnotify.fbcoord_notify.endpoint}")
+            if state.fbnotify.fbcoord_notify.key_id:
+                lines.append(f"      key_id: {state.fbnotify.fbcoord_notify.key_id}")
+            if state.fbnotify.fbcoord_notify.source_instance:
+                lines.append(f"      source_instance: {state.fbnotify.fbcoord_notify.source_instance}")
+            if state.fbnotify.fbcoord_notify.masked_prefix:
+                lines.append(f"      token: {state.fbnotify.fbcoord_notify.masked_prefix}")
+            if state.fbnotify.fbcoord_notify.updated_at is not None:
+                lines.append(f"      updated_at: {state.fbnotify.fbcoord_notify.updated_at}")
+            if state.fbnotify.fbcoord_notify.error:
+                lines.append(f"      error: {state.fbnotify.fbcoord_notify.error}")
         lines.append("")
 
     lines.append("  process status:")
@@ -394,6 +469,37 @@ def print_basic_status(state: LabState) -> None:
             print(f"  internal_url={state.fbnotify.internal_base_url}")
         if state.fbnotify.error:
             print(f"  error={state.fbnotify.error}")
+        if state.fbnotify.emitters:
+            print("  emitters:")
+            for name, info in sorted(state.fbnotify.emitters.items()):
+                print(
+                    "    "
+                    f"{name}: key_id={info.key_id} "
+                    f"source={info.source_service}/{info.source_instance} "
+                    f"token={mask_secret(info.token)}"
+                )
+        if (
+            state.fbnotify.fbcoord_notify.verified
+            or state.fbnotify.fbcoord_notify.error
+            or state.fbnotify.fbcoord_notify.key_id
+            or state.fbnotify.fbcoord_notify.endpoint
+        ):
+            print("  fbcoord_notify:")
+            print(f"    verified={state.fbnotify.fbcoord_notify.verified}")
+            print(f"    configured={state.fbnotify.fbcoord_notify.configured}")
+            print(f"    source={state.fbnotify.fbcoord_notify.source}")
+            if state.fbnotify.fbcoord_notify.endpoint:
+                print(f"    endpoint={state.fbnotify.fbcoord_notify.endpoint}")
+            if state.fbnotify.fbcoord_notify.key_id:
+                print(f"    key_id={state.fbnotify.fbcoord_notify.key_id}")
+            if state.fbnotify.fbcoord_notify.source_instance:
+                print(f"    source_instance={state.fbnotify.fbcoord_notify.source_instance}")
+            if state.fbnotify.fbcoord_notify.masked_prefix:
+                print(f"    token={state.fbnotify.fbcoord_notify.masked_prefix}")
+            if state.fbnotify.fbcoord_notify.updated_at is not None:
+                print(f"    updated_at={state.fbnotify.fbcoord_notify.updated_at}")
+            if state.fbnotify.fbcoord_notify.error:
+                print(f"    error={state.fbnotify.fbcoord_notify.error}")
     print("artifacts:")
     print(f"  configs={configs_dir_for(workdir)}")
     print(f"  data={data_dir_for(workdir)}")

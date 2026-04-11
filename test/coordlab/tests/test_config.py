@@ -139,6 +139,31 @@ class ConfigHelpersTest(unittest.TestCase):
             self.assertTrue((runtime_dir / "src/worker.ts").exists())
             self.assertTrue((runtime_dir / "node_modules").is_symlink())
 
+    def test_prepare_fbcoord_runtime_writes_notify_bootstrap_vars_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = coordconfig.prepare_fbcoord_runtime(
+                tmpdir,
+                "operator-token",
+                "operator-pepper",
+                fbnotify=coordconfig.FBCoordNotifyBootstrapConfig(
+                    endpoint="http://10.99.0.30:8787/v1/events",
+                    key_id="fbcoord-key",
+                    token="fbcoord-secret",
+                    source_instance="fbcoord",
+                ),
+            )
+            self.assertEqual(
+                (
+                    "FBCOORD_TOKEN=operator-token\n"
+                    "FBCOORD_TOKEN_PEPPER=operator-pepper\n"
+                    "FBNOTIFY_URL=http://10.99.0.30:8787/v1/events\n"
+                    "FBNOTIFY_KEY_ID=fbcoord-key\n"
+                    "FBNOTIFY_TOKEN=fbcoord-secret\n"
+                    "FBNOTIFY_SOURCE_INSTANCE=fbcoord\n"
+                ),
+                (runtime_dir / ".dev.vars").read_text(encoding="utf-8"),
+            )
+
     def test_prepare_fbnotify_runtime_writes_dev_vars_and_links_node_modules(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_dir = coordconfig.prepare_fbnotify_runtime(tmpdir, "notify-token", "notify-pepper")
