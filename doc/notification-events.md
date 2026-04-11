@@ -9,7 +9,7 @@ the canonical `event_name` values sent to `fbnotify`.
 
 Current event set:
 
-- `fbforward`: 3 events
+- `fbforward`: 4 events
 - `fbcoord`: 3 events
 
 ---
@@ -58,6 +58,7 @@ Trigger:
   - `failover_loss`
   - `failover_retrans`
   - `failover_dial`
+  - `coordination_fallback`
 
 It is not emitted for routine score-driven or warmup-driven switches.
 
@@ -86,6 +87,33 @@ Notes:
 
 - this event is emitted only after a real connected session has been observed
 - there is no recovery notification for reconnect in the current implementation
+
+### `coordination.authority_lost`
+
+Severity:
+
+- `warn` when sustained authority loss starts
+- `info` when authority is restored
+
+Trigger:
+
+- coordination has previously established a real session with `fbcoord`
+- effective coordination authority stays false for at least 30 seconds
+- `coordination.connected` remains transport-level; this event follows the
+  effective health signal instead
+
+Attributes:
+
+- `coordination.endpoint`
+- `notification.state = "active"` on alert onset
+- `notification.state = "resolved"` on recovery
+
+Notes:
+
+- authority is currently computed as `connected && !fallback_active &&
+  selected_upstream != ""`
+- this event can fire while transport remains connected if coordination is
+  stuck in fallback or has no usable coordinated pick
 
 ---
 
@@ -134,6 +162,7 @@ Trigger:
 
 Attributes:
 
+- `session_id` for the newly created operator session
 - `client.ip` from the raw `cf-connecting-ip` header when present
 - `client.country` from `request.cf.country` when present
 - `client.city` from `request.cf.city` when present

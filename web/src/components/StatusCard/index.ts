@@ -37,6 +37,7 @@ export function renderStatusCard(
     mode: createRow('Mode'),
     active: createRow('Active upstream'),
     coordination: createRow('Coordination'),
+    coordAuthority: createRow('Coord authority'),
     coordPick: createRow('Coord pick'),
     coordFallback: createRow('Coord fallback'),
     tcp: createRow('TCP conns'),
@@ -60,6 +61,7 @@ export function renderStatusCard(
   container.appendChild(rows.mode.row);
   container.appendChild(rows.active.row);
   container.appendChild(rows.coordination.row);
+  container.appendChild(rows.coordAuthority.row);
   container.appendChild(rows.coordPick.row);
   container.appendChild(rows.coordFallback.row);
   container.appendChild(rows.tcp.row);
@@ -76,6 +78,7 @@ export function renderStatusCard(
     rows.mode.value.textContent = data.mode;
     rows.active.value.textContent = data.activeUpstream || '-';
     rows.coordination.value.textContent = formatCoordinationState(data.coordination);
+    rows.coordAuthority.value.textContent = formatCoordinationAuthority(data.coordination);
     rows.coordPick.value.textContent = formatCoordinationPick(data.coordination);
     rows.coordFallback.value.textContent = data.coordination.available
       ? data.coordination.fallback_active
@@ -118,6 +121,13 @@ function formatCoordinationPick(coordination: CoordinationStatus): string {
     return coordination.selected_upstream;
   }
   return 'waiting for match';
+}
+
+function formatCoordinationAuthority(coordination: CoordinationStatus): string {
+  if (!coordination.available) {
+    return '-';
+  }
+  return coordination.authoritative ? 'authoritative' : 'not authoritative';
 }
 
 function createRow(label: string) {

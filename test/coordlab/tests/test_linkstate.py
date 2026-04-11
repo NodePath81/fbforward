@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 from lib.linkstate import LinkStateController, parse_link_show
 from lib.network_control import NetworkController
-from lib.state import DesiredTargetState, LabState, NamespaceInfo, ShapingInfo, ShapingTargetInfo, TopologyInfo
+from lib.state import DesiredTargetState, LabState, LinkInfo, NamespaceInfo, ShapingInfo, ShapingTargetInfo, TopologyInfo
 
 
 def target_config() -> ShapingInfo:
@@ -34,10 +34,13 @@ def controller_state() -> LabState:
         work_dir="/tmp/coordlab-test",
         namespaces={
             "hub": NamespaceInfo(pid=111, parent=None, role="hub"),
+            "internet": NamespaceInfo(pid=116, parent="hub", role="internet"),
+            "hub-up": NamespaceInfo(pid=117, parent="hub", role="hub-up"),
             "fbnotify": NamespaceInfo(pid=112, parent="hub", role="fbnotify"),
             "node-1": NamespaceInfo(pid=113, parent="hub", role="node"),
             "client-edge": NamespaceInfo(pid=114, parent="hub", role="client-edge"),
             "client-1": NamespaceInfo(pid=115, parent="client-edge", role="client"),
+            "upstream-1": NamespaceInfo(pid=118, parent="hub-up", role="upstream"),
         },
         shaping=ShapingInfo(
             targets={
@@ -78,7 +81,18 @@ def controller_state() -> LabState:
                 "client-1": DesiredTargetState(),
             },
         ),
-        topology=TopologyInfo(base_cidr="10.99.0.0/24"),
+        topology=TopologyInfo(
+            base_cidr="10.99.0.0/24",
+            links=[
+                LinkInfo("hub", "fbnotify", "hub-fbnotify", "fbnotify-peer", "10.99.0.0/30", "10.99.0.1", "10.99.0.2"),
+                LinkInfo("hub", "node-1", "hub-node1", "node1-peer", "10.99.0.4/30", "10.99.0.5", "10.99.0.6"),
+                LinkInfo("hub", "internet", "hub-inet", "inet-hub", "10.99.0.12/30", "10.99.0.13", "10.99.0.14"),
+                LinkInfo("internet", "hub-up", "inet-hubup", "hubup-inet", "10.99.0.16/30", "10.99.0.17", "10.99.0.18"),
+                LinkInfo("hub-up", "upstream-1", "hubup-u1", "upstream1-peer", "10.99.0.20/30", "10.99.0.21", "10.99.0.22"),
+                LinkInfo("internet", "client-edge", "inet-cedge", "cedge-inet", "10.99.0.28/30", "10.99.0.29", "10.99.0.30"),
+                LinkInfo("client-edge", "client-1", "cedge-c1", "c1-peer", "10.99.0.32/30", "10.99.0.33", "10.99.0.34"),
+            ],
+        ),
     )
 
 
@@ -193,6 +207,53 @@ class LinkStateControllerTest(unittest.TestCase):
         self.assertFalse(status.connected)
         self.assertEqual(4, len(commands))
         self.assertTrue(all(command[:4] == ["ip", "-o", "link", "show"] for command in commands))
+
+    def test_network_controller_reconnect_replays_upstream_routes(self) -> None:
+        state = controller_state()
+        state.shaping.targets["upstream-1"] = ShapingTargetInfo(
+            router_ns="hub-up",
+            tag="us-1",
+            namespace="upstream-1",
+            device="hubup-u1",
+            kind="upstream",
+            peer_device="upstream1-peer",
+            shape_capable=True,
+            display_name="upstream-1",
+        )
+        state.shaping.desired["upstream-1"] = DesiredTargetState(connected=False)
+        controller = NetworkController(state)
+        live = {
+            ("hub-up", "hubup-u1"): False,
+            ("upstream-1", "upstream1-peer"): False,
+        }
+        commands: list[tuple[int, list[str]]] = []
+
+        def fake_run(pid: int, args: list[str]):
+            commands.append((pid, args))
+            namespace = {117: "hub-up", 118: "upstream-1"}.get(pid)
+            if args[:4] == ["ip", "-o", "link", "show"]:
+                connected = live[(namespace, args[-1])]
+                state_name = "UP" if connected else "DOWN"
+                flags = "BROADCAST,MULTICAST,UP,LOWER_UP" if connected else "BROADCAST,MULTICAST"
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout=f"5: {args[-1]}: <{flags}> state {state_name}\n", stderr="")
+            if args[:4] == ["ip", "link", "set", "dev"]:
+                live[(namespace, args[4])] = args[5] == "up"
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            if args[:3] == ["ip", "route", "replace"]:
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            if args[:3] == ["tc", "qdisc", "del"]:
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            if args[:3] == ["tc", "qdisc", "show"]:
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="qdisc noqueue 0: root refcnt 2\n", stderr="")
+            raise AssertionError(f"unexpected args: {args!r}")
+
+        with mock.patch("lib.network_control.netns.nsenter_run", side_effect=fake_run):
+            status = controller.set_connected("upstream-1", True)
+
+        self.assertTrue(status.connected)
+        self.assertIn((118, ["ip", "route", "replace", "default", "via", "10.99.0.21", "dev", "upstream1-peer"]), commands)
+        self.assertIn((111, ["ip", "route", "replace", "10.99.0.20/30", "via", "10.99.0.14", "dev", "hub-inet"]), commands)
+        self.assertIn((116, ["ip", "route", "replace", "10.99.0.20/30", "via", "10.99.0.18", "dev", "inet-hubup"]), commands)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,12 @@ export const SESSION_TTL_SECONDS = 24 * 60 * 60;
 
 interface SessionPayload {
   exp: number;
+  session_id?: string;
+}
+
+export interface CreatedSession {
+  token: string;
+  sessionId: string;
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -58,12 +64,26 @@ export async function createSession(
   ttlSeconds: number = SESSION_TTL_SECONDS,
   nowMs: number = Date.now()
 ): Promise<string> {
+  const session = await createSessionRecord(secret, ttlSeconds, nowMs);
+  return session.token;
+}
+
+export async function createSessionRecord(
+  secret: string,
+  ttlSeconds: number = SESSION_TTL_SECONDS,
+  nowMs: number = Date.now()
+): Promise<CreatedSession> {
+  const sessionId = crypto.randomUUID();
   const payload: SessionPayload = {
-    exp: Math.floor(nowMs / 1000) + ttlSeconds
+    exp: Math.floor(nowMs / 1000) + ttlSeconds,
+    session_id: sessionId
   };
   const encodedPayload = bytesToBase64Url(encoder.encode(JSON.stringify(payload)));
   const encodedSignature = bytesToBase64Url(await signPayload(encodedPayload, secret));
-  return `${encodedPayload}.${encodedSignature}`;
+  return {
+    token: `${encodedPayload}.${encodedSignature}`,
+    sessionId
+  };
 }
 
 export async function validateSession(
@@ -84,6 +104,9 @@ export async function validateSession(
   }
 
   if (typeof payload.exp !== 'number' || payload.exp <= Math.floor(nowMs / 1000)) {
+    return false;
+  }
+  if (payload.session_id !== undefined && typeof payload.session_id !== 'string') {
     return false;
   }
 

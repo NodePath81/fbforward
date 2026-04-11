@@ -48,6 +48,9 @@ type Policy struct {
 	coordConnected       bool
 	coordAlerted         bool
 	coordTimer           timer
+	coordAuthoritative   bool
+	authorityAlerted     bool
+	authorityTimer       timer
 }
 
 func NewPolicy(emitter Emitter, cfg PolicyConfig) *Policy {
@@ -80,6 +83,7 @@ func (p *Policy) Close() {
 	p.closed = true
 	p.stopOutageTimerLocked()
 	p.stopCoordTimerLocked()
+	p.stopAuthorityTimerLocked()
 }
 
 func (p *Policy) HandleActiveChange(oldTag, newTag, reason string, previousScore, nextScore float64) {
@@ -99,7 +103,7 @@ func (p *Policy) HandleActiveChange(oldTag, newTag, reason string, previousScore
 	p.stopOutageTimerLocked()
 
 	switch reason {
-	case "failover_loss", "failover_retrans", "failover_dial":
+	case "failover_loss", "failover_retrans", "failover_dial", "coordination_fallback":
 		p.emitLocked("upstream.active_changed", SeverityWarn, map[string]any{
 			"switch.from":   oldTag,
 			"switch.to":     newTag,
@@ -136,6 +140,9 @@ func (p *Policy) HandleCoordinationConnection(connected bool) {
 		p.coordConnected = true
 		p.coordAlerted = false
 		p.stopCoordTimerLocked()
+		if !p.coordAuthoritative && !p.authorityAlerted && p.authorityTimer == nil {
+			p.scheduleAuthorityLocked()
+		}
 		return
 	}
 
@@ -147,6 +154,32 @@ func (p *Policy) HandleCoordinationConnection(connected bool) {
 	p.coordTimer = p.after(sustainedAlertDelay, func() {
 		p.fireCoordinationAlert()
 	})
+}
+
+func (p *Policy) HandleCoordinationAuthority(authoritative bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+
+	p.coordAuthoritative = authoritative
+	if authoritative {
+		p.stopAuthorityTimerLocked()
+		if p.authorityAlerted {
+			p.emitLocked("coordination.authority_lost", SeverityInfo, map[string]any{
+				"coordination.endpoint": p.coordinationEndpoint,
+				"notification.state":    "resolved",
+			})
+			p.authorityAlerted = false
+		}
+		return
+	}
+
+	if !p.coordEverConnected || p.authorityAlerted || p.authorityTimer != nil {
+		return
+	}
+	p.scheduleAuthorityLocked()
 }
 
 func (p *Policy) fireOutageAlert() {
@@ -190,6 +223,23 @@ func (p *Policy) fireCoordinationAlert() {
 	p.coordAlerted = true
 }
 
+func (p *Policy) fireAuthorityAlert() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.authorityTimer = nil
+	if p.coordAuthoritative || !p.coordEverConnected || p.authorityAlerted {
+		return
+	}
+	p.emitLocked("coordination.authority_lost", SeverityWarn, map[string]any{
+		"coordination.endpoint": p.coordinationEndpoint,
+		"notification.state":    "active",
+	})
+	p.authorityAlerted = true
+}
+
 func (p *Policy) scheduleOutageLocked() {
 	if p.outageAlerted {
 		return
@@ -219,6 +269,19 @@ func (p *Policy) stopCoordTimerLocked() {
 	if p.coordTimer != nil {
 		p.coordTimer.Stop()
 		p.coordTimer = nil
+	}
+}
+
+func (p *Policy) scheduleAuthorityLocked() {
+	p.authorityTimer = p.after(sustainedAlertDelay, func() {
+		p.fireAuthorityAlert()
+	})
+}
+
+func (p *Policy) stopAuthorityTimerLocked() {
+	if p.authorityTimer != nil {
+		p.authorityTimer.Stop()
+		p.authorityTimer = nil
 	}
 }
 

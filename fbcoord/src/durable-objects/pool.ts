@@ -514,6 +514,17 @@ export class PoolState {
     return Array.from(this.activeNodes.values()).map(node => node.connection);
   }
 
+  nextStaleDeadline(): number | null {
+    let nextDeadline: number | null = null;
+    for (const current of this.activeNodes.values()) {
+      const candidate = current.lastSeen + this.staleAfterMs;
+      if (nextDeadline === null || candidate < nextDeadline) {
+        nextDeadline = candidate;
+      }
+    }
+    return nextDeadline;
+  }
+
   private recompute(): boolean {
     const upstream = selectSharedUpstream(Array.from(this.activeNodes.values()));
     if (upstream === this.snapshot.upstream) {
@@ -529,6 +540,19 @@ export class PoolState {
 
 function sendJson(socket: WebSocket, payload: ReadyMessage | PickMessage | ClosingMessage | ErrorMessage): void {
   socket.send(JSON.stringify(payload));
+}
+
+function logAbortedNotificationTrigger(abortedNodes: AbortedNodeNotification[], notifierEnabled: boolean): void {
+  console.info('fbcoord notification trigger', {
+    component: 'notify',
+    service: 'fbcoord',
+    event_name: 'pool.node_aborted',
+    notifier_enabled: notifierEnabled,
+    aborted_nodes: abortedNodes.map(node => ({
+      node_id: node.node_id,
+      cause: node.cause
+    }))
+  });
 }
 
 export class PoolDurableObject {
@@ -565,6 +589,7 @@ export class PoolDurableObject {
       if (result.changed) {
         this.broadcastPick();
       }
+      await this.syncStaleAlarm();
       result.connection?.close(1008, 'revoked');
 
       return Response.json({ ok: true, removed: result.removed });
@@ -602,6 +627,7 @@ export class PoolDurableObject {
           await this.persistIfNeeded(true);
           this.scheduleAbortedNotifications(abortedNodes);
         }
+        await this.syncStaleAlarm();
       })();
     }
     await this.loadPromise;
@@ -643,10 +669,15 @@ export class PoolDurableObject {
     for (const connection of result.connectionsToClose) {
       connection.close(1001, 'stale');
     }
+    await this.syncStaleAlarm();
   }
 
   private scheduleAbortedNotifications(abortedNodes: AbortedNodeNotification[]): void {
-    if (abortedNodes.length === 0 || !this.notifier.enabled()) {
+    if (abortedNodes.length === 0) {
+      return;
+    }
+    logAbortedNotificationTrigger(abortedNodes, this.notifier.enabled());
+    if (!this.notifier.enabled()) {
       return;
     }
     for (const node of abortedNodes) {
@@ -710,6 +741,7 @@ export class PoolDurableObject {
         this.broadcastPick();
       }
       this.scheduleAbortedNotifications(result.aborted_nodes ?? []);
+      await this.syncStaleAlarm();
     };
 
     socket.addEventListener('message', event => {
@@ -792,6 +824,7 @@ export class PoolDurableObject {
       }
 
       await this.persistIfNeeded(result.rosterChanged);
+      await this.syncStaleAlarm();
       setPhase('online');
       sendJson(socket, {
         type: 'ready',
@@ -825,6 +858,7 @@ export class PoolDurableObject {
     if (message.type === 'preferences') {
       const result = this.state.setPreferences(authenticatedNodeId, socket, message.upstreams, message.active_upstream ?? null);
       await this.persistIfNeeded(result.rosterChanged);
+      await this.syncStaleAlarm();
       if (result.changed) {
         this.broadcastPick();
       }
@@ -834,12 +868,14 @@ export class PoolDurableObject {
     if (message.type === 'heartbeat') {
       const result = this.state.heartbeat(authenticatedNodeId, socket);
       await this.persistIfNeeded(result.rosterChanged);
+      await this.syncStaleAlarm();
       return;
     }
 
     if (message.type === 'bye') {
       const result = this.state.acceptTeardown(authenticatedNodeId, socket);
       await this.persistIfNeeded(result.rosterChanged);
+      await this.syncStaleAlarm();
       setPhase('teardown_accepted');
       if (result.changed) {
         this.broadcastPick();
@@ -849,5 +885,25 @@ export class PoolDurableObject {
       } satisfies ClosingMessage);
       armTeardownClose();
     }
+  }
+
+  async alarm(): Promise<void> {
+    await this.ensureLoaded();
+    await this.flushReapResult(this.state.reapStaleNodes());
+  }
+
+  private async syncStaleAlarm(): Promise<void> {
+    const deadline = this.state.nextStaleDeadline();
+    const currentAlarm = await this.storage.getAlarm();
+    if (deadline === null) {
+      if (currentAlarm !== null) {
+        await this.storage.deleteAlarm();
+      }
+      return;
+    }
+    if (currentAlarm === deadline) {
+      return;
+    }
+    await this.storage.setAlarm(deadline);
   }
 }

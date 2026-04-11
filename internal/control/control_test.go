@@ -17,7 +17,9 @@ import (
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
-type fakeManager struct{}
+type fakeManager struct {
+	coordState upstream.CoordinationState
+}
 
 type fakeGeoIPManager struct {
 	status        geoip.Status
@@ -32,8 +34,8 @@ func (fakeManager) Snapshot() []upstream.UpstreamSnapshot { return nil }
 func (fakeManager) Mode() upstream.Mode                   { return upstream.ModeAuto }
 func (fakeManager) ActiveTag() string                     { return "" }
 func (fakeManager) Get(string) *upstream.Upstream         { return nil }
-func (fakeManager) CoordinationState() upstream.CoordinationState {
-	return upstream.CoordinationState{}
+func (f fakeManager) CoordinationState() upstream.CoordinationState {
+	return f.coordState
 }
 
 func (f fakeGeoIPManager) Status() geoip.Status {
@@ -323,6 +325,12 @@ func TestGetStatusOmitsLegacyCoordinationFields(t *testing.T) {
 		Pool:     "legacy-pool",
 		NodeID:   "legacy-node",
 	}
+	server.manager = fakeManager{
+		coordState: upstream.CoordinationState{
+			Connected:     true,
+			Authoritative: false,
+		},
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "GetStatus", nil)))
 	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
@@ -350,6 +358,9 @@ func TestGetStatusOmitsLegacyCoordinationFields(t *testing.T) {
 	}
 	if _, exists := coordinationState["node_id"]; exists {
 		t.Fatalf("unexpected legacy node_id in status response: %#v", coordinationState)
+	}
+	if coordinationState["authoritative"] != false {
+		t.Fatalf("unexpected authoritative flag in status response: %#v", coordinationState)
 	}
 }
 

@@ -164,6 +164,11 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 			rt.notifyPolicy.HandleUsabilityChange(change.Tag, change.Usable, change.Reason)
 		}
 	})
+	if rt.notifyPolicy != nil {
+		manager.SetCoordinationStateCallback(func(state upstream.CoordinationState) {
+			rt.notifyPolicy.HandleCoordinationAuthority(state.Authoritative)
+		})
+	}
 
 	metrics.SetMode(upstream.ModeAuto)
 	metrics.SetCoordinationState(manager.CoordinationState())

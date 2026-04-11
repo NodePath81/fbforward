@@ -635,7 +635,8 @@ Retrieve current runtime status.
 - `usable`: Whether upstream is eligible for selection (not failed/unreachable)
 - `reachable`: ICMP probe reachability status
 - `coordination.available`: Whether coordination mode is configured locally
-- `coordination.connected`: Whether the node is currently connected to `fbcoord`
+- `coordination.connected`: Whether the node currently has a live transport session to `fbcoord`
+- `coordination.authoritative`: Whether coordination is currently healthy enough to drive picks authoritatively
 - `coordination.selected_upstream`: Latest coordinated upstream pick, if any
 - `coordination.version`: Latest applied coordination version
 - `coordination.fallback_active`: Whether coordination mode is currently using local auto-selection fallback
@@ -1429,6 +1430,7 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 |--------|------|--------|-------------|
 | `fbforward_mode` | gauge | - | Selection mode: 0=auto, 1=manual, 2=coordination |
 | `fbforward_coord_connected` | gauge | - | Coordination service connection state: 1=connected, 0=disconnected |
+| `fbforward_coord_authoritative` | gauge | - | Effective coordination health: 1=authoritative, 0=not authoritative |
 | `fbforward_coord_fallback_active` | gauge | - | Coordination fallback state: 1=using local auto fallback, 0=inactive |
 | `fbforward_coord_version` | gauge | - | Last applied coordination version |
 | `fbforward_coord_selected_upstream` | gauge | `upstream` | Coordinated upstream indicator: 1=selected, 0=not selected |

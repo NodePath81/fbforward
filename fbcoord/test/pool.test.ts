@@ -48,6 +48,24 @@ describe('PoolState', () => {
     expect(state.currentPick()).toEqual({ version: 2, upstream: null });
   });
 
+  it('tracks the next stale deadline from the oldest active heartbeat', () => {
+    let now = 0;
+    const state = new PoolState(() => now, 30_000);
+    const first = new FakeConnection();
+    const second = new FakeConnection();
+
+    state.registerConnection('node-1', first);
+    now = 10_000;
+    state.registerConnection('node-2', second);
+
+    expect(state.nextStaleDeadline()).toBe(30_000);
+
+    now = 20_000;
+    state.heartbeat('node-1', first);
+
+    expect(state.nextStaleDeadline()).toBe(40_000);
+  });
+
   it('increments version only when the visible pick changes', () => {
     const state = new PoolState();
     const first = new FakeConnection();

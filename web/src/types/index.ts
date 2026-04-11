@@ -9,6 +9,7 @@ export interface ControlState {
 export interface CoordinationStatus {
   available: boolean;
   connected: boolean;
+  authoritative: boolean;
   pool: string;
   node_id: string;
   selected_upstream: string;

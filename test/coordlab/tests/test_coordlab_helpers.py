@@ -605,7 +605,9 @@ class CoordlabHelpersTest(unittest.TestCase):
             stack.enter_context(mock.patch("cli.lifecycle.readiness.verify_fbcoord_api"))
             stack.enter_context(mock.patch("cli.lifecycle.start_ttyd_terminals", return_value={}))
             stack.enter_context(mock.patch("cli.lifecycle.render_summary", return_value="ok"))
-            self.assertEqual(0, cmd_up(args))
+            with io.StringIO() as buffer, redirect_stdout(buffer):
+                self.assertEqual(0, cmd_up(args))
+                output = buffer.getvalue()
 
         self.assertGreaterEqual(len(saved_states), 3)
         final_state = saved_states[-1]
@@ -613,6 +615,10 @@ class CoordlabHelpersTest(unittest.TestCase):
         self.assertEqual("public proxy failed", final_state.fbnotify.error)
         self.assertNotIn("fbnotify", final_state.proxies)
         self.assertIn("fbcoord", final_state.proxies)
+        self.assertIn(f"runtime={workdir / 'fbcoord-runtime'}", output)
+        self.assertIn("FBNOTIFY_URL=set", output)
+        self.assertIn("FBNOTIFY_KEY_ID=set", output)
+        self.assertIn("FBNOTIFY_SOURCE_INSTANCE=set", output)
 
 
 if __name__ == "__main__":

@@ -131,6 +131,7 @@ func TestCoordinationPickApplied(t *testing.T) {
 	)
 
 	manager.SetCoordination()
+	manager.SetCoordinationConnected(true)
 	applied, err := manager.ApplyCoordinationPick(1, "beta")
 	if err != nil {
 		t.Fatalf("expected valid coordination pick, got error %v", err)
@@ -140,7 +141,7 @@ func TestCoordinationPickApplied(t *testing.T) {
 	}
 
 	state := manager.CoordinationState()
-	if state.FallbackActive || state.SelectedUpstream != "beta" || state.Version != 1 {
+	if state.FallbackActive || !state.Authoritative || state.SelectedUpstream != "beta" || state.Version != 1 {
 		t.Fatalf("unexpected coordination state: %+v", state)
 	}
 	if manager.ActiveTag() != "beta" {
@@ -155,6 +156,7 @@ func TestCoordinationStaleVersionIgnored(t *testing.T) {
 	)
 
 	manager.SetCoordination()
+	manager.SetCoordinationConnected(true)
 	if _, err := manager.ApplyCoordinationPick(2, "beta"); err != nil {
 		t.Fatalf("expected first coordination pick to apply: %v", err)
 	}
@@ -182,7 +184,7 @@ func TestCoordinationModeWithoutPickFallsBackToAutoSelection(t *testing.T) {
 	manager.SetCoordination()
 
 	state := manager.CoordinationState()
-	if !state.FallbackActive {
+	if !state.FallbackActive || state.Authoritative {
 		t.Fatalf("expected fallback to local auto selection, got %+v", state)
 	}
 	if manager.ActiveTag() != "alpha" {
@@ -206,7 +208,7 @@ func TestCoordinationInvalidPickFallsBackToAutoSelection(t *testing.T) {
 	}
 
 	state := manager.CoordinationState()
-	if !state.FallbackActive {
+	if !state.FallbackActive || state.Authoritative {
 		t.Fatalf("expected fallback state after invalid coordination pick, got %+v", state)
 	}
 	if manager.ActiveTag() != "alpha" {
@@ -227,11 +229,26 @@ func TestSwitchingAwayFromCoordinationClearsCoordinationState(t *testing.T) {
 	manager.SetAuto()
 
 	state := manager.CoordinationState()
-	if state.Connected || state.SelectedUpstream != "" || state.Version != 0 || state.FallbackActive {
+	if state.Connected || state.Authoritative || state.SelectedUpstream != "" || state.Version != 0 || state.FallbackActive {
 		t.Fatalf("expected coordination state to be cleared, got %+v", state)
 	}
 	if manager.Mode() != ModeAuto {
 		t.Fatalf("expected auto mode, got %s", manager.Mode().String())
+	}
+}
+
+func TestCoordinationConnectedWithoutPickIsNotAuthoritative(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 95, true),
+		testUpstream("beta", 65, true),
+	)
+
+	manager.SetCoordination()
+	manager.SetCoordinationConnected(true)
+
+	state := manager.CoordinationState()
+	if !state.Connected || state.Authoritative || !state.FallbackActive {
+		t.Fatalf("expected connected-but-not-authoritative coordination state, got %+v", state)
 	}
 }
 

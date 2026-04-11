@@ -359,6 +359,7 @@ function renderCoordination(payload) {
         <p><strong>Mode:</strong> ${node.mode}</p>
         <p><strong>Active:</strong> ${node.active_upstream || "none"}</p>
         <p><strong>Connected:</strong> ${coordination.connected ? "yes" : "no"}</p>
+        <p><strong>Authoritative:</strong> ${coordination.authoritative ? "yes" : "no"}</p>
         <p><strong>Selected:</strong> ${coordination.selected_upstream || "none"}</p>
         <p><strong>Fallback:</strong> ${coordination.fallback_active ? "yes" : "no"}</p>
       </article>

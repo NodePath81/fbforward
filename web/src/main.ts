@@ -804,6 +804,7 @@ function startApp(token: string) {
         coordination: {
           ...store.getState().coordination,
           connected: snapshot.coordination.connected,
+          authoritative: snapshot.coordination.authoritative,
           fallback_active: snapshot.coordination.fallbackActive,
           version: snapshot.coordination.version,
           selected_upstream: snapshot.coordination.selectedUpstream

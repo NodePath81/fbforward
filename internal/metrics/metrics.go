@@ -39,6 +39,7 @@ type Metrics struct {
 	mode               upstream.Mode
 	activeTag          string
 	coordConnected     bool
+	coordAuthoritative bool
 	coordFallback      bool
 	coordVersion       int64
 	coordSelectedTag   string
@@ -280,6 +281,7 @@ func (m *Metrics) SetCoordinationState(state upstream.CoordinationState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.coordConnected = state.Connected
+	m.coordAuthoritative = state.Authoritative
 	m.coordFallback = state.FallbackActive
 	m.coordVersion = state.Version
 	m.coordSelectedTag = state.SelectedUpstream
@@ -424,6 +426,7 @@ func (m *Metrics) Render() string {
 	mode := m.mode
 	active := m.activeTag
 	coordConnected := m.coordConnected
+	coordAuthoritative := m.coordAuthoritative
 	coordFallback := m.coordFallback
 	coordVersion := m.coordVersion
 	coordSelectedTag := m.coordSelectedTag
@@ -585,6 +588,12 @@ func (m *Metrics) Render() string {
 		b.WriteString("fbforward_coord_connected 1\n")
 	} else {
 		b.WriteString("fbforward_coord_connected 0\n")
+	}
+	b.WriteString("# TYPE fbforward_coord_authoritative gauge\n")
+	if coordAuthoritative {
+		b.WriteString("fbforward_coord_authoritative 1\n")
+	} else {
+		b.WriteString("fbforward_coord_authoritative 0\n")
 	}
 	b.WriteString("# TYPE fbforward_coord_fallback_active gauge\n")
 	if coordFallback {

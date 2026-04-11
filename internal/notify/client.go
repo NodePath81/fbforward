@@ -129,7 +129,7 @@ func NewClient(cfg Config) (*Client, error) {
 
 func (c *Client) Emit(eventName string, severity Severity, attributes map[string]any) bool {
 	now := c.now().UTC()
-	return c.Submit(Event{
+	event := Event{
 		SchemaVersion: 1,
 		EventName:     eventName,
 		Severity:      severity,
@@ -139,7 +139,26 @@ func (c *Client) Emit(eventName string, severity Severity, attributes map[string
 			Instance: c.sourceInstance,
 		},
 		Attributes: cloneAttributes(attributes),
-	})
+	}
+	util.Event(c.logger, slog.LevelInfo, "notify.triggered",
+		"notify.event_name", event.EventName,
+		"notify.severity", event.Severity,
+		"source.service", event.Source.Service,
+		"source.instance", event.Source.Instance,
+	)
+	submitted := c.Submit(event)
+	if submitted {
+		util.Event(c.logger, slog.LevelInfo, "notify.enqueued",
+			"notify.event_name", event.EventName,
+			"notify.severity", event.Severity,
+		)
+		return true
+	}
+	util.Event(c.logger, slog.LevelWarn, "notify.enqueue_failed",
+		"notify.event_name", event.EventName,
+		"notify.severity", event.Severity,
+	)
+	return false
 }
 
 func (c *Client) Submit(event Event) bool {
@@ -211,6 +230,10 @@ func (c *Client) send(event Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 	req = req.WithContext(ctx)
+	util.Event(c.logger, slog.LevelInfo, "notify.delivery_started",
+		"notify.event_name", event.EventName,
+		"notify.endpoint", c.endpoint,
+	)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -221,7 +244,9 @@ func (c *Client) send(event Event) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.EventName, "http.status_code", resp.StatusCode)
+		return
 	}
+	util.Event(c.logger, slog.LevelInfo, "notify.delivered", "notify.event_name", event.EventName, "http.status_code", resp.StatusCode)
 }
 
 func sign(payload, secret string) string {

@@ -135,8 +135,43 @@ class NetworkController:
         target = self._target(target_name)
         if not self.get_link(target_name).connected:
             return
+        self._reconcile_routes(target_name)
         if target.shape_capable:
             self._reconcile_shaping(target_name)
+
+    def _reconcile_routes(self, target_name: str) -> None:
+        target = self._target(target_name)
+        topology_links = self.state.topology.links
+        hub_to_internet = netns.find_link(topology_links, "hub", "internet")
+
+        if target.namespace in {"fbcoord", "fbnotify", "node-1", "node-2"}:
+            link = netns.find_link(topology_links, "hub", target.namespace)
+            netns.add_default_route(self._namespace_pid(target.namespace), link.left_ip, link.right_if)
+            internet_to_hub_up = netns.find_link(topology_links, "internet", "hub-up")
+            netns.add_route(self._namespace_pid("hub-up"), link.subnet, internet_to_hub_up.left_ip, internet_to_hub_up.right_if)
+            netns.add_route(self._namespace_pid("internet"), link.subnet, hub_to_internet.left_ip, hub_to_internet.right_if)
+            return
+
+        if target.namespace in {"upstream-1", "upstream-2"}:
+            link = netns.find_link(topology_links, "hub-up", target.namespace)
+            netns.add_default_route(self._namespace_pid(target.namespace), link.left_ip, link.right_if)
+            internet_to_hub_up = netns.find_link(topology_links, "internet", "hub-up")
+            netns.add_route(self._namespace_pid("hub"), link.subnet, hub_to_internet.right_ip, hub_to_internet.left_if)
+            netns.add_route(self._namespace_pid("internet"), link.subnet, internet_to_hub_up.right_ip, internet_to_hub_up.left_if)
+            return
+
+        if target.kind == "client":
+            client = self.state.clients.get(target.namespace)
+            if client is None:
+                raise RuntimeError(f"missing client metadata for {target.namespace!r}")
+            link = netns.find_link(topology_links, "client-edge", target.namespace)
+            internet_to_client_edge = netns.find_link(topology_links, "internet", "client-edge")
+            identity_cidr = f"{client.identity_ip}/32"
+            netns.add_default_route(self._namespace_pid(target.namespace), link.left_ip, link.right_if, src=client.identity_ip)
+            netns.add_route(self._namespace_pid("client-edge"), identity_cidr, link.right_ip, link.left_if)
+            netns.add_route(self._namespace_pid("internet"), identity_cidr, internet_to_client_edge.right_ip, internet_to_client_edge.left_if)
+            netns.add_route(self._namespace_pid("hub"), identity_cidr, hub_to_internet.right_ip, hub_to_internet.left_if)
+            return
 
     def _reconcile_shaping(self, target_name: str) -> None:
         target = self._target(target_name)
@@ -178,6 +213,12 @@ class NetworkController:
         if target is None:
             raise ValueError(f"unknown target {target_name!r}")
         return target
+
+    def _namespace_pid(self, namespace_name: str) -> int:
+        info = self.state.namespaces.get(namespace_name)
+        if info is None:
+            raise RuntimeError(f"missing namespace metadata for {namespace_name!r}")
+        return info.pid
 
     def _interface_connected(self, namespace_name: str, device: str) -> bool:
         result = self._run(namespace_name, ["ip", "-o", "link", "show", "dev", device])

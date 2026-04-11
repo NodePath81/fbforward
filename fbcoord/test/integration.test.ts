@@ -551,13 +551,15 @@ describe('worker fetch', () => {
     const ctx = createExecutionContext();
     const response = await worker.fetch(request, env, ctx.ctx);
     expect(response.status).toBe(200);
+    const cookie = cookieHeader(response);
     await ctx.flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const call = fetchMock.mock.calls[0] as unknown[] | undefined;
     expect(call).toBeDefined();
     const init = call?.[1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toMatchObject({
+    const payload = JSON.parse(String(init.body));
+    expect(payload).toMatchObject({
       event_name: 'operator.login',
       severity: 'info',
       source: {
@@ -571,6 +573,16 @@ describe('worker fetch', () => {
         'client.region': 'Washington'
       }
     });
+    expect(payload.attributes.session_id).toEqual(expect.any(String));
+
+    const authCheck = await worker.fetch(new Request('https://example.com/api/auth/check', {
+      headers: {
+        Cookie: cookie
+      }
+    }), env);
+    expect(authCheck.status).toBe(200);
+    await ctx.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('emits operator token rotation notifications on success', async () => {

@@ -75,15 +75,19 @@ func TestPolicyEmitsOnlyFailoverReasons(t *testing.T) {
 
 	policy.HandleActiveChange("a", "b", "score_delta", 0, 0)
 	policy.HandleActiveChange("b", "c", "failover_dial", 0, 0)
+	policy.HandleActiveChange("c", "d", "coordination_fallback", 0, 0)
 
-	if len(emitter.events) != 1 {
-		t.Fatalf("expected one failover event, got %d", len(emitter.events))
+	if len(emitter.events) != 2 {
+		t.Fatalf("expected two failover-style events, got %d", len(emitter.events))
 	}
-	if emitter.events[0].name != "upstream.active_changed" {
-		t.Fatalf("unexpected event name %q", emitter.events[0].name)
+	if emitter.events[0].name != "upstream.active_changed" || emitter.events[1].name != "upstream.active_changed" {
+		t.Fatalf("unexpected event names %+v", emitter.events)
 	}
 	if emitter.events[0].attributes["switch.reason"] != "failover_dial" {
 		t.Fatalf("unexpected switch reason %#v", emitter.events[0].attributes)
+	}
+	if emitter.events[1].attributes["switch.reason"] != "coordination_fallback" {
+		t.Fatalf("unexpected switch reason %#v", emitter.events[1].attributes)
 	}
 }
 
@@ -172,5 +176,42 @@ func TestPolicyHandlesSustainedCoordinationDisconnect(t *testing.T) {
 	}
 	if emitter.events[0].attributes["coordination.endpoint"] != "https://fbcoord.example" {
 		t.Fatalf("unexpected coordination attributes %#v", emitter.events[0].attributes)
+	}
+}
+
+func TestPolicyHandlesSustainedCoordinationAuthorityLoss(t *testing.T) {
+	emitter := &recordingEmitter{}
+	factory := &timerFactory{}
+	policy := NewPolicy(emitter, PolicyConfig{
+		StartTime:            time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
+		CoordinationEndpoint: "https://fbcoord.example",
+		AfterFunc:            factory.After,
+	})
+
+	policy.HandleCoordinationConnection(true)
+	policy.HandleCoordinationAuthority(false)
+	firstTimer := factory.Last()
+	policy.HandleCoordinationAuthority(true)
+	firstTimer.Fire()
+
+	if len(emitter.events) != 0 {
+		t.Fatalf("expected authority recovery to cancel pending alert, got %d", len(emitter.events))
+	}
+
+	policy.HandleCoordinationAuthority(false)
+	factory.Last().Fire()
+	policy.HandleCoordinationAuthority(true)
+
+	if len(emitter.events) != 2 {
+		t.Fatalf("expected authority loss and recovery, got %d", len(emitter.events))
+	}
+	if emitter.events[0].name != "coordination.authority_lost" || emitter.events[1].name != "coordination.authority_lost" {
+		t.Fatalf("unexpected event names %+v", emitter.events)
+	}
+	if emitter.events[0].attributes["notification.state"] != "active" {
+		t.Fatalf("unexpected authority alert attributes %#v", emitter.events[0].attributes)
+	}
+	if emitter.events[1].attributes["notification.state"] != "resolved" {
+		t.Fatalf("unexpected authority recovery attributes %#v", emitter.events[1].attributes)
 	}
 }

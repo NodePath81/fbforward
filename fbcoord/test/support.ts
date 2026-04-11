@@ -1,5 +1,6 @@
 export class MemoryStorage implements DurableObjectStorage {
   private readonly values = new Map<string, unknown>();
+  private alarmAt: number | null = null;
 
   async get<T>(key: string): Promise<T | undefined> {
     const value = this.values.get(key);
@@ -12,6 +13,18 @@ export class MemoryStorage implements DurableObjectStorage {
 
   async delete(key: string): Promise<boolean> {
     return this.values.delete(key);
+  }
+
+  async getAlarm(): Promise<number | null> {
+    return this.alarmAt;
+  }
+
+  async setAlarm(scheduledTime: number | Date): Promise<void> {
+    this.alarmAt = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime;
+  }
+
+  async deleteAlarm(): Promise<void> {
+    this.alarmAt = null;
   }
 }
 

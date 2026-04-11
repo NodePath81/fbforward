@@ -41,6 +41,7 @@ func (m Mode) String() string {
 
 type CoordinationState struct {
 	Connected        bool   `json:"connected"`
+	Authoritative    bool   `json:"authoritative"`
 	SelectedUpstream string `json:"selected_upstream"`
 	Version          int64  `json:"version"`
 	FallbackActive   bool   `json:"fallback_active"`
@@ -123,6 +124,7 @@ type UpstreamManager struct {
 	rng            *rand.Rand
 	onSelect       func(change ActiveChange)
 	onStateChange  func(change UsabilityChange)
+	onCoordState   func(state CoordinationState)
 	switching      config.SwitchingConfig
 	staleThreshold time.Duration
 	scorer         Scorer
@@ -167,6 +169,10 @@ func (m *UpstreamManager) SetScorer(scorer Scorer) {
 func (m *UpstreamManager) SetCallbacks(onSelect func(change ActiveChange), onStateChange func(change UsabilityChange)) {
 	m.onSelect = onSelect
 	m.onStateChange = onStateChange
+}
+
+func (m *UpstreamManager) SetCoordinationStateCallback(callback func(state CoordinationState)) {
+	m.onCoordState = callback
 }
 
 func (m *UpstreamManager) SetSwitching(cfg config.SwitchingConfig) {
@@ -257,12 +263,7 @@ func (m *UpstreamManager) ActiveTag() string {
 func (m *UpstreamManager) CoordinationState() CoordinationState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return CoordinationState{
-		Connected:        m.coordConnected,
-		SelectedUpstream: m.coordTag,
-		Version:          m.coordVersion,
-		FallbackActive:   m.coordFallback,
-	}
+	return m.coordinationStateLocked()
 }
 
 func (m *UpstreamManager) Get(tag string) *Upstream {
@@ -308,6 +309,7 @@ func (m *UpstreamManager) SetAuto() {
 	m.resetPendingLocked()
 	best, _ := m.selectBestLocked("")
 	m.setActiveLocked(best, "manual")
+	m.emitCoordinationStateLocked()
 }
 
 func (m *UpstreamManager) SetManual(tag string) error {
@@ -325,6 +327,7 @@ func (m *UpstreamManager) SetManual(tag string) error {
 	m.clearCoordinationLocked()
 	m.resetPendingLocked()
 	m.setActiveLocked(tag, "manual")
+	m.emitCoordinationStateLocked()
 	return nil
 }
 
@@ -338,6 +341,7 @@ func (m *UpstreamManager) SetCoordination() {
 	m.resetPendingLocked()
 	best, _ := m.selectBestLocked("")
 	m.setActiveLocked(best, "coordination_fallback")
+	m.emitCoordinationStateLocked()
 }
 
 func (m *UpstreamManager) SetCoordinationConnected(connected bool) {
@@ -345,6 +349,7 @@ func (m *UpstreamManager) SetCoordinationConnected(connected bool) {
 	defer m.mu.Unlock()
 	m.coordConnected = connected
 	if connected {
+		m.emitCoordinationStateLocked()
 		return
 	}
 	m.activateCoordinationFallbackLocked("coordination_fallback")
@@ -377,6 +382,7 @@ func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool
 	if m.mode == ModeCoordination {
 		m.setActiveLocked(tag, "coordination")
 	}
+	m.emitCoordinationStateLocked()
 	return true, nil
 }
 
@@ -789,6 +795,23 @@ func (m *UpstreamManager) setActiveLocked(tag, reason string) {
 	}
 }
 
+func (m *UpstreamManager) coordinationStateLocked() CoordinationState {
+	return CoordinationState{
+		Connected:        m.coordConnected,
+		Authoritative:    m.coordConnected && !m.coordFallback && m.coordTag != "",
+		SelectedUpstream: m.coordTag,
+		Version:          m.coordVersion,
+		FallbackActive:   m.coordFallback,
+	}
+}
+
+func (m *UpstreamManager) emitCoordinationStateLocked() {
+	if m.onCoordState == nil {
+		return
+	}
+	m.onCoordState(m.coordinationStateLocked())
+}
+
 func (m *UpstreamManager) resetPendingLocked() {
 	if m.pendingSwitch != "" {
 		util.Event(m.logger, slog.LevelDebug, "upstream.pending_switch_cancelled",
@@ -817,9 +840,11 @@ func (m *UpstreamManager) activateCoordinationFallbackLocked(reason string) {
 		m.coordFallback = true
 		best, _ := m.selectBestLocked("")
 		m.setActiveLocked(best, reason)
+		m.emitCoordinationStateLocked()
 		return
 	}
 	m.coordFallback = false
+	m.emitCoordinationStateLocked()
 }
 
 func (m *UpstreamManager) usabilityReason(stats UpstreamStats) string {

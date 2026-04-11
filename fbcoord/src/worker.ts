@@ -4,7 +4,7 @@ import { AUTHENTICATED_NODE_ID_HEADER, PoolDurableObject } from './durable-objec
 import { RegistryDurableObject } from './durable-objects/registry';
 import { TokenDurableObject } from './durable-objects/token';
 import { createNotifier } from './notify';
-import { clearSessionCookie, createSession, createSessionCookie, SESSION_COOKIE_NAME, validateSession } from './session';
+import { clearSessionCookie, createSessionCookie, createSessionRecord, SESSION_COOKIE_NAME, validateSession } from './session';
 
 export interface Env {
   FBCOORD_POOL: DurableObjectNamespace;
@@ -400,8 +400,9 @@ function noOpContext(): ExecutionContextLike {
   };
 }
 
-function loginNotificationAttributes(request: Request): Record<string, unknown> {
+function loginNotificationAttributes(request: Request, sessionId: string): Record<string, unknown> {
   const attributes: Record<string, unknown> = {};
+  attributes.session_id = sessionId;
   const clientIp = request.headers.get('cf-connecting-ip')?.trim();
   if (clientIp) {
     attributes['client.ip'] = clientIp;
@@ -416,6 +417,20 @@ function loginNotificationAttributes(request: Request): Record<string, unknown> 
     attributes['client.region'] = request.cf.region;
   }
   return attributes;
+}
+
+function logNotificationTrigger(
+  eventName: string,
+  notifierEnabled: boolean,
+  details: Record<string, unknown> = {}
+): void {
+  console.info('fbcoord notification trigger', {
+    component: 'notify',
+    service: 'fbcoord',
+    event_name: eventName,
+    notifier_enabled: notifierEnabled,
+    ...details
+  });
 }
 
 function createWorker() {
@@ -469,10 +484,14 @@ function createWorker() {
         await recordAuthSuccess(env, 'login', clientKey);
 
         const sessionSecret = await getSessionSecret(env);
-        const session = await createSession(sessionSecret);
-        ctx.waitUntil(notifier.send('operator.login', 'info', loginNotificationAttributes(request)));
+        const session = await createSessionRecord(sessionSecret);
+        logNotificationTrigger('operator.login', notifier.enabled(), {
+          session_id: session.sessionId,
+          has_client_ip: Boolean(request.headers.get('cf-connecting-ip')?.trim())
+        });
+        ctx.waitUntil(notifier.send('operator.login', 'info', loginNotificationAttributes(request, session.sessionId)));
         return json({ ok: true }, 200, {
-          'Set-Cookie': createSessionCookie(session, undefined, secureCookiesFor(request))
+          'Set-Cookie': createSessionCookie(session.token, undefined, secureCookiesFor(request))
         });
       }
 

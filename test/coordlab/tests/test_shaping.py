@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 from lib.network_control import NetworkController
 from lib.shaping import ShapingState, TrafficShaper, parse_qdisc_show
-from lib.state import DesiredTargetState, LabState, NamespaceInfo, ShapingInfo, ShapingTargetInfo, TopologyInfo
+from lib.state import DesiredTargetState, LabState, LinkInfo, NamespaceInfo, ShapingInfo, ShapingTargetInfo, TopologyInfo
 
 
 def shaping_config() -> ShapingInfo:
@@ -34,6 +34,8 @@ def controller_state() -> LabState:
         work_dir="/tmp/coordlab-test",
         namespaces={
             "hub": NamespaceInfo(pid=111, parent=None, role="hub"),
+            "internet": NamespaceInfo(pid=114, parent="hub", role="internet"),
+            "hub-up": NamespaceInfo(pid=115, parent="hub", role="hub-up"),
             "node-1": NamespaceInfo(pid=112, parent="hub", role="node"),
             "fbnotify": NamespaceInfo(pid=113, parent="hub", role="fbnotify"),
         },
@@ -65,7 +67,15 @@ def controller_state() -> LabState:
                 "fbnotify": DesiredTargetState(),
             },
         ),
-        topology=TopologyInfo(base_cidr="10.99.0.0/24"),
+        topology=TopologyInfo(
+            base_cidr="10.99.0.0/24",
+            links=[
+                LinkInfo("hub", "node-1", "hub-node1", "node1-peer", "10.99.0.4/30", "10.99.0.5", "10.99.0.6"),
+                LinkInfo("hub", "fbnotify", "hub-fbnotify", "fbnotify-peer", "10.99.0.0/30", "10.99.0.1", "10.99.0.2"),
+                LinkInfo("hub", "internet", "hub-inet", "inet-hub", "10.99.0.12/30", "10.99.0.13", "10.99.0.14"),
+                LinkInfo("internet", "hub-up", "inet-hubup", "hubup-inet", "10.99.0.16/30", "10.99.0.17", "10.99.0.18"),
+            ],
+        ),
     )
 
 
@@ -182,6 +192,8 @@ class TrafficShaperTest(unittest.TestCase):
             if args[:4] == ["ip", "link", "set", "dev"]:
                 live[(namespace, args[4])] = args[5] == "up"
                 return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            if args[:3] == ["ip", "route", "replace"]:
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             if args[:3] == ["tc", "qdisc", "replace"]:
                 return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             if args[:3] == ["tc", "qdisc", "show"]:
@@ -194,6 +206,9 @@ class TrafficShaperTest(unittest.TestCase):
         self.assertTrue(status.connected)
         self.assertIn(["ip", "link", "set", "dev", "node1-peer", "up"], commands)
         self.assertIn(["ip", "link", "set", "dev", "hub-node1", "up"], commands)
+        self.assertIn(["ip", "route", "replace", "default", "via", "10.99.0.5", "dev", "node1-peer"], commands)
+        self.assertIn(["ip", "route", "replace", "10.99.0.4/30", "via", "10.99.0.17", "dev", "hubup-inet"], commands)
+        self.assertIn(["ip", "route", "replace", "10.99.0.4/30", "via", "10.99.0.13", "dev", "inet-hub"], commands)
         self.assertIn(
             ["tc", "qdisc", "replace", "dev", "hub-node1", "root", "netem", "delay", "150ms", "loss", "7.5%"],
             commands,

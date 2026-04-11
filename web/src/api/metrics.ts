@@ -12,6 +12,7 @@ export interface MetricsSnapshot {
   activeUpstream: string;
   coordination: {
     connected: boolean;
+    authoritative: boolean;
     fallbackActive: boolean;
     version: number;
     selectedUpstream: string;
@@ -73,6 +74,7 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
   const tcp = data['fbforward_tcp_active']?.[0]?.value ?? 0;
   const udp = data['fbforward_udp_mappings_active']?.[0]?.value ?? 0;
   const coordConnected = data['fbforward_coord_connected']?.[0]?.value === 1;
+  const coordAuthoritative = data['fbforward_coord_authoritative']?.[0]?.value === 1;
   const coordFallbackActive = data['fbforward_coord_fallback_active']?.[0]?.value === 1;
   const coordVersion = data['fbforward_coord_version']?.[0]?.value ?? 0;
   const memorySample = data['fbforward_memory_alloc_bytes']?.[0]?.value;
@@ -240,6 +242,7 @@ export function extractMetrics(data: MetricsMap): MetricsSnapshot {
     activeUpstream,
     coordination: {
       connected: coordConnected,
+      authoritative: coordAuthoritative,
       fallbackActive: coordFallbackActive,
       version: coordVersion,
       selectedUpstream: coordSelectedUpstream

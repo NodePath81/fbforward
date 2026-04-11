@@ -242,6 +242,7 @@ type statusResponse struct {
 type coordinationStatusResponse struct {
 	Available        bool   `json:"available"`
 	Connected        bool   `json:"connected"`
+	Authoritative    bool   `json:"authoritative"`
 	SelectedUpstream string `json:"selected_upstream"`
 	Version          int64  `json:"version"`
 	FallbackActive   bool   `json:"fallback_active"`
@@ -611,6 +612,7 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			Coordination: coordinationStatusResponse{
 				Available:        c.fullCfg.Coordination.IsConfigured(),
 				Connected:        coordState.Connected,
+				Authoritative:    coordState.Authoritative,
 				SelectedUpstream: coordState.SelectedUpstream,
 				Version:          coordState.Version,
 				FallbackActive:   coordState.FallbackActive,

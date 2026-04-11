@@ -181,6 +181,13 @@ def cmd_up(args: argparse.Namespace) -> int:
                     "FBNOTIFY_SOURCE_INSTANCE": fbcoord_notify.source_instance,
                 }
             )
+        print(
+            "coordlab fbcoord launch:"
+            f" runtime={runtime_dir}"
+            f" FBNOTIFY_URL={'set' if fbcoord_env.get('FBNOTIFY_URL') else 'unset'}"
+            f" FBNOTIFY_KEY_ID={'set' if fbcoord_env.get('FBNOTIFY_KEY_ID') else 'unset'}"
+            f" FBNOTIFY_SOURCE_INSTANCE={'set' if fbcoord_env.get('FBNOTIFY_SOURCE_INSTANCE') else 'unset'}"
+        )
         manager.start(
             topology.namespaces["fbcoord"].pid,
             "fbcoord",

@@ -120,6 +120,7 @@ export function createInitialState(token: string): AppState {
     coordination: {
       available: false,
       connected: false,
+      authoritative: false,
       pool: '',
       node_id: '',
       selected_upstream: '',

@@ -26,6 +26,24 @@ export interface Notifier {
   send(eventName: string, severity: NotifySeverity, attributes?: Record<string, unknown>): Promise<void>;
 }
 
+function logNotification(
+  level: 'info' | 'warn',
+  action: 'attempt' | 'delivered' | 'delivery_failed',
+  details: Record<string, unknown>
+): void {
+  const payload = {
+    component: 'notify',
+    service: 'fbcoord',
+    action,
+    ...details
+  };
+  if (level === 'warn') {
+    console.warn('fbcoord notification', payload);
+    return;
+  }
+  console.info('fbcoord notification', payload);
+}
+
 function trim(value: string | undefined): string {
   return value?.trim() ?? '';
 }
@@ -83,8 +101,15 @@ export function createNotifier(env: NotifyEnv, sourceService: string, fetchImpl:
       const headerTimestamp = String(Math.floor(Date.now() / 1000));
 
       try {
+        logNotification('info', 'attempt', {
+          event_name: eventName,
+          severity,
+          endpoint: url,
+          source_instance: sourceInstance,
+          attribute_keys: Object.keys(attributes).sort()
+        });
         const signature = await sign(token, `${headerTimestamp}.${rawBody}`);
-        await fetchImpl(url, {
+        const response = await fetchImpl(url, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -94,7 +119,32 @@ export function createNotifier(env: NotifyEnv, sourceService: string, fetchImpl:
           },
           body: rawBody
         });
-      } catch {
+        if (response.ok) {
+          logNotification('info', 'delivered', {
+            event_name: eventName,
+            severity,
+            endpoint: url,
+            source_instance: sourceInstance,
+            http_status: response.status
+          });
+          return;
+        }
+        logNotification('warn', 'delivery_failed', {
+          event_name: eventName,
+          severity,
+          endpoint: url,
+          source_instance: sourceInstance,
+          http_status: response.status
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logNotification('warn', 'delivery_failed', {
+          event_name: eventName,
+          severity,
+          endpoint: url,
+          source_instance: sourceInstance,
+          error: message
+        });
         // Best-effort notification delivery must never affect caller behavior.
       }
     }
