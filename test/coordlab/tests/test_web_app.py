@@ -238,6 +238,24 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("198.51.100.10", payload["clients"]["client-1"]["identity_ip"])
         self.assertEqual("http://127.0.0.1:18900", payload["terminals"]["client-1"]["url"])
         self.assertEqual("client-1 - 301", payload["terminals"]["client-1"]["label"])
+
+    def test_status_hides_fbnotify_service_link_when_proxy_is_missing(self) -> None:
+        state = sample_state(self.workdir)
+        state.proxies.pop("fbnotify")
+        state.fbnotify.available = False
+        state.fbnotify.error = "public proxy failed"
+        self.write_state(state)
+        with (
+            mock.patch("web.app.is_alive", return_value=True),
+            mock.patch("lib.output.is_alive", return_value=True),
+        ):
+            response = self.client.get("/api/status")
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertNotIn("fbnotify", payload["service_links"])
+        self.assertFalse(payload["fbnotify"]["available"])
+        self.assertEqual("public proxy failed", payload["fbnotify"]["error"])
         self.assertTrue(payload["terminals"]["upstream-1"]["alive"])
         self.assertTrue(payload["node_features"]["node-1"]["geoip"]["enabled"])
         self.assertEqual("node-1", payload["shaping_targets"][0]["target"])

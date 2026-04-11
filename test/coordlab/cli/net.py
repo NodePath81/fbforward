@@ -22,6 +22,7 @@ def register_parser(subparsers) -> None:
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
         if name == "net-up":
             sub.add_argument("--client", action="append", default=[], metavar="NAME=IP")
+            sub.add_argument("--skip-connectivity-check", action="store_true")
         if name == "net-status":
             sub.add_argument("--json", action="store_true")
         sub.set_defaults(handler=handler)
@@ -29,6 +30,7 @@ def register_parser(subparsers) -> None:
 
 def cmd_net_up(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).expanduser().resolve()
+    skip_connectivity_check = bool(getattr(args, "skip_connectivity_check", False))
     workdir.mkdir(parents=True, exist_ok=True)
     state_path = state_path_for(workdir)
     existing = load_state(state_path)
@@ -44,13 +46,16 @@ def cmd_net_up(args: argparse.Namespace) -> int:
 
     topology = netns.build_topology(str(workdir), client_specs=client_specs)
     try:
-        netns.verify_connectivity(topology)
+        if not skip_connectivity_check:
+            netns.verify_connectivity(topology)
     except Exception:
         netns.destroy_topology(topology)
         raise
 
     state = build_state(workdir, topology, phase=1, active=True)
     save_state(state_path, state)
+    if skip_connectivity_check:
+        print("coordlab note: skipping connectivity preflight")
     print_basic_status(state)
     return 0
 

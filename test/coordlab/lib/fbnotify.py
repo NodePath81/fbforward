@@ -26,6 +26,12 @@ FBNOTIFY_NODE_TOKEN_ENVS = {
 }
 
 
+class NotificationWaitTimeout(RuntimeError):
+    def __init__(self, messages: list[dict]) -> None:
+        super().__init__("timed out")
+        self.messages = messages
+
+
 def fbnotify_namespace_base_url(topology: netns.Topology) -> str:
     fbnotify_ip = netns.find_link(topology.links, "hub", "fbnotify").right_ip
     return f"http://{fbnotify_ip}:8787"
@@ -213,3 +219,74 @@ def clear_ntfybox_messages(state: LabState) -> None:
         )
     if response.status_code != 200:
         raise RuntimeError(f"fbnotify capture clear failed: status={response.status_code} body={response.text.strip()}")
+
+
+def _payload_attributes(message: dict) -> dict:
+    payload = message.get("payload")
+    if not isinstance(payload, str):
+        return {}
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    attributes = decoded.get("attributes")
+    return attributes if isinstance(attributes, dict) else {}
+
+
+def _matches_ntfybox_message(
+    message: dict,
+    *,
+    event_name: str,
+    source_service: str | None,
+    source_instance: str | None,
+    severity: str | None,
+    attr_filters: list[tuple[str, str]],
+) -> bool:
+    if message.get("event_name") != event_name:
+        return False
+    if source_service is not None and message.get("source_service") != source_service:
+        return False
+    if source_instance is not None and message.get("source_instance") != source_instance:
+        return False
+    if severity is not None and message.get("severity") != severity:
+        return False
+    if not attr_filters:
+        return True
+    attributes = _payload_attributes(message)
+    return all(attributes.get(key) == value for key, value in attr_filters)
+
+
+def wait_for_ntfybox_messages(
+    state: LabState,
+    *,
+    event_name: str,
+    source_service: str | None = None,
+    source_instance: str | None = None,
+    severity: str | None = None,
+    attr_filters: list[tuple[str, str]] | None = None,
+    timeout_sec: float = 30.0,
+    interval_sec: float = 1.0,
+) -> list[dict]:
+    deadline = time.monotonic() + timeout_sec
+    filters = list(attr_filters or [])
+    last_messages: list[dict] = []
+    while time.monotonic() < deadline:
+        last_messages = list_ntfybox_messages(state)
+        matches = [
+            message
+            for message in last_messages
+            if _matches_ntfybox_message(
+                message,
+                event_name=event_name,
+                source_service=source_service,
+                source_instance=source_instance,
+                severity=severity,
+                attr_filters=filters,
+            )
+        ]
+        if matches:
+            return matches
+        time.sleep(interval_sec)
+    raise NotificationWaitTimeout(last_messages)

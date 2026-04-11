@@ -31,7 +31,7 @@ def ensure_client_edge(state: LabState) -> LabState:
     return state
 
 
-def add_client(state: LabState, name: str, identity_ip: str) -> LabState:
+def add_client(state: LabState, name: str, identity_ip: str, *, skip_connectivity_check: bool = False) -> LabState:
     if not state.active:
         raise RuntimeError("coordlab state is not active")
     normalized_ip = validate_client_spec(
@@ -64,7 +64,8 @@ def add_client(state: LabState, name: str, identity_ip: str) -> LabState:
             topology.links.append(client_link)
         topology.clients.setdefault(name, normalized_ip)
         topology.next_subnet_index = max(topology.next_subnet_index, next_subnet_index)
-        netns.verify_connectivity(topology)
+        if not skip_connectivity_check:
+            netns.verify_connectivity(topology)
         terminal_pid, log_path = start_terminal_process(workdir, name, namespace.pid, host_port)
     except Exception:
         if terminal_pid is not None:
@@ -115,10 +116,16 @@ def remove_client(state: LabState, name: str) -> LabState:
     return state
 
 
-def run_locked_add_client(workdir: Path, name: str, identity_ip: str) -> LabState:
+def run_locked_add_client(
+    workdir: Path,
+    name: str,
+    identity_ip: str,
+    *,
+    skip_connectivity_check: bool = False,
+) -> LabState:
     with acquire_client_mutation_lock(workdir):
         state = load_active_state(workdir)
-        return add_client(state, name, identity_ip)
+        return add_client(state, name, identity_ip, skip_connectivity_check=skip_connectivity_check)
 
 
 def run_locked_remove_client(workdir: Path, name: str) -> LabState:

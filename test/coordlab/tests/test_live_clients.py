@@ -132,7 +132,7 @@ class LiveClientMutationTest(unittest.TestCase):
                 ),
                 9,
             )),
-            mock.patch("lib.clients.netns.verify_connectivity"),
+            mock.patch("lib.clients.netns.verify_connectivity") as verify_connectivity,
         ):
             updated = add_client(state, "client-2", "203.0.113.20")
 
@@ -148,6 +148,45 @@ class LiveClientMutationTest(unittest.TestCase):
             [("ttyd-client-2", "127.0.0.1", 18900)],
             error_prefix="coordlab ttyd ports are already in use",
         )
+        verify_connectivity.assert_called_once()
+
+    def test_add_client_skips_connectivity_check_when_requested(self) -> None:
+        state = sample_state(self.workdir, with_client=False)
+        with (
+            mock.patch("lib.clients.assert_bindings_available"),
+            mock.patch("lib.clients.start_terminal_process", return_value=(401, str(self.workdir / "logs/ttyd-client-2.log"))),
+            mock.patch("lib.clients.save_current_state"),
+            mock.patch("lib.clients.netns.create_client_edge", return_value=(
+                mock.Mock(name="client-edge", pid=210, parent="hub", role="client-edge"),
+                mock.Mock(
+                    left_ns="internet",
+                    right_ns="client-edge",
+                    left_if="inet-cedge",
+                    right_if="cedge-inet",
+                    subnet="10.99.0.28/30",
+                    left_ip="10.99.0.29",
+                    right_ip="10.99.0.30",
+                ),
+                8,
+            )),
+            mock.patch("lib.clients.netns.create_client_namespace", return_value=(
+                mock.Mock(name="client-2", pid=211, parent="client-edge", role="client"),
+                mock.Mock(
+                    left_ns="client-edge",
+                    right_ns="client-2",
+                    left_if="cedge-c1",
+                    right_if="c1-peer",
+                    subnet="10.99.0.32/30",
+                    left_ip="10.99.0.33",
+                    right_ip="10.99.0.34",
+                ),
+                9,
+            )),
+            mock.patch("lib.clients.netns.verify_connectivity") as verify_connectivity,
+        ):
+            add_client(state, "client-2", "203.0.113.20", skip_connectivity_check=True)
+
+        verify_connectivity.assert_not_called()
 
     def test_add_client_reports_only_ttyd_port_conflict(self) -> None:
         state = sample_state(self.workdir, with_client=False)

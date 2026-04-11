@@ -18,7 +18,9 @@ from cli.clients import cmd_add_client, cmd_remove_client
 from cli.exec_ import cmd_exec
 from cli.lifecycle import cmd_status
 from cli.net import cmd_net_status
-from cli.ntfybox import cmd_ntfybox_clear, cmd_ntfybox_list
+from cli.node import cmd_node_rpc, cmd_node_status, cmd_node_switch
+from cli.ntfybox import cmd_notify_wait, cmd_ntfybox_clear, cmd_ntfybox_list
+from lib.fbnotify import NotificationWaitTimeout
 from lib.locking import acquire_client_mutation_lock
 from lib.state import (
     ClientInfo,
@@ -249,6 +251,135 @@ class CliCommandsTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         payload = json.loads(output)
         self.assertEqual("fbnotify is not available for this lab run", payload["error"])
+
+    def test_node_rpc_json_returns_rpc_payload(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(
+            workdir=str(self.workdir),
+            node="node-1",
+            method="GetStatus",
+            params_json='{"detail":true}',
+            json=True,
+        )
+        with mock.patch("cli.node.rpc.rpc_call", return_value={"ok": True, "result": {"mode": "auto"}}) as rpc_call:
+            exit_code, output = self.capture_stdout(cmd_node_rpc, args)
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(output)
+        self.assertTrue(payload["ok"])
+        rpc_call.assert_called_once_with("http://127.0.0.1:18701", "control-token", "GetStatus", {"detail": True})
+
+    def test_node_rpc_json_rejects_non_object_params(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(
+            workdir=str(self.workdir),
+            node="node-1",
+            method="GetStatus",
+            params_json='["not","an","object"]',
+            json=True,
+        )
+        exit_code, output = self.capture_stdout(cmd_node_rpc, args)
+
+        self.assertEqual(1, exit_code)
+        payload = json.loads(output)
+        self.assertEqual("params_json must decode to a JSON object", payload["error"])
+
+    def test_node_switch_json_wraps_set_upstream(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(workdir=str(self.workdir), node="node-1", mode="manual", tag="us-2", json=True)
+        with mock.patch("cli.node.rpc.set_upstream", return_value={"ok": True}) as set_upstream:
+            exit_code, output = self.capture_stdout(cmd_node_switch, args)
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual({"ok": True}, json.loads(output))
+        set_upstream.assert_called_once_with("http://127.0.0.1:18701", "control-token", "manual", tag="us-2")
+
+    def test_node_status_json_returns_metrics(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(workdir=str(self.workdir), node="node-1", json=True)
+        with mock.patch("cli.node.rpc.fetch_metrics", return_value="demo_metric 1\n") as fetch_metrics:
+            exit_code, output = self.capture_stdout(cmd_node_status, args)
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(output)
+        self.assertEqual("node-1", payload["node"])
+        self.assertEqual("demo_metric 1\n", payload["metrics"])
+        fetch_metrics.assert_called_once_with("http://127.0.0.1:18701")
+
+    def test_node_commands_report_missing_proxy(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(workdir=str(self.workdir), node="node-2", method="GetStatus", params_json=None, json=True)
+        exit_code, output = self.capture_stdout(cmd_node_rpc, args)
+
+        self.assertEqual(1, exit_code)
+        payload = json.loads(output)
+        self.assertEqual("coordlab state does not expose a proxy for node-2", payload["error"])
+
+    def test_notify_wait_json_returns_matches(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(
+            workdir=str(self.workdir),
+            event="demo.test",
+            source_service="fbforward",
+            source_instance=None,
+            severity=None,
+            attr=["notification.state=active"],
+            timeout=30.0,
+            json=True,
+        )
+        matches = [{"event_name": "demo.test", "severity": "info"}]
+        with mock.patch("cli.ntfybox.wait_for_ntfybox_messages", return_value=matches) as wait_for_ntfybox_messages:
+            exit_code, output = self.capture_stdout(cmd_notify_wait, args)
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(output)
+        self.assertEqual({"ok": True, "count": 1, "messages": matches}, payload)
+        wait_for_ntfybox_messages.assert_called_once()
+        _, kwargs = wait_for_ntfybox_messages.call_args
+        self.assertEqual("demo.test", kwargs["event_name"])
+        self.assertEqual([("notification.state", "active")], kwargs["attr_filters"])
+
+    def test_notify_wait_json_returns_timeout_payload(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(
+            workdir=str(self.workdir),
+            event="demo.test",
+            source_service=None,
+            source_instance=None,
+            severity=None,
+            attr=[],
+            timeout=5.0,
+            json=True,
+        )
+        with mock.patch(
+            "cli.ntfybox.wait_for_ntfybox_messages",
+            side_effect=NotificationWaitTimeout([{"event_name": "demo.test"}]),
+        ):
+            exit_code, output = self.capture_stdout(cmd_notify_wait, args)
+
+        self.assertEqual(1, exit_code)
+        payload = json.loads(output)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("timed out", payload["error"])
+        self.assertEqual([{"event_name": "demo.test"}], payload["messages"])
+
+    def test_notify_wait_json_rejects_invalid_attr_filter(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(
+            workdir=str(self.workdir),
+            event="demo.test",
+            source_service=None,
+            source_instance=None,
+            severity=None,
+            attr=["broken-filter"],
+            timeout=5.0,
+            json=True,
+        )
+        exit_code, output = self.capture_stdout(cmd_notify_wait, args)
+
+        self.assertEqual(1, exit_code)
+        payload = json.loads(output)
+        self.assertIn("invalid attr filter", payload["error"])
 
 
 if __name__ == "__main__":

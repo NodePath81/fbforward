@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lib.netns import DEFAULT_BASE_CIDR, allocate_next_subnet, allocate_subnets, default_links
+from lib.netns import DEFAULT_BASE_CIDR, UPSTREAM_RETURN_ROUTE_LEAVES, allocate_next_subnet, allocate_subnets, default_links
 from lib.netns import compute_link_order, compute_namespace_order
 
 
@@ -69,6 +69,9 @@ class NetnsHelpersTest(unittest.TestCase):
         self.assertEqual("10.99.0.28/30", str(first))
         self.assertEqual("10.99.0.32/30", str(second))
         self.assertEqual(9, cursor)
+
+    def test_upstream_return_routes_include_fbnotify(self) -> None:
+        self.assertEqual(("fbcoord", "fbnotify", "node-1", "node-2"), UPSTREAM_RETURN_ROUTE_LEAVES)
 
 
 if __name__ == "__main__":

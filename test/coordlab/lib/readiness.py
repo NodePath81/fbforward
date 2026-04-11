@@ -94,6 +94,11 @@ def verify_fbnotify_api(base_url: str, operator_token: str) -> dict:
         return capture.json()
 
 
+def verify_fbnotify_public(base_url: str, operator_token: str) -> dict:
+    wait_http_ok(f"{base_url.rstrip('/')}/healthz")
+    return verify_fbnotify_api(base_url, operator_token)
+
+
 def wait_for_condition(timeout_sec: float, poll_fn, failure_message: str, *, interval_sec: float = POLL_INTERVAL_SEC) -> None:
     deadline = time.monotonic() + timeout_sec
     last_error: Exception | None = None

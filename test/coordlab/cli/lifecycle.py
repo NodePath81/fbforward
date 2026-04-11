@@ -41,7 +41,7 @@ from lib.lab import (
     process_shutdown_order,
     validate_fbforward_config,
 )
-from lib.output import print_json, render_summary, status_payload
+from lib.output import exception_message, print_json, render_summary, status_payload
 from lib.paths import (
     COORDLAB_SCRIPT,
     DEFAULT_WORKDIR,
@@ -68,6 +68,7 @@ def register_parser(subparsers) -> None:
         sub.add_argument("--workdir", default=str(DEFAULT_WORKDIR))
         if name == "up":
             sub.add_argument("--skip-build", action="store_true")
+            sub.add_argument("--skip-connectivity-check", action="store_true")
             sub.add_argument("--client", action="append", default=[], metavar="NAME=IP")
         if name == "status":
             sub.add_argument("--json", action="store_true")
@@ -112,9 +113,11 @@ def cmd_up(args: argparse.Namespace) -> int:
         emitters={},
     )
     fbnotify_pepper = token_hex(32)
+    fbnotify_internal_ready = False
 
     try:
-        netns.verify_connectivity(topology)
+        if not args.skip_connectivity_check:
+            netns.verify_connectivity(topology)
 
         try:
             ensure_fbnotify_assets(args.skip_build)
@@ -140,11 +143,8 @@ def cmd_up(args: argparse.Namespace) -> int:
                 topology.namespaces["node-1"].pid,
                 fbnotify_info.operator_token,
             )
-            fbnotify_info.available = True
+            fbnotify_internal_ready = True
         except Exception as exc:
-            from lib.output import exception_message
-
-            fbnotify_info.available = False
             fbnotify_info.error = exception_message(exc)
             manager.stop("fbnotify")
 
@@ -170,7 +170,7 @@ def cmd_up(args: argparse.Namespace) -> int:
             "FBCOORD_TOKEN": tokens.operator_token,
             "FBCOORD_TOKEN_PEPPER": generated_tokens.operator_pepper,
         }
-        if fbnotify_info.available:
+        if fbnotify_internal_ready:
             fbcoord_notify = fbnotify_info.emitters["fbcoord"]
             fbcoord_env.update(
                 {
@@ -201,7 +201,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         node_envs: dict[str, dict[str, str]] = {"node-1": {}, "node-2": {}}
         for node in ("node-1", "node-2"):
             fbnotify_node_cfg = None
-            if fbnotify_info.available:
+            if fbnotify_internal_ready:
                 emitter = fbnotify_info.emitters[node]
                 token_env = FBNOTIFY_NODE_TOKEN_ENVS[node]
                 fbnotify_node_cfg = coordconfig.FBNotifyNodeConfig(
@@ -239,38 +239,48 @@ def cmd_up(args: argparse.Namespace) -> int:
         verify_fbforward_rpc_in_namespace(topology, manager, "node-1", tokens.control_token)
         verify_fbforward_rpc_in_namespace(topology, manager, "node-2", tokens.control_token)
 
-        proxies = build_proxy_infos(include_fbnotify=fbnotify_info.available)
-        state = build_state(
-            workdir,
-            topology,
-            phase=5,
-            active=True,
-            processes=manager.infos(),
-            proxies=proxies,
-            node_features=node_features,
-            tokens=tokens,
-            fbnotify=fbnotify_info,
-        )
-        save_state(state_path, state)
+        def save_runtime_state(*, proxies, terminals=None) -> None:
+            state = build_state(
+                workdir,
+                topology,
+                phase=5,
+                active=True,
+                processes=manager.infos(),
+                proxies=proxies,
+                terminals=terminals,
+                node_features=node_features,
+                tokens=tokens,
+                fbnotify=fbnotify_info,
+            )
+            save_state(state_path, state)
+
+        proxies = build_proxy_infos(include_fbnotify=fbnotify_internal_ready)
+        save_runtime_state(proxies=proxies)
 
         manager.start_host(
             [str(VENV_PYTHON), str(COORDLAB_SCRIPT), "proxy-daemon", "--state", str(state_path)],
             PROXY_PROCESS_NAME,
             cwd=str(REPO_ROOT),
         )
+        save_runtime_state(proxies=proxies)
 
-        state = build_state(
-            workdir,
-            topology,
-            phase=5,
-            active=True,
-            processes=manager.infos(),
-            proxies=proxies,
-            node_features=node_features,
-            tokens=tokens,
-            fbnotify=fbnotify_info,
-        )
-        save_state(state_path, state)
+        if fbnotify_internal_ready:
+            try:
+                readiness.verify_fbnotify_public(fbnotify_info.public_url, fbnotify_info.operator_token)
+                fbnotify_info.available = True
+                fbnotify_info.error = ""
+            except Exception as exc:
+                manager.stop(PROXY_PROCESS_NAME)
+                fbnotify_info.available = False
+                fbnotify_info.error = exception_message(exc)
+                proxies = build_proxy_infos(include_fbnotify=False)
+                save_runtime_state(proxies=proxies)
+                manager.start_host(
+                    [str(VENV_PYTHON), str(COORDLAB_SCRIPT), "proxy-daemon", "--state", str(state_path)],
+                    PROXY_PROCESS_NAME,
+                    cwd=str(REPO_ROOT),
+                )
+        save_runtime_state(proxies=proxies)
 
         fbcoord_url = f"http://{proxies['fbcoord'].listen_host}:{proxies['fbcoord'].host_port}"
         node1_url = f"http://{proxies['node-1'].listen_host}:{proxies['node-1'].host_port}"
@@ -292,19 +302,11 @@ def cmd_up(args: argparse.Namespace) -> int:
         readiness.verify_fbcoord_api(fbcoord_url, tokens.operator_token, expected_node_ids=("node-1", "node-2"))
 
         terminals = start_ttyd_terminals(manager, topology, ttyd_ports)
-        state = build_state(
-            workdir,
-            topology,
-            phase=5,
-            active=True,
-            processes=manager.infos(),
-            proxies=proxies,
-            terminals=terminals,
-            node_features=node_features,
-            tokens=tokens,
-            fbnotify=fbnotify_info,
-        )
-        save_state(state_path, state)
+        save_runtime_state(proxies=proxies, terminals=terminals)
+        state = load_state(state_path)
+        assert state is not None
+        if args.skip_connectivity_check:
+            print("coordlab note: skipping connectivity preflight")
         print(render_summary(state, str(VENV_PYTHON)))
         return 0
     except Exception:

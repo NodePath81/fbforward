@@ -32,5 +32,23 @@ def get_status(base_url: str, token: str) -> dict:
     return result
 
 
+def set_upstream(base_url: str, token: str, mode: str, *, tag: str | None = None) -> dict:
+    params = {"mode": mode}
+    if tag is not None:
+        params["tag"] = tag
+    return rpc_call(base_url, token, "SetUpstream", params)
+
+
 def set_mode_coordination(base_url: str, token: str) -> None:
-    rpc_call(base_url, token, "SetUpstream", {"mode": "coordination"})
+    set_upstream(base_url, token, "coordination")
+
+
+def fetch_metrics(base_url: str) -> str:
+    response = httpx.get(
+        f"{base_url.rstrip('/')}/metrics",
+        timeout=5.0,
+        follow_redirects=True,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"metrics fetch failed with status={response.status_code}: {response.text.strip()}")
+    return response.text

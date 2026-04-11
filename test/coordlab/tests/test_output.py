@@ -151,6 +151,34 @@ class OutputSummaryTest(unittest.TestCase):
         self.assertNotIn("fbnotify-secret-node-1", summary)
         self.assertNotIn("fbnotify-operator-token", summary)
 
+    def test_render_summary_hides_fbnotify_link_when_proxy_is_missing(self) -> None:
+        state = LabState(
+            phase=5,
+            active=True,
+            created_at="2026-04-05T00:00:00+00:00",
+            work_dir="/tmp/coordlab-phase3",
+            namespaces={"node-1": NamespaceInfo(pid=100, parent="hub", role="node")},
+            proxies={
+                "fbcoord": ProxyInfo("127.0.0.1", 18700, "fbcoord", "127.0.0.1", 8787),
+                "node-1": ProxyInfo("127.0.0.1", 18701, "node-1", "127.0.0.1", 8080),
+            },
+            fbnotify=FBNotifyInfo(
+                available=False,
+                error="public proxy failed",
+                public_url="http://127.0.0.1:18703",
+                internal_base_url="http://10.99.0.30:8787",
+                internal_ingest_url="http://10.99.0.30:8787/v1/events",
+                operator_token="fbnotify-operator-token",
+            ),
+            topology=TopologyInfo(base_cidr="10.99.0.0/24"),
+        )
+
+        with mock.patch("lib.output.is_alive", return_value=True):
+            summary = render_summary(state, "/repo/.venv/bin/python")
+
+        self.assertIn("status: degraded", summary)
+        self.assertNotIn("  fbnotify: http://127.0.0.1:18703", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

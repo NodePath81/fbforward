@@ -81,6 +81,17 @@ class ReadinessHelpersTest(unittest.TestCase):
         self.assertEqual([], payload["messages"])
         self.assertEqual({"Cookie": "fbnotify_session=test-session"}, client.last_get_headers)
 
+    def test_verify_fbnotify_public_waits_for_health_then_fetches_api(self) -> None:
+        with (
+            mock.patch("lib.readiness.wait_http_ok") as wait_http_ok,
+            mock.patch("lib.readiness.verify_fbnotify_api", return_value={"messages": []}) as verify_fbnotify_api,
+        ):
+            payload = readiness.verify_fbnotify_public("http://127.0.0.1:18703", "operator-token")
+
+        self.assertEqual({"messages": []}, payload)
+        wait_http_ok.assert_called_once_with("http://127.0.0.1:18703/healthz")
+        verify_fbnotify_api.assert_called_once_with("http://127.0.0.1:18703", "operator-token")
+
 
 if __name__ == "__main__":
     unittest.main()

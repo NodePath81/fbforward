@@ -31,6 +31,7 @@ LINK_NAME_ORDER = (
     ("hub", "fbnotify", "hub-fbnotify", "fbnotify-peer"),
 )
 PHASE1_LINK_COUNT = len(LINK_NAME_ORDER)
+UPSTREAM_RETURN_ROUTE_LEAVES = ("fbcoord", "fbnotify", "node-1", "node-2")
 
 
 @dataclass(slots=True)
@@ -271,7 +272,7 @@ def build_topology(
             add_route(namespaces["hub"].pid, link.subnet, hub_to_internet.right_ip, hub_to_internet.left_if)
             add_route(namespaces["internet"].pid, link.subnet, internet_to_hub_up.right_ip, internet_to_hub_up.left_if)
 
-        for leaf in ("fbcoord", "node-1", "node-2"):
+        for leaf in UPSTREAM_RETURN_ROUTE_LEAVES:
             link = find_link(links, "hub", leaf)
             add_route(namespaces["hub-up"].pid, link.subnet, internet_to_hub_up.left_ip, internet_to_hub_up.right_if)
             add_route(namespaces["internet"].pid, link.subnet, hub_to_internet.left_ip, hub_to_internet.right_if)
