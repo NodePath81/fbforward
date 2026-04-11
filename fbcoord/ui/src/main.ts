@@ -9,6 +9,7 @@ import {
   login,
   revokeNodeToken,
   rotateToken,
+  sendTestNotification,
   updateNotifyConfig
 } from './api.js';
 import { renderDashboardPage } from './pages/dashboard.js';
@@ -200,6 +201,9 @@ async function renderRoute(): Promise<void> {
       }
       await updateNotifyConfig(payload);
       await renderRoute();
+    },
+    onSendTestNotification: async () => {
+      await sendTestNotification();
     }
   }));
 }

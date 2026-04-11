@@ -178,6 +178,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 	}
 	ctrl := control.NewControlServer(cfg, manager, metrics, status, coordCtrl, restartFn, logger)
+	if rt.notifier != nil {
+		ctrl.SetNotifier(rt.notifier)
+	}
 	if rt.geoipMgr != nil {
 		ctrl.SetGeoIPManager(rt.geoipMgr)
 	}

@@ -86,6 +86,12 @@ export async function updateNotifyConfig(payload: {
   });
 }
 
+export async function sendTestNotification(): Promise<void> {
+  await request<{ ok: boolean }>('/api/notify/test', {
+    method: 'POST'
+  });
+}
+
 export async function rotateToken(payload: {
   current_token: string;
   token?: string;

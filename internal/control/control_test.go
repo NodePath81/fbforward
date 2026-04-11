@@ -14,6 +14,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
@@ -25,6 +26,13 @@ type fakeGeoIPManager struct {
 	status        geoip.Status
 	refreshResult geoip.RefreshResult
 	refreshErr    error
+}
+
+type fakeNotifier struct {
+	eventName  string
+	severity   notify.Severity
+	attributes map[string]any
+	accepted   bool
 }
 
 func (fakeManager) SetAuto()                              {}
@@ -44,6 +52,13 @@ func (f fakeGeoIPManager) Status() geoip.Status {
 
 func (f fakeGeoIPManager) RefreshNow(context.Context) (geoip.RefreshResult, error) {
 	return f.refreshResult, f.refreshErr
+}
+
+func (f *fakeNotifier) Emit(eventName string, severity notify.Severity, attributes map[string]any) bool {
+	f.eventName = eventName
+	f.severity = severity
+	f.attributes = attributes
+	return f.accepted
 }
 
 func newTestControlServer(t *testing.T) *ControlServer {
@@ -361,6 +376,56 @@ func TestGetStatusOmitsLegacyCoordinationFields(t *testing.T) {
 	}
 	if coordinationState["authoritative"] != false {
 		t.Fatalf("unexpected authoritative flag in status response: %#v", coordinationState)
+	}
+}
+
+func TestSendTestNotificationRequiresConfiguredNotifier(t *testing.T) {
+	server := newTestControlServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "SendTestNotification", nil)))
+	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	rec := httptest.NewRecorder()
+
+	server.handleRPC(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSendTestNotificationEmitsManualInfoEvent(t *testing.T) {
+	server := newTestControlServer(t)
+	notifier := &fakeNotifier{accepted: true}
+	server.SetNotifier(notifier)
+
+	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "SendTestNotification", nil)))
+	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	rec := httptest.NewRecorder()
+
+	server.handleRPC(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if notifier.eventName != "system.test_notification" {
+		t.Fatalf("unexpected event name: %q", notifier.eventName)
+	}
+	if notifier.severity != notify.SeverityInfo {
+		t.Fatalf("unexpected severity: %q", notifier.severity)
+	}
+	if notifier.attributes["test.origin"] != "manual" || notifier.attributes["test.service"] != "fbforward" {
+		t.Fatalf("unexpected attributes: %#v", notifier.attributes)
+	}
+}
+
+func TestSendTestNotificationReturnsErrorWhenQueueRejects(t *testing.T) {
+	server := newTestControlServer(t)
+	server.SetNotifier(&fakeNotifier{accepted: false})
+
+	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "SendTestNotification", nil)))
+	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
+	rec := httptest.NewRecorder()
+
+	server.handleRPC(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

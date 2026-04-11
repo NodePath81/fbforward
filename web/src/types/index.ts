@@ -85,6 +85,7 @@ export type RPCMethod =
   | 'GetStatus'
   | 'SetUpstream'
   | 'Restart'
+  | 'SendTestNotification'
   | 'ListUpstreams'
   | 'GetMeasurementConfig'
   | 'GetRuntimeConfig'

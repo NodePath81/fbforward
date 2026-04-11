@@ -663,6 +663,67 @@ describe('worker fetch', () => {
     });
   });
 
+  it('queues a manual test notification through the authenticated API', async () => {
+    const { env } = createEnv(undefined, {
+      FBNOTIFY_URL: 'https://notify.example/v1/events',
+      FBNOTIFY_KEY_ID: 'notify-key',
+      FBNOTIFY_TOKEN: 'notify-token-abcdefghijklmnopqrstuvwxyz123456',
+      FBNOTIFY_SOURCE_INSTANCE: 'coord-1'
+    });
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const worker = createWorker();
+    const loginResponse = await login(worker, env);
+    const cookie = cookieHeader(loginResponse);
+
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request('https://example.com/api/notify/test', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie
+      }
+    }), env, ctx.ctx);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    await ctx.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0] as unknown[] | undefined;
+    expect(call).toBeDefined();
+    const init = call?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      event_name: 'system.test_notification',
+      severity: 'info',
+      source: {
+        service: 'fbcoord',
+        instance: 'coord-1'
+      },
+      attributes: {
+        'test.origin': 'manual',
+        'test.service': 'fbcoord'
+      }
+    });
+  });
+
+  it('rejects manual test notifications when fbnotify is not configured', async () => {
+    const { env } = createEnv();
+    const worker = createWorker();
+    const loginResponse = await login(worker, env);
+    const cookie = cookieHeader(loginResponse);
+
+    const response = await worker.fetch(new Request('https://example.com/api/notify/test', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie
+      }
+    }), env);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'fbnotify is not configured (endpoint, key_id, token, source_instance missing)'
+    });
+  });
+
   it('emits operator token rotation notifications on success', async () => {
     const { env } = createEnv();
     env.FBNOTIFY_URL = 'https://notify.example/v1/events';

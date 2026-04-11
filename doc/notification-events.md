@@ -10,8 +10,8 @@ parsing. The names listed here are the canonical `event_name` values sent to
 
 Current event set:
 
-- `fbforward`: 2 events
-- `fbcoord`: 2 events
+- `fbforward`: 3 events
+- `fbcoord`: 3 events
 
 ---
 
@@ -128,6 +128,46 @@ Example payload:
 }
 ```
 
+### `system.test_notification`
+
+Severity:
+
+- `info`
+
+Trigger:
+
+- explicit manual operator action from the `fbforward` web UI
+
+Attributes:
+
+- `test.origin = "manual"`
+- `test.service = "fbforward"`
+
+Notes:
+
+- this is a test-only event used to validate notification wiring
+- it does not indicate an operational fault
+- success means the event entered the existing `fbforward` notification queue
+
+Example payload:
+
+```json
+{
+  "schema_version": 1,
+  "event_name": "system.test_notification",
+  "severity": "info",
+  "timestamp": "2026-04-10T12:06:00Z",
+  "source": {
+    "service": "fbforward",
+    "instance": "node-1"
+  },
+  "attributes": {
+    "test.origin": "manual",
+    "test.service": "fbforward"
+  }
+}
+```
+
 ---
 
 ## fbcoord
@@ -215,5 +255,45 @@ Example payload:
     "instance": "fbcoord"
   },
   "attributes": {}
+}
+```
+
+### `system.test_notification`
+
+Severity:
+
+- `info`
+
+Trigger:
+
+- explicit manual operator action from the `fbcoord` token page
+
+Attributes:
+
+- `test.origin = "manual"`
+- `test.service = "fbcoord"`
+
+Notes:
+
+- this is a test-only event used to validate notification wiring
+- it does not indicate an operational fault
+- success means the event entered the existing `fbcoord` notification send path
+
+Example payload:
+
+```json
+{
+  "schema_version": 1,
+  "event_name": "system.test_notification",
+  "severity": "info",
+  "timestamp": "2026-04-10T12:20:00Z",
+  "source": {
+    "service": "fbcoord",
+    "instance": "fbcoord"
+  },
+  "attributes": {
+    "test.origin": "manual",
+    "test.service": "fbcoord"
+  }
 }
 ```

@@ -589,6 +589,28 @@ function createWorker() {
           return methodNotAllowed('GET, PUT');
         }
 
+        if (url.pathname === '/api/notify/test') {
+          if (request.method !== 'POST') {
+            return methodNotAllowed('POST');
+          }
+          const originError = requireSameOrigin(request);
+          if (originError) {
+            return originError;
+          }
+          const notifyConfig = await notifier.status();
+          if (!notifyConfig.configured) {
+            return json({ error: `fbnotify is not configured (${notifyConfig.missing.join(', ')} missing)` }, 503);
+          }
+          logNotificationTrigger('system.test_notification', notifyConfig, {
+            trigger: 'manual'
+          });
+          ctx.waitUntil(notifier.send('system.test_notification', 'info', {
+            'test.origin': 'manual',
+            'test.service': 'fbcoord',
+          }));
+          return json({ ok: true });
+        }
+
         if (url.pathname === '/api/token/rotate') {
           if (request.method !== 'POST') {
             return methodNotAllowed('POST');

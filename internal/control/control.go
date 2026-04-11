@@ -24,6 +24,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 	"github.com/NodePath81/fbforward/internal/version"
@@ -56,6 +57,8 @@ type ControlServer struct {
 	logger      util.Logger
 	server      *http.Server
 	limiter     *rateLimiter
+	notifierMu  sync.RWMutex
+	notifier    notify.Emitter
 	schedulerMu sync.RWMutex
 	scheduler   *measure.Scheduler
 	collectorMu sync.RWMutex
@@ -131,6 +134,12 @@ func (c *ControlServer) SetScheduler(scheduler *measure.Scheduler) {
 	c.schedulerMu.Lock()
 	defer c.schedulerMu.Unlock()
 	c.scheduler = scheduler
+}
+
+func (c *ControlServer) SetNotifier(notifier notify.Emitter) {
+	c.notifierMu.Lock()
+	defer c.notifierMu.Unlock()
+	c.notifier = notifier
 }
 
 func (c *ControlServer) SetCollector(collector *measure.Collector) {
@@ -601,6 +610,24 @@ func (c *ControlServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 				"result", "success",
 			)
 		}(reqCtx.id)
+		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
+	case "SendTestNotification":
+		c.notifierMu.RLock()
+		notifier := c.notifier
+		c.notifierMu.RUnlock()
+		if notifier == nil {
+			completionErr = "notifications not configured"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
+		if !notifier.Emit("system.test_notification", notify.SeverityInfo, map[string]any{
+			"test.origin":  "manual",
+			"test.service": "fbforward",
+		}) {
+			completionErr = "notification enqueue failed"
+			writeJSON(sw, http.StatusServiceUnavailable, rpcResponse{Ok: false, Error: completionErr})
+			return
+		}
 		writeJSON(sw, http.StatusOK, rpcResponse{Ok: true})
 	case "GetStatus":
 		upstreams := c.manager.Snapshot()

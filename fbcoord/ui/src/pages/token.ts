@@ -28,6 +28,7 @@ export function renderTokenPage(options: {
     token: string;
     source_instance: string;
   }) => Promise<void>;
+  onSendTestNotification: () => Promise<void>;
 }): HTMLElement {
   const shell = document.createElement('main');
   shell.className = 'shell';
@@ -420,7 +421,28 @@ export function renderTokenPage(options: {
   notifySubmit.type = 'submit';
   notifySubmit.textContent = 'Save fbnotify config';
 
-  notifyForm.append(endpointLabel, keyIdLabel, sourceInstanceLabel, tokenLabel, notifyNotice, notifySubmit);
+  const notifyTestButton = document.createElement('button');
+  notifyTestButton.className = 'button secondary';
+  notifyTestButton.type = 'button';
+  notifyTestButton.textContent = 'Send Test Notification';
+  notifyTestButton.addEventListener('click', () => {
+    notifyNotice.hidden = true;
+    void options.onSendTestNotification()
+      .then(() => {
+        notifyNotice.hidden = false;
+        notifyNotice.textContent = 'Test notification queued.';
+      })
+      .catch(error => {
+        notifyNotice.hidden = false;
+        notifyNotice.textContent = error instanceof Error ? error.message : 'Test notification failed';
+      });
+  });
+
+  const notifyActions = document.createElement('div');
+  notifyActions.className = 'button-row';
+  notifyActions.append(notifySubmit, notifyTestButton);
+
+  notifyForm.append(endpointLabel, keyIdLabel, sourceInstanceLabel, tokenLabel, notifyNotice, notifyActions);
   notifyForm.addEventListener('submit', event => {
     event.preventDefault();
     const endpoint = endpointInput.value.trim();

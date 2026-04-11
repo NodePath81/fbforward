@@ -72,6 +72,7 @@ function startApp(token: string) {
   const connectionSearch = qs<HTMLInputElement>(document, '#connectionSearch');
   const sessionSearch = qs<HTMLInputElement>(document, '#sessionSearch');
   const toast = createToastManager(qs<HTMLElement>(document, '#toastRegion'));
+  const testNotifyButton = qs<HTMLButtonElement>(document, '#testNotifyButton');
   const restartButton = qs<HTMLButtonElement>(document, '#restartButton');
   const logoutButton = qs<HTMLButtonElement>(document, '#logoutButton');
   const pollStatus = qs<HTMLElement>(document, '#pollStatus');
@@ -137,6 +138,17 @@ function startApp(token: string) {
       toast.show('Restart requested.', 'warning');
     }
     restartButton.disabled = false;
+  });
+
+  testNotifyButton.addEventListener('click', async () => {
+    testNotifyButton.disabled = true;
+    const result = await callRPC<unknown>(token, 'SendTestNotification', {});
+    if (!result.ok) {
+      toast.show(result.error || 'Test notification failed.', 'error');
+    } else {
+      toast.show('Test notification queued.', 'success');
+    }
+    testNotifyButton.disabled = false;
   });
 
   logoutButton.addEventListener('click', () => {
