@@ -5,7 +5,7 @@ from pathlib import Path
 from . import netns
 from .env import validate_client_spec
 from .lab import load_active_state, save_current_state, sync_state_topology, topology_from_state
-from .locking import acquire_client_mutation_lock
+from .locking import acquire_client_mutation_lock, acquire_network_mutation_lock
 from .ports import assert_bindings_available
 from .process import terminate_process_group
 from .state import LabState, ProcessInfo, TerminalInfo
@@ -124,13 +124,15 @@ def run_locked_add_client(
     skip_connectivity_check: bool = False,
 ) -> LabState:
     with acquire_client_mutation_lock(workdir):
-        state = load_active_state(workdir)
-        return add_client(state, name, identity_ip, skip_connectivity_check=skip_connectivity_check)
+        with acquire_network_mutation_lock(workdir):
+            state = load_active_state(workdir)
+            return add_client(state, name, identity_ip, skip_connectivity_check=skip_connectivity_check)
 
 
 def run_locked_remove_client(workdir: Path, name: str) -> LabState:
     with acquire_client_mutation_lock(workdir):
-        state = load_active_state(workdir)
-        if name not in state.clients:
-            raise KeyError(f"unknown client namespace: {name}")
-        return remove_client(state, name)
+        with acquire_network_mutation_lock(workdir):
+            state = load_active_state(workdir)
+            if name not in state.clients:
+                raise KeyError(f"unknown client namespace: {name}")
+            return remove_client(state, name)

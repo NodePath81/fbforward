@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 from lib.state import (
     ClientInfo,
+    DesiredTargetState,
     FBNotifyEmitterInfo,
     FBNotifyInfo,
     FirewallFeatureInfo,
@@ -92,13 +93,30 @@ class StateRoundTripTest(unittest.TestCase):
             },
             shaping=ShapingInfo(
                 targets={
-                    "node-1": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-1", device="hub-node1"),
+                    "node-1": ShapingTargetInfo(
+                        router_ns="hub",
+                        tag="",
+                        namespace="node-1",
+                        device="hub-node1",
+                        kind="node",
+                        peer_device="node1-peer",
+                        shape_capable=True,
+                        display_name="node-1",
+                    ),
                     "upstream-1": ShapingTargetInfo(
                         router_ns="hub-up",
                         tag="us-1",
                         namespace="upstream-1",
                         device="hubup-u1",
+                        kind="upstream",
+                        peer_device="upstream1-peer",
+                        shape_capable=True,
+                        display_name="upstream-1",
                     ),
+                },
+                desired={
+                    "node-1": DesiredTargetState(connected=False, delay_ms=25, loss_pct=1.5),
+                    "upstream-1": DesiredTargetState(connected=True, delay_ms=0, loss_pct=0.0),
                 },
             ),
             tokens=TokenInfo(
@@ -162,6 +180,11 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.terminals["client-1"].host_port, loaded.terminals["client-1"].host_port)
         self.assertEqual(state.shaping.targets["node-1"].router_ns, loaded.shaping.targets["node-1"].router_ns)
         self.assertEqual(state.shaping.targets["upstream-1"].device, loaded.shaping.targets["upstream-1"].device)
+        self.assertEqual("node", loaded.shaping.targets["node-1"].kind)
+        self.assertEqual("node1-peer", loaded.shaping.targets["node-1"].peer_device)
+        self.assertFalse(loaded.shaping.desired["node-1"].connected)
+        self.assertEqual(25, loaded.shaping.desired["node-1"].delay_ms)
+        self.assertEqual(1.5, loaded.shaping.desired["node-1"].loss_pct)
         self.assertEqual(state.tokens.operator_token, loaded.tokens.operator_token)
         self.assertEqual(state.tokens.node_tokens, loaded.tokens.node_tokens)
         self.assertTrue(loaded.fbnotify.available)
@@ -173,6 +196,38 @@ class StateRoundTripTest(unittest.TestCase):
         self.assertEqual(state.node_features["node-1"].geoip.asn_db_path, loaded.node_features["node-1"].geoip.asn_db_path)
         self.assertEqual(state.node_features["node-1"].ip_log.db_path, loaded.node_features["node-1"].ip_log.db_path)
         self.assertEqual(state.node_features["node-1"].firewall.default_policy, loaded.node_features["node-1"].firewall.default_policy)
+
+    def test_load_old_state_defaults_new_shaping_fields(self) -> None:
+        raw = {
+            "phase": 1,
+            "active": True,
+            "created_at": "2026-04-05T00:00:00+00:00",
+            "work_dir": "/tmp/coordlab-test",
+            "shaping": {
+                "targets": {
+                    "node-1": {
+                        "router_ns": "hub",
+                        "tag": "",
+                        "namespace": "node-1",
+                        "device": "hub-node1",
+                    }
+                }
+            },
+            "topology": {"base_cidr": "10.99.0.0/24", "links": []},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            path.write_text(__import__("json").dumps(raw), encoding="utf-8")
+            loaded = load_state(path)
+
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual("", loaded.shaping.targets["node-1"].kind)
+        self.assertEqual("", loaded.shaping.targets["node-1"].peer_device)
+        self.assertTrue(loaded.shaping.targets["node-1"].shape_capable)
+        self.assertEqual("", loaded.shaping.targets["node-1"].display_name)
+        self.assertEqual({}, loaded.shaping.desired)
 
 
 if __name__ == "__main__":

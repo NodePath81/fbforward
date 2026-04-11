@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,12 +17,14 @@ if str(ROOT) not in sys.path:
 
 from cli.clients import cmd_add_client, cmd_remove_client
 from cli.exec_ import cmd_exec
+from cli.links import cmd_disconnect, cmd_reconnect
 from cli.lifecycle import cmd_status
 from cli.net import cmd_net_status
 from cli.node import cmd_node_rpc, cmd_node_status, cmd_node_switch
 from cli.ntfybox import cmd_notify_wait, cmd_ntfybox_clear, cmd_ntfybox_list
 from lib.fbnotify import NotificationWaitTimeout
 from lib.locking import acquire_client_mutation_lock
+from lib.netns import default_links
 from lib.state import (
     ClientInfo,
     FBNotifyEmitterInfo,
@@ -30,12 +33,12 @@ from lib.state import (
     GeoIPFeatureInfo,
     IPLogFeatureInfo,
     LabState,
+    LinkInfo,
     NamespaceInfo,
     NodeFeatureInfo,
     ProcessInfo,
     ProxyInfo,
     ShapingInfo,
-    ShapingTargetInfo,
     TerminalInfo,
     TokenInfo,
     TopologyInfo,
@@ -51,8 +54,16 @@ def sample_state(workdir: Path) -> LabState:
         work_dir=str(workdir),
         namespaces={
             "hub": NamespaceInfo(pid=99, parent=None, role="hub"),
-            "node-1": NamespaceInfo(pid=101, parent="hub", role="node"),
-            "client-1": NamespaceInfo(pid=106, parent="client-edge", role="client"),
+            "hub-up": NamespaceInfo(pid=100, parent="hub", role="hub-up"),
+            "internet": NamespaceInfo(pid=101, parent="hub", role="internet"),
+            "fbcoord": NamespaceInfo(pid=102, parent="hub", role="fbcoord"),
+            "fbnotify": NamespaceInfo(pid=103, parent="hub", role="fbnotify"),
+            "node-1": NamespaceInfo(pid=104, parent="hub", role="node"),
+            "node-2": NamespaceInfo(pid=105, parent="hub", role="node"),
+            "upstream-1": NamespaceInfo(pid=106, parent="hub-up", role="upstream"),
+            "upstream-2": NamespaceInfo(pid=107, parent="hub-up", role="upstream"),
+            "client-edge": NamespaceInfo(pid=108, parent="hub", role="client-edge"),
+            "client-1": NamespaceInfo(pid=109, parent="client-edge", role="client"),
         },
         processes={
             "fbcoord": ProcessInfo(pid=200, ns="fbcoord", log_path=str(workdir / "fbcoord.log"), order=1),
@@ -88,11 +99,7 @@ def sample_state(workdir: Path) -> LabState:
                 firewall=FirewallFeatureInfo(enabled=True, default_policy="allow"),
             ),
         },
-        shaping=ShapingInfo(
-            targets={
-                "node-1": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-1", device="hub-node1"),
-            },
-        ),
+        shaping=ShapingInfo(),
         tokens=TokenInfo(
             control_token="control-token",
             operator_token="operator-token",
@@ -114,7 +121,22 @@ def sample_state(workdir: Path) -> LabState:
                 )
             },
         ),
-        topology=TopologyInfo(base_cidr="10.99.0.0/24", next_subnet_index=10),
+        topology=TopologyInfo(
+            base_cidr="10.99.0.0/24",
+            links=[
+                LinkInfo(
+                    left_ns=link.left_ns,
+                    right_ns=link.right_ns,
+                    left_if=link.left_if,
+                    right_if=link.right_if,
+                    subnet=link.subnet,
+                    left_ip=link.left_ip,
+                    right_ip=link.right_ip,
+                )
+                for link in default_links(client_names=["client-1"])
+            ],
+            next_subnet_index=10,
+        ),
     )
 
 
@@ -191,7 +213,8 @@ class CliCommandsTest(unittest.TestCase):
         self.assertNotIn("client-1", payload["clients"])
 
     def test_exec_json_runs_nsenter_command_and_returns_exit_code(self) -> None:
-        self.write_state(sample_state(self.workdir))
+        state = sample_state(self.workdir)
+        self.write_state(state)
         args = argparse.Namespace(workdir=str(self.workdir), ns="client-1", json=True, command=["--", "echo", "ok"])
         completed = mock.Mock(returncode=7, stdout="out", stderr="err")
         with mock.patch("cli.exec_.subprocess.run", return_value=completed) as run:
@@ -200,7 +223,7 @@ class CliCommandsTest(unittest.TestCase):
         self.assertEqual(7, exit_code)
         payload = json.loads(output)
         self.assertEqual("client-1", payload["namespace"])
-        self.assertEqual(106, payload["pid"])
+        self.assertEqual(state.namespaces["client-1"].pid, payload["pid"])
         self.assertEqual(["echo", "ok"], payload["command"])
         self.assertEqual("out", payload["stdout"])
         self.assertEqual("err", payload["stderr"])
@@ -380,6 +403,36 @@ class CliCommandsTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         payload = json.loads(output)
         self.assertIn("invalid attr filter", payload["error"])
+
+    def test_disconnect_allows_service_target(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(workdir=str(self.workdir), target="fbnotify")
+        fake_controller = mock.Mock()
+        fake_controller.get_links.return_value = {"fbnotify": SimpleNamespace(connected=False)}
+        with (
+            mock.patch("cli.links.run_locked_set_connected", return_value=sample_state(self.workdir)) as run_locked_set_connected,
+            mock.patch("cli.links.build_network_controller_from_state", return_value=fake_controller),
+        ):
+            exit_code, output = self.capture_stdout(cmd_disconnect, args)
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("fbnotify: disconnected", output)
+        run_locked_set_connected.assert_called_once_with(self.workdir.resolve(), "fbnotify", False)
+
+    def test_reconnect_allows_client_target(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        args = argparse.Namespace(workdir=str(self.workdir), target="client-1")
+        fake_controller = mock.Mock()
+        fake_controller.get_links.return_value = {"client-1": SimpleNamespace(connected=True)}
+        with (
+            mock.patch("cli.links.run_locked_set_connected", return_value=sample_state(self.workdir)) as run_locked_set_connected,
+            mock.patch("cli.links.build_network_controller_from_state", return_value=fake_controller),
+        ):
+            exit_code, output = self.capture_stdout(cmd_reconnect, args)
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("client-1: connected", output)
+        run_locked_set_connected.assert_called_once_with(self.workdir.resolve(), "client-1", True)
 
 
 if __name__ == "__main__":

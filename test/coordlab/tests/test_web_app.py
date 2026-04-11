@@ -5,12 +5,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from lib.netns import default_links
 from lib.state import (
     ClientInfo,
     FBNotifyEmitterInfo,
@@ -19,12 +21,12 @@ from lib.state import (
     GeoIPFeatureInfo,
     IPLogFeatureInfo,
     LabState,
+    LinkInfo,
     NodeFeatureInfo,
     NamespaceInfo,
     ProcessInfo,
     ProxyInfo,
     ShapingInfo,
-    ShapingTargetInfo,
     TerminalInfo,
     TokenInfo,
     TopologyInfo,
@@ -34,60 +36,139 @@ from lib.locking import acquire_client_mutation_lock
 from web.app import create_app
 
 
-class FakeShaper:
+class FakeNetworkController:
     def __init__(self):
-        self.calls: list[tuple] = []
-        self.states = {
-            "node-1": {"delay_ms": 0, "loss_pct": 0.0},
-            "node-2": {"delay_ms": 0, "loss_pct": 0.0},
-            "upstream-1": {"delay_ms": 0, "loss_pct": 0.0},
-            "upstream-2": {"delay_ms": 0, "loss_pct": 0.0},
+        self.shaping_states = {
+            "node-1": SimpleNamespace(
+                target="node-1",
+                display_name="node-1",
+                kind="node",
+                router_ns="hub",
+                namespace="node-1",
+                device="hub-node1",
+                delay_ms=0,
+                loss_pct=0.0,
+                connected=True,
+            ),
+            "node-2": SimpleNamespace(
+                target="node-2",
+                display_name="node-2",
+                kind="node",
+                router_ns="hub",
+                namespace="node-2",
+                device="hub-node2",
+                delay_ms=0,
+                loss_pct=0.0,
+                connected=True,
+            ),
+            "upstream-1": SimpleNamespace(
+                target="upstream-1",
+                display_name="upstream-1",
+                kind="upstream",
+                router_ns="hub-up",
+                namespace="upstream-1",
+                device="hubup-u1",
+                delay_ms=0,
+                loss_pct=0.0,
+                connected=True,
+            ),
+            "upstream-2": SimpleNamespace(
+                target="upstream-2",
+                display_name="upstream-2",
+                kind="upstream",
+                router_ns="hub-up",
+                namespace="upstream-2",
+                device="hubup-u2",
+                delay_ms=0,
+                loss_pct=0.0,
+                connected=True,
+            ),
+        }
+        self.link_states = {
+            "fbcoord": SimpleNamespace(
+                target="fbcoord",
+                display_name="fbcoord",
+                kind="service",
+                namespace="fbcoord",
+                router_ns="hub",
+                device="hub-fbcoord",
+                peer_device="fbcoord-peer",
+                shape_capable=False,
+                connected=True,
+            ),
+            "fbnotify": SimpleNamespace(
+                target="fbnotify",
+                display_name="fbnotify",
+                kind="service",
+                namespace="fbnotify",
+                router_ns="hub",
+                device="hub-fbnotify",
+                peer_device="fbnotify-peer",
+                shape_capable=False,
+                connected=False,
+            ),
+            "node-1": SimpleNamespace(
+                target="node-1",
+                display_name="node-1",
+                kind="node",
+                namespace="node-1",
+                router_ns="hub",
+                device="hub-node1",
+                peer_device="node1-peer",
+                shape_capable=True,
+                connected=True,
+            ),
+            "node-2": SimpleNamespace(
+                target="node-2",
+                display_name="node-2",
+                kind="node",
+                namespace="node-2",
+                router_ns="hub",
+                device="hub-node2",
+                peer_device="node2-peer",
+                shape_capable=True,
+                connected=True,
+            ),
+            "upstream-1": SimpleNamespace(
+                target="upstream-1",
+                display_name="upstream-1",
+                kind="upstream",
+                namespace="upstream-1",
+                router_ns="hub-up",
+                device="hubup-u1",
+                peer_device="upstream1-peer",
+                shape_capable=True,
+                connected=True,
+            ),
+            "upstream-2": SimpleNamespace(
+                target="upstream-2",
+                display_name="upstream-2",
+                kind="upstream",
+                namespace="upstream-2",
+                router_ns="hub-up",
+                device="hubup-u2",
+                peer_device="upstream2-peer",
+                shape_capable=True,
+                connected=True,
+            ),
+            "client-1": SimpleNamespace(
+                target="client-1",
+                display_name="client-1",
+                kind="client",
+                namespace="client-1",
+                router_ns="client-edge",
+                device="cedge-c1",
+                peer_device="c1-peer",
+                shape_capable=False,
+                connected=True,
+            ),
         }
 
-    def get_all(self):
-        result = {}
-        for name, state in self.states.items():
-            if state["delay_ms"] == 0 and state["loss_pct"] == 0:
-                result[name] = None
-            else:
-                result[name] = type("ShapingState", (), state)()
-        return result
+    def get_shaping_all(self):
+        return self.shaping_states
 
-    def set(self, target: str, delay_ms: int = 0, loss_pct: float = 0):
-        self.calls.append(("set", target, delay_ms, loss_pct))
-        self.states[target] = {"delay_ms": delay_ms, "loss_pct": loss_pct}
-
-    def clear(self, target: str):
-        self.calls.append(("clear", target))
-        self.states[target] = {"delay_ms": 0, "loss_pct": 0.0}
-
-    def clear_all(self):
-        self.calls.append(("clear_all",))
-        for upstream in self.states:
-            self.states[upstream] = {"delay_ms": 0, "loss_pct": 0.0}
-
-
-class FakeLinkStateController:
-    def __init__(self):
-        self.calls: list[tuple] = []
-        self.states = {
-            "node-1": {"target": "node-1", "router_ns": "hub", "namespace": "node-1", "device": "hub-node1", "connected": True},
-            "node-2": {"target": "node-2", "router_ns": "hub", "namespace": "node-2", "device": "hub-node2", "connected": True},
-            "upstream-1": {"target": "upstream-1", "router_ns": "hub-up", "namespace": "upstream-1", "device": "hubup-u1", "connected": True},
-            "upstream-2": {"target": "upstream-2", "router_ns": "hub-up", "namespace": "upstream-2", "device": "hubup-u2", "connected": True},
-        }
-
-    def get_all(self):
-        result = {}
-        for name, state in self.states.items():
-            result[name] = type("LinkState", (), state)()
-        return result
-
-    def set_connected(self, target: str, connected: bool):
-        if target not in self.states:
-            raise ValueError(f"unknown target {target!r}")
-        self.calls.append(("set_connected", target, connected))
-        self.states[target]["connected"] = connected
+    def get_links(self):
+        return self.link_states
 
 
 def sample_state(workdir: Path) -> LabState:
@@ -100,6 +181,7 @@ def sample_state(workdir: Path) -> LabState:
             "hub": NamespaceInfo(pid=99, parent=None, role="hub"),
             "hub-up": NamespaceInfo(pid=100, parent="hub", role="hub-up"),
             "internet": NamespaceInfo(pid=109, parent="hub", role="internet"),
+            "fbcoord": NamespaceInfo(pid=97, parent="hub", role="fbcoord"),
             "fbnotify": NamespaceInfo(pid=98, parent="hub", role="fbnotify"),
             "node-1": NamespaceInfo(pid=101, parent="hub", role="node"),
             "node-2": NamespaceInfo(pid=102, parent="hub", role="node"),
@@ -154,24 +236,7 @@ def sample_state(workdir: Path) -> LabState:
                 firewall=FirewallFeatureInfo(enabled=True, default_policy="allow"),
             ),
         },
-        shaping=ShapingInfo(
-            targets={
-                "node-1": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-1", device="hub-node1"),
-                "node-2": ShapingTargetInfo(router_ns="hub", tag="", namespace="node-2", device="hub-node2"),
-                "upstream-1": ShapingTargetInfo(
-                    router_ns="hub-up",
-                    tag="us-1",
-                    namespace="upstream-1",
-                    device="hubup-u1",
-                ),
-                "upstream-2": ShapingTargetInfo(
-                    router_ns="hub-up",
-                    tag="us-2",
-                    namespace="upstream-2",
-                    device="hubup-u2",
-                ),
-            },
-        ),
+        shaping=ShapingInfo(),
         tokens=TokenInfo(
             control_token="control-token",
             operator_token="operator-token",
@@ -193,7 +258,22 @@ def sample_state(workdir: Path) -> LabState:
                 ),
             },
         ),
-        topology=TopologyInfo(base_cidr="10.99.0.0/24", next_subnet_index=10),
+        topology=TopologyInfo(
+            base_cidr="10.99.0.0/24",
+            links=[
+                LinkInfo(
+                    left_ns=link.left_ns,
+                    right_ns=link.right_ns,
+                    left_if=link.left_if,
+                    right_if=link.right_if,
+                    subnet=link.subnet,
+                    left_ip=link.left_ip,
+                    right_ip=link.right_ip,
+                )
+                for link in default_links(client_names=["client-1"])
+            ],
+            next_subnet_index=10,
+        ),
     )
 
 
@@ -258,7 +338,8 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("public proxy failed", payload["fbnotify"]["error"])
         self.assertTrue(payload["terminals"]["upstream-1"]["alive"])
         self.assertTrue(payload["node_features"]["node-1"]["geoip"]["enabled"])
-        self.assertEqual("node-1", payload["shaping_targets"][0]["target"])
+        self.assertIn("fbnotify", {entry["target"] for entry in payload["shaping_targets"]})
+        self.assertIn("client-1", {entry["target"] for entry in payload["shaping_targets"]})
 
     def test_coordination_returns_partial_errors(self) -> None:
         self.write_state(sample_state(self.workdir))
@@ -327,10 +408,15 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("process exited; see log", payload["errors"]["node-2"])
         fetch_node_status.assert_not_called()
 
-    def test_shaping_routes_reuse_shaper_and_return_current_state(self) -> None:
+    def test_shaping_routes_reuse_controller_and_return_shape_capable_targets(self) -> None:
         self.write_state(sample_state(self.workdir))
-        fake = FakeShaper()
-        with mock.patch("web.app.build_shaper_from_state", return_value=fake):
+        fake = FakeNetworkController()
+        with (
+            mock.patch("web.app.build_network_controller_from_state", return_value=fake),
+            mock.patch("web.app.run_locked_set_shaping", return_value=sample_state(self.workdir)) as run_locked_set_shaping,
+            mock.patch("web.app.run_locked_clear_shaping", return_value=sample_state(self.workdir)) as run_locked_clear_shaping,
+            mock.patch("web.app.run_locked_clear_all_shaping", return_value=sample_state(self.workdir)) as run_locked_clear_all_shaping,
+        ):
             get_response = self.client.get("/api/shaping")
             put_response = self.client.put(
                 "/api/shaping/node-1",
@@ -346,17 +432,20 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, clear_all_response.status_code)
         payload = get_response.get_json()
         self.assertEqual(["node-1", "node-2", "upstream-1", "upstream-2"], [entry["target"] for entry in payload["targets"]])
-        self.assertEqual(("set", "node-1", 200, 0.0), fake.calls[0])
-        self.assertEqual(("clear", "upstream-1"), fake.calls[1])
-        self.assertEqual(("clear_all",), fake.calls[2])
+        run_locked_set_shaping.assert_called_once_with(self.workdir.resolve(), "node-1", 200, 0.0)
+        run_locked_clear_shaping.assert_called_once_with(self.workdir.resolve(), "upstream-1")
+        run_locked_clear_all_shaping.assert_called_once_with(self.workdir.resolve())
 
     def test_link_state_routes_return_current_state_and_apply_changes(self) -> None:
         self.write_state(sample_state(self.workdir))
-        fake = FakeLinkStateController()
-        with mock.patch("web.app.build_link_state_controller_from_state", return_value=fake):
+        fake = FakeNetworkController()
+        with (
+            mock.patch("web.app.build_network_controller_from_state", return_value=fake),
+            mock.patch("web.app.run_locked_set_connected", return_value=sample_state(self.workdir)) as run_locked_set_connected,
+        ):
             get_response = self.client.get("/api/link-state")
             put_response = self.client.put(
-                "/api/link-state/node-1",
+                "/api/link-state/fbnotify",
                 data=json.dumps({"connected": False}),
                 content_type="application/json",
             )
@@ -364,13 +453,19 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, get_response.status_code)
         self.assertEqual(200, put_response.status_code)
         payload = get_response.get_json()
-        self.assertEqual(["node-1", "node-2", "upstream-1", "upstream-2"], [entry["target"] for entry in payload["targets"]])
-        self.assertEqual(("set_connected", "node-1", False), fake.calls[0])
+        self.assertCountEqual(
+            ["fbcoord", "fbnotify", "node-1", "node-2", "upstream-1", "upstream-2", "client-1"],
+            [entry["target"] for entry in payload["targets"]],
+        )
+        fbnotify = next(entry for entry in payload["targets"] if entry["target"] == "fbnotify")
+        client = next(entry for entry in payload["targets"] if entry["target"] == "client-1")
+        self.assertFalse(fbnotify["shape_capable"])
+        self.assertFalse(client["shape_capable"])
+        run_locked_set_connected.assert_called_once_with(self.workdir.resolve(), "fbnotify", False)
 
     def test_link_state_route_rejects_bad_target_and_inactive_state(self) -> None:
         self.write_state(sample_state(self.workdir))
-        fake = FakeLinkStateController()
-        with mock.patch("web.app.build_link_state_controller_from_state", return_value=fake):
+        with mock.patch("web.app.run_locked_set_connected", side_effect=ValueError("unknown target 'node-9'")):
             bad = self.client.put(
                 "/api/link-state/node-9",
                 data=json.dumps({"connected": False}),
@@ -426,6 +521,38 @@ class WebAppTest(unittest.TestCase):
 
         self.assertEqual(409, response.status_code)
         self.assertEqual("fbnotify is not available for this lab run", response.get_json()["error"])
+
+    def test_shaping_route_rejects_non_shape_capable_target(self) -> None:
+        self.write_state(sample_state(self.workdir))
+        with mock.patch(
+            "web.app.run_locked_set_shaping",
+            side_effect=ValueError("target 'fbnotify' does not support shaping"),
+        ):
+            response = self.client.put(
+                "/api/shaping/fbnotify",
+                data=json.dumps({"delay_ms": 100, "loss_pct": 0}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn("does not support shaping", response.get_json()["error"])
+
+    def test_index_and_static_assets_include_fbnotify_and_client_topology_hooks(self) -> None:
+        index = self.client.get("/")
+        script = self.client.get("/static/app.js")
+        styles = self.client.get("/static/styles.css")
+
+        self.assertEqual(200, index.status_code)
+        self.assertEqual(200, script.status_code)
+        self.assertEqual(200, styles.status_code)
+        self.assertIn("topology-target-fbnotify", index.get_data(as_text=True))
+        self.assertIn("topology-clients", index.get_data(as_text=True))
+        self.assertIn("FIXED_TARGET_ORDER", script.get_data(as_text=True))
+        self.assertIn("client-edge", script.get_data(as_text=True))
+        self.assertIn("shape-card-offline", styles.get_data(as_text=True))
+        index.close()
+        script.close()
+        styles.close()
 
     def test_add_client_route_returns_updated_status_payload(self) -> None:
         updated = sample_state(self.workdir)

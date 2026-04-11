@@ -91,101 +91,112 @@
             <h2>Network Topology</h2>
             <span class="chip">fixed core + dynamic clients</span>
           </div>
-          <svg class="topology" viewBox="0 0 960 360" role="img" aria-label="coordlab topology">
+          <svg class="topology" viewBox="0 0 960 460" role="img" aria-label="coordlab topology">
             <defs>
               <linearGradient id="topology-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" stop-color="#1f5f52"></stop>
                 <stop offset="100%" stop-color="#0f2f3a"></stop>
               </linearGradient>
             </defs>
-            <rect x="0" y="0" width="960" height="360" rx="22" fill="url(#topology-gradient)"></rect>
+            <rect x="0" y="0" width="960" height="460" rx="22" fill="url(#topology-gradient)"></rect>
 
-            <text x="134" y="38" class="section-tag">coordination plane</text>
-            <text x="356" y="38" class="section-tag">node-side shaping</text>
-            <text x="676" y="38" class="section-tag">upstream-side shaping</text>
+            <text x="132" y="34" class="section-tag">services + nodes</text>
+            <text x="348" y="34" class="section-tag">hub-side controls</text>
+            <text x="674" y="34" class="section-tag">upstream-side controls</text>
+            <text x="496" y="294" class="section-tag">client path</text>
 
-            <g class="node-box">
-              <rect x="48" y="48" width="172" height="64" rx="16"></rect>
+            <g id="topology-target-fbcoord" class="topology-target">
+              <rect class="target-box" x="40" y="46" width="168" height="52" rx="16"></rect>
               <text x="134" y="80" class="box-label">fbcoord</text>
+              <rect class="target-pill" x="240" y="60" width="126" height="28" rx="14"></rect>
+              <text id="topology-fbcoord" x="303" y="74" class="shape-label">connected</text>
             </g>
-            <g class="node-box">
-              <rect x="48" y="142" width="172" height="64" rx="16"></rect>
-              <text x="134" y="174" class="box-label">node-1</text>
+            <g id="topology-target-fbnotify" class="topology-target">
+              <rect class="target-box" x="40" y="116" width="168" height="52" rx="16"></rect>
+              <text x="134" y="150" class="box-label">fbnotify</text>
+              <rect class="target-pill" x="240" y="130" width="126" height="28" rx="14"></rect>
+              <text id="topology-fbnotify" x="303" y="144" class="shape-label">connected</text>
             </g>
-            <g class="node-box">
-              <rect x="48" y="236" width="172" height="64" rx="16"></rect>
-              <text x="134" y="268" class="box-label">node-2</text>
+            <g id="topology-target-node-1" class="topology-target">
+              <rect class="target-box" x="40" y="186" width="168" height="52" rx="16"></rect>
+              <text x="134" y="220" class="box-label">node-1</text>
+              <rect class="target-pill" x="240" y="200" width="150" height="28" rx="14"></rect>
+              <text id="topology-node-1" x="315" y="214" class="shape-label">healthy</text>
+            </g>
+            <g id="topology-target-node-2" class="topology-target">
+              <rect class="target-box" x="40" y="256" width="168" height="52" rx="16"></rect>
+              <text x="134" y="290" class="box-label">node-2</text>
+              <rect class="target-pill" x="240" y="270" width="150" height="28" rx="14"></rect>
+              <text id="topology-node-2" x="315" y="284" class="shape-label">healthy</text>
             </g>
 
             <g class="hub-box">
-              <rect x="296" y="144" width="116" height="60" rx="16"></rect>
-              <text x="354" y="174" class="router-label">hub</text>
+              <rect x="310" y="172" width="116" height="56" rx="16"></rect>
+              <text x="368" y="200" class="router-label">hub</text>
             </g>
             <g class="hub-box internet-box">
-              <rect x="438" y="144" width="116" height="60" rx="16"></rect>
-              <text x="496" y="174" class="router-label">internet</text>
+              <rect x="452" y="172" width="116" height="56" rx="16"></rect>
+              <text x="510" y="200" class="router-label">internet</text>
             </g>
             <g class="hub-box">
-              <rect x="580" y="144" width="116" height="60" rx="16"></rect>
-              <text x="638" y="174" class="router-label">hub-up</text>
+              <rect x="594" y="172" width="116" height="56" rx="16"></rect>
+              <text x="652" y="200" class="router-label">hub-up</text>
+            </g>
+            <g class="hub-box internet-box">
+              <rect x="452" y="320" width="116" height="52" rx="16"></rect>
+              <text x="510" y="346" class="router-label">client-edge</text>
             </g>
 
-            <g class="node-box upstream-box">
-              <rect x="780" y="92" width="132" height="64" rx="16"></rect>
-              <text x="846" y="124" class="box-label">upstream-1</text>
+            <g id="topology-target-upstream-1" class="topology-target upstream-target">
+              <rect class="target-box" x="790" y="102" width="132" height="56" rx="16"></rect>
+              <text x="856" y="132" class="box-label">upstream-1</text>
+              <rect class="target-pill" x="612" y="96" width="152" height="28" rx="14"></rect>
+              <text id="topology-upstream-1" x="688" y="110" class="shape-label">healthy</text>
             </g>
-            <g class="node-box upstream-box">
-              <rect x="780" y="220" width="132" height="64" rx="16"></rect>
-              <text x="846" y="252" class="box-label">upstream-2</text>
+            <g id="topology-target-upstream-2" class="topology-target upstream-target">
+              <rect class="target-box" x="790" y="244" width="132" height="56" rx="16"></rect>
+              <text x="856" y="274" class="box-label">upstream-2</text>
+              <rect class="target-pill" x="612" y="278" width="152" height="28" rx="14"></rect>
+              <text id="topology-upstream-2" x="688" y="292" class="shape-label">healthy</text>
             </g>
 
+            <g id="topology-link-fbcoord" class="link branch">
+              <line x1="208" y1="72" x2="310" y2="184"></line>
+            </g>
+            <g id="topology-link-fbnotify" class="link branch">
+              <line x1="208" y1="142" x2="310" y2="192"></line>
+            </g>
             <g id="topology-link-node-1" class="link solid">
-              <line x1="220" y1="174" x2="296" y2="174"></line>
+              <line x1="208" y1="212" x2="310" y2="212"></line>
             </g>
             <g class="link solid">
-              <line x1="412" y1="174" x2="438" y2="174"></line>
+              <line x1="426" y1="200" x2="452" y2="200"></line>
             </g>
             <g class="link solid">
-              <line x1="554" y1="174" x2="580" y2="174"></line>
+              <line x1="568" y1="200" x2="594" y2="200"></line>
             </g>
             <g id="topology-link-upstream-1" class="link dashed">
-              <line x1="696" y1="168" x2="780" y2="126"></line>
+              <line x1="710" y1="194" x2="790" y2="130"></line>
             </g>
             <g id="topology-link-upstream-2" class="link dashed">
-              <line x1="696" y1="180" x2="780" y2="252"></line>
-            </g>
-            <g class="link branch">
-              <line x1="220" y1="80" x2="296" y2="150"></line>
+              <line x1="710" y1="206" x2="790" y2="272"></line>
             </g>
             <g id="topology-link-node-2" class="link branch">
-              <line x1="220" y1="268" x2="296" y2="198"></line>
+              <line x1="208" y1="282" x2="310" y2="216"></line>
             </g>
+            <g id="topology-link-client-edge" class="link solid">
+              <line x1="510" y1="228" x2="510" y2="320"></line>
+            </g>
+            <g id="topology-clients"></g>
 
-            <g class="shape-pill">
-              <rect x="262" y="118" width="150" height="30" rx="15"></rect>
-              <text id="topology-node-1" x="337" y="133" class="shape-label">healthy</text>
-            </g>
-            <g class="shape-pill">
-              <rect x="262" y="210" width="150" height="30" rx="15"></rect>
-              <text id="topology-node-2" x="337" y="225" class="shape-label">healthy</text>
-            </g>
-            <g class="shape-pill">
-              <rect x="580" y="86" width="164" height="30" rx="15"></rect>
-              <text id="topology-upstream-1" x="662" y="101" class="shape-label">healthy</text>
-            </g>
-            <g class="shape-pill">
-              <rect x="580" y="232" width="164" height="30" rx="15"></rect>
-              <text id="topology-upstream-2" x="662" y="247" class="shape-label">healthy</text>
-            </g>
-
-            <text x="337" y="260" class="caption-label">node-side netem on hub egress</text>
-            <text x="496" y="222" class="caption-label">transit only</text>
-            <text x="662" y="286" class="caption-label">upstream-side netem on hub-up egress</text>
-            <text x="496" y="324" class="caption-label">effective path = node-side(node) + upstream-side(upstream)</text>
+            <text x="314" y="328" class="caption-label">service + node links terminate on hub</text>
+            <text x="510" y="246" class="caption-label">transit path</text>
+            <text x="688" y="330" class="caption-label">upstream netem runs on hub-up egress</text>
+            <text x="510" y="402" class="caption-label">client namespaces connect through client-edge</text>
           </svg>
           <div class="panel-section">
             <h3>Client Paths</h3>
-            <p class="subtle">Client namespaces extend the lab outside the fixed SVG. Their routed path is client -> client-edge -> internet -> hub.</p>
+            <p class="subtle">Client namespaces now appear in the topology and connect through client-edge -> internet -> hub.</p>
             <div id="client-paths" class="list"></div>
           </div>
         </article>
@@ -206,7 +217,7 @@
             </div>
           </div>
           <div id="shaping-error" class="error-list"></div>
-          <p class="subtle">Node-side shaping affects all traffic from that node, including coordination traffic. Upstream-side shaping affects both nodes only when they use that upstream.</p>
+          <p class="subtle">Services and clients support connect or disconnect only. Node-side shaping affects all traffic from that node, including coordination traffic. Upstream-side shaping affects both nodes only when they use that upstream.</p>
           <div id="shaping-list" class="stack"></div>
         </article>
       </section>

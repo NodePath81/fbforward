@@ -30,10 +30,11 @@ def sample_state(workdir: Path, *, with_client: bool) -> LabState:
         "hub-up": NamespaceInfo(pid=101, parent="hub", role="hub-up"),
         "internet": NamespaceInfo(pid=102, parent="hub", role="internet"),
         "fbcoord": NamespaceInfo(pid=103, parent="hub", role="fbcoord"),
-        "node-1": NamespaceInfo(pid=104, parent="hub", role="node"),
-        "node-2": NamespaceInfo(pid=105, parent="hub", role="node"),
-        "upstream-1": NamespaceInfo(pid=106, parent="hub-up", role="upstream"),
-        "upstream-2": NamespaceInfo(pid=107, parent="hub-up", role="upstream"),
+        "fbnotify": NamespaceInfo(pid=104, parent="hub", role="fbnotify"),
+        "node-1": NamespaceInfo(pid=105, parent="hub", role="node"),
+        "node-2": NamespaceInfo(pid=106, parent="hub", role="node"),
+        "upstream-1": NamespaceInfo(pid=107, parent="hub-up", role="upstream"),
+        "upstream-2": NamespaceInfo(pid=108, parent="hub-up", role="upstream"),
     }
     clients: dict[str, ClientInfo] = {}
     processes: dict[str, ProcessInfo] = {
@@ -54,8 +55,8 @@ def sample_state(workdir: Path, *, with_client: bool) -> LabState:
     next_subnet_index = len(links)
 
     if with_client:
-        namespaces["client-edge"] = NamespaceInfo(pid=108, parent="hub", role="client-edge")
-        namespaces["client-1"] = NamespaceInfo(pid=109, parent="client-edge", role="client")
+        namespaces["client-edge"] = NamespaceInfo(pid=109, parent="hub", role="client-edge")
+        namespaces["client-1"] = NamespaceInfo(pid=110, parent="client-edge", role="client")
         clients["client-1"] = ClientInfo(identity_ip="198.51.100.10")
         processes["ttyd-client-1"] = ProcessInfo(pid=300, ns="host", log_path=str(workdir / "ttyd-client-1.log"), order=2)
         processes["ttyd-upstream-1"] = ProcessInfo(pid=301, ns="host", log_path=str(workdir / "ttyd-upstream-1.log"), order=3)
@@ -144,6 +145,12 @@ class LiveClientMutationTest(unittest.TestCase):
         self.assertEqual(9, updated.topology.next_subnet_index)
         self.assertEqual("10.99.0.28/30", updated.topology.links[-2].subnet)
         self.assertEqual("10.99.0.32/30", updated.topology.links[-1].subnet)
+        self.assertIn("fbnotify", updated.shaping.targets)
+        self.assertFalse(updated.shaping.targets["fbnotify"].shape_capable)
+        self.assertIn("client-2", updated.shaping.targets)
+        self.assertEqual("client", updated.shaping.targets["client-2"].kind)
+        self.assertFalse(updated.shaping.targets["client-2"].shape_capable)
+        self.assertTrue(updated.shaping.desired["client-2"].connected)
         assert_bindings_available.assert_called_once_with(
             [("ttyd-client-2", "127.0.0.1", 18900)],
             error_prefix="coordlab ttyd ports are already in use",
@@ -216,6 +223,8 @@ class LiveClientMutationTest(unittest.TestCase):
         self.assertNotIn("client-1", updated.clients)
         self.assertNotIn("client-1", updated.terminals)
         self.assertNotIn("ttyd-client-1", updated.processes)
+        self.assertNotIn("client-1", updated.shaping.targets)
+        self.assertNotIn("client-1", updated.shaping.desired)
         self.assertEqual(10, updated.topology.next_subnet_index)
 
 

@@ -8,13 +8,18 @@ from flask import Flask, jsonify, render_template, request
 
 from lib.clients import run_locked_add_client, run_locked_remove_client
 from lib.fbnotify import clear_ntfybox_messages, list_ntfybox_messages
-from lib.lab import build_link_state_controller_from_state, build_shaper_from_state, load_active_state
+from lib.lab import load_active_state, normalize_state_topology
+from lib.network_control import (
+    build_network_controller_from_state,
+    run_locked_clear_all_shaping,
+    run_locked_clear_shaping,
+    run_locked_set_connected,
+    run_locked_set_shaping,
+)
 from lib.output import proxy_url, status_payload
 from lib.paths import state_path_for
 from lib.process import is_alive
 from lib.rpc import get_status
-from lib.linkstate import LinkStateController
-from lib.shaping import TrafficShaper
 from lib.state import LabState, load_state
 
 DEFAULT_LOG_LINES = 100
@@ -28,7 +33,10 @@ FBCOORD_PROCESS_NAME = "fbcoord"
 
 
 def load_lab_state(workdir: Path) -> LabState | None:
-    return load_state(state_path_for(workdir))
+    state = load_state(state_path_for(workdir))
+    if state is None:
+        return None
+    return normalize_state_topology(state)
 
 
 def load_active_state_or_error(workdir: Path) -> tuple[LabState | None, tuple[dict, int] | None]:
@@ -38,40 +46,44 @@ def load_active_state_or_error(workdir: Path) -> tuple[LabState | None, tuple[di
         return None, ({"error": str(exc)}, 409)
 
 
-def shaping_payload(state: LabState, shaper: TrafficShaper | None = None) -> dict:
-    if shaper is None:
-        shaper = build_shaper_from_state(state)
-    shaping_state = shaper.get_all()
+def shaping_payload(state: LabState) -> dict:
+    controller = build_network_controller_from_state(state)
+    shaping_state = controller.get_shaping_all()
     return {
         "active": True,
         "targets": [
             {
                 "target": target_name,
-                "router_ns": target.router_ns,
-                "tag": target.tag,
-                "namespace": target.namespace,
-                "device": target.device,
-                "delay_ms": shaping_state[target_name].delay_ms if shaping_state[target_name] else 0,
-                "loss_pct": shaping_state[target_name].loss_pct if shaping_state[target_name] else 0.0,
+                "display_name": entry.display_name,
+                "kind": entry.kind,
+                "router_ns": entry.router_ns,
+                "namespace": entry.namespace,
+                "device": entry.device,
+                "delay_ms": entry.delay_ms,
+                "loss_pct": entry.loss_pct,
+                "connected": entry.connected,
             }
-            for target_name, target in sorted(state.shaping.targets.items())
+            for target_name, entry in sorted(shaping_state.items())
         ],
     }
 
 
-def link_state_payload(state: LabState, controller: LinkStateController | None = None) -> dict:
-    if controller is None:
-        controller = build_link_state_controller_from_state(state)
-    link_states = controller.get_all()
+def link_state_payload(state: LabState) -> dict:
+    controller = build_network_controller_from_state(state)
+    link_states = controller.get_links()
     return {
         "active": True,
         "targets": [
             {
                 "target": target_name,
+                "display_name": link_state.display_name,
+                "kind": link_state.kind,
                 "router_ns": link_state.router_ns,
                 "namespace": link_state.namespace,
                 "device": link_state.device,
+                "peer_device": link_state.peer_device,
                 "connected": link_state.connected,
+                "shape_capable": link_state.shape_capable,
             }
             for target_name, link_state in sorted(link_states.items())
         ],
@@ -279,9 +291,8 @@ def create_app(workdir: Path | str) -> Flask:
             return jsonify(payload), status
         try:
             delay_ms, loss_pct = parse_shaping_body(request.get_json(silent=True))
-            shaper = build_shaper_from_state(state)
-            shaper.set(target, delay_ms=delay_ms, loss_pct=loss_pct)
-            return jsonify(shaping_payload(state, shaper))
+            updated = run_locked_set_shaping(workdir, target, delay_ms, loss_pct)
+            return jsonify(shaping_payload(updated))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:
@@ -294,9 +305,8 @@ def create_app(workdir: Path | str) -> Flask:
             payload, status = error
             return jsonify(payload), status
         try:
-            shaper = build_shaper_from_state(state)
-            shaper.clear(target)
-            return jsonify(shaping_payload(state, shaper))
+            updated = run_locked_clear_shaping(workdir, target)
+            return jsonify(shaping_payload(updated))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:
@@ -309,9 +319,8 @@ def create_app(workdir: Path | str) -> Flask:
             payload, status = error
             return jsonify(payload), status
         try:
-            shaper = build_shaper_from_state(state)
-            shaper.clear_all()
-            return jsonify(shaping_payload(state, shaper))
+            updated = run_locked_clear_all_shaping(workdir)
+            return jsonify(shaping_payload(updated))
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
 
@@ -328,9 +337,8 @@ def create_app(workdir: Path | str) -> Flask:
         if not isinstance(connected, bool):
             return jsonify({"error": "connected must be a boolean"}), 400
         try:
-            controller = build_link_state_controller_from_state(state)
-            controller.set_connected(target, connected)
-            return jsonify(link_state_payload(state, controller))
+            updated = run_locked_set_connected(workdir, target, connected)
+            return jsonify(link_state_payload(updated))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:

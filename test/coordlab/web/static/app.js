@@ -1,21 +1,17 @@
-const TARGET_ORDER = ["node-1", "node-2", "upstream-1", "upstream-2"];
-const TARGET_LABELS = {
-  "node-1": "node-1",
-  "node-2": "node-2",
-  "upstream-1": "upstream-1",
-  "upstream-2": "upstream-2",
+const FIXED_TARGET_ORDER = ["fbcoord", "fbnotify", "node-1", "node-2", "upstream-1", "upstream-2"];
+const KIND_ORDER = {
+  service: 0,
+  node: 1,
+  upstream: 2,
+  client: 3,
 };
-const TOPOLOGY_LABEL_IDS = {
-  "node-1": "topology-node-1",
-  "node-2": "topology-node-2",
-  "upstream-1": "topology-upstream-1",
-  "upstream-2": "topology-upstream-2",
-};
-const TOPOLOGY_LINE_IDS = {
-  "node-1": "topology-link-node-1",
-  "node-2": "topology-link-node-2",
-  "upstream-1": "topology-link-upstream-1",
-  "upstream-2": "topology-link-upstream-2",
+const TOPOLOGY_FIXED_IDS = {
+  fbcoord: { label: "topology-fbcoord", line: "topology-link-fbcoord", group: "topology-target-fbcoord" },
+  fbnotify: { label: "topology-fbnotify", line: "topology-link-fbnotify", group: "topology-target-fbnotify" },
+  "node-1": { label: "topology-node-1", line: "topology-link-node-1", group: "topology-target-node-1" },
+  "node-2": { label: "topology-node-2", line: "topology-link-node-2", group: "topology-target-node-2" },
+  "upstream-1": { label: "topology-upstream-1", line: "topology-link-upstream-1", group: "topology-target-upstream-1" },
+  "upstream-2": { label: "topology-upstream-2", line: "topology-link-upstream-2", group: "topology-target-upstream-2" },
 };
 
 const state = {
@@ -88,29 +84,90 @@ function shapeStateText(entry, linkState) {
   return parts.length ? parts.join(" • ") : "healthy";
 }
 
-function sortTargets(entries) {
-  return [...entries].sort((left, right) => TARGET_ORDER.indexOf(left.target) - TARGET_ORDER.indexOf(right.target));
+function targetKindOrder(entry) {
+  return Object.prototype.hasOwnProperty.call(KIND_ORDER, entry.kind) ? KIND_ORDER[entry.kind] : 99;
 }
 
-function updateTopology(targets, linkTargets) {
-  const byTarget = Object.fromEntries(targets.map((entry) => [entry.target, entry]));
-  for (const target of TARGET_ORDER) {
-    const label = document.querySelector(`#${TOPOLOGY_LABEL_IDS[target]}`);
-    const line = document.querySelector(`#${TOPOLOGY_LINE_IDS[target]}`);
-    const pill = label ? label.closest(".shape-pill") : null;
+function sortTargets(entries) {
+  return [...entries].sort((left, right) => {
+    const kindDelta = targetKindOrder(left) - targetKindOrder(right);
+    if (kindDelta !== 0) {
+      return kindDelta;
+    }
+    return (left.display_name || left.target).localeCompare(right.display_name || right.target);
+  });
+}
+
+function topologyTargetText(targetName, linkState, shapingEntry) {
+  if (linkState && linkState.connected === false) {
+    return "disconnected";
+  }
+  if (shapingEntry) {
+    return shapeStateText(shapingEntry, linkState);
+  }
+  return "connected";
+}
+
+function renderDynamicClientTopology(clientTargets) {
+  const container = document.querySelector("#topology-clients");
+  if (!container) {
+    return;
+  }
+  if (!clientTargets.length) {
+    container.innerHTML = "";
+    return;
+  }
+  const width = 132;
+  const height = 48;
+  const gap = 24;
+  const centerX = 510;
+  const rowY = 386;
+  const totalWidth = clientTargets.length * width + Math.max(0, clientTargets.length - 1) * gap;
+  const startX = centerX - totalWidth / 2;
+  container.innerHTML = clientTargets.map((entry, index) => {
+    const x = startX + index * (width + gap);
+    const y = rowY;
+    const center = x + width / 2;
+    const disconnected = entry.connected === false;
+    const groupClass = disconnected ? "client-node offline" : "client-node";
+    const lineClass = disconnected ? "link branch offline" : "link branch";
+    return `
+      <g id="topology-link-${entry.target}" class="${lineClass}">
+        <line x1="510" y1="372" x2="${center}" y2="${y}"></line>
+      </g>
+      <g id="topology-target-${entry.target}" class="${groupClass}">
+        <rect class="target-box" x="${x}" y="${y}" width="${width}" height="${height}" rx="14"></rect>
+        <text x="${center}" y="${y + 16}" class="box-label">${entry.display_name || entry.target}</text>
+        <rect class="target-pill" x="${x + 14}" y="${y + 24}" width="${width - 28}" height="18" rx="9"></rect>
+        <text x="${center}" y="${y + 33}" class="shape-label">${disconnected ? "disconnected" : "connected"}</text>
+      </g>
+    `;
+  }).join("");
+}
+
+function updateTopology(linkTargets, shapingTargets) {
+  const byTarget = Object.fromEntries(shapingTargets.map((entry) => [entry.target, entry]));
+  for (const target of FIXED_TARGET_ORDER) {
+    const ids = TOPOLOGY_FIXED_IDS[target];
+    const label = document.querySelector(`#${ids.label}`);
+    const line = document.querySelector(`#${ids.line}`);
+    const group = document.querySelector(`#${ids.group}`);
     const linkState = linkTargets[target];
     if (!label) {
       continue;
     }
-    label.textContent = byTarget[target] ? shapeStateText(byTarget[target], linkState) : "unknown";
+    label.textContent = topologyTargetText(target, linkState, byTarget[target]);
     const disconnected = linkState ? linkState.connected === false : false;
     if (line) {
       line.classList.toggle("offline", disconnected);
     }
-    if (pill) {
-      pill.classList.toggle("offline", disconnected);
+    if (group) {
+      group.classList.toggle("offline", disconnected);
     }
   }
+  renderDynamicClientTopology(
+    sortTargets(Object.values(linkTargets || {}).filter((entry) => entry.kind === "client")),
+  );
 }
 
 function syncLogProcessOptions(processes) {
@@ -209,7 +266,7 @@ function renderClientPaths(clients) {
         <strong>${name}</strong>
         <span class="subtle">${info.identity_ip}</span>
       </div>
-      <div class="subtle">client-edge -> internet -> hub</div>
+      <div class="subtle">client -> client-edge -> internet -> hub</div>
     </div>
   `);
 }
@@ -310,14 +367,29 @@ function renderCoordination(payload) {
 }
 
 function targetAxis(entry) {
-  return entry.target.startsWith("node-") ? "node-side / hub" : "upstream-side / hub-up";
+  if (entry.kind === "service") {
+    return "service / hub";
+  }
+  if (entry.kind === "node") {
+    return "node-side / hub";
+  }
+  if (entry.kind === "upstream") {
+    return "upstream-side / hub-up";
+  }
+  return "client-side / client-edge";
 }
 
 function targetEffect(entry) {
-  if (entry.target.startsWith("node-")) {
+  if (entry.kind === "service") {
+    return "Service control link to hub. Connect and disconnect only.";
+  }
+  if (entry.kind === "node") {
     return "Affects this node broadly, including coordination traffic.";
   }
-  return "Affects both nodes only when they use this upstream.";
+  if (entry.kind === "upstream") {
+    return "Affects both nodes only when they use this upstream.";
+  }
+  return "Client transport link to client-edge. Connect and disconnect only.";
 }
 
 function linkStateBadge(connected) {
@@ -328,41 +400,51 @@ function linkStateBadge(connected) {
 
 function renderShapingView() {
   const list = document.querySelector("#shaping-list");
-  const targets = sortTargets(state.shapingTargets || []);
-  updateTopology(targets, state.linkTargets || {});
-  list.innerHTML = targets.map((entry) => {
-    const linkState = state.linkTargets[entry.target] || { connected: true };
+  const linkTargets = sortTargets(Object.values(state.linkTargets || {}));
+  const shapingByTarget = Object.fromEntries((state.shapingTargets || []).map((entry) => [entry.target, entry]));
+  updateTopology(state.linkTargets || {}, state.shapingTargets || []);
+  list.innerHTML = linkTargets.map((entry) => {
+    const shapingEntry = shapingByTarget[entry.target] || { delay_ms: 0, loss_pct: 0 };
+    const linkState = state.linkTargets[entry.target] || entry || { connected: true };
     const connected = linkState.connected !== false;
-    const disabled = connected ? "" : "disabled";
     const toggleLabel = connected ? "Disconnect" : "Reconnect";
     const toggleClass = connected ? "ghost warn-button" : "";
+    const shapingControls = entry.shape_capable ? `
+      <div class="shape-values">
+        <label>
+          Delay (ms)
+          <input type="number" min="0" value="${shapingEntry.delay_ms}" data-field="delay">
+        </label>
+        <label>
+          Loss (%)
+          <input type="number" min="0" max="100" step="0.1" value="${shapingEntry.loss_pct}" data-field="loss">
+        </label>
+      </div>
+      <div class="inline-actions">
+        <button type="button" data-action="apply">Apply</button>
+        <button type="button" class="ghost" data-action="clear">Clear</button>
+        <button type="button" class="${toggleClass}" data-action="link" data-connected="${connected ? "true" : "false"}">${toggleLabel}</button>
+      </div>
+      ${connected ? "" : `<p class="subtle">Pending shaping will be re-applied on reconnect.</p>`}
+    ` : `
+      <div class="inline-actions">
+        <button type="button" class="${toggleClass}" data-action="link" data-connected="${connected ? "true" : "false"}">${toggleLabel}</button>
+      </div>
+    `;
     return `
       <article class="shape-card ${connected ? "" : "shape-card-offline"}" data-target="${entry.target}">
         <div class="shape-header">
-          <h3>${TARGET_LABELS[entry.target] || entry.target}</h3>
+          <h3>${entry.display_name || entry.target}</h3>
           <div class="chip-row">
             ${linkStateBadge(connected)}
             <span class="chip muted-chip">${targetAxis(entry)}</span>
+            ${entry.kind ? `<span class="chip">${entry.kind}</span>` : ""}
             ${entry.tag ? `<span class="chip">${entry.tag}</span>` : ""}
           </div>
         </div>
         <p class="subtle">${entry.namespace} / ${entry.device}</p>
         <p class="shape-note">${targetEffect(entry)}</p>
-        <div class="shape-values">
-          <label>
-            Delay (ms)
-            <input type="number" min="0" value="${entry.delay_ms}" data-field="delay" ${disabled}>
-          </label>
-          <label>
-            Loss (%)
-            <input type="number" min="0" max="100" step="0.1" value="${entry.loss_pct}" data-field="loss" ${disabled}>
-          </label>
-        </div>
-        <div class="inline-actions">
-          <button type="button" data-action="apply" ${disabled}>Apply</button>
-          <button type="button" class="ghost" data-action="clear" ${disabled}>Clear</button>
-          <button type="button" class="${toggleClass}" data-action="link" data-connected="${connected ? "true" : "false"}">${toggleLabel}</button>
-        </div>
+        ${shapingControls}
       </article>
     `;
   }).join("");

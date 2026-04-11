@@ -447,8 +447,9 @@ input:disabled {
   dominant-baseline: middle;
 }
 
-.node-box rect,
-.hub-box rect {
+.topology-target .target-box,
+.hub-box rect,
+.client-node .target-box {
   fill: rgba(255, 255, 255, 0.14);
   stroke: rgba(255, 255, 255, 0.55);
 }
@@ -473,6 +474,12 @@ input:disabled {
   stroke: rgba(246, 221, 214, 0.9);
   stroke-width: 5;
   stroke-dasharray: 8 8;
+}
+
+.topology-target.offline .target-box,
+.client-node.offline .target-box {
+  fill: rgba(246, 221, 214, 0.16);
+  stroke: rgba(246, 221, 214, 0.74);
 }
 
 .box-label {
@@ -502,13 +509,15 @@ input:disabled {
   font-size: 12px;
 }
 
-.shape-pill rect {
+.topology-target .target-pill,
+.client-node .target-pill {
   fill: rgba(255, 249, 239, 0.14);
   stroke: rgba(255, 249, 239, 0.42);
   stroke-width: 1;
 }
 
-.shape-pill.offline rect {
+.topology-target.offline .target-pill,
+.client-node.offline .target-pill {
   fill: rgba(246, 221, 214, 0.18);
   stroke: rgba(246, 221, 214, 0.68);
 }

@@ -191,10 +191,17 @@ def status_payload(state: LabState | None, workdir: Path) -> dict:
         "shaping_targets": [
             {
                 "target": target_name,
+                "display_name": target.display_name or target_name,
+                "kind": target.kind,
                 "router_ns": target.router_ns,
                 "tag": target.tag,
                 "namespace": target.namespace,
                 "device": target.device,
+                "peer_device": target.peer_device,
+                "shape_capable": target.shape_capable,
+                "connected": state.shaping.desired.get(target_name).connected if state.shaping.desired.get(target_name) else True,
+                "delay_ms": state.shaping.desired.get(target_name).delay_ms if state.shaping.desired.get(target_name) else 0,
+                "loss_pct": state.shaping.desired.get(target_name).loss_pct if state.shaping.desired.get(target_name) else 0.0,
             }
             for target_name, target in sorted(state.shaping.targets.items())
         ],

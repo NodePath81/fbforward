@@ -11,6 +11,7 @@ from .paths import state_path_for
 from .process import is_alive
 from .state import (
     ClientInfo,
+    DesiredTargetState,
     FBNotifyInfo,
     LabState,
     LinkInfo,
@@ -74,7 +75,7 @@ def build_state(
         clients=client_infos,
         terminals=terminals or {},
         node_features=node_features or {},
-        shaping=shaping or build_shaping_info(topology),
+        shaping=build_shaping_info(topology, existing=shaping),
         tokens=tokens or TokenInfo(),
         fbnotify=fbnotify or FBNotifyInfo(),
         topology=TopologyInfo(
@@ -85,33 +86,117 @@ def build_state(
     )
 
 
-def build_shaping_info(topology: netns.Topology) -> ShapingInfo:
+def _merge_desired_target_state(existing: ShapingInfo | None, target_name: str) -> DesiredTargetState:
+    if existing is None:
+        return DesiredTargetState()
+    desired = existing.desired.get(target_name)
+    if desired is None:
+        return DesiredTargetState()
+    return DesiredTargetState(
+        connected=desired.connected,
+        delay_ms=desired.delay_ms,
+        loss_pct=desired.loss_pct,
+    )
+
+
+def _target_from_link(
+    topology: netns.Topology,
+    *,
+    target_name: str,
+    router_ns: str,
+    namespace: str,
+    tag: str,
+    kind: str,
+    shape_capable: bool,
+    display_name: str,
+) -> ShapingTargetInfo:
+    link = netns.find_link(topology.links, router_ns, namespace)
+    return ShapingTargetInfo(
+        router_ns=router_ns,
+        tag=tag,
+        namespace=namespace,
+        device=link.left_if,
+        kind=kind,
+        peer_device=link.right_if,
+        shape_capable=shape_capable,
+        display_name=display_name or target_name,
+    )
+
+
+def _maybe_target_from_link(
+    topology: netns.Topology,
+    *,
+    target_name: str,
+    router_ns: str,
+    namespace: str,
+    tag: str,
+    kind: str,
+    shape_capable: bool,
+    display_name: str,
+) -> tuple[str, ShapingTargetInfo] | None:
+    if router_ns not in topology.namespaces or namespace not in topology.namespaces:
+        return None
+    try:
+        target = _target_from_link(
+            topology,
+            target_name=target_name,
+            router_ns=router_ns,
+            namespace=namespace,
+            tag=tag,
+            kind=kind,
+            shape_capable=shape_capable,
+            display_name=display_name,
+        )
+    except ValueError:
+        return None
+    return target_name, target
+
+
+def build_shaping_info(topology: netns.Topology, *, existing: ShapingInfo | None = None) -> ShapingInfo:
+    targets: dict[str, ShapingTargetInfo] = {}
+    fixed_targets = (
+        ("fbcoord", "hub", "fbcoord", "", "service", False, "fbcoord"),
+        ("fbnotify", "hub", "fbnotify", "", "service", False, "fbnotify"),
+        ("node-1", "hub", "node-1", "", "node", True, "node-1"),
+        ("node-2", "hub", "node-2", "", "node", True, "node-2"),
+        ("upstream-1", "hub-up", "upstream-1", "us-1", "upstream", True, "upstream-1"),
+        ("upstream-2", "hub-up", "upstream-2", "us-2", "upstream", True, "upstream-2"),
+    )
+    for target_name, router_ns, namespace, tag, kind, shape_capable, display_name in fixed_targets:
+        maybe_target = _maybe_target_from_link(
+            topology,
+            target_name=target_name,
+            router_ns=router_ns,
+            namespace=namespace,
+            tag=tag,
+            kind=kind,
+            shape_capable=shape_capable,
+            display_name=display_name,
+        )
+        if maybe_target is None:
+            continue
+        name, target = maybe_target
+        targets[name] = target
+    for client_name in sorted(topology.clients):
+        maybe_target = _maybe_target_from_link(
+            topology,
+            target_name=client_name,
+            router_ns="client-edge",
+            namespace=client_name,
+            tag="",
+            kind="client",
+            shape_capable=False,
+            display_name=client_name,
+        )
+        if maybe_target is None:
+            continue
+        name, target = maybe_target
+        targets[name] = target
     return ShapingInfo(
-        targets={
-            "node-1": ShapingTargetInfo(
-                router_ns="hub",
-                tag="",
-                namespace="node-1",
-                device=netns.find_link(topology.links, "hub", "node-1").left_if,
-            ),
-            "node-2": ShapingTargetInfo(
-                router_ns="hub",
-                tag="",
-                namespace="node-2",
-                device=netns.find_link(topology.links, "hub", "node-2").left_if,
-            ),
-            "upstream-1": ShapingTargetInfo(
-                router_ns="hub-up",
-                tag="us-1",
-                namespace="upstream-1",
-                device=netns.find_link(topology.links, "hub-up", "upstream-1").left_if,
-            ),
-            "upstream-2": ShapingTargetInfo(
-                router_ns="hub-up",
-                tag="us-2",
-                namespace="upstream-2",
-                device=netns.find_link(topology.links, "hub-up", "upstream-2").left_if,
-            ),
+        targets=targets,
+        desired={
+            target_name: _merge_desired_target_state(existing, target_name)
+            for target_name in targets
         },
     )
 
@@ -225,6 +310,7 @@ def sync_state_topology(state: LabState, topology: netns.Topology) -> None:
         ],
         next_subnet_index=topology.next_subnet_index,
     )
+    state.shaping = build_shaping_info(topology, existing=state.shaping)
 
 
 def save_current_state(state: LabState) -> None:
@@ -238,6 +324,21 @@ def load_active_state(workdir: Path) -> LabState:
         raise RuntimeError(f"no coordlab state found at {state_path}")
     if not state.active:
         raise RuntimeError(f"coordlab state is not active: {state_path}")
+    return normalize_state_topology(state)
+
+
+def normalize_state_topology(state: LabState) -> LabState:
+    if not state.topology.links:
+        state.shaping = ShapingInfo(
+            targets=state.shaping.targets,
+            desired={
+                target_name: _merge_desired_target_state(state.shaping, target_name)
+                for target_name in state.shaping.targets
+            },
+        )
+        return state
+    topology = topology_from_state(state)
+    state.shaping = build_shaping_info(topology, existing=state.shaping)
     return state
 
 
@@ -246,7 +347,19 @@ def build_shaper_from_state(state: LabState):
 
     require_tools(["tc"])
     router_pids = resolve_target_router_pids(state, kind="shaping")
-    return TrafficShaper(router_pids, state.shaping)
+    shaping = ShapingInfo(
+        targets={
+            name: target
+            for name, target in state.shaping.targets.items()
+            if target.shape_capable
+        },
+        desired={
+            name: desired
+            for name, desired in state.shaping.desired.items()
+            if name in state.shaping.targets and state.shaping.targets[name].shape_capable
+        },
+    )
+    return TrafficShaper(router_pids, shaping)
 
 
 def build_link_state_controller_from_state(state: LabState):

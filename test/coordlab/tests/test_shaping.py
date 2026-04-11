@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from lib.network_control import NetworkController
 from lib.shaping import ShapingState, TrafficShaper, parse_qdisc_show
-from lib.state import ShapingInfo, ShapingTargetInfo
+from lib.state import DesiredTargetState, LabState, NamespaceInfo, ShapingInfo, ShapingTargetInfo, TopologyInfo
 
 
 def shaping_config() -> ShapingInfo:
@@ -22,6 +23,49 @@ def shaping_config() -> ShapingInfo:
             "upstream-1": ShapingTargetInfo(router_ns="hub-up", tag="us-1", namespace="upstream-1", device="hubup-u1"),
             "upstream-2": ShapingTargetInfo(router_ns="hub-up", tag="us-2", namespace="upstream-2", device="hubup-u2"),
         },
+    )
+
+
+def controller_state() -> LabState:
+    return LabState(
+        phase=5,
+        active=True,
+        created_at="2026-04-10T00:00:00+00:00",
+        work_dir="/tmp/coordlab-test",
+        namespaces={
+            "hub": NamespaceInfo(pid=111, parent=None, role="hub"),
+            "node-1": NamespaceInfo(pid=112, parent="hub", role="node"),
+            "fbnotify": NamespaceInfo(pid=113, parent="hub", role="fbnotify"),
+        },
+        shaping=ShapingInfo(
+            targets={
+                "node-1": ShapingTargetInfo(
+                    router_ns="hub",
+                    tag="",
+                    namespace="node-1",
+                    device="hub-node1",
+                    kind="node",
+                    peer_device="node1-peer",
+                    shape_capable=True,
+                    display_name="node-1",
+                ),
+                "fbnotify": ShapingTargetInfo(
+                    router_ns="hub",
+                    tag="",
+                    namespace="fbnotify",
+                    device="hub-fbnotify",
+                    kind="service",
+                    peer_device="fbnotify-peer",
+                    shape_capable=False,
+                    display_name="fbnotify",
+                ),
+            },
+            desired={
+                "node-1": DesiredTargetState(),
+                "fbnotify": DesiredTargetState(),
+            },
+        ),
+        topology=TopologyInfo(base_cidr="10.99.0.0/24"),
     )
 
 
@@ -92,6 +136,74 @@ class TrafficShaperTest(unittest.TestCase):
         self.assertIsNone(state["node-2"])
         self.assertEqual(10.0, state["upstream-1"].loss_pct)
         self.assertIsNone(state["upstream-2"])
+
+    def test_network_controller_set_shaping_on_disconnected_target_updates_desired_only(self) -> None:
+        controller = NetworkController(controller_state())
+        commands: list[list[str]] = []
+
+        def fake_run(_pid: int, args: list[str]):
+            commands.append(args)
+            if args[:4] == ["ip", "-o", "link", "show"]:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout=f"5: {args[-1]}: <BROADCAST,MULTICAST> state DOWN\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected args: {args!r}")
+
+        with mock.patch("lib.network_control.netns.nsenter_run", side_effect=fake_run):
+            status = controller.set_shaping("node-1", delay_ms=120, loss_pct=3.5)
+
+        self.assertEqual(120, status.delay_ms)
+        self.assertEqual(3.5, status.loss_pct)
+        self.assertFalse(status.connected)
+        self.assertEqual(120, controller.state.shaping.desired["node-1"].delay_ms)
+        self.assertEqual(3.5, controller.state.shaping.desired["node-1"].loss_pct)
+        self.assertFalse(any(command[:3] == ["tc", "qdisc", "replace"] for command in commands))
+
+    def test_network_controller_reconnect_reapplies_desired_shaping(self) -> None:
+        controller = controller_state()
+        controller.shaping.desired["node-1"] = DesiredTargetState(connected=False, delay_ms=150, loss_pct=7.5)
+        live = {
+            ("node-1", "node1-peer"): False,
+            ("hub", "hub-node1"): False,
+        }
+        commands: list[list[str]] = []
+
+        def fake_run(pid: int, args: list[str]):
+            commands.append(args)
+            namespace = "hub" if pid == 111 else "node-1"
+            if args[:4] == ["ip", "-o", "link", "show"]:
+                connected = live[(namespace, args[-1])]
+                state = "UP" if connected else "DOWN"
+                flags = "BROADCAST,MULTICAST,UP,LOWER_UP" if connected else "BROADCAST,MULTICAST"
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout=f"5: {args[-1]}: <{flags}> state {state}\n", stderr="")
+            if args[:4] == ["ip", "link", "set", "dev"]:
+                live[(namespace, args[4])] = args[5] == "up"
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            if args[:3] == ["tc", "qdisc", "replace"]:
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            if args[:3] == ["tc", "qdisc", "show"]:
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="qdisc noqueue 0: root refcnt 2\n", stderr="")
+            raise AssertionError(f"unexpected args: {args!r}")
+
+        with mock.patch("lib.network_control.netns.nsenter_run", side_effect=fake_run):
+            status = NetworkController(controller).set_connected("node-1", True)
+
+        self.assertTrue(status.connected)
+        self.assertIn(["ip", "link", "set", "dev", "node1-peer", "up"], commands)
+        self.assertIn(["ip", "link", "set", "dev", "hub-node1", "up"], commands)
+        self.assertIn(
+            ["tc", "qdisc", "replace", "dev", "hub-node1", "root", "netem", "delay", "150ms", "loss", "7.5%"],
+            commands,
+        )
+
+    def test_network_controller_rejects_non_shape_capable_target(self) -> None:
+        controller = NetworkController(controller_state())
+
+        with self.assertRaisesRegex(ValueError, "does not support shaping"):
+            controller.set_shaping("fbnotify", delay_ms=10)
 
 
 if __name__ == "__main__":

@@ -101,11 +101,23 @@ class ShapingTargetInfo:
     tag: str
     namespace: str
     device: str
+    kind: str = ""
+    peer_device: str = ""
+    shape_capable: bool = True
+    display_name: str = ""
+
+
+@dataclass(slots=True)
+class DesiredTargetState:
+    connected: bool = True
+    delay_ms: int = 0
+    loss_pct: float = 0.0
 
 
 @dataclass(slots=True)
 class ShapingInfo:
     targets: dict[str, ShapingTargetInfo] = field(default_factory=dict)
+    desired: dict[str, DesiredTargetState] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -203,6 +215,10 @@ class LabState:
             targets={
                 name: ShapingTargetInfo(**info)
                 for name, info in shaping_raw.get("targets", {}).items()
+            },
+            desired={
+                name: DesiredTargetState(**info)
+                for name, info in shaping_raw.get("desired", {}).items()
             },
         )
         tokens = TokenInfo(**data.get("tokens", {}))

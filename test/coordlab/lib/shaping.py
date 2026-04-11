@@ -29,6 +29,7 @@ class ShapingTarget:
     tag: str
     namespace: str
     device: str
+    shape_capable: bool
 
 
 class TrafficShaper:
@@ -80,12 +81,15 @@ class TrafficShaper:
             raise ValueError(f"unknown target {target_name!r}")
         if target.router_ns not in self.router_pids:
             raise RuntimeError(f"missing router pid for shaping namespace {target.router_ns!r}")
+        if not target.shape_capable:
+            raise ValueError(f"target {target_name!r} does not support shaping")
         return ShapingTarget(
             target=target_name,
             router_ns=target.router_ns,
             tag=target.tag,
             namespace=target.namespace,
             device=target.device,
+            shape_capable=target.shape_capable,
         )
 
     def _run(self, target: ShapingTarget, args: list[str]) -> CompletedProcess[str]:

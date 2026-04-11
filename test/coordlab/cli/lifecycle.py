@@ -37,6 +37,7 @@ from lib.lab import (
     build_node_feature_summary,
     build_state,
     existing_lab_is_alive,
+    normalize_state_topology,
     namespace_shutdown_order,
     process_shutdown_order,
     validate_fbforward_config,
@@ -353,6 +354,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             return 1
         print(f"no coordlab state found at {state_path}")
         return 1
+    state = normalize_state_topology(state)
     if args.json:
         print_json(status_payload(state, workdir))
         return 0
