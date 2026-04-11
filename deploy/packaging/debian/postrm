@@ -3,6 +3,7 @@ set -eu
 
 SERVICE_USER="fbforward"
 SERVICE_GROUP="fbforward"
+DATA_DIR="/var/lib/fbforward"
 
 case "${1:-}" in
   remove|purge)
@@ -11,6 +12,9 @@ case "${1:-}" in
     fi
     if getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
       groupdel "$SERVICE_GROUP" || true
+    fi
+    if [ "${1:-}" = "purge" ] && [ -d "$DATA_DIR" ]; then
+      rm -rf "$DATA_DIR" || true
     fi
     ;;
 esac

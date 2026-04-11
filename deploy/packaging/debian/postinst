@@ -5,6 +5,7 @@ SERVICE_USER="fbforward"
 SERVICE_GROUP="fbforward"
 CONFIG_PATH="/etc/fbforward/config.yaml"
 CONFIG_TEMPLATE="/usr/share/fbforward/config.example.yaml"
+DATA_DIR="/var/lib/fbforward"
 
 if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
   groupadd --system "$SERVICE_GROUP"
@@ -24,6 +25,8 @@ if [ -f "$CONFIG_PATH" ]; then
   chown root:"$SERVICE_GROUP" "$CONFIG_PATH"
   chmod 0640 "$CONFIG_PATH"
 fi
+
+install -d -o root -g "$SERVICE_GROUP" -m 0750 "$DATA_DIR"
 
 systemctl daemon-reload || true
 systemctl enable --now fbforward.service || true
