@@ -8,7 +8,7 @@ This reference documents all configuration options for fbforward. For operationa
 
 ### YAML structure
 
-fbforward uses YAML for configuration. The top-level structure contains 15 top-level fields: the optional `hostname` plus 14 configuration sections.
+fbforward uses YAML for configuration. The top-level structure contains 16 top-level fields: the optional `hostname` plus 15 configuration sections.
 
 ```yaml
 hostname: fbforward-01           # Optional identifier
@@ -20,6 +20,7 @@ measurement: {...}                # fbmeasure probe settings
 scoring: {...}                    # Quality scoring algorithm
 switching: {...}                  # Upstream switching behavior
 control: {...}                    # Control plane (HTTP API, web UI)
+notify: {...}                     # fbnotify event delivery
 coordination: {...}               # Optional fbcoord participation
 logging: {...}                    # Log level
 shaping: {...}                    # Linux tc traffic shaping
@@ -205,7 +206,7 @@ forwarding:
         download_limit: 200m
 ```
 
-At least one of `upload_limit` or `download_limit` must be specified. See [Section 4.11](configuration-reference.md#411-shaping-section) for shaping architecture.
+At least one of `upload_limit` or `download_limit` must be specified. See [Section 4.12](configuration-reference.md#412-shaping-section) for shaping architecture.
 
 ---
 
@@ -360,7 +361,7 @@ upstreams:
       download_limit: 500m
 ```
 
-At least one of `upload_limit` or `download_limit` must be specified. Shaping applies to all traffic to/from the upstream's resolved IP addresses. See [Section 4.11](configuration-reference.md#411-shaping-section) for shaping architecture.
+At least one of `upload_limit` or `download_limit` must be specified. Shaping applies to all traffic to/from the upstream's resolved IP addresses. See [Section 4.12](configuration-reference.md#412-shaping-section) for shaping architecture.
 
 **Validation:**
 - `tag` must be unique across all upstreams
@@ -1004,7 +1005,50 @@ When `false`, `GET /metrics` returns 404.
 
 ---
 
-## 4.10 coordination section
+## 4.10 notify section
+
+The `notify` section configures outbound notification delivery through `fbnotify`.
+
+**Type:** Object
+
+**Required:** No
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable outbound notification delivery |
+| `endpoint` | string | empty | `fbnotify` event-ingress URL |
+| `key_id` | string | empty | `fbnotify` emitter key ID |
+| `token` | string | empty | fbnotify emitter token |
+| `source_instance` | string | empty | Source instance name reported to `fbnotify` |
+| `startup_grace_period` | duration | `5m` | Delay before unusable-state notifications may start |
+| `unusable_interval` | duration | `30s` | Continuous unusable duration before the first alert |
+| `notify_interval` | duration | `30m` | Minimum interval between repeated unusable reminders |
+
+**Example:**
+
+```yaml
+notify:
+  enabled: true
+  endpoint: http://10.99.0.30:8787/v1/events
+  key_id: fbnotify-key-id
+  token: replace-with-fbnotify-token
+  source_instance: node-1
+  startup_grace_period: 5m
+  unusable_interval: 30s
+  notify_interval: 30m
+```
+
+When `notify.enabled` is `true`:
+
+- `endpoint` must be a valid `http` or `https` URL
+- `key_id` must be a valid notify identifier
+- `token` must be non-empty and pass token validation
+- `source_instance` defaults to `hostname` or the OS hostname if omitted
+- `startup_grace_period`, `unusable_interval`, and `notify_interval` must each be greater than zero
+
+`notify.token` is intentionally omitted from sanitized runtime-config and control output.
+
+## 4.11 coordination section
 
 The `coordination` section enables optional participation in an external
 `fbcoord` service. When configured, operators can switch the runtime into
@@ -1044,7 +1088,7 @@ coordination:
 
 ---
 
-## 4.11 shaping section
+## 4.12 shaping section
 
 The `shaping` section configures Linux tc (traffic control) bandwidth shaping via netlink. Shaping is optional and requires `CAP_NET_ADMIN` capability.
 
@@ -1136,7 +1180,7 @@ fbforward will not create tc qdiscs or require `CAP_NET_ADMIN`.
 
 ---
 
-## 4.12 geoip section
+## 4.13 geoip section
 
 The `geoip` section configures optional MaxMind MMDB database management for ASN and country lookups. GeoIP data is used by `ip_log` for enriching connection records and by `firewall` for ASN/country-based rules.
 
@@ -1175,7 +1219,7 @@ geoip:
 
 ---
 
-## 4.13 ip_log section
+## 4.14 ip_log section
 
 The `ip_log` section configures optional persisted IP flow and rejection logging. When enabled, fbforward records each accepted flow's source IP, protocol, upstream tag, port, timestamps, byte counters, and (if GeoIP is available) ASN and country. When rejection logging is enabled, it also records scoped reject events such as firewall denies and connection/mapping-limit rejects.
 
@@ -1230,7 +1274,7 @@ Accepted flow-close records can be queried via the `QueryIPLog` RPC method. Reje
 
 ---
 
-## 4.14 firewall section
+## 4.15 firewall section
 
 The `firewall` section configures optional connection-level firewall rules. Rules are evaluated before upstream selection; denied flows are rejected immediately and never forwarded. When rejection logging is enabled under `ip_log`, deny decisions are also persisted as rejection records.
 

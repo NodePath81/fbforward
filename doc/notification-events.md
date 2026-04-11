@@ -83,7 +83,7 @@ notify:
   enabled: true
   endpoint: http://10.99.0.30:8787/v1/events
   key_id: notify-key
-  token_env: FBNOTIFY_TOKEN_NODE_1
+  token: replace-with-fbnotify-token
   source_instance: node-1
   startup_grace_period: 5m
   unusable_interval: 30s

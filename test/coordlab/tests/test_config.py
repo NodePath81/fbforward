@@ -94,7 +94,7 @@ class ConfigHelpersTest(unittest.TestCase):
                 fbnotify=coordconfig.FBNotifyNodeConfig(
                     endpoint="http://10.99.0.30:8787/v1/events",
                     key_id="notify-key-1",
-                    token_env="FBNOTIFY_TOKEN_NODE_1",
+                    token="notify-token-1",
                     source_instance="node-1",
                 ),
             )
@@ -104,7 +104,7 @@ class ConfigHelpersTest(unittest.TestCase):
         self.assertIn("enabled: true", rendered)
         self.assertIn("endpoint: http://10.99.0.30:8787/v1/events", rendered)
         self.assertIn('key_id: "notify-key-1"', rendered)
-        self.assertIn('token_env: "FBNOTIFY_TOKEN_NODE_1"', rendered)
+        self.assertIn('token: "notify-token-1"', rendered)
         self.assertIn("source_instance: node-1", rendered)
 
     def test_build_node_feature_info_uses_per_node_db_path_and_curated_firewall_rules(self) -> None:

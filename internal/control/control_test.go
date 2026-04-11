@@ -924,12 +924,11 @@ func TestRuntimeConfigSanitizesNotifyConfig(t *testing.T) {
 		Enabled:            true,
 		Endpoint:           "https://notify.example/v1/events",
 		KeyID:              "key-1",
-		TokenEnv:           "FBNOTIFY_TOKEN",
+		Token:              "secret-node-token",
 		SourceInstance:     "node-1",
 		StartupGracePeriod: config.Duration(10 * time.Minute),
 		UnusableInterval:   config.Duration(45 * time.Second),
 		NotifyInterval:     config.Duration(2 * time.Hour),
-		Token:              "secret-node-token",
 	}
 
 	cfg := server.getRuntimeConfig()

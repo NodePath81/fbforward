@@ -58,36 +58,34 @@ func TestCoordinationConfigIgnoresLegacyPoolAndNodeIDWithWarnings(t *testing.T) 
 	}
 }
 
-func TestNotifyConfigRequiresResolvedEnvTokenWhenEnabled(t *testing.T) {
+func TestNotifyConfigRequiresTokenWhenEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.Notify = NotifyConfig{
 		Enabled:  true,
 		Endpoint: "https://notify.example/v1/events",
 		KeyID:    "key-1",
-		TokenEnv: "FBNOTIFY_TOKEN",
 	}
 	cfg.setDefaults()
 	err := cfg.validate()
-	if err == nil || !strings.Contains(err.Error(), `notify token env "FBNOTIFY_TOKEN" is not set or empty`) {
-		t.Fatalf("expected missing notify env error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "notify.token is required when notify.enabled is true") {
+		t.Fatalf("expected missing notify token error, got %v", err)
 	}
 }
 
-func TestNotifyConfigResolvesTokenAndSourceInstance(t *testing.T) {
+func TestNotifyConfigAcceptsTokenAndDefaultsSourceInstance(t *testing.T) {
 	cfg := testConfig()
 	cfg.Notify = NotifyConfig{
 		Enabled:  true,
 		Endpoint: "https://notify.example/v1/events",
 		KeyID:    "key-1",
-		TokenEnv: "FBNOTIFY_TOKEN",
+		Token:    "node-token-abcdefghijklmnopqrstuvwxyz123456",
 	}
-	t.Setenv("FBNOTIFY_TOKEN", "node-token-abcdefghijklmnopqrstuvwxyz123456")
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("expected notify config to validate: %v", err)
 	}
 	if cfg.Notify.Token != "node-token-abcdefghijklmnopqrstuvwxyz123456" {
-		t.Fatalf("expected resolved notify token, got %q", cfg.Notify.Token)
+		t.Fatalf("expected notify token to be preserved, got %q", cfg.Notify.Token)
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -143,9 +141,8 @@ func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
 				Enabled:  true,
 				Endpoint: "https://notify.example/v1/events",
 				KeyID:    "key-1",
-				TokenEnv: "FBNOTIFY_TOKEN",
+				Token:    "node-token-abcdefghijklmnopqrstuvwxyz123456",
 			}
-			t.Setenv("FBNOTIFY_TOKEN", "node-token-abcdefghijklmnopqrstuvwxyz123456")
 			cfg.setDefaults()
 			tc.mut(&cfg)
 			err := cfg.validate()
@@ -156,6 +153,60 @@ func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
 				t.Fatalf("expected %q in error, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestNotifyConfigRejectsInvalidToken(t *testing.T) {
+	cfg := testConfig()
+	cfg.Notify = NotifyConfig{
+		Enabled:  true,
+		Endpoint: "https://notify.example/v1/events",
+		KeyID:    "key-1",
+		Token:    "short-token",
+	}
+	cfg.setDefaults()
+	err := cfg.validate()
+	if err == nil {
+		t.Fatalf("expected invalid token validation error")
+	}
+	if !strings.Contains(err.Error(), "notify.token") {
+		t.Fatalf("expected notify.token validation error, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsLegacyNotifyTokenEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	raw := `
+hostname: node-1
+forwarding:
+  listeners:
+    - bind_port: 9000
+      protocol: tcp
+upstreams:
+  - tag: us-1
+    destination:
+      host: 203.0.113.10
+    measurement:
+      host: 203.0.113.10
+      port: 9876
+control:
+  auth_token: "0123456789abcdef0123456789abcdef"
+notify:
+  enabled: true
+  endpoint: https://notify.example/v1/events
+  key_id: key-1
+  token_env: FBNOTIFY_TOKEN
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatalf("expected legacy notify.token_env to be rejected")
+	}
+	if !strings.Contains(err.Error(), "notify.token_env") {
+		t.Fatalf("expected notify.token_env removed-key error, got %v", err)
 	}
 }
 

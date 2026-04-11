@@ -45,7 +45,7 @@ class GeneratedTokens:
 class FBNotifyNodeConfig:
     endpoint: str
     key_id: str
-    token_env: str
+    token: str
     source_instance: str
 
 
@@ -175,7 +175,7 @@ def generate_fbforward_config(
               enabled: true
               endpoint: {fbnotify.endpoint}
               key_id: "{fbnotify.key_id}"
-              token_env: "{fbnotify.token_env}"
+              token: "{fbnotify.token}"
               source_instance: {fbnotify.source_instance}
             """
         )

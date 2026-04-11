@@ -26,7 +26,6 @@ from lib.fbcoord import (
     verify_fbforward_rpc_in_namespace,
 )
 from lib.fbnotify import (
-    FBNOTIFY_NODE_TOKEN_ENVS,
     bootstrap_fbnotify,
     fbnotify_ingest_url,
     fbnotify_namespace_base_url,
@@ -207,19 +206,16 @@ def cmd_up(args: argparse.Namespace) -> int:
         )
 
         config_paths: dict[str, Path] = {}
-        node_envs: dict[str, dict[str, str]] = {"node-1": {}, "node-2": {}}
         for node in ("node-1", "node-2"):
             fbnotify_node_cfg = None
             if fbnotify_internal_ready:
                 emitter = fbnotify_info.emitters[node]
-                token_env = FBNOTIFY_NODE_TOKEN_ENVS[node]
                 fbnotify_node_cfg = coordconfig.FBNotifyNodeConfig(
                     endpoint=fbnotify_info.internal_ingest_url,
                     key_id=emitter.key_id,
-                    token_env=token_env,
+                    token=emitter.token,
                     source_instance=emitter.source_instance,
                 )
-                node_envs[node][token_env] = emitter.token
             config_paths[node] = coordconfig.generate_fbforward_config(
                 node,
                 topology,
@@ -228,21 +224,19 @@ def cmd_up(args: argparse.Namespace) -> int:
                 fbnotify=fbnotify_node_cfg,
             )
         for node, config_path in config_paths.items():
-            validate_fbforward_config(config_path, env=node_envs[node] or None)
+            validate_fbforward_config(config_path)
 
         manager.start(
             topology.namespaces["node-1"].pid,
             "node-1",
             [str(FBFORWARD_BIN), "run", "--config", str(config_paths["node-1"])],
             "fbforward-node-1",
-            env=node_envs["node-1"] or None,
         )
         manager.start(
             topology.namespaces["node-2"].pid,
             "node-2",
             [str(FBFORWARD_BIN), "run", "--config", str(config_paths["node-2"])],
             "fbforward-node-2",
-            env=node_envs["node-2"] or None,
         )
 
         verify_fbforward_rpc_in_namespace(topology, manager, "node-1", tokens.control_token)

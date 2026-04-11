@@ -20,10 +20,6 @@ from .state import FBNotifyEmitterInfo, FBNotifyInfo, LabState
 FBNOTIFY_SOURCE_INSTANCE = "fbcoord"
 FBNOTIFY_TARGET_NAME = "coordlab-capture"
 FBNOTIFY_ROUTE_NAME = "coordlab-default"
-FBNOTIFY_NODE_TOKEN_ENVS = {
-    "node-1": "FBNOTIFY_TOKEN_NODE_1",
-    "node-2": "FBNOTIFY_TOKEN_NODE_2",
-}
 
 
 class NotificationWaitTimeout(RuntimeError):

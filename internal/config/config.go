@@ -346,12 +346,11 @@ type NotifyConfig struct {
 	Enabled            bool     `yaml:"enabled"`
 	Endpoint           string   `yaml:"endpoint"`
 	KeyID              string   `yaml:"key_id"`
-	TokenEnv           string   `yaml:"token_env"`
+	Token              string   `yaml:"token"`
 	SourceInstance     string   `yaml:"source_instance"`
 	StartupGracePeriod Duration `yaml:"startup_grace_period"`
 	UnusableInterval   Duration `yaml:"unusable_interval"`
 	NotifyInterval     Duration `yaml:"notify_interval"`
-	Token              string   `yaml:"-"`
 }
 
 type CoordinationConfig struct {
@@ -465,6 +464,7 @@ func detectRemovedConfigPaths(raw []byte) []string {
 	collectRemovedTree(root, []string{"measurement", "protocols", "udp", "target_bandwidth"}, &removed)
 	collectSpecificRemovedKeys(root, []string{"measurement", "protocols", "tcp"}, []string{"alternate", "chunk_size", "sample_size", "sample_count"}, &removed)
 	collectSpecificRemovedKeys(root, []string{"measurement", "protocols", "udp"}, []string{"chunk_size", "sample_size", "sample_count"}, &removed)
+	collectSpecificRemovedKeys(root, []string{"notify"}, []string{"token_env"}, &removed)
 	collectRemovedTree(root, []string{"scoring", "reference", "tcp", "bandwidth"}, &removed)
 	collectRemovedTree(root, []string{"scoring", "reference", "udp", "bandwidth"}, &removed)
 	collectRemovedTree(root, []string{"scoring", "utilization_penalty"}, &removed)
@@ -889,9 +889,8 @@ func (c *Config) validate() error {
 
 	c.Notify.Endpoint = strings.TrimSpace(c.Notify.Endpoint)
 	c.Notify.KeyID = strings.TrimSpace(c.Notify.KeyID)
-	c.Notify.TokenEnv = strings.TrimSpace(c.Notify.TokenEnv)
+	c.Notify.Token = strings.TrimSpace(c.Notify.Token)
 	c.Notify.SourceInstance = strings.TrimSpace(c.Notify.SourceInstance)
-	c.Notify.Token = ""
 	if c.Notify.Enabled {
 		if c.Notify.StartupGracePeriod.Duration() <= 0 {
 			return errors.New("notify.startup_grace_period must be > 0")
@@ -915,17 +914,12 @@ func (c *Config) validate() error {
 		if err := validateNotifyIdentifier(c.Notify.KeyID, "notify.key_id"); err != nil {
 			return err
 		}
-		if c.Notify.TokenEnv == "" {
-			return errors.New("notify.token_env is required when notify.enabled is true")
+		if c.Notify.Token == "" {
+			return errors.New("notify.token is required when notify.enabled is true")
 		}
-		token := strings.TrimSpace(os.Getenv(c.Notify.TokenEnv))
-		if token == "" {
-			return fmt.Errorf("notify token env %q is not set or empty", c.Notify.TokenEnv)
-		}
-		if err := validateAuthTokenField(token, "notify.token_env"); err != nil {
+		if err := validateAuthTokenField(c.Notify.Token, "notify.token"); err != nil {
 			return err
 		}
-		c.Notify.Token = token
 		if c.Notify.SourceInstance == "" {
 			c.Notify.SourceInstance = strings.TrimSpace(c.Hostname)
 			if c.Notify.SourceInstance == "" {

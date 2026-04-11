@@ -20,7 +20,6 @@ from lib.build import ensure_fbforward_binaries, ensure_fbnotify_assets, ensure_
 from lib.env import parse_client_specs
 from lib.fbcoord import mint_fbcoord_node_tokens
 from lib.fbnotify import (
-    FBNOTIFY_NODE_TOKEN_ENVS,
     NotificationWaitTimeout,
     bootstrap_fbnotify,
     build_fbnotify_ingress_headers,
@@ -370,10 +369,6 @@ class CoordlabHelpersTest(unittest.TestCase):
         self.assertEqual("1775779200", headers["X-FBNotify-Timestamp"])
         self.assertEqual("application/json", headers["Content-Type"])
         self.assertTrue(headers["X-FBNotify-Signature"])
-
-    def test_fixed_fbnotify_node_token_env_names(self) -> None:
-        self.assertEqual("FBNOTIFY_TOKEN_NODE_1", FBNOTIFY_NODE_TOKEN_ENVS["node-1"])
-        self.assertEqual("FBNOTIFY_TOKEN_NODE_2", FBNOTIFY_NODE_TOKEN_ENVS["node-2"])
 
     def test_wait_for_ntfybox_messages_matches_attribute_filters(self) -> None:
         state = LabState(
