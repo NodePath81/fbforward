@@ -74,6 +74,10 @@ The UI does not override picks, evict nodes, or push configuration.
 fbcoord can optionally emit outbound notification events to `fbnotify` when
 the `FBNOTIFY_*` Worker bindings are configured. The current emitted event set
 is documented in the [notification event reference](../notification-events.md).
+`pool.node_aborted` is delayed by default for 30 seconds before delivery, and
+the pending notification is dropped if the node recovers before the delay
+expires. Operators can override the delay with
+`FBCOORD_ABORTED_NOTIFY_DELAY_MS`.
 
 ---
 

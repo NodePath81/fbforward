@@ -27,6 +27,9 @@ preview_id = ""
 directory = "./ui/dist"
 binding = "ASSETS"
 
+[vars]
+FBCOORD_ABORTED_NOTIFY_DELAY_MS = "30000"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PoolDurableObject"]

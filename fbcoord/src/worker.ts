@@ -18,6 +18,7 @@ export interface Env {
   FBNOTIFY_KEY_ID?: string;
   FBNOTIFY_TOKEN?: string;
   FBNOTIFY_SOURCE_INSTANCE?: string;
+  FBCOORD_ABORTED_NOTIFY_DELAY_MS?: string;
   ASSETS?: Fetcher;
 }
 

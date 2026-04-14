@@ -187,8 +187,12 @@ Trigger:
   - heartbeat timeout
   - unexpected disconnect
   - Durable Object load normalization of persisted `online` state
+- delivery is delayed by `FBCOORD_ABORTED_NOTIFY_DELAY_MS`, which defaults to
+  30 seconds
 
 Graceful teardown to `offline` does not emit this event.
+If the node returns to a non-`aborted` state before the delay expires, the
+pending notification is discarded.
 
 Attributes:
 

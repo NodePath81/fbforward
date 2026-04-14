@@ -14,12 +14,14 @@ import { MAX_UPSTREAMS, validateNodeId, validateUpstreamTag } from '../validatio
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 const DEFAULT_STALE_AFTER_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
+const DEFAULT_ABORTED_NOTIFICATION_DELAY_MS = 30_000;
 const MESSAGE_WINDOW_MS = 5_000;
 const MAX_MESSAGES_PER_WINDOW = 10;
 const RECONNECT_THROTTLE_MS = 5_000;
 const HELLO_TIMEOUT_MS = 5_000;
 const TEARDOWN_CLOSE_TIMEOUT_MS = 2_000;
 const ROSTER_KEY = 'roster';
+const ABORTED_NOTIFICATION_QUEUE_KEY = 'aborted_notification_queue';
 
 export const AUTHENTICATED_NODE_ID_HEADER = 'x-fbcoord-node-id';
 
@@ -43,6 +45,14 @@ interface StoredRosterEntry {
 }
 
 type StoredRoster = Record<string, StoredRosterEntry>;
+
+interface PendingAbortedNotificationRecord {
+  node_id: string;
+  cause: AbortedNodeNotification['cause'];
+  due_at: number;
+}
+
+type StoredPendingAbortedNotificationQueue = Record<string, PendingAbortedNotificationRecord>;
 
 export interface PoolNodeSnapshot {
   node_id: string;
@@ -122,6 +132,15 @@ export class ConnectionRateLimiter {
 
 function parseString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
+}
+
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+  const trimmed = value?.trim() ?? '';
+  if (!/^\d+$/.test(trimmed)) {
+    return fallback;
+  }
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
 }
 
 function cloneStoredRoster(roster: StoredRoster): StoredRoster {
@@ -248,6 +267,10 @@ export class PoolState {
 
   exportRoster(): StoredRoster {
     return cloneStoredRoster(this.roster);
+  }
+
+  isAborted(nodeId: string): boolean {
+    return this.roster[nodeId]?.status === 'aborted';
   }
 
   normalizeLoadedRoster(): AbortedNodeNotification[] {
@@ -566,6 +589,7 @@ function logAbortedNotificationTrigger(
 
 interface PoolEnv extends NotifyEnv {
   FBCOORD_TOKEN_STORE?: DurableObjectNamespace;
+  FBCOORD_ABORTED_NOTIFY_DELAY_MS?: string;
 }
 
 export class PoolDurableObject {
@@ -575,11 +599,17 @@ export class PoolDurableObject {
   private readonly notifier: Notifier;
   private readonly tokenStore: DurableObjectStub | null;
   private readonly fallbackNotifyEnv: NotifyEnv;
+  private readonly abortedNotifyDelayMs: number;
+  private pendingAbortedNotifications = new Map<string, PendingAbortedNotificationRecord>();
   private loadPromise: Promise<void> | null = null;
 
   constructor(state: DurableObjectState, env: PoolEnv) {
     this.durableState = state;
     this.storage = state.storage;
+    this.abortedNotifyDelayMs = parseNonNegativeInteger(
+      env.FBCOORD_ABORTED_NOTIFY_DELAY_MS,
+      DEFAULT_ABORTED_NOTIFICATION_DELAY_MS
+    );
     this.fallbackNotifyEnv = {
       FBNOTIFY_URL: env.FBNOTIFY_URL,
       FBNOTIFY_KEY_ID: env.FBNOTIFY_KEY_ID,
@@ -595,6 +625,10 @@ export class PoolDurableObject {
       fetch,
       this.tokenStore ? async () => await this.loadNotifyConfig() : null
     );
+  }
+
+  private now(): number {
+    return Date.now();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -614,11 +648,12 @@ export class PoolDurableObject {
       }
 
       const result = this.state.revokeNode(nodeId);
-      await this.persistIfNeeded(result.rosterChanged);
+      const pendingChanged = this.removePendingAbortedNotification(nodeId);
+      await this.persistStateIfNeeded(result.rosterChanged, pendingChanged);
       if (result.changed) {
         this.broadcastPick();
       }
-      await this.syncStaleAlarm();
+      await this.syncAlarm();
       result.connection?.close(1008, 'revoked');
 
       return Response.json({ ok: true, removed: result.removed });
@@ -651,22 +686,40 @@ export class PoolDurableObject {
       this.loadPromise = (async () => {
         const stored = await this.storage.get<StoredRoster>(ROSTER_KEY);
         this.state.hydrateRoster(stored ?? {});
+        const pendingStored = await this.storage.get<StoredPendingAbortedNotificationQueue>(ABORTED_NOTIFICATION_QUEUE_KEY);
+        this.pendingAbortedNotifications = new Map(Object.entries(pendingStored ?? {}));
         const abortedNodes = this.state.normalizeLoadedRoster();
-        if (abortedNodes.length > 0) {
-          await this.persistIfNeeded(true);
-          this.scheduleAbortedNotifications(abortedNodes);
+        const pendingChanged = this.enqueueAbortedNotifications(abortedNodes);
+        const dueResult = this.processPendingAbortedNotifications();
+        await this.persistStateIfNeeded(abortedNodes.length > 0, pendingChanged || dueResult.changed);
+        if (dueResult.dueNodes.length > 0) {
+          this.durableState.waitUntil(this.dispatchAbortedNotifications(dueResult.dueNodes));
         }
-        await this.syncStaleAlarm();
+        await this.syncAlarm();
       })();
     }
     await this.loadPromise;
   }
 
-  private async persistIfNeeded(changed: boolean): Promise<void> {
-    if (!changed) {
+  private async persistStateIfNeeded(rosterChanged: boolean, pendingChanged: boolean): Promise<void> {
+    if (!rosterChanged && !pendingChanged) {
       return;
     }
-    await this.storage.put(ROSTER_KEY, this.state.exportRoster());
+    const writes: Promise<unknown>[] = [];
+    if (rosterChanged) {
+      writes.push(this.storage.put(ROSTER_KEY, this.state.exportRoster()));
+    }
+    if (pendingChanged) {
+      if (this.pendingAbortedNotifications.size === 0) {
+        writes.push(this.storage.delete(ABORTED_NOTIFICATION_QUEUE_KEY));
+      } else {
+        writes.push(this.storage.put(
+          ABORTED_NOTIFICATION_QUEUE_KEY,
+          Object.fromEntries(this.pendingAbortedNotifications.entries())
+        ));
+      }
+    }
+    await Promise.all(writes);
   }
 
   private broadcastPick(): void {
@@ -690,25 +743,92 @@ export class PoolDurableObject {
   }
 
   private async flushReapResult(result: ReapResult): Promise<void> {
-    await this.persistIfNeeded(result.rosterChanged);
+    const pendingChanged = this.enqueueAbortedNotifications(result.aborted_nodes ?? []);
+    const dueResult = this.processPendingAbortedNotifications();
+    await this.persistStateIfNeeded(result.rosterChanged, pendingChanged || dueResult.changed);
     if (result.changed) {
       this.broadcastPick();
     }
-    this.scheduleAbortedNotifications(result.aborted_nodes ?? []);
     for (const connection of result.connectionsToClose) {
       connection.close(1001, 'stale');
     }
-    await this.syncStaleAlarm();
+    if (dueResult.dueNodes.length > 0) {
+      this.durableState.waitUntil(this.dispatchAbortedNotifications(dueResult.dueNodes));
+    }
+    await this.syncAlarm();
   }
 
-  private scheduleAbortedNotifications(abortedNodes: AbortedNodeNotification[]): void {
+  private enqueueAbortedNotifications(abortedNodes: AbortedNodeNotification[]): boolean {
     if (abortedNodes.length === 0) {
-      return;
+      return false;
     }
-    this.durableState.waitUntil(this.dispatchAbortedNotifications(abortedNodes));
+
+    const dueAt = this.now() + this.abortedNotifyDelayMs;
+    let changed = false;
+    for (const node of abortedNodes) {
+      const next = {
+        node_id: node.node_id,
+        cause: node.cause,
+        due_at: dueAt
+      } satisfies PendingAbortedNotificationRecord;
+      const current = this.pendingAbortedNotifications.get(node.node_id);
+      if (!current || current.cause !== next.cause || current.due_at !== next.due_at) {
+        this.pendingAbortedNotifications.set(node.node_id, next);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private removePendingAbortedNotification(nodeId: string): boolean {
+    return this.pendingAbortedNotifications.delete(nodeId);
+  }
+
+  private processPendingAbortedNotifications(): { dueNodes: AbortedNodeNotification[]; changed: boolean } {
+    const now = this.now();
+    const dueNodes: Array<AbortedNodeNotification & { due_at: number }> = [];
+    let changed = false;
+
+    for (const [nodeId, record] of this.pendingAbortedNotifications.entries()) {
+      if (!this.state.isAborted(nodeId)) {
+        this.pendingAbortedNotifications.delete(nodeId);
+        changed = true;
+        continue;
+      }
+
+      if (record.due_at > now) {
+        continue;
+      }
+
+      dueNodes.push({
+        node_id: record.node_id,
+        cause: record.cause,
+        due_at: record.due_at
+      });
+      this.pendingAbortedNotifications.delete(nodeId);
+      changed = true;
+    }
+
+    dueNodes.sort((left, right) => {
+      if (left.due_at !== right.due_at) {
+        return left.due_at - right.due_at;
+      }
+      return left.node_id.localeCompare(right.node_id);
+    });
+
+    return {
+      dueNodes: dueNodes.map(node => ({
+        node_id: node.node_id,
+        cause: node.cause
+      })),
+      changed
+    };
   }
 
   private async dispatchAbortedNotifications(abortedNodes: AbortedNodeNotification[]): Promise<void> {
+    if (abortedNodes.length === 0) {
+      return;
+    }
     const notifyConfig = await this.notifier.status();
     logAbortedNotificationTrigger(abortedNodes, notifyConfig);
     if (!notifyConfig.configured) {
@@ -781,12 +901,16 @@ export class PoolDurableObject {
 
       const result = this.state.abortConnection(authenticatedNodeId, socket);
       phase = 'closed';
-      await this.persistIfNeeded(result.rosterChanged);
+      const pendingChanged = this.enqueueAbortedNotifications(result.aborted_nodes ?? []);
+      const dueResult = this.processPendingAbortedNotifications();
+      await this.persistStateIfNeeded(result.rosterChanged, pendingChanged || dueResult.changed);
       if (result.changed) {
         this.broadcastPick();
       }
-      this.scheduleAbortedNotifications(result.aborted_nodes ?? []);
-      await this.syncStaleAlarm();
+      if (dueResult.dueNodes.length > 0) {
+        this.durableState.waitUntil(this.dispatchAbortedNotifications(dueResult.dueNodes));
+      }
+      await this.syncAlarm();
     };
 
     socket.addEventListener('message', event => {
@@ -868,8 +992,9 @@ export class PoolDurableObject {
         return;
       }
 
-      await this.persistIfNeeded(result.rosterChanged);
-      await this.syncStaleAlarm();
+      const pendingChanged = this.removePendingAbortedNotification(authenticatedNodeId);
+      await this.persistStateIfNeeded(result.rosterChanged, pendingChanged);
+      await this.syncAlarm();
       setPhase('online');
       sendJson(socket, {
         type: 'ready',
@@ -902,8 +1027,8 @@ export class PoolDurableObject {
 
     if (message.type === 'preferences') {
       const result = this.state.setPreferences(authenticatedNodeId, socket, message.upstreams, message.active_upstream ?? null);
-      await this.persistIfNeeded(result.rosterChanged);
-      await this.syncStaleAlarm();
+      await this.persistStateIfNeeded(result.rosterChanged, false);
+      await this.syncAlarm();
       if (result.changed) {
         this.broadcastPick();
       }
@@ -912,15 +1037,16 @@ export class PoolDurableObject {
 
     if (message.type === 'heartbeat') {
       const result = this.state.heartbeat(authenticatedNodeId, socket);
-      await this.persistIfNeeded(result.rosterChanged);
-      await this.syncStaleAlarm();
+      await this.persistStateIfNeeded(result.rosterChanged, false);
+      await this.syncAlarm();
       return;
     }
 
     if (message.type === 'bye') {
       const result = this.state.acceptTeardown(authenticatedNodeId, socket);
-      await this.persistIfNeeded(result.rosterChanged);
-      await this.syncStaleAlarm();
+      const pendingChanged = this.removePendingAbortedNotification(authenticatedNodeId);
+      await this.persistStateIfNeeded(result.rosterChanged, pendingChanged);
+      await this.syncAlarm();
       setPhase('teardown_accepted');
       if (result.changed) {
         this.broadcastPick();
@@ -937,8 +1063,8 @@ export class PoolDurableObject {
     await this.flushReapResult(this.state.reapStaleNodes());
   }
 
-  private async syncStaleAlarm(): Promise<void> {
-    const deadline = this.state.nextStaleDeadline();
+  private async syncAlarm(): Promise<void> {
+    const deadline = this.nextAlarmDeadline();
     const currentAlarm = await this.storage.getAlarm();
     if (deadline === null) {
       if (currentAlarm !== null) {
@@ -950,5 +1076,27 @@ export class PoolDurableObject {
       return;
     }
     await this.storage.setAlarm(deadline);
+  }
+
+  private nextAlarmDeadline(): number | null {
+    const staleDeadline = this.state.nextStaleDeadline();
+    let abortedDeadline: number | null = null;
+
+    for (const record of this.pendingAbortedNotifications.values()) {
+      if (!this.state.isAborted(record.node_id)) {
+        continue;
+      }
+      if (abortedDeadline === null || record.due_at < abortedDeadline) {
+        abortedDeadline = record.due_at;
+      }
+    }
+
+    if (staleDeadline === null) {
+      return abortedDeadline;
+    }
+    if (abortedDeadline === null) {
+      return staleDeadline;
+    }
+    return Math.min(staleDeadline, abortedDeadline);
   }
 }
