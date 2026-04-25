@@ -358,10 +358,16 @@ func (m *UpstreamManager) SetCoordinationConnected(connected bool) {
 func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if version <= m.coordVersion {
+	if version < m.coordVersion {
 		return false, errors.New("stale coordination version")
 	}
 	tag = strings.TrimSpace(tag)
+	if version == m.coordVersion && !m.coordFallback {
+		if tag == m.coordTag {
+			return false, nil
+		}
+		return false, errors.New("stale coordination version")
+	}
 	if tag == "" {
 		m.coordVersion = version
 		m.activateCoordinationFallbackLocked("coordination_fallback")

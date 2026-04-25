@@ -14,6 +14,7 @@ import { MAX_UPSTREAMS, validateNodeId, validateUpstreamTag } from '../validatio
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 const DEFAULT_STALE_AFTER_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
+const PICK_REBROADCAST_INTERVAL_MS = DEFAULT_HEARTBEAT_INTERVAL_MS;
 const DEFAULT_ABORTED_NOTIFICATION_DELAY_MS = 30_000;
 const MESSAGE_WINDOW_MS = 5_000;
 const MAX_MESSAGES_PER_WINDOW = 10;
@@ -602,6 +603,7 @@ export class PoolDurableObject {
   private readonly abortedNotifyDelayMs: number;
   private pendingAbortedNotifications = new Map<string, PendingAbortedNotificationRecord>();
   private loadPromise: Promise<void> | null = null;
+  private pickRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(state: DurableObjectState, env: PoolEnv) {
     this.durableState = state;
@@ -654,6 +656,7 @@ export class PoolDurableObject {
         this.broadcastPick();
       }
       await this.syncAlarm();
+      this.syncPickRefreshTimer();
       result.connection?.close(1008, 'revoked');
 
       return Response.json({ ok: true, removed: result.removed });
@@ -696,6 +699,7 @@ export class PoolDurableObject {
           this.durableState.waitUntil(this.dispatchAbortedNotifications(dueResult.dueNodes));
         }
         await this.syncAlarm();
+        this.syncPickRefreshTimer();
       })();
     }
     await this.loadPromise;
@@ -723,7 +727,10 @@ export class PoolDurableObject {
   }
 
   private broadcastPick(): void {
-    const snapshot = this.state.currentPick();
+    this.broadcastPickSnapshot(this.state.currentPick());
+  }
+
+  private broadcastPickSnapshot(snapshot: PoolSnapshot): void {
     for (const connection of this.state.connectionsList()) {
       connection.send(JSON.stringify({
         type: 'pick',
@@ -756,6 +763,7 @@ export class PoolDurableObject {
       this.durableState.waitUntil(this.dispatchAbortedNotifications(dueResult.dueNodes));
     }
     await this.syncAlarm();
+    this.syncPickRefreshTimer();
   }
 
   private enqueueAbortedNotifications(abortedNodes: AbortedNodeNotification[]): boolean {
@@ -995,6 +1003,7 @@ export class PoolDurableObject {
       const pendingChanged = this.removePendingAbortedNotification(authenticatedNodeId);
       await this.persistStateIfNeeded(result.rosterChanged, pendingChanged);
       await this.syncAlarm();
+      this.syncPickRefreshTimer();
       setPhase('online');
       sendJson(socket, {
         type: 'ready',
@@ -1029,6 +1038,7 @@ export class PoolDurableObject {
       const result = this.state.setPreferences(authenticatedNodeId, socket, message.upstreams, message.active_upstream ?? null);
       await this.persistStateIfNeeded(result.rosterChanged, false);
       await this.syncAlarm();
+      this.syncPickRefreshTimer();
       if (result.changed) {
         this.broadcastPick();
       }
@@ -1039,6 +1049,7 @@ export class PoolDurableObject {
       const result = this.state.heartbeat(authenticatedNodeId, socket);
       await this.persistStateIfNeeded(result.rosterChanged, false);
       await this.syncAlarm();
+      this.syncPickRefreshTimer();
       return;
     }
 
@@ -1047,6 +1058,7 @@ export class PoolDurableObject {
       const pendingChanged = this.removePendingAbortedNotification(authenticatedNodeId);
       await this.persistStateIfNeeded(result.rosterChanged, pendingChanged);
       await this.syncAlarm();
+      this.syncPickRefreshTimer();
       setPhase('teardown_accepted');
       if (result.changed) {
         this.broadcastPick();
@@ -1061,6 +1073,31 @@ export class PoolDurableObject {
   async alarm(): Promise<void> {
     await this.ensureLoaded();
     await this.flushReapResult(this.state.reapStaleNodes());
+  }
+
+  private syncPickRefreshTimer(): void {
+    if (this.state.nodeCount() === 0) {
+      this.stopPickRefreshTimer();
+      return;
+    }
+    if (this.pickRefreshTimer !== null) {
+      return;
+    }
+    this.pickRefreshTimer = setInterval(() => {
+      if (this.state.nodeCount() === 0) {
+        this.stopPickRefreshTimer();
+        return;
+      }
+      this.broadcastPick();
+    }, PICK_REBROADCAST_INTERVAL_MS);
+  }
+
+  private stopPickRefreshTimer(): void {
+    if (this.pickRefreshTimer === null) {
+      return;
+    }
+    clearInterval(this.pickRefreshTimer);
+    this.pickRefreshTimer = null;
   }
 
   private async syncAlarm(): Promise<void> {

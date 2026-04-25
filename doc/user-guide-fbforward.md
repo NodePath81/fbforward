@@ -52,14 +52,16 @@ fbforward supports three upstream selection modes:
 plane RPC method `SetUpstream` with `mode: "coordination"`. fbforward then
 connects to `fbcoord`, submits its sorted local upstream preference list, and
 applies the coordinated upstream returned by `fbcoord` when that pick is
-locally usable.
+locally usable. fbcoord periodically reasserts the current pick, so a node that
+temporarily falls back to local auto-selection can return to the coordinated
+upstream without waiting for the coordinator to choose a new version.
 
 Mode behavior:
 - Startup mode is always auto
 - Manual mode is entered only when operator calls `SetUpstream` RPC with `mode: "manual"`
 - Coordination mode is entered only when operator calls `SetUpstream` RPC with `mode: "coordination"` and coordination is configured
 - In coordination mode, a valid coordinated pick overrides local auto selection for new flows
-- If `fbcoord` returns no upstream, disconnects, or returns a locally invalid upstream, fbforward remains in coordination mode but falls back to local auto-selection behavior
+- If `fbcoord` returns no upstream, disconnects, or returns a locally invalid upstream, fbforward remains in coordination mode but falls back to local auto-selection behavior; repeated coordinator `pick` messages are treated as refreshes of the current shared state
 - The local Web UI exposes `auto`, `manual`, and `coordination` mode buttons when enabled
 
 Coordination configuration now effectively requires only:

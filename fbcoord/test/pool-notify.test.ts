@@ -5,6 +5,7 @@ import { createDurableObjectState, MemoryStorage } from './support';
 
 class FakeSocket {
   private readonly listeners = new Map<string, Array<(event?: { data?: unknown }) => void>>();
+  readonly sent: string[] = [];
 
   addEventListener(type: string, handler: (event?: { data?: unknown }) => void): void {
     const current = this.listeners.get(type) ?? [];
@@ -14,7 +15,9 @@ class FakeSocket {
 
   accept(): void {}
 
-  send(): void {}
+  send(data: string): void {
+    this.sent.push(String(data));
+  }
 
   close(): void {
     for (const handler of this.listeners.get('close') ?? []) {
@@ -53,8 +56,17 @@ function createPool(
     ensureLoaded(): Promise<void>;
     persistStateIfNeeded(rosterChanged: boolean, pendingChanged: boolean): Promise<void>;
     syncAlarm(): Promise<void>;
+    syncPickRefreshTimer(): void;
     state: {
       registerConnection(nodeId: string, connection: WebSocket): { rosterChanged: boolean };
+      setPreferences(nodeId: string, connection: WebSocket, upstreams: string[], activeUpstream: string | null): {
+        changed: boolean;
+        rosterChanged: boolean;
+      };
+      acceptTeardown(nodeId: string, connection: WebSocket): {
+        changed: boolean;
+        rosterChanged: boolean;
+      };
     };
   };
   flush(): Promise<void>;
@@ -71,8 +83,17 @@ function createPool(
       ensureLoaded(): Promise<void>;
       persistStateIfNeeded(rosterChanged: boolean, pendingChanged: boolean): Promise<void>;
       syncAlarm(): Promise<void>;
+      syncPickRefreshTimer(): void;
       state: {
         registerConnection(nodeId: string, connection: WebSocket): { rosterChanged: boolean };
+        setPreferences(nodeId: string, connection: WebSocket, upstreams: string[], activeUpstream: string | null): {
+          changed: boolean;
+          rosterChanged: boolean;
+        };
+        acceptTeardown(nodeId: string, connection: WebSocket): {
+          changed: boolean;
+          rosterChanged: boolean;
+        };
       };
     },
     flush
@@ -251,5 +272,54 @@ describe('PoolDurableObject notifications', () => {
         cause: 'load-normalization'
       }
     });
+  });
+
+  it('periodically rebroadcasts the current pick while nodes remain online', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE_TIME);
+
+    const storage = new MemoryStorage();
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 202 }));
+    const { pool, state, flush } = createPool(storage, {}, fetchMock);
+
+    await state.ensureLoaded();
+    const socket = new FakeSocket();
+    const connection = socket as unknown as WebSocket;
+
+    const registered = state.state.registerConnection('node-1', connection);
+    expect(registered.rosterChanged).toBe(true);
+    await state.persistStateIfNeeded(registered.rosterChanged, false);
+
+    const preferences = state.state.setPreferences('node-1', connection, ['us-a', 'us-b'], null);
+    expect(preferences.changed).toBe(true);
+    await state.persistStateIfNeeded(preferences.rosterChanged, false);
+
+    state.syncPickRefreshTimer();
+    await flush();
+
+    expect(socket.sent).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flush();
+
+    expect(socket.sent).toHaveLength(1);
+    expect(JSON.parse(socket.sent[0] ?? '{}')).toEqual({
+      type: 'pick',
+      version: 1,
+      upstream: 'us-a'
+    });
+
+    const teardown = state.state.acceptTeardown('node-1', connection);
+    expect(teardown.rosterChanged).toBe(true);
+    await state.persistStateIfNeeded(teardown.rosterChanged, false);
+    state.syncPickRefreshTimer();
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flush();
+
+    expect(socket.sent).toHaveLength(1);
+    expect(await storage.getAlarm()).toBeNull();
+    void pool;
   });
 });

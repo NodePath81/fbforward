@@ -175,6 +175,45 @@ func TestCoordinationStaleVersionIgnored(t *testing.T) {
 	}
 }
 
+func TestCoordinationSameVersionReassertsAfterFallback(t *testing.T) {
+	manager := newTestManager(
+		testUpstream("alpha", 90, true),
+		testUpstream("beta", 70, true),
+	)
+
+	manager.SetCoordination()
+	manager.SetCoordinationConnected(true)
+	if _, err := manager.ApplyCoordinationPick(2, "beta"); err != nil {
+		t.Fatalf("expected initial coordination pick to apply: %v", err)
+	}
+
+	manager.UpdateReachability("beta", false)
+	fallback := manager.CoordinationState()
+	if !fallback.FallbackActive || fallback.Authoritative {
+		t.Fatalf("expected coordination fallback after upstream failure, got %+v", fallback)
+	}
+	if manager.ActiveTag() != "alpha" {
+		t.Fatalf("expected local fallback to alpha, got %q", manager.ActiveTag())
+	}
+
+	manager.UpdateReachability("beta", true)
+	applied, err := manager.ApplyCoordinationPick(2, "beta")
+	if err != nil {
+		t.Fatalf("expected same-version reassertion to be accepted during fallback, got %v", err)
+	}
+	if !applied {
+		t.Fatalf("expected same-version reassertion to be applied")
+	}
+
+	state := manager.CoordinationState()
+	if state.FallbackActive || !state.Authoritative || state.SelectedUpstream != "beta" || state.Version != 2 {
+		t.Fatalf("unexpected coordination state after reassertion: %+v", state)
+	}
+	if manager.ActiveTag() != "beta" {
+		t.Fatalf("expected active upstream beta after reassertion, got %q", manager.ActiveTag())
+	}
+}
+
 func TestCoordinationModeWithoutPickFallsBackToAutoSelection(t *testing.T) {
 	manager := newTestManager(
 		testUpstream("alpha", 95, true),

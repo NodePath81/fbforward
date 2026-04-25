@@ -53,7 +53,9 @@ At a high level:
 2. The node sends `hello` and waits for `ready`.
 3. The node sends `preferences`, then periodic `heartbeat` messages.
 4. fbcoord computes one coordinated pick across all online nodes and
-   broadcasts `pick` updates.
+   broadcasts `pick` updates. It also periodically reasserts the current pick
+   to connected nodes so a transient local fallback can recover without waiting
+   for a visible pick change.
 5. To exit coordination cleanly, the node sends `bye` and waits for
    `closing`.
 6. If there is no shared candidate, fbcoord returns `upstream: null`.

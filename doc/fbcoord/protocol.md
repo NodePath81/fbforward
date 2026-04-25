@@ -199,7 +199,8 @@ fbcoord force-closes it after a short timeout.
 ### `pick`
 
 Broadcast by fbcoord whenever the visible coordinated pick changes, and also
-sent immediately after successful `hello`.
+periodically while one or more nodes remain connected. fbcoord also sends the
+current `pick` immediately after successful `hello`.
 
 ```json
 {
@@ -221,9 +222,13 @@ No-consensus example:
 
 Fields:
 
-- `version`: monotonic pick version for the deployment-wide coordination state
+- `version`: pick version for the deployment-wide coordination state; the same
+  version may be repeated when fbcoord reasserts the current pick
 - `upstream`: selected upstream tag, or `null` when there is no coordinated
   pick
+
+Repeated `pick` messages are reassertions of the current coordinator state and
+may repeat the last version/value pair.
 
 ### `error`
 
