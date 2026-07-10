@@ -152,6 +152,36 @@ func (c *ControlServer) rpcQueryLogEvents(_ *rpcContext, raw json.RawMessage) (a
 	return rpcOK(result)
 }
 
+type topTalkersParams struct {
+	StartTime *int64 `json:"start_time,omitempty"`
+	EndTime   *int64 `json:"end_time,omitempty"`
+	Protocol  string `json:"protocol,omitempty"`
+	Upstream  string `json:"upstream,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+func (c *ControlServer) rpcGetTopTalkers(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
+	store := c.auditStore()
+	if store == nil {
+		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
+	}
+	var params topTalkersParams
+	if fault := decodeOptionalParams(raw, &params); fault != nil {
+		return rpcError(fault.Status, fault.Message)
+	}
+	result, err := store.GetTopTalkers(iplog.TopTalkerParams{
+		StartTime: params.StartTime,
+		EndTime:   params.EndTime,
+		Protocol:  params.Protocol,
+		Upstream:  params.Upstream,
+		Limit:     params.Limit,
+	})
+	if err != nil {
+		return rpcError(http.StatusBadRequest, err.Error())
+	}
+	return rpcOK(result)
+}
+
 func (c *ControlServer) getIPLogStatus(store *iplog.Store) (ipLogStatusResponse, error) {
 	stats, err := store.Stats()
 	if err != nil {

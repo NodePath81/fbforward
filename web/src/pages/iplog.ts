@@ -1,12 +1,13 @@
 import type { ToastManager } from '../components/Toast';
-import { queryLogEvents } from '../api/iplog';
+import { getTopTalkers, queryLogEvents } from '../api/iplog';
 import type {
   LogEntryType,
   LogEventQueryParams,
   LogEventQueryResult,
   LogEventRecord,
   LogEventSortBy,
-  IPLogSortOrder
+  IPLogSortOrder,
+  TopTalker
 } from '../types';
 import { clearChildren, createEl } from '../utils/dom';
 import { formatBytes, formatMs } from '../utils/format';
@@ -75,6 +76,7 @@ interface IPLogPageState {
   hasQueried: boolean;
   total: number;
   records: LogEventRecord[];
+  topTalkers: TopTalker[];
 }
 
 export function createIPLogPage(container: HTMLElement, options: IPLogPageOptions): void {
@@ -96,10 +98,21 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
     loading: false,
     hasQueried: false,
     total: 0,
-    records: []
+    records: [],
+    topTalkers: []
   };
 
   clearChildren(container);
+
+  const topPanel = createEl('section', 'panel');
+  const topHeader = createEl('div', 'panel-header');
+  topHeader.appendChild(createEl('h2', '', 'Top Talkers'));
+  topHeader.appendChild(createEl('span', 'panel-meta', 'Aggregated from completed flows'));
+  const topBody = createEl('div', 'iplog-results');
+  const topStatus = createEl('p', 'hint', 'Run a query to load top clients.');
+  topBody.appendChild(topStatus);
+  topPanel.appendChild(topHeader);
+  topPanel.appendChild(topBody);
 
   const filtersPanel = createEl('section', 'panel');
   const filtersHeader = createEl('div', 'panel-header');
@@ -249,12 +262,15 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
   for (const label of [
     'Timestamp',
     'Type',
+    'Flow ID',
     'Client IP',
     'ASN',
     'Org',
     'Country',
     'Protocol',
     'Port',
+    'Listener',
+    'Route',
     'Upstream',
     'Bytes Up',
     'Bytes Down',
@@ -262,7 +278,8 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
     'Duration',
     'Reason',
     'Rule Type',
-    'Rule Value'
+    'Rule Value',
+    'Close Reason'
   ]) {
     headRow.appendChild(createHeader(label));
   }
@@ -290,6 +307,7 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
   resultsBody.appendChild(pager);
   resultsPanel.appendChild(resultsBody);
 
+  container.appendChild(topPanel);
   container.appendChild(filtersPanel);
   container.appendChild(resultsPanel);
 
@@ -343,6 +361,8 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
     }
 
     applyResult(resp.result);
+    const topResp = await getTopTalkers(options.token, buildTopTalkerParams(state));
+    state.topTalkers = topResp.ok && topResp.result ? topResp.result : [];
     render();
   }
 
@@ -403,7 +423,32 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
         : 'Run a query to load persisted IP logs.';
       clearChildren(tbody);
       pagerInfo.textContent = 'Page 1';
+      topStatus.textContent = 'Run a query to load top clients.';
+      clearChildren(topBody);
+      topBody.appendChild(topStatus);
       return;
+    }
+
+    clearChildren(topBody);
+    if (state.topTalkers.length === 0) {
+      topBody.appendChild(createEl('p', 'hint', 'No completed flows matched the current filters.'));
+    } else {
+      const topTable = createEl('table');
+      const head = createEl('tr');
+      for (const label of ['Client IP', 'Bytes Up', 'Bytes Down', 'Total', 'Flows']) {
+        head.appendChild(createHeader(label));
+      }
+      topTable.appendChild(head);
+      for (const talker of state.topTalkers) {
+        const row = createEl('tr');
+        row.appendChild(createCell(talker.client_ip));
+        row.appendChild(createCell(formatBytes(talker.bytes_up)));
+        row.appendChild(createCell(formatBytes(talker.bytes_down)));
+        row.appendChild(createCell(formatBytes(talker.bytes_total)));
+        row.appendChild(createCell(talker.flow_count.toString()));
+        topTable.appendChild(row);
+      }
+      topBody.appendChild(topTable);
     }
 
     const start = state.total === 0 ? 0 : state.offset + 1;
@@ -422,7 +467,7 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
     if (state.records.length === 0) {
       const row = createEl('tr');
       const cell = createEl('td', 'empty-row', 'No records matched this query.');
-      cell.setAttribute('colspan', '16');
+      cell.setAttribute('colspan', '20');
       row.appendChild(cell);
       tbody.appendChild(row);
       return;
@@ -432,12 +477,15 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
       const row = createEl('tr');
       row.appendChild(createCell(formatRecordTime(record.recorded_at)));
       row.appendChild(createCell(record.entry_type));
+      row.appendChild(createCell(record.flow_id || '-'));
       row.appendChild(createCell(record.ip));
       row.appendChild(createCell(record.asn > 0 ? record.asn.toString() : '-'));
       row.appendChild(createCell(record.as_org || '-'));
       row.appendChild(createCell(record.country || '-'));
       row.appendChild(createCell(record.protocol.toUpperCase()));
       row.appendChild(createCell(record.port.toString()));
+      row.appendChild(createCell(record.listener || '-'));
+      row.appendChild(createCell(record.route || '-'));
       row.appendChild(createCell(record.upstream || '-'));
       row.appendChild(createCell(record.bytes_up === null ? '-' : formatBytes(record.bytes_up)));
       row.appendChild(createCell(record.bytes_down === null ? '-' : formatBytes(record.bytes_down)));
@@ -446,6 +494,7 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
       row.appendChild(createCell(record.reason || '-'));
       row.appendChild(createCell(record.matched_rule_type || '-'));
       row.appendChild(createCell(record.matched_rule_value || '-'));
+      row.appendChild(createCell(record.close_reason || '-'));
       tbody.appendChild(row);
     }
   }
@@ -538,6 +587,16 @@ function buildQueryParams(state: IPLogPageState): LogEventQueryParams {
     }
   }
 
+  return params;
+}
+
+function buildTopTalkerParams(state: IPLogPageState): { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; limit: number } {
+  const params: { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; limit: number } = { limit: 10 };
+  const start = parseDateTimeLocal(state.startTime);
+  const end = parseDateTimeLocal(state.endTime);
+  if (start !== null) params.start_time = start;
+  if (end !== null) params.end_time = end;
+  if (state.protocol) params.protocol = state.protocol;
   return params;
 }
 

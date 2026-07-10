@@ -84,6 +84,7 @@ func (c *ControlServer) registerRPCHandlers() {
 		"QueryIPLog":           c.rpcQueryIPLog,
 		"QueryRejectionLog":    c.rpcQueryRejectionLog,
 		"QueryLogEvents":       c.rpcQueryLogEvents,
+		"GetTopTalkers":        c.rpcGetTopTalkers,
 	}
 	for name, handler := range registrations {
 		if err := c.rpcs.Register(name, handler); err != nil {

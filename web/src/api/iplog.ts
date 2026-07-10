@@ -9,7 +9,8 @@ import type {
   RejectionLogQueryParams,
   RejectionLogQueryResult,
   RefreshGeoIPResponse,
-  RPCResponse
+  RPCResponse,
+  TopTalker
 } from '../types';
 
 export async function getGeoIPStatus(
@@ -49,4 +50,11 @@ export async function queryLogEvents(
   params: LogEventQueryParams
 ): Promise<RPCResponse<LogEventQueryResult>> {
   return callRPC<LogEventQueryResult>(token, 'QueryLogEvents', params);
+}
+
+export async function getTopTalkers(
+  token: string,
+  params: { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; upstream?: string; limit?: number }
+): Promise<RPCResponse<TopTalker[]>> {
+  return callRPC<TopTalker[]>(token, 'GetTopTalkers', params);
 }

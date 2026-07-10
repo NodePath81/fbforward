@@ -95,7 +95,8 @@ export type RPCMethod =
   | 'GetIPLogStatus'
   | 'QueryIPLog'
   | 'QueryRejectionLog'
-  | 'QueryLogEvents';
+  | 'QueryLogEvents'
+  | 'GetTopTalkers';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;
@@ -157,6 +158,14 @@ export interface IPLogStatusResponse {
   prune_interval: string;
 }
 
+export interface TopTalker {
+  client_ip: string;
+  bytes_up: number;
+  bytes_down: number;
+  bytes_total: number;
+  flow_count: number;
+}
+
 export type IPLogSortBy =
   | 'recorded_at'
   | 'bytes_up'
@@ -210,6 +219,7 @@ export interface IPLogQueryParams {
 
 export interface IPLogRecord {
   id: number;
+  flow_id?: string;
   ip: string;
   asn: number;
   as_org: string;
@@ -221,6 +231,11 @@ export interface IPLogRecord {
   bytes_down: number;
   duration_ms: number;
   recorded_at: number;
+  listener?: string;
+  route?: string;
+  started_at?: number;
+  ended_at?: number;
+  close_reason?: string;
 }
 
 export interface IPLogQueryResult {
@@ -298,6 +313,10 @@ export interface LogEventRecord {
   reason: string | null;
   matched_rule_type: string | null;
   matched_rule_value: string | null;
+  flow_id?: string | null;
+  listener?: string | null;
+  route?: string | null;
+  close_reason?: string | null;
 }
 
 export interface LogEventQueryResult {

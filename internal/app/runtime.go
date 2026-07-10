@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/coordination"
@@ -48,7 +49,7 @@ type Runtime struct {
 	shaper        *shaping.TrafficShaper
 	geoipMgr      *geoip.Manager
 	iplogStore    *iplog.Store
-	iplogPipeline *iplog.Pipeline
+	iplogPipeline *audit.Pipeline
 	firewall      *firewall.Engine
 	upstreams     []*upstream.Upstream
 	listeners     []closer
@@ -118,7 +119,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 		rt.iplogStore = store
 		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration(), cfg.IPLog.PruneInterval.Duration())
-		rt.iplogPipeline = iplog.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
+		rt.iplogPipeline = audit.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
 		flowObservers = append(flowObservers, rt.iplogPipeline)
 	}
 	rt.flowObserver = flowObservers

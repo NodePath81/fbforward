@@ -1,0 +1,297 @@
+package audit
+
+import (
+	"context"
+	"log/slog"
+	"net"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/flow"
+	"github.com/NodePath81/fbforward/internal/geoip"
+	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/util"
+	"github.com/google/uuid"
+)
+
+type pipelineItem struct {
+	flow       *FlowRecord
+	checkpoint *FlowCheckpoint
+	rejection  *RejectionRow
+}
+
+type activeFlow struct {
+	meta           flow.Meta
+	lastCounters   flow.Counters
+	lastCheckpoint time.Time
+}
+
+type Pipeline struct {
+	geoCh         chan pipelineItem
+	writeCh       chan pipelineItem
+	lookup        geoip.LookupProvider
+	store         *Store
+	metrics       *metrics.Metrics
+	logger        util.Logger
+	batchSize     int
+	flushInterval time.Duration
+	logRejections bool
+
+	mu        sync.Mutex
+	active    map[flow.ID]activeFlow
+	closed    bool
+	closeOnce sync.Once
+	wg        sync.WaitGroup
+	rejectMu  sync.Mutex
+	recent    map[string]time.Time
+}
+
+func NewPipeline(cfg config.IPLogConfig, lookup geoip.LookupProvider, store *Store, metricSet *metrics.Metrics, logger util.Logger) *Pipeline {
+	geoSize := cfg.GeoQueueSize
+	if geoSize <= 0 {
+		geoSize = 256
+	}
+	writeSize := cfg.WriteQueueSize
+	if writeSize <= 0 {
+		writeSize = 256
+	}
+	batchSize := cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	flush := cfg.FlushInterval.Duration()
+	if flush <= 0 {
+		flush = 5 * time.Second
+	}
+	return &Pipeline{
+		geoCh: make(chan pipelineItem, geoSize), writeCh: make(chan pipelineItem, writeSize),
+		lookup: lookup, store: store, metrics: metricSet, logger: util.ComponentLogger(logger, util.CompIPLog),
+		batchSize: batchSize, flushInterval: flush, logRejections: util.BoolValue(cfg.LogRejections, cfg.Enabled),
+		active: make(map[flow.ID]activeFlow), recent: make(map[string]time.Time),
+	}
+}
+
+func (p *Pipeline) Start() {
+	if p == nil {
+		return
+	}
+	p.wg.Add(2)
+	go func() { defer p.wg.Done(); p.runGeoWorker() }()
+	go func() { defer p.wg.Done(); p.runWriteWorker() }()
+}
+
+func (p *Pipeline) Open(meta flow.Meta) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.active[meta.ID] = activeFlow{meta: meta}
+	p.mu.Unlock()
+}
+
+func (p *Pipeline) Update(id flow.ID, counters flow.Counters) {
+	if p == nil {
+		return
+	}
+	now := counters.LastActivity
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	p.mu.Lock()
+	current, ok := p.active[id]
+	if !ok || p.closed {
+		p.mu.Unlock()
+		return
+	}
+	current.lastCounters = counters
+	if current.lastCheckpoint.IsZero() || now.Sub(current.lastCheckpoint) >= p.flushInterval {
+		current.lastCheckpoint = now
+		p.active[id] = current
+		checkpoint := FlowCheckpoint{FlowID: id.String(), RecordedAt: now, LastActivity: counters.LastActivity, BytesUp: counters.BytesUp, BytesDown: counters.BytesDown, SegmentsUp: counters.SegmentsUp, SegmentsDown: counters.SegmentsDown}
+		p.mu.Unlock()
+		p.enqueue(pipelineItem{checkpoint: &checkpoint})
+		return
+	}
+	p.active[id] = current
+	p.mu.Unlock()
+}
+
+func (p *Pipeline) Close(summary flow.Summary) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	current := p.active[summary.ID]
+	delete(p.active, summary.ID)
+	p.mu.Unlock()
+	ended := defaultTime(summary.EndedAt)
+	started := summary.StartedAt
+	if started.IsZero() {
+		started = current.meta.StartedAt
+	}
+	last := summary.LastActivity
+	if last.IsZero() {
+		last = current.lastCounters.LastActivity
+	}
+	if last.IsZero() {
+		last = started
+	}
+	record := FlowRecord{FlowID: summary.ID.String(), Protocol: summary.Protocol, ClientIP: summary.ClientAddr.Addr().String(), ClientPort: int(summary.ClientAddr.Port()), Listener: summary.Listener, Route: summary.Route, Upstream: summary.Upstream, StartedAt: started, EndedAt: ended, LastActivity: last, BytesUp: summary.BytesUp, BytesDown: summary.BytesDown, CloseReason: summary.CloseReason}
+	checkpoint := FlowCheckpoint{FlowID: record.FlowID, RecordedAt: ended, LastActivity: last, BytesUp: summary.BytesUp, BytesDown: summary.BytesDown, SegmentsUp: current.lastCounters.SegmentsUp, SegmentsDown: current.lastCounters.SegmentsDown}
+	p.enqueue(pipelineItem{flow: &record, checkpoint: &checkpoint})
+}
+
+func (p *Pipeline) Reject(rejection flow.Rejection) {
+	if p == nil || !p.logRejections {
+		return
+	}
+	event := RejectionRow{EventID: uuidLike(), Protocol: rejection.Protocol, ClientIP: rejection.ClientAddr.Addr().String(), ClientPort: int(rejection.ClientAddr.Port()), Listener: rejection.Listener, Port: listenerPort(rejection.Listener), Reason: rejection.Reason, MatchedRuleType: rejection.MatchedRuleType, MatchedRuleValue: rejection.MatchedRuleValue, RecordedAt: defaultTime(rejection.RecordedAt)}
+	key := event.ClientIP + "|" + event.Protocol + "|" + event.Reason + "|" + event.MatchedRuleType + "|" + event.MatchedRuleValue
+	p.rejectMu.Lock()
+	last := p.recent[key]
+	if !last.IsZero() && event.RecordedAt.Sub(last) < time.Minute {
+		p.rejectMu.Unlock()
+		return
+	}
+	p.recent[key] = event.RecordedAt
+	p.rejectMu.Unlock()
+	p.enqueue(pipelineItem{rejection: &event})
+}
+
+func (p *Pipeline) enqueue(item pipelineItem) bool {
+	p.mu.Lock()
+	closed := p.closed
+	if !closed {
+		select {
+		case p.geoCh <- item:
+			if p.metrics != nil {
+				p.metrics.IncIPLogEvent()
+			}
+			p.mu.Unlock()
+			return true
+		default:
+		}
+	}
+	p.mu.Unlock()
+	if p.metrics != nil {
+		p.metrics.IncIPLogEventDropped()
+	}
+	return !closed && false
+}
+
+func (p *Pipeline) Shutdown(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	p.closeOnce.Do(func() {
+		p.mu.Lock()
+		p.closed = true
+		close(p.geoCh)
+		p.mu.Unlock()
+	})
+	done := make(chan struct{})
+	go func() { p.wg.Wait(); close(done) }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+func (p *Pipeline) runGeoWorker() {
+	defer close(p.writeCh)
+	for item := range p.geoCh {
+		if item.flow != nil {
+			p.enrich(&item.flow.ASN, &item.flow.ASOrg, &item.flow.Country, item.flow.ClientIP)
+		}
+		if item.rejection != nil {
+			p.enrich(&item.rejection.ASN, &item.rejection.ASOrg, &item.rejection.Country, item.rejection.ClientIP)
+		}
+		select {
+		case p.writeCh <- item:
+		default:
+			if p.metrics != nil {
+				p.metrics.IncIPLogEventDropped()
+			}
+		}
+	}
+}
+
+func (p *Pipeline) runWriteWorker() {
+	flows := make([]FlowRecord, 0, p.batchSize)
+	checkpoints := make([]FlowCheckpoint, 0, p.batchSize)
+	rejections := make([]RejectionRow, 0, p.batchSize)
+	ticker := time.NewTicker(p.flushInterval)
+	defer ticker.Stop()
+	flush := func() {
+		if p.store == nil {
+			flows = flows[:0]
+			checkpoints = checkpoints[:0]
+			rejections = rejections[:0]
+			return
+		}
+		if len(flows) > 0 {
+			if err := p.store.InsertFlows(flows); err != nil {
+				util.Event(p.logger, slog.LevelError, "audit.flow_write_failed", "error", err)
+			}
+			flows = flows[:0]
+		}
+		if len(checkpoints) > 0 {
+			if err := p.store.InsertCheckpoints(checkpoints); err != nil {
+				util.Event(p.logger, slog.LevelError, "audit.checkpoint_write_failed", "error", err)
+			}
+			checkpoints = checkpoints[:0]
+		}
+		if len(rejections) > 0 {
+			if err := p.store.InsertRejections(rejections); err != nil {
+				util.Event(p.logger, slog.LevelError, "audit.rejection_write_failed", "error", err)
+			}
+			rejections = rejections[:0]
+		}
+	}
+	for {
+		select {
+		case item, ok := <-p.writeCh:
+			if !ok {
+				flush()
+				return
+			}
+			if item.flow != nil {
+				flows = append(flows, *item.flow)
+			}
+			if item.checkpoint != nil {
+				checkpoints = append(checkpoints, *item.checkpoint)
+			}
+			if item.rejection != nil {
+				rejections = append(rejections, *item.rejection)
+			}
+			if len(flows)+len(checkpoints)+len(rejections) >= p.batchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
+}
+
+func (p *Pipeline) enrich(asn *int, asOrg, country *string, ip string) {
+	if p.lookup == nil {
+		return
+	}
+	result := p.lookup.Lookup(net.ParseIP(ip))
+	*asn, *asOrg, *country = result.ASN, result.ASOrg, result.Country
+}
+
+func listenerPort(listener string) int {
+	if _, port, err := net.SplitHostPort(listener); err == nil {
+		if value, err := strconv.Atoi(port); err == nil {
+			return value
+		}
+	}
+	return 0
+}
+
+func uuidLike() string { return uuid.NewString() }
