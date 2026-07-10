@@ -12,18 +12,16 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/flow"
-	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type UDPListener struct {
 	cfg      config.ListenerConfig
-	manager  upstream.UpstreamSelector
+	picker   UpstreamPicker
+	policy   AdmissionPolicy
 	timeout  time.Duration
-	firewall *firewall.Engine
-	observer flow.Observer
+	observer FlowObserver
 	registry *flow.Registry
 	sem      chan struct{}
 	logger   util.Logger
@@ -58,12 +56,12 @@ var udpPacketPool = sync.Pool{
 	},
 }
 
-func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, fw *firewall.Engine, observer flow.Observer, registry *flow.Registry, logger util.Logger) *UDPListener {
+func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, picker UpstreamPicker, policy AdmissionPolicy, observer FlowObserver, registry *flow.Registry, logger util.Logger) *UDPListener {
 	return &UDPListener{
 		cfg:      cfg,
-		manager:  manager,
+		picker:   picker,
+		policy:   policy,
 		timeout:  timeout,
-		firewall: fw,
 		observer: observer,
 		registry: registry,
 		sem:      make(chan struct{}, limits.MaxUDPMappings),
@@ -157,26 +155,30 @@ func (l *UDPListener) Close() error {
 }
 
 func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr, payload []byte) {
-	if l.firewall != nil {
-		decision := l.firewall.Decide(clientAddr.IP)
+	key := clientAddr.String()
+	clientIP := clientAddr.IP.String()
+	candidate, err := newCandidateMeta(flow.ProtocolUDP, key, l.listenAddr())
+	if err != nil {
+		return
+	}
+	if l.policy != nil {
+		decision := l.policy.Decide(candidate)
 		if !decision.Allowed {
-			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), clientAddr.String(), "firewall_deny", decision)
+			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "firewall_deny", decision)
 			return
 		}
 	}
-	key := clientAddr.String()
-	clientIP := clientAddr.IP.String()
 	mapping, reservation, err := l.getOrReserveMapping(key, clientIP)
 	if err != nil {
 		switch {
 		case errors.Is(err, errUDPPerIPLimit):
-			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "udp_per_ip_mapping_limit", firewall.Decision{})
+			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "udp_per_ip_mapping_limit", Decision{})
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_per_ip_limit_reached",
 				"client.addr", key,
 				"client.ip", clientIP,
 			)
 		case errors.Is(err, errUDPMappingLimit):
-			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "udp_mapping_limit", firewall.Decision{})
+			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "udp_mapping_limit", Decision{})
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_limit_reached", "client.addr", key)
 		case errors.Is(err, errUDPUpstreamSelection):
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)
@@ -184,7 +186,7 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 		return
 	}
 	if reservation != nil {
-		mapping, err = l.buildMapping(clientAddr)
+		mapping, err = l.buildMapping(clientAddr, candidate)
 		l.finishReservation(key, clientIP, reservation, mapping, err)
 		if err != nil {
 			if errors.Is(err, errUDPUpstreamSelection) {
@@ -234,32 +236,38 @@ func (l *UDPListener) getOrReserveMapping(key, clientIP string) (*udpMapping, *u
 	}
 }
 
-func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr) (*udpMapping, error) {
-	up, err := l.manager.SelectUpstream()
+func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta) (*udpMapping, error) {
+	if l.picker == nil {
+		return nil, errors.New("upstream picker is unavailable")
+	}
+	selected, err := l.picker.Pick(candidate)
 	if err != nil {
 		return nil, errors.Join(errUDPUpstreamSelection, err)
 	}
-	ip := up.ActiveIP()
-	if ip == nil {
+	if !selected.Addr.IsValid() {
 		return nil, errors.Join(errUDPUpstreamSelection, errors.New("upstream has no resolved IP"))
 	}
-	upstreamIP := ip.String()
+	upstreamIP := selected.Addr.String()
 	util.Event(l.logger, slog.LevelDebug, "forward.udp.upstream_selected",
-		"upstream", up.Tag,
+		"upstream", selected.Tag,
 		"upstream.ip", upstreamIP,
 	)
-	upAddr := &net.UDPAddr{IP: ip, Port: l.cfg.BindPort}
+	upAddr := &net.UDPAddr{IP: net.ParseIP(upstreamIP), Port: l.cfg.BindPort}
 	upConn, err := net.DialUDP("udp", nil, upAddr)
 	if err != nil {
 		util.Event(l.logger, slog.LevelWarn, "forward.udp.dial_failed",
-			"upstream", up.Tag,
+			"upstream", selected.Tag,
 			"error", err,
 			"result", "failed",
 		)
-		l.manager.MarkDialFailure(up.Tag, udpDialFailureCooldown)
+		if feedback, ok := l.picker.(DialFeedback); ok {
+			feedback.MarkDialFailure(selected, udpDialFailureCooldown)
+		}
 		return nil, err
 	}
-	l.manager.ClearDialFailure(up.Tag)
+	if feedback, ok := l.picker.(DialFeedback); ok {
+		feedback.ClearDialFailure(selected)
+	}
 	clientAddrStr := clientAddr.String()
 	listenAddr := net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort))
 	mapping := &udpMapping{
@@ -267,7 +275,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr) (*udpMapping, error)
 		clientAddr:    clientAddr,
 		clientAddrStr: clientAddrStr,
 		clientIP:      clientIPFromAddr(clientAddrStr),
-		upstreamTag:   up.Tag,
+		upstreamTag:   selected.Tag,
 		upstreamConn:  upConn,
 		timeout:       l.timeout,
 		logger:        l.logger,
@@ -275,7 +283,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr) (*udpMapping, error)
 		registry:      l.registry,
 		activityCh:    make(chan struct{}, 1),
 		done:          make(chan struct{}),
-		created:       time.Now().UTC(),
+		created:       candidate.StartedAt,
 		upstreamIP:    upstreamIP,
 		upstreamAddr:  upAddr.String(),
 		listenAddr:    listenAddr,
@@ -296,8 +304,8 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr) (*udpMapping, error)
 		ClientAddr: clientEndpoint,
 		Listener:   listenAddr,
 		Route:      "",
-		Upstream:   up.Tag,
-		StartedAt:  mapping.created,
+		Upstream:   selected.Tag,
+		StartedAt:  candidate.StartedAt,
 	}, mapping.observer, mapping.registry, mapping.close)
 	mapping.lifecycle.Open()
 	return mapping, nil
@@ -354,7 +362,7 @@ type udpMapping struct {
 	upstreamConn  *net.UDPConn
 	timeout       time.Duration
 	logger        util.Logger
-	observer      flow.Observer
+	observer      FlowObserver
 	registry      *flow.Registry
 	created       time.Time
 	upstreamIP    string

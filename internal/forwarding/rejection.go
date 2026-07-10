@@ -1,14 +1,14 @@
 package forwarding
 
 import (
+	"fmt"
 	"net/netip"
 	"time"
 
-	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/flow"
 )
 
-func emitRejection(observer flow.Observer, protocol, listener, clientAddress, reason string, decision firewall.Decision) {
+func emitRejection(observer FlowObserver, protocol, listener, clientAddress, reason string, decision Decision) {
 	if observer == nil || clientAddress == "" {
 		return
 	}
@@ -25,6 +25,19 @@ func emitRejection(observer flow.Observer, protocol, listener, clientAddress, re
 		MatchedRuleValue: decision.RuleValue,
 		RecordedAt:       time.Now().UTC(),
 	})
+}
+
+func newCandidateMeta(protocol, clientAddress, listener string) (flow.Meta, error) {
+	addr := parseClientAddr(clientAddress)
+	if !addr.IsValid() {
+		return flow.Meta{}, fmt.Errorf("invalid client address %q", clientAddress)
+	}
+	return flow.Meta{
+		Protocol:   protocol,
+		ClientAddr: addr,
+		Listener:   listener,
+		StartedAt:  time.Now().UTC(),
+	}, nil
 }
 
 func parseClientAddr(raw string) netip.AddrPort {

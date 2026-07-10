@@ -1,0 +1,53 @@
+package forwarding
+
+import (
+	"net/netip"
+	"time"
+
+	"github.com/NodePath81/fbforward/internal/flow"
+)
+
+// Decision is the forwarding-layer result of an admission policy. Concrete
+// firewall implementations are adapted to this value at the application
+// boundary.
+type Decision struct {
+	Allowed   bool
+	RuleType  string
+	RuleValue string
+}
+
+// AdmissionPolicy decides whether a candidate Flow may be admitted. Candidate
+// metadata has no ID or upstream yet; those are assigned after admission.
+type AdmissionPolicy interface {
+	Decide(flow.Meta) Decision
+}
+
+// Upstream is the minimal value needed by the data plane to dial a selected
+// upstream. The listener's port remains the destination port for compatibility
+// with the existing forwarding configuration.
+type Upstream struct {
+	Tag  string
+	Addr netip.Addr
+}
+
+// UpstreamPicker selects one upstream for a new Flow.
+type UpstreamPicker interface {
+	Pick(flow.Meta) (Upstream, error)
+}
+
+// DialFeedback is optional. Pickers that implement it retain the existing
+// dial-failure cooldown behavior without making it part of the selection API.
+type DialFeedback interface {
+	MarkDialFailure(Upstream, time.Duration)
+	ClearDialFailure(Upstream)
+}
+
+// FlowObserver is intentionally declared in forwarding. Implementations from
+// flow, control, metrics, and iplog satisfy it structurally without making the
+// data plane depend on those packages.
+type FlowObserver interface {
+	Open(flow.Meta)
+	Update(flow.ID, flow.Counters)
+	Close(flow.Summary)
+	Reject(flow.Rejection)
+}

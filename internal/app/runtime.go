@@ -39,8 +39,10 @@ type Runtime struct {
 	manager       *upstream.UpstreamManager
 	metrics       *metrics.Metrics
 	status        *control.StatusStore
-	flowObserver  flow.Observer
+	flowObserver  forwarding.FlowObserver
 	flowRegistry  *flow.Registry
+	picker        forwarding.UpstreamPicker
+	policy        forwarding.AdmissionPolicy
 	control       *control.ControlServer
 	coord         *coordination.Controller
 	shaper        *shaping.TrafficShaper
@@ -97,6 +99,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		metrics:      metricSet,
 		status:       status,
 		flowRegistry: flowRegistry,
+		picker:       &upstreamPicker{manager: manager},
 		upstreams:    upstreams,
 	}
 	if cfg.GeoIP.Enabled {
@@ -130,6 +133,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 		rt.firewall = fw
 	}
+	rt.policy = &firewallPolicy{engine: rt.firewall}
 	if cfg.Shaping.Enabled {
 		// Build upstream shaping entries with resolved IPs
 		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
@@ -403,13 +407,13 @@ func (r *Runtime) startListeners() error {
 	for _, ln := range r.cfg.Forwarding.Listeners {
 		switch ln.Protocol {
 		case "tcp":
-			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.manager, r.firewall, r.flowObserver, r.flowRegistry, r.logger)
+			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.picker, r.policy, r.flowObserver, r.flowRegistry, r.logger)
 			if err := tcpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
 			r.listeners = append(r.listeners, tcpListener)
 		case "udp":
-			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.manager, r.firewall, r.flowObserver, r.flowRegistry, r.logger)
+			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.picker, r.policy, r.flowObserver, r.flowRegistry, r.logger)
 			if err := udpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}

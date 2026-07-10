@@ -11,18 +11,16 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/flow"
-	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type TCPListener struct {
 	cfg      config.ListenerConfig
-	manager  upstream.UpstreamSelector
+	picker   UpstreamPicker
+	policy   AdmissionPolicy
 	timeout  time.Duration
-	firewall *firewall.Engine
-	observer flow.Observer
+	observer FlowObserver
 	registry *flow.Registry
 	sem      chan struct{}
 	logger   util.Logger
@@ -43,12 +41,12 @@ var tcpBufPool = sync.Pool{
 	},
 }
 
-func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, fw *firewall.Engine, observer flow.Observer, registry *flow.Registry, logger util.Logger) *TCPListener {
+func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, picker UpstreamPicker, policy AdmissionPolicy, observer FlowObserver, registry *flow.Registry, logger util.Logger) *TCPListener {
 	return &TCPListener{
 		cfg:      cfg,
-		manager:  manager,
+		picker:   picker,
+		policy:   policy,
 		timeout:  timeout,
-		firewall: fw,
 		observer: observer,
 		registry: registry,
 		sem:      make(chan struct{}, limits.MaxTCPConnections),
@@ -87,7 +85,7 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 				go l.handleConn(ctx, conn)
 			default:
 				clientAddr := conn.RemoteAddr().String()
-				emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "tcp_connection_limit", firewall.Decision{})
+				emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "tcp_connection_limit", Decision{})
 				util.Event(l.logger, slog.LevelWarn, "forward.tcp.connection_limit_reached",
 					"client.addr", conn.RemoteAddr().String(),
 				)
@@ -115,55 +113,65 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		applyTCPOptions(tcpConn)
 	}
 	clientAddr := client.RemoteAddr().String()
-	clientIPStr := clientIPFromAddr(clientAddr)
-	clientIP := net.ParseIP(clientIPStr)
-	if l.firewall != nil {
-		decision := l.firewall.Decide(clientIP)
+	candidate, err := newCandidateMeta(flow.ProtocolTCP, clientAddr, l.listenAddr())
+	if err != nil {
+		_ = client.Close()
+		return
+	}
+	if l.policy != nil {
+		decision := l.policy.Decide(candidate)
 		if !decision.Allowed {
 			emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "firewall_deny", decision)
 			_ = client.Close()
 			return
 		}
 	}
-	up, err := l.manager.SelectUpstream()
+	if l.picker == nil {
+		_ = client.Close()
+		return
+	}
+	selected, err := l.picker.Pick(candidate)
 	if err != nil {
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.upstream_selection_failed", "error", err)
 		_ = client.Close()
 		return
 	}
-	ip := up.ActiveIP()
-	if ip == nil {
+	if !selected.Addr.IsValid() {
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.dial_failed",
-			"upstream", up.Tag,
+			"upstream", selected.Tag,
 			"result", "failed",
 		)
 		_ = client.Close()
 		return
 	}
-	upstreamIP := ip.String()
+	upstreamIP := selected.Addr.String()
 	util.Event(l.logger, slog.LevelDebug, "forward.tcp.upstream_selected",
-		"upstream", up.Tag,
+		"upstream", selected.Tag,
 		"upstream.ip", upstreamIP,
 	)
-	remoteAddr := net.JoinHostPort(ip.String(), util.FormatPort(l.cfg.BindPort))
-	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond, l.logger, up.Tag)
+	remoteAddr := net.JoinHostPort(selected.Addr.String(), util.FormatPort(l.cfg.BindPort))
+	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond, l.logger, selected.Tag)
 	if err != nil {
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.dial_failed",
-			"upstream", up.Tag,
+			"upstream", selected.Tag,
 			"upstream.ip", upstreamIP,
 			"error", err,
 			"result", "failed",
 		)
-		l.manager.MarkDialFailure(up.Tag, tcpDialFailureCooldown)
+		if feedback, ok := l.picker.(DialFeedback); ok {
+			feedback.MarkDialFailure(selected, tcpDialFailureCooldown)
+		}
 		_ = client.Close()
 		return
 	}
-	l.manager.ClearDialFailure(up.Tag)
+	if feedback, ok := l.picker.(DialFeedback); ok {
+		feedback.ClearDialFailure(selected)
+	}
 
 	conn := &tcpConn{
 		client:       client,
 		upstream:     upConn,
-		upstreamTag:  up.Tag,
+		upstreamTag:  selected.Tag,
 		listenPort:   l.cfg.BindPort,
 		timeout:      l.timeout,
 		logger:       l.logger,
@@ -172,6 +180,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		upstreamIP:   upstreamIP,
 		upstreamAddr: remoteAddr,
 		listenAddr:   net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
+		created:      candidate.StartedAt,
 	}
 	conn.start(ctx)
 }
@@ -183,7 +192,7 @@ type tcpConn struct {
 	listenPort   int
 	timeout      time.Duration
 	logger       util.Logger
-	observer     flow.Observer
+	observer     FlowObserver
 	registry     *flow.Registry
 	upstreamIP   string
 	upstreamAddr string
@@ -203,7 +212,11 @@ func (c *tcpConn) start(ctx context.Context) {
 	clientAddr := c.client.RemoteAddr().String()
 	c.clientAddr = clientAddr
 	c.clientIP = clientIPFromAddr(clientAddr)
-	c.created = time.Now().UTC()
+	if c.created.IsZero() {
+		c.created = time.Now().UTC()
+	} else {
+		c.created = c.created.UTC()
+	}
 	c.activityCh = make(chan struct{}, 1)
 	c.done = make(chan struct{})
 	clientEndpoint, err := netip.ParseAddrPort(clientAddr)
