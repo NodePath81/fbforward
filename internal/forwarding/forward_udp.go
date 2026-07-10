@@ -5,16 +5,15 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/netip"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/firewall"
-	"github.com/NodePath81/fbforward/internal/iplog"
-	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 )
@@ -22,11 +21,10 @@ import (
 type UDPListener struct {
 	cfg      config.ListenerConfig
 	manager  upstream.UpstreamSelector
-	metrics  *metrics.Metrics
-	status   *control.StatusStore
 	timeout  time.Duration
 	firewall *firewall.Engine
-	pipeline *iplog.Pipeline
+	observer flow.Observer
+	registry *flow.Registry
 	sem      chan struct{}
 	logger   util.Logger
 
@@ -60,15 +58,14 @@ var udpPacketPool = sync.Pool{
 	},
 }
 
-func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, fw *firewall.Engine, pipeline *iplog.Pipeline, logger util.Logger) *UDPListener {
+func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, fw *firewall.Engine, observer flow.Observer, registry *flow.Registry, logger util.Logger) *UDPListener {
 	return &UDPListener{
 		cfg:      cfg,
 		manager:  manager,
-		metrics:  metrics,
-		status:   status,
 		timeout:  timeout,
 		firewall: fw,
-		pipeline: pipeline,
+		observer: observer,
+		registry: registry,
 		sem:      make(chan struct{}, limits.MaxUDPMappings),
 		logger:   util.ComponentLogger(logger, util.CompForwardUDP),
 		mappings: make(map[string]*udpMapping),
@@ -163,7 +160,7 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 	if l.firewall != nil {
 		decision := l.firewall.Decide(clientAddr.IP)
 		if !decision.Allowed {
-			emitRejection(l.pipeline, "udp", l.cfg.BindPort, clientAddr.IP.String(), "firewall_deny", decision)
+			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), clientAddr.String(), "firewall_deny", decision)
 			return
 		}
 	}
@@ -173,13 +170,13 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 	if err != nil {
 		switch {
 		case errors.Is(err, errUDPPerIPLimit):
-			emitRejection(l.pipeline, "udp", l.cfg.BindPort, clientIP, "udp_per_ip_mapping_limit", firewall.Decision{})
+			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "udp_per_ip_mapping_limit", firewall.Decision{})
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_per_ip_limit_reached",
 				"client.addr", key,
 				"client.ip", clientIP,
 			)
 		case errors.Is(err, errUDPMappingLimit):
-			emitRejection(l.pipeline, "udp", l.cfg.BindPort, clientIP, "udp_mapping_limit", firewall.Decision{})
+			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "udp_mapping_limit", firewall.Decision{})
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_limit_reached", "client.addr", key)
 		case errors.Is(err, errUDPUpstreamSelection):
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)
@@ -273,18 +270,36 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr) (*udpMapping, error)
 		upstreamTag:   up.Tag,
 		upstreamConn:  upConn,
 		timeout:       l.timeout,
-		metrics:       l.metrics,
-		status:        l.status,
 		logger:        l.logger,
-		pipeline:      l.pipeline,
+		observer:      l.observer,
+		registry:      l.registry,
 		activityCh:    make(chan struct{}, 1),
 		done:          make(chan struct{}),
-		created:       time.Now(),
+		created:       time.Now().UTC(),
 		upstreamIP:    upstreamIP,
 		upstreamAddr:  upAddr.String(),
 		listenAddr:    listenAddr,
 	}
-	mapping.id = l.status.AddUDP(clientAddrStr, up.Tag, l.cfg.BindPort, mapping.close)
+	clientEndpoint, err := netip.ParseAddrPort(clientAddrStr)
+	if err != nil {
+		_ = upConn.Close()
+		return nil, err
+	}
+	mapping.id, err = flow.NewID()
+	if err != nil {
+		_ = upConn.Close()
+		return nil, err
+	}
+	mapping.lifecycle = flow.NewLifecycle(flow.Meta{
+		ID:         mapping.id,
+		Protocol:   flow.ProtocolUDP,
+		ClientAddr: clientEndpoint,
+		Listener:   listenAddr,
+		Route:      "",
+		Upstream:   up.Tag,
+		StartedAt:  mapping.created,
+	}, mapping.observer, mapping.registry, mapping.close)
+	mapping.lifecycle.Open()
 	return mapping, nil
 }
 
@@ -338,21 +353,19 @@ type udpMapping struct {
 	upstreamTag   string
 	upstreamConn  *net.UDPConn
 	timeout       time.Duration
-	metrics       *metrics.Metrics
-	status        *control.StatusStore
 	logger        util.Logger
-	pipeline      *iplog.Pipeline
+	observer      flow.Observer
+	registry      *flow.Registry
 	created       time.Time
-	totalUp       uint64
-	totalDown     uint64
 	upstreamIP    string
 	upstreamAddr  string
 	listenAddr    string
 
-	id         string
+	id         flow.ID
 	closeOnce  sync.Once
 	activityCh chan struct{}
 	done       chan struct{}
+	lifecycle  *flow.Lifecycle
 }
 
 type udpMappingReservation struct {
@@ -366,9 +379,9 @@ func (m *udpMapping) forwardToUpstream(payload []byte) error {
 		return err
 	}
 	n := uint64(len(payload))
-	atomic.AddUint64(&m.totalUp, n)
-	m.metrics.AddBytesUp(m.upstreamTag, n, "udp")
-	m.status.UpdateUDP(m.id, n, 0, 1, 0)
+	if m.lifecycle != nil {
+		m.lifecycle.Add(n, 0, 1, 0)
+	}
 	m.touch()
 	return nil
 }
@@ -400,9 +413,9 @@ func (m *udpMapping) readLoop(ctx context.Context) {
 				return
 			}
 			down := uint64(n)
-			atomic.AddUint64(&m.totalDown, down)
-			m.metrics.AddBytesDown(m.upstreamTag, down, "udp")
-			m.status.UpdateUDP(m.id, 0, down, 0, 1)
+			if m.lifecycle != nil {
+				m.lifecycle.Add(0, down, 0, 1)
+			}
 			m.touch()
 		}
 		select {
@@ -453,10 +466,14 @@ func (m *udpMapping) closeWithReason(reason string) {
 		close(m.done)
 		_ = m.upstreamConn.Close()
 		m.parent.removeMapping(m.clientAddr.String(), m.clientIP)
-		m.status.RemoveUDP(m.id)
 		durationMs := int64(0)
 		if !m.created.IsZero() {
 			durationMs = time.Since(m.created).Milliseconds()
+		}
+		counters := flow.Counters{}
+		if m.lifecycle != nil {
+			counters = m.lifecycle.Snapshot()
+			m.lifecycle.Close(reason)
 		}
 		util.Event(m.logger, slog.LevelInfo, "forward.udp.mapping_closed",
 			"flow.id", m.id,
@@ -467,23 +484,11 @@ func (m *udpMapping) closeWithReason(reason string) {
 			"upstream.ip", m.upstreamIP,
 			"upstream.addr", m.upstreamAddr,
 			"flow.close_reason", reason,
-			"flow.bytes_up", atomic.LoadUint64(&m.totalUp),
-			"flow.bytes_down", atomic.LoadUint64(&m.totalDown),
+			"flow.bytes_up", counters.BytesUp,
+			"flow.bytes_down", counters.BytesDown,
 			"flow.duration_ms", durationMs,
 			"result", "closed",
 		)
-		if m.pipeline != nil {
-			m.pipeline.Emit(iplog.CloseEvent{
-				IP:         m.clientIP,
-				Protocol:   "udp",
-				Upstream:   m.upstreamTag,
-				Port:       m.parent.cfg.BindPort,
-				BytesUp:    atomic.LoadUint64(&m.totalUp),
-				BytesDown:  atomic.LoadUint64(&m.totalDown),
-				DurationMs: durationMs,
-				RecordedAt: time.Now(),
-			})
-		}
 		<-m.parent.sem
 	})
 }
@@ -531,4 +536,8 @@ func (l *UDPListener) noteQueueDrop(queueDepth int) {
 		"queue.depth", queueDepth,
 		"result", "dropped",
 	)
+}
+
+func (l *UDPListener) listenAddr() string {
+	return net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort))
 }

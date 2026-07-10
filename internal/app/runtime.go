@@ -14,6 +14,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/firewall"
+	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/forwarding"
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/iplog"
@@ -38,6 +39,8 @@ type Runtime struct {
 	manager       *upstream.UpstreamManager
 	metrics       *metrics.Metrics
 	status        *control.StatusStore
+	flowObserver  flow.Observer
+	flowRegistry  *flow.Registry
 	control       *control.ControlServer
 	coord         *coordination.Controller
 	shaper        *shaping.TrafficShaper
@@ -69,9 +72,11 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	for _, up := range upstreams {
 		tags = append(tags, up.Tag)
 	}
-	metrics := metrics.NewMetrics(tags)
+	metricSet := metrics.NewMetrics(tags)
 	statusHub := control.NewStatusHub(ctx.Done(), util.ComponentLogger(logger, util.CompControl))
-	status := control.NewStatusStore(statusHub, metrics)
+	status := control.NewStatusStore(statusHub)
+	flowRegistry := flow.NewRegistry()
+	flowObservers := flow.MultiObserver{status, metrics.NewFlowObserver(metricSet)}
 	seed := time.Now().UnixNano()
 	var seedBuf [8]byte
 	if _, err := crand.Read(seedBuf[:]); err == nil {
@@ -83,15 +88,16 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	manager.SetMeasurementConfig(cfg.Measurement)
 
 	rt := &Runtime{
-		cfg:       cfg,
-		ctx:       ctx,
-		cancel:    cancel,
-		logger:    logger,
-		resolver:  resolver,
-		manager:   manager,
-		metrics:   metrics,
-		status:    status,
-		upstreams: upstreams,
+		cfg:          cfg,
+		ctx:          ctx,
+		cancel:       cancel,
+		logger:       logger,
+		resolver:     resolver,
+		manager:      manager,
+		metrics:      metricSet,
+		status:       status,
+		flowRegistry: flowRegistry,
+		upstreams:    upstreams,
 	}
 	if cfg.GeoIP.Enabled {
 		geoMgr, err := geoip.NewManager(cfg.GeoIP, logger)
@@ -109,10 +115,12 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 		rt.iplogStore = store
 		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration(), cfg.IPLog.PruneInterval.Duration())
-		rt.iplogPipeline = iplog.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metrics, logger)
+		rt.iplogPipeline = iplog.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
+		flowObservers = append(flowObservers, rt.iplogPipeline)
 	}
+	rt.flowObserver = flowObservers
 	if cfg.Firewall.Enabled {
-		fw, err := firewall.NewEngine(cfg.Firewall, rt.geoipMgr, metrics, logger)
+		fw, err := firewall.NewEngine(cfg.Firewall, rt.geoipMgr, metricSet, logger)
 		if err != nil {
 			cancel()
 			if rt.iplogStore != nil {
@@ -154,30 +162,30 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 
 	manager.SetCallbacks(func(change upstream.ActiveChange) {
 		if change.OldTag != change.NewTag {
-			metrics.SetActive(change.NewTag)
+			metricSet.SetActive(change.NewTag)
 		}
 	}, func(change upstream.UsabilityChange) {
 		if !change.Usable && cfg.Switching.CloseFlowsOnFailover {
-			status.CloseByUpstream(change.Tag)
+			flowRegistry.CloseByUpstream(change.Tag)
 		}
 		if rt.notifyPolicy != nil {
 			rt.notifyPolicy.HandleUsabilityChange(change.Tag, change.Usable, change.Reason)
 		}
 	})
 
-	metrics.SetMode(upstream.ModeAuto)
-	metrics.SetCoordinationState(manager.CoordinationState())
+	metricSet.SetMode(upstream.ModeAuto)
+	metricSet.SetCoordinationState(manager.CoordinationState())
 	manager.SetAuto()
-	metrics.Start(ctx.Done())
+	metricSet.Start(ctx.Done())
 
 	var coordCtrl *coordination.Controller
 	if cfg.Coordination.IsConfigured() {
-		coordCtrl = coordination.NewController(ctx, cfg.Coordination, manager, metrics, util.ComponentLogger(logger, util.CompCoord))
+		coordCtrl = coordination.NewController(ctx, cfg.Coordination, manager, metricSet, util.ComponentLogger(logger, util.CompCoord))
 		if rt.notifyPolicy != nil {
 			coordCtrl.SetConnectionCallback(rt.notifyPolicy.HandleCoordinationConnection)
 		}
 	}
-	ctrl := control.NewControlServer(cfg, manager, metrics, status, coordCtrl, restartFn, logger)
+	ctrl := control.NewControlServer(cfg, manager, metricSet, status, coordCtrl, restartFn, logger)
 	if rt.notifier != nil {
 		ctrl.SetNotifier(rt.notifier)
 	}
@@ -225,8 +233,8 @@ func (r *Runtime) Start() error {
 
 func (r *Runtime) Stop() {
 	r.cancel()
-	if r.status != nil {
-		r.status.CloseAll()
+	if r.flowRegistry != nil {
+		r.flowRegistry.CloseAll()
 	}
 	for _, ln := range r.listeners {
 		_ = ln.Close()
@@ -395,13 +403,13 @@ func (r *Runtime) startListeners() error {
 	for _, ln := range r.cfg.Forwarding.Listeners {
 		switch ln.Protocol {
 		case "tcp":
-			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.manager, r.metrics, r.status, r.firewall, r.iplogPipeline, r.logger)
+			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.manager, r.firewall, r.flowObserver, r.flowRegistry, r.logger)
 			if err := tcpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
 			r.listeners = append(r.listeners, tcpListener)
 		case "udp":
-			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.manager, r.metrics, r.status, r.firewall, r.iplogPipeline, r.logger)
+			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.manager, r.firewall, r.flowObserver, r.flowRegistry, r.logger)
 			if err := udpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}

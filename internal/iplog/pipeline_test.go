@@ -3,12 +3,14 @@ package iplog
 import (
 	"context"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/metrics"
 )
@@ -132,6 +134,56 @@ func TestPipelineFlushesOnShutdown(t *testing.T) {
 	}
 	if writer.count() != 1 {
 		t.Fatalf("expected one written record, got %d", writer.count())
+	}
+}
+
+func TestPipelineObserverMapsFlowSummary(t *testing.T) {
+	writer := &fakeWriter{}
+	pipeline := NewPipeline(config.IPLogConfig{
+		GeoQueueSize:   2,
+		WriteQueueSize: 2,
+		BatchSize:      1,
+		FlushInterval:  config.Duration(time.Hour),
+	}, nil, writer, metrics.NewMetrics(nil), nil)
+	pipeline.Start()
+	started := time.Unix(100, 0).UTC()
+	ended := time.Unix(103, 0).UTC()
+	id, err := flow.NewID()
+	if err != nil {
+		t.Fatalf("NewID error: %v", err)
+	}
+	pipeline.Close(flow.Summary{
+		Meta: flow.Meta{
+			ID:         id,
+			Protocol:   flow.ProtocolUDP,
+			ClientAddr: netip.MustParseAddrPort("192.0.2.1:1234"),
+			Listener:   "127.0.0.1:9000",
+			Route:      "simple",
+			Upstream:   "primary",
+			StartedAt:  started,
+		},
+		EndedAt:      ended,
+		LastActivity: time.Unix(102, 0).UTC(),
+		BytesUp:      10,
+		BytesDown:    20,
+		CloseReason:  "idle_timeout",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	records := writer.flatten()
+	if len(records) != 1 {
+		t.Fatalf("expected one Flow record, got %d", len(records))
+	}
+	record := records[0]
+	if record.FlowID != id.String() || record.IP != "192.0.2.1" || record.Port != 9000 {
+		t.Fatalf("unexpected Flow identity: %+v", record)
+	}
+	if record.Route != "simple" || record.CloseReason != "idle_timeout" || record.BytesUp != 10 || record.BytesDown != 20 {
+		t.Fatalf("unexpected Flow summary mapping: %+v", record)
 	}
 }
 

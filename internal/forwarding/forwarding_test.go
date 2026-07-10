@@ -4,13 +4,14 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/firewall"
+	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
@@ -99,13 +100,6 @@ func (w *recordingWriter) firstRejection() iplog.EnrichedRejectionRecord {
 	return w.rejectionRecords[0]
 }
 
-func newStatusStore(t *testing.T) (*control.StatusStore, chan struct{}) {
-	t.Helper()
-	done := make(chan struct{})
-	store := control.NewStatusStore(control.NewStatusHub(done, nil), metrics.NewMetrics(nil))
-	return store, done
-}
-
 func newPipeline(t *testing.T, writer *recordingWriter) *iplog.Pipeline {
 	t.Helper()
 	p := iplog.NewPipeline(config.IPLogConfig{
@@ -190,7 +184,7 @@ func TestTCPFirewallDenyEmitsRejectionRecord(t *testing.T) {
 		cfg:      config.ListenerConfig{BindPort: 9000},
 		manager:  selector,
 		firewall: engine,
-		pipeline: pipeline,
+		observer: pipeline,
 		sem:      make(chan struct{}, 1),
 	}
 	listener.sem <- struct{}{}
@@ -222,9 +216,8 @@ func TestTCPConnectionLimitEmitsRejectionRecord(t *testing.T) {
 		time.Second,
 		&testSelector{},
 		nil,
-		nil,
-		nil,
 		pipeline,
+		nil,
 		nil,
 	)
 
@@ -319,7 +312,7 @@ func TestUDPFirewallDenyEmitsRejectionRecord(t *testing.T) {
 	listener := &UDPListener{
 		cfg:      config.ListenerConfig{BindPort: 9000},
 		firewall: engine,
-		pipeline: pipeline,
+		observer: pipeline,
 		sem:      make(chan struct{}, 1),
 		mappings: make(map[string]*udpMapping),
 		pending:  make(map[string]*udpMappingReservation),
@@ -348,7 +341,7 @@ func TestUDPPerIPLimitEmitsRejectionRecord(t *testing.T) {
 
 	listener := &UDPListener{
 		cfg:      config.ListenerConfig{BindPort: 9000},
-		pipeline: pipeline,
+		observer: pipeline,
 		sem:      make(chan struct{}, 1),
 		mappings: make(map[string]*udpMapping),
 		pending:  make(map[string]*udpMappingReservation),
@@ -374,7 +367,7 @@ func TestUDPMappingLimitEmitsRejectionRecord(t *testing.T) {
 
 	listener := &UDPListener{
 		cfg:      config.ListenerConfig{BindPort: 9000},
-		pipeline: pipeline,
+		observer: pipeline,
 		sem:      make(chan struct{}),
 		mappings: make(map[string]*udpMapping),
 		pending:  make(map[string]*udpMappingReservation),
@@ -395,8 +388,6 @@ func TestUDPMappingLimitEmitsRejectionRecord(t *testing.T) {
 }
 
 func TestTCPCloseWithReasonEmitsOneIPLogRecord(t *testing.T) {
-	status, done := newStatusStore(t)
-	defer close(done)
 	writer := &recordingWriter{}
 	pipeline := newPipeline(t, writer)
 
@@ -410,14 +401,23 @@ func TestTCPCloseWithReasonEmitsOneIPLogRecord(t *testing.T) {
 		upstream:    upstreamConn,
 		upstreamTag: "primary",
 		listenPort:  9000,
-		status:      status,
-		pipeline:    pipeline,
+		observer:    pipeline,
 		done:        make(chan struct{}),
-		created:     time.Now().Add(-time.Second),
+		created:     time.Now().UTC().Add(-time.Second),
 		clientAddr:  "1.1.1.1:12345",
 		clientIP:    "1.1.1.1",
+		listenAddr:  ":9000",
 	}
-	conn.id = status.AddTCP(conn.clientAddr, conn.upstreamTag, conn.listenPort, nil)
+	conn.id, _ = flow.NewID()
+	conn.lifecycle = flow.NewLifecycle(flow.Meta{
+		ID:         conn.id,
+		Protocol:   flow.ProtocolTCP,
+		ClientAddr: netip.MustParseAddrPort(conn.clientAddr),
+		Listener:   conn.listenAddr,
+		Upstream:   conn.upstreamTag,
+		StartedAt:  conn.created,
+	}, conn.observer, nil, conn.close)
+	conn.lifecycle.Open()
 
 	conn.closeWithReason("test")
 	conn.closeWithReason("test")
@@ -433,8 +433,6 @@ func TestTCPCloseWithReasonEmitsOneIPLogRecord(t *testing.T) {
 }
 
 func TestUDPCloseWithReasonEmitsOneIPLogRecord(t *testing.T) {
-	status, done := newStatusStore(t)
-	defer close(done)
 	writer := &recordingWriter{}
 	pipeline := newPipeline(t, writer)
 
@@ -445,7 +443,6 @@ func TestUDPCloseWithReasonEmitsOneIPLogRecord(t *testing.T) {
 
 	parent := &UDPListener{
 		cfg:      config.ListenerConfig{BindPort: 9000},
-		status:   status,
 		sem:      make(chan struct{}, 1),
 		mappings: make(map[string]*udpMapping),
 		pending:  make(map[string]*udpMappingReservation),
@@ -461,12 +458,21 @@ func TestUDPCloseWithReasonEmitsOneIPLogRecord(t *testing.T) {
 		clientIP:      "1.1.1.1",
 		upstreamTag:   "primary",
 		upstreamConn:  upstreamConn,
-		status:        status,
-		pipeline:      pipeline,
+		observer:      pipeline,
 		done:          make(chan struct{}),
-		created:       time.Now().Add(-time.Second),
+		created:       time.Now().UTC().Add(-time.Second),
+		listenAddr:    ":9000",
 	}
-	mapping.id = status.AddUDP(mapping.clientAddrStr, mapping.upstreamTag, parent.cfg.BindPort, nil)
+	mapping.id, _ = flow.NewID()
+	mapping.lifecycle = flow.NewLifecycle(flow.Meta{
+		ID:         mapping.id,
+		Protocol:   flow.ProtocolUDP,
+		ClientAddr: netip.MustParseAddrPort(mapping.clientAddrStr),
+		Listener:   mapping.listenAddr,
+		Upstream:   mapping.upstreamTag,
+		StartedAt:  mapping.created,
+	}, mapping.observer, nil, mapping.close)
+	mapping.lifecycle.Open()
 	parent.mappings[mapping.clientAddrStr] = mapping
 
 	mapping.closeWithReason("test")

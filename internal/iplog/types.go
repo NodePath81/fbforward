@@ -14,14 +14,21 @@ const (
 )
 
 type CloseEvent struct {
-	IP         string
-	Protocol   string
-	Upstream   string
-	Port       int
-	BytesUp    uint64
-	BytesDown  uint64
-	DurationMs int64
-	RecordedAt time.Time
+	FlowID       string
+	IP           string
+	Protocol     string
+	Listener     string
+	Route        string
+	Upstream     string
+	Port         int
+	BytesUp      uint64
+	BytesDown    uint64
+	DurationMs   int64
+	StartedAt    time.Time
+	EndedAt      time.Time
+	LastActivity time.Time
+	CloseReason  string
+	RecordedAt   time.Time
 }
 
 type EnrichedRecord struct {

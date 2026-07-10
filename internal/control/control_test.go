@@ -76,7 +76,7 @@ func newTestControlServer(t *testing.T) *ControlServer {
 		},
 		fakeManager{},
 		metrics.NewMetrics(nil),
-		NewStatusStore(NewStatusHub(ctxDone, nil), nil),
+		NewStatusStore(NewStatusHub(ctxDone, nil)),
 		nil,
 		func() error { return nil },
 		nil,

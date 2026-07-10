@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/util"
@@ -102,6 +103,58 @@ func (p *Pipeline) Emit(event CloseEvent) bool {
 	return p.enqueueGeoItem(geoQueueItem{flow: &event})
 }
 
+func (p *Pipeline) Open(flow.Meta) {}
+
+func (p *Pipeline) Update(flow.ID, flow.Counters) {}
+
+func (p *Pipeline) Close(summary flow.Summary) {
+	if p == nil {
+		return
+	}
+	endedAt := summary.EndedAt
+	if endedAt.IsZero() {
+		endedAt = time.Now().UTC()
+	}
+	startedAt := summary.StartedAt
+	durationMs := int64(0)
+	if !startedAt.IsZero() {
+		durationMs = endedAt.Sub(startedAt).Milliseconds()
+		if durationMs < 0 {
+			durationMs = 0
+		}
+	}
+	port := listenerPort(summary.Listener)
+	p.Emit(CloseEvent{
+		FlowID:       summary.ID.String(),
+		IP:           summary.ClientAddr.Addr().String(),
+		Protocol:     summary.Protocol,
+		Listener:     summary.Listener,
+		Route:        summary.Route,
+		Upstream:     summary.Upstream,
+		Port:         port,
+		BytesUp:      summary.BytesUp,
+		BytesDown:    summary.BytesDown,
+		DurationMs:   durationMs,
+		StartedAt:    startedAt,
+		EndedAt:      endedAt,
+		LastActivity: summary.LastActivity,
+		CloseReason:  summary.CloseReason,
+		RecordedAt:   endedAt,
+	})
+}
+
+func (p *Pipeline) Reject(rejection flow.Rejection) {
+	p.EmitRejection(RejectionEvent{
+		IP:               rejection.ClientAddr.Addr().String(),
+		Protocol:         rejection.Protocol,
+		Port:             listenerPort(rejection.Listener),
+		Reason:           rejection.Reason,
+		MatchedRuleType:  rejection.MatchedRuleType,
+		MatchedRuleValue: rejection.MatchedRuleValue,
+		RecordedAt:       rejection.RecordedAt,
+	})
+}
+
 func (p *Pipeline) EmitRejection(event RejectionEvent) bool {
 	if p == nil || !p.logRejections {
 		return false
@@ -113,6 +166,16 @@ func (p *Pipeline) EmitRejection(event RejectionEvent) bool {
 		return false
 	}
 	return p.enqueueGeoItem(geoQueueItem{rejection: &event})
+}
+
+func listenerPort(listener string) int {
+	if _, port, err := net.SplitHostPort(listener); err == nil {
+		var value int
+		if _, err := fmt.Sscanf(port, "%d", &value); err == nil {
+			return value
+		}
+	}
+	return 0
 }
 
 func (p *Pipeline) enqueueGeoItem(item geoQueueItem) bool {

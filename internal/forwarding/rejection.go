@@ -1,23 +1,38 @@
 package forwarding
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/firewall"
-	"github.com/NodePath81/fbforward/internal/iplog"
+	"github.com/NodePath81/fbforward/internal/flow"
 )
 
-func emitRejection(pipeline *iplog.Pipeline, protocol string, port int, ip, reason string, decision firewall.Decision) {
-	if pipeline == nil || ip == "" {
+func emitRejection(observer flow.Observer, protocol, listener, clientAddress, reason string, decision firewall.Decision) {
+	if observer == nil || clientAddress == "" {
 		return
 	}
-	pipeline.EmitRejection(iplog.RejectionEvent{
-		IP:               ip,
+	clientAddr := parseClientAddr(clientAddress)
+	if !clientAddr.IsValid() {
+		return
+	}
+	observer.Reject(flow.Rejection{
 		Protocol:         protocol,
-		Port:             port,
+		ClientAddr:       clientAddr,
+		Listener:         listener,
 		Reason:           reason,
 		MatchedRuleType:  decision.RuleType,
 		MatchedRuleValue: decision.RuleValue,
-		RecordedAt:       time.Now(),
+		RecordedAt:       time.Now().UTC(),
 	})
+}
+
+func parseClientAddr(raw string) netip.AddrPort {
+	if addr, err := netip.ParseAddrPort(raw); err == nil {
+		return addr
+	}
+	if addr, err := netip.ParseAddr(raw); err == nil {
+		return netip.AddrPortFrom(addr, 0)
+	}
+	return netip.AddrPort{}
 }

@@ -6,15 +6,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/firewall"
-	"github.com/NodePath81/fbforward/internal/iplog"
-	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 )
@@ -22,11 +20,10 @@ import (
 type TCPListener struct {
 	cfg      config.ListenerConfig
 	manager  upstream.UpstreamSelector
-	metrics  *metrics.Metrics
-	status   *control.StatusStore
 	timeout  time.Duration
 	firewall *firewall.Engine
-	pipeline *iplog.Pipeline
+	observer flow.Observer
+	registry *flow.Registry
 	sem      chan struct{}
 	logger   util.Logger
 
@@ -46,15 +43,14 @@ var tcpBufPool = sync.Pool{
 	},
 }
 
-func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, metrics *metrics.Metrics, status *control.StatusStore, fw *firewall.Engine, pipeline *iplog.Pipeline, logger util.Logger) *TCPListener {
+func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, manager upstream.UpstreamSelector, fw *firewall.Engine, observer flow.Observer, registry *flow.Registry, logger util.Logger) *TCPListener {
 	return &TCPListener{
 		cfg:      cfg,
 		manager:  manager,
-		metrics:  metrics,
-		status:   status,
 		timeout:  timeout,
 		firewall: fw,
-		pipeline: pipeline,
+		observer: observer,
+		registry: registry,
 		sem:      make(chan struct{}, limits.MaxTCPConnections),
 		logger:   util.ComponentLogger(logger, util.CompForwardTCP),
 	}
@@ -90,8 +86,8 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 			case l.sem <- struct{}{}:
 				go l.handleConn(ctx, conn)
 			default:
-				clientIP := clientIPFromAddr(conn.RemoteAddr().String())
-				emitRejection(l.pipeline, "tcp", l.cfg.BindPort, clientIP, "tcp_connection_limit", firewall.Decision{})
+				clientAddr := conn.RemoteAddr().String()
+				emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "tcp_connection_limit", firewall.Decision{})
 				util.Event(l.logger, slog.LevelWarn, "forward.tcp.connection_limit_reached",
 					"client.addr", conn.RemoteAddr().String(),
 				)
@@ -124,7 +120,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 	if l.firewall != nil {
 		decision := l.firewall.Decide(clientIP)
 		if !decision.Allowed {
-			emitRejection(l.pipeline, "tcp", l.cfg.BindPort, clientIPStr, "firewall_deny", decision)
+			emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "firewall_deny", decision)
 			_ = client.Close()
 			return
 		}
@@ -170,10 +166,9 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		upstreamTag:  up.Tag,
 		listenPort:   l.cfg.BindPort,
 		timeout:      l.timeout,
-		metrics:      l.metrics,
-		status:       l.status,
 		logger:       l.logger,
-		pipeline:     l.pipeline,
+		observer:     l.observer,
+		registry:     l.registry,
 		upstreamIP:   upstreamIP,
 		upstreamAddr: remoteAddr,
 		listenAddr:   net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
@@ -187,33 +182,54 @@ type tcpConn struct {
 	upstreamTag  string
 	listenPort   int
 	timeout      time.Duration
-	metrics      *metrics.Metrics
-	status       *control.StatusStore
 	logger       util.Logger
-	pipeline     *iplog.Pipeline
+	observer     flow.Observer
+	registry     *flow.Registry
 	upstreamIP   string
 	upstreamAddr string
 	listenAddr   string
 	clientAddr   string
 	clientIP     string
 
-	id         string
+	id         flow.ID
 	closeOnce  sync.Once
 	activityCh chan struct{}
 	done       chan struct{}
 	created    time.Time
-	totalUp    uint64
-	totalDown  uint64
+	lifecycle  *flow.Lifecycle
 }
 
 func (c *tcpConn) start(ctx context.Context) {
 	clientAddr := c.client.RemoteAddr().String()
 	c.clientAddr = clientAddr
 	c.clientIP = clientIPFromAddr(clientAddr)
-	c.created = time.Now()
+	c.created = time.Now().UTC()
 	c.activityCh = make(chan struct{}, 1)
 	c.done = make(chan struct{})
-	c.id = c.status.AddTCP(clientAddr, c.upstreamTag, c.listenPort, c.close)
+	clientEndpoint, err := netip.ParseAddrPort(clientAddr)
+	if err != nil {
+		util.Event(c.logger, slog.LevelWarn, "forward.tcp.invalid_client_addr", "client.addr", clientAddr, "error", err)
+		_ = c.client.Close()
+		_ = c.upstream.Close()
+		return
+	}
+	c.id, err = flow.NewID()
+	if err != nil {
+		util.Event(c.logger, slog.LevelError, "forward.tcp.flow_id_failed", "error", err)
+		_ = c.client.Close()
+		_ = c.upstream.Close()
+		return
+	}
+	c.lifecycle = flow.NewLifecycle(flow.Meta{
+		ID:         c.id,
+		Protocol:   flow.ProtocolTCP,
+		ClientAddr: clientEndpoint,
+		Listener:   c.listenAddr,
+		Route:      "",
+		Upstream:   c.upstreamTag,
+		StartedAt:  c.created,
+	}, c.observer, c.registry, c.close)
+	c.lifecycle.Open()
 	util.Event(c.logger, slog.LevelInfo, "forward.tcp.connection_opened",
 		"flow.id", c.id,
 		"request.protocol", "tcp",
@@ -326,13 +342,13 @@ func applyTCPOptions(conn *net.TCPConn) {
 
 func (c *tcpConn) touch(n uint64, up bool) {
 	if up {
-		atomic.AddUint64(&c.totalUp, n)
-		c.metrics.AddBytesUp(c.upstreamTag, n, "tcp")
-		c.status.UpdateTCP(c.id, n, 0, 1, 0)
+		if c.lifecycle != nil {
+			c.lifecycle.Add(n, 0, 1, 0)
+		}
 	} else {
-		atomic.AddUint64(&c.totalDown, n)
-		c.metrics.AddBytesDown(c.upstreamTag, n, "tcp")
-		c.status.UpdateTCP(c.id, 0, n, 0, 1)
+		if c.lifecycle != nil {
+			c.lifecycle.Add(0, n, 0, 1)
+		}
 	}
 	select {
 	case c.activityCh <- struct{}{}:
@@ -370,10 +386,14 @@ func (c *tcpConn) closeWithReason(reason string) {
 		close(c.done)
 		_ = c.client.Close()
 		_ = c.upstream.Close()
-		c.status.RemoveTCP(c.id)
 		durationMs := int64(0)
 		if !c.created.IsZero() {
 			durationMs = time.Since(c.created).Milliseconds()
+		}
+		counters := flow.Counters{}
+		if c.lifecycle != nil {
+			counters = c.lifecycle.Snapshot()
+			c.lifecycle.Close(reason)
 		}
 		util.Event(c.logger, slog.LevelInfo, "forward.tcp.connection_closed",
 			"flow.id", c.id,
@@ -384,23 +404,11 @@ func (c *tcpConn) closeWithReason(reason string) {
 			"upstream.ip", c.upstreamIP,
 			"upstream.addr", c.upstreamAddr,
 			"flow.close_reason", reason,
-			"flow.bytes_up", atomic.LoadUint64(&c.totalUp),
-			"flow.bytes_down", atomic.LoadUint64(&c.totalDown),
+			"flow.bytes_up", counters.BytesUp,
+			"flow.bytes_down", counters.BytesDown,
 			"flow.duration_ms", durationMs,
 			"result", "closed",
 		)
-		if c.pipeline != nil {
-			c.pipeline.Emit(iplog.CloseEvent{
-				IP:         c.clientIP,
-				Protocol:   "tcp",
-				Upstream:   c.upstreamTag,
-				Port:       c.listenPort,
-				BytesUp:    atomic.LoadUint64(&c.totalUp),
-				BytesDown:  atomic.LoadUint64(&c.totalDown),
-				DurationMs: durationMs,
-				RecordedAt: time.Now(),
-			})
-		}
 	})
 }
 
@@ -413,4 +421,8 @@ func clientIPFromAddr(addr string) string {
 		return host
 	}
 	return addr
+}
+
+func (l *TCPListener) listenAddr() string {
+	return net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort))
 }

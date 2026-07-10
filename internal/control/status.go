@@ -3,12 +3,13 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
-	"strconv"
+	"net"
 	"sync"
 	"time"
 
-	"github.com/NodePath81/fbforward/internal/metrics"
+	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
@@ -16,6 +17,9 @@ type StatusEntry struct {
 	Kind         string `json:"kind"`
 	ID           string `json:"id"`
 	ClientAddr   string `json:"client_addr"`
+	Listener     string `json:"listener,omitempty"`
+	Route        string `json:"route,omitempty"`
+	StartedAt    int64  `json:"started_at,omitempty"`
 	Port         int    `json:"port"`
 	Upstream     string `json:"upstream"`
 	BytesUp      uint64 `json:"bytes_up"`
@@ -31,6 +35,9 @@ type statusEntry struct {
 	kind          string
 	id            string
 	clientAddr    string
+	listener      string
+	route         string
+	startedAt     time.Time
 	port          int
 	upstream      string
 	bytesUp       uint64
@@ -43,92 +50,69 @@ type statusEntry struct {
 }
 
 type StatusStore struct {
-	mu        sync.Mutex
-	tcp       map[string]*statusEntry
-	udp       map[string]*statusEntry
-	tcpCloser map[string]func()
-	udpCloser map[string]func()
-	nextID    uint64
-	hub       *StatusHub
-	metrics   *metrics.Metrics
+	mu  sync.Mutex
+	tcp map[string]*statusEntry
+	udp map[string]*statusEntry
+	hub *StatusHub
 }
 
-func NewStatusStore(hub *StatusHub, metrics *metrics.Metrics) *StatusStore {
+func NewStatusStore(hub *StatusHub) *StatusStore {
 	return &StatusStore{
-		tcp:       make(map[string]*statusEntry),
-		udp:       make(map[string]*statusEntry),
-		tcpCloser: make(map[string]func()),
-		udpCloser: make(map[string]func()),
-		hub:       hub,
-		metrics:   metrics,
+		tcp: make(map[string]*statusEntry),
+		udp: make(map[string]*statusEntry),
+		hub: hub,
 	}
 }
 
-func (s *StatusStore) AddTCP(clientAddr, upstream string, port int, closeFunc func()) string {
-	return s.add("tcp", clientAddr, upstream, port, closeFunc)
-}
-
-func (s *StatusStore) AddUDP(clientAddr, upstream string, port int, closeFunc func()) string {
-	return s.add("udp", clientAddr, upstream, port, closeFunc)
-}
-
-func (s *StatusStore) add(kind, clientAddr, upstream string, port int, closeFunc func()) string {
+func (s *StatusStore) Open(meta flow.Meta) {
 	s.mu.Lock()
-	now := time.Now()
-	s.nextID++
-	id := kind + "-" + strconv.FormatInt(now.UnixNano(), 10) + "-" + strconv.FormatUint(s.nextID, 10)
+	id := meta.ID.String()
+	now := meta.StartedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	entry := &statusEntry{
-		kind:         kind,
+		kind:         meta.Protocol,
 		id:           id,
-		clientAddr:   clientAddr,
-		port:         port,
-		upstream:     upstream,
+		clientAddr:   meta.ClientAddr.String(),
+		listener:     meta.Listener,
+		route:        meta.Route,
+		startedAt:    now,
+		port:         listenerPort(meta.Listener),
+		upstream:     meta.Upstream,
 		lastActivity: now,
 		created:      now,
 	}
-	if kind == "tcp" {
+	if meta.Protocol == flow.ProtocolTCP {
 		s.tcp[id] = entry
-		s.tcpCloser[id] = closeFunc
-		if s.metrics != nil {
-			s.metrics.IncTCPActive()
-		}
 	} else {
 		s.udp[id] = entry
-		s.udpCloser[id] = closeFunc
-		if s.metrics != nil {
-			s.metrics.IncUDPActive()
-		}
 	}
 	s.mu.Unlock()
 	snapshot := s.toStatusEntry(entry)
-	s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "add", Entry: &snapshot})
-	return id
+	if s.hub != nil {
+		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "add", Entry: &snapshot})
+	}
 }
 
-func (s *StatusStore) UpdateTCP(id string, upDelta, downDelta, segUp, segDown uint64) {
-	s.update("tcp", id, upDelta, downDelta, segUp, segDown)
-}
-
-func (s *StatusStore) UpdateUDP(id string, upDelta, downDelta, segUp, segDown uint64) {
-	s.update("udp", id, upDelta, downDelta, segUp, segDown)
-}
-
-func (s *StatusStore) update(kind, id string, upDelta, downDelta, segUp, segDown uint64) {
-	now := time.Now()
+func (s *StatusStore) Update(id flow.ID, counters flow.Counters) {
 	var entry *statusEntry
 	s.mu.Lock()
-	if kind == "tcp" {
-		entry = s.tcp[id]
-	} else {
-		entry = s.udp[id]
+	idString := id.String()
+	entry = s.tcp[idString]
+	if entry == nil {
+		entry = s.udp[idString]
 	}
 	if entry != nil {
-		entry.bytesUp += upDelta
-		entry.bytesDown += downDelta
-		entry.segmentsUp += segUp
-		entry.segmentsDown += segDown
-		entry.lastActivity = now
+		entry.bytesUp = counters.BytesUp
+		entry.bytesDown = counters.BytesDown
+		entry.segmentsUp = counters.SegmentsUp
+		entry.segmentsDown = counters.SegmentsDown
+		if !counters.LastActivity.IsZero() {
+			entry.lastActivity = counters.LastActivity
+		}
 	}
+	now := time.Now()
 	shouldBroadcast := entry != nil && now.Sub(entry.lastBroadcast) >= time.Second
 	var snapshot *StatusEntry
 	if shouldBroadcast {
@@ -137,39 +121,25 @@ func (s *StatusStore) update(kind, id string, upDelta, downDelta, segUp, segDown
 		snapshot = &temp
 	}
 	s.mu.Unlock()
-	if snapshot != nil {
+	if snapshot != nil && s.hub != nil {
 		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "update", Entry: snapshot})
 	}
 }
 
-func (s *StatusStore) RemoveTCP(id string) {
-	s.remove("tcp", id)
-}
-
-func (s *StatusStore) RemoveUDP(id string) {
-	s.remove("udp", id)
-}
-
-func (s *StatusStore) remove(kind, id string) {
+func (s *StatusStore) Close(summary flow.Summary) {
+	kind := summary.Protocol
+	id := summary.ID.String()
 	s.mu.Lock()
 	var entry *statusEntry
-	if kind == "tcp" {
+	if kind == flow.ProtocolTCP {
 		entry = s.tcp[id]
 		delete(s.tcp, id)
-		delete(s.tcpCloser, id)
-		if s.metrics != nil {
-			s.metrics.DecTCPActive()
-		}
 	} else {
 		entry = s.udp[id]
 		delete(s.udp, id)
-		delete(s.udpCloser, id)
-		if s.metrics != nil {
-			s.metrics.DecUDPActive()
-		}
 	}
 	s.mu.Unlock()
-	if entry != nil {
+	if entry != nil && s.hub != nil {
 		s.hub.Broadcast(statusMessage{
 			SchemaVersion: 1,
 			Type:          "remove",
@@ -179,6 +149,8 @@ func (s *StatusStore) remove(kind, id string) {
 		})
 	}
 }
+
+func (s *StatusStore) Reject(flow.Rejection) {}
 
 func (s *StatusStore) Snapshot() (tcp []StatusEntry, udp []StatusEntry) {
 	s.mu.Lock()
@@ -194,50 +166,15 @@ func (s *StatusStore) Snapshot() (tcp []StatusEntry, udp []StatusEntry) {
 	return tcp, udp
 }
 
-func (s *StatusStore) CloseByUpstream(tag string) {
-	var closers []func()
-	s.mu.Lock()
-	for id, entry := range s.tcp {
-		if entry.upstream == tag {
-			closers = append(closers, s.tcpCloser[id])
-		}
-	}
-	for id, entry := range s.udp {
-		if entry.upstream == tag {
-			closers = append(closers, s.udpCloser[id])
-		}
-	}
-	s.mu.Unlock()
-	for _, closer := range closers {
-		if closer != nil {
-			closer()
-		}
-	}
-}
-
-func (s *StatusStore) CloseAll() {
-	var closers []func()
-	s.mu.Lock()
-	for _, closer := range s.tcpCloser {
-		closers = append(closers, closer)
-	}
-	for _, closer := range s.udpCloser {
-		closers = append(closers, closer)
-	}
-	s.mu.Unlock()
-	for _, closer := range closers {
-		if closer != nil {
-			closer()
-		}
-	}
-}
-
 func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 	age := time.Since(entry.created).Seconds()
 	return StatusEntry{
 		Kind:         entry.kind,
 		ID:           entry.id,
 		ClientAddr:   entry.clientAddr,
+		Listener:     entry.listener,
+		Route:        entry.route,
+		StartedAt:    entry.startedAt.UnixMilli(),
 		Port:         entry.port,
 		Upstream:     entry.upstream,
 		BytesUp:      entry.bytesUp,
@@ -247,6 +184,16 @@ func (s *StatusStore) toStatusEntry(entry *statusEntry) StatusEntry {
 		LastActivity: entry.lastActivity.UnixMilli(),
 		Age:          int64(age),
 	}
+}
+
+func listenerPort(listener string) int {
+	if _, port, err := net.SplitHostPort(listener); err == nil {
+		var value int
+		if _, err := fmt.Sscanf(port, "%d", &value); err == nil {
+			return value
+		}
+	}
+	return 0
 }
 
 type TestHistoryPayload struct {
