@@ -23,6 +23,7 @@ type UDPListener struct {
 	timeout  time.Duration
 	observer FlowObserver
 	registry *flow.Registry
+	binder   BackendBinder
 	sem      chan struct{}
 	logger   util.Logger
 
@@ -56,7 +57,7 @@ var udpPacketPool = sync.Pool{
 	},
 }
 
-func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, picker UpstreamPicker, policy AdmissionPolicy, observer FlowObserver, registry *flow.Registry, logger util.Logger) *UDPListener {
+func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, picker UpstreamPicker, policy AdmissionPolicy, observer FlowObserver, registry *flow.Registry, binder BackendBinder, logger util.Logger) *UDPListener {
 	return &UDPListener{
 		cfg:      cfg,
 		picker:   picker,
@@ -64,6 +65,7 @@ func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsCon
 		timeout:  timeout,
 		observer: observer,
 		registry: registry,
+		binder:   binder,
 		sem:      make(chan struct{}, limits.MaxUDPMappings),
 		logger:   util.ComponentLogger(logger, util.CompForwardUDP),
 		mappings: make(map[string]*udpMapping),
@@ -281,6 +283,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta)
 		logger:        l.logger,
 		observer:      l.observer,
 		registry:      l.registry,
+		binder:        l.binder,
 		activityCh:    make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		created:       candidate.StartedAt,
@@ -308,6 +311,13 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta)
 		StartedAt:  candidate.StartedAt,
 	}, mapping.observer, mapping.registry, mapping.close)
 	mapping.lifecycle.Open()
+	if l.binder != nil {
+		if tuple, bindErr := backendTuple(flow.ProtocolUDP, mapping.upstreamTag, upConn.LocalAddr(), upConn.RemoteAddr()); bindErr != nil {
+			util.Event(l.logger, slog.LevelWarn, "forward.udp.backend_bind_failed", "flow.id", mapping.id, "error", bindErr)
+		} else if bindErr := l.binder.Bind(mapping.id, tuple); bindErr != nil {
+			util.Event(l.logger, slog.LevelWarn, "forward.udp.backend_bind_failed", "flow.id", mapping.id, "error", bindErr)
+		}
+	}
 	return mapping, nil
 }
 
@@ -364,6 +374,7 @@ type udpMapping struct {
 	logger        util.Logger
 	observer      FlowObserver
 	registry      *flow.Registry
+	binder        BackendBinder
 	created       time.Time
 	upstreamIP    string
 	upstreamAddr  string

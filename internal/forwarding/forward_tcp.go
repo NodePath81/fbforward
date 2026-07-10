@@ -22,6 +22,7 @@ type TCPListener struct {
 	timeout  time.Duration
 	observer FlowObserver
 	registry *flow.Registry
+	binder   BackendBinder
 	sem      chan struct{}
 	logger   util.Logger
 
@@ -41,7 +42,7 @@ var tcpBufPool = sync.Pool{
 	},
 }
 
-func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, picker UpstreamPicker, policy AdmissionPolicy, observer FlowObserver, registry *flow.Registry, logger util.Logger) *TCPListener {
+func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsConfig, timeout time.Duration, picker UpstreamPicker, policy AdmissionPolicy, observer FlowObserver, registry *flow.Registry, binder BackendBinder, logger util.Logger) *TCPListener {
 	return &TCPListener{
 		cfg:      cfg,
 		picker:   picker,
@@ -49,6 +50,7 @@ func NewTCPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsCon
 		timeout:  timeout,
 		observer: observer,
 		registry: registry,
+		binder:   binder,
 		sem:      make(chan struct{}, limits.MaxTCPConnections),
 		logger:   util.ComponentLogger(logger, util.CompForwardTCP),
 	}
@@ -177,6 +179,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		logger:       l.logger,
 		observer:     l.observer,
 		registry:     l.registry,
+		binder:       l.binder,
 		upstreamIP:   upstreamIP,
 		upstreamAddr: remoteAddr,
 		listenAddr:   net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
@@ -194,6 +197,7 @@ type tcpConn struct {
 	logger       util.Logger
 	observer     FlowObserver
 	registry     *flow.Registry
+	binder       BackendBinder
 	upstreamIP   string
 	upstreamAddr string
 	listenAddr   string
@@ -243,6 +247,13 @@ func (c *tcpConn) start(ctx context.Context) {
 		StartedAt:  c.created,
 	}, c.observer, c.registry, c.close)
 	c.lifecycle.Open()
+	if c.binder != nil {
+		if tuple, bindErr := backendTuple(flow.ProtocolTCP, c.upstreamTag, c.upstream.LocalAddr(), c.upstream.RemoteAddr()); bindErr != nil {
+			util.Event(c.logger, slog.LevelWarn, "forward.tcp.backend_bind_failed", "flow.id", c.id, "error", bindErr)
+		} else if bindErr := c.binder.Bind(c.id, tuple); bindErr != nil {
+			util.Event(c.logger, slog.LevelWarn, "forward.tcp.backend_bind_failed", "flow.id", c.id, "error", bindErr)
+		}
+	}
 	util.Event(c.logger, slog.LevelInfo, "forward.tcp.connection_opened",
 		"flow.id", c.id,
 		"request.protocol", "tcp",

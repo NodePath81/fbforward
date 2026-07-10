@@ -77,6 +77,21 @@ type recordingObserver struct {
 	rejections []flow.Rejection
 }
 
+type recordingBinder struct {
+	mu     sync.Mutex
+	ids    []flow.ID
+	tuples []flow.BackendTuple
+	err    error
+}
+
+func (b *recordingBinder) Bind(id flow.ID, tuple flow.BackendTuple) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ids = append(b.ids, id)
+	b.tuples = append(b.tuples, tuple)
+	return b.err
+}
+
 func (o *recordingObserver) Open(meta flow.Meta) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -223,6 +238,75 @@ func TestTCPPickErrorClosesConnectionWithoutCreatingFlow(t *testing.T) {
 	}
 }
 
+func TestTCPFlowBindsUpstreamSocketTuple(t *testing.T) {
+	observer := &recordingObserver{}
+	binder := &recordingBinder{}
+	client := &stubConn{
+		local:  stubAddr("127.0.0.1:9000"),
+		remote: stubAddr("192.0.2.1:12345"),
+	}
+	upstream := &stubConn{
+		local:  stubAddr("10.0.0.1:43122"),
+		remote: stubAddr("192.0.2.10:443"),
+	}
+	conn := &tcpConn{
+		client:       client,
+		upstream:     upstream,
+		upstreamTag:  "primary",
+		listenPort:   9000,
+		timeout:      time.Second,
+		observer:     observer,
+		binder:       binder,
+		listenAddr:   "127.0.0.1:9000",
+		upstreamAddr: "192.0.2.10:443",
+		created:      time.Now().UTC(),
+	}
+	conn.start(context.Background())
+	defer conn.closeWithReason("test")
+	binder.mu.Lock()
+	defer binder.mu.Unlock()
+	if len(binder.ids) != 1 || len(binder.tuples) != 1 {
+		t.Fatalf("expected one backend binding, ids=%d tuples=%d", len(binder.ids), len(binder.tuples))
+	}
+	if got := binder.tuples[0].BackendKey; got != "primary@192.0.2.10:443" {
+		t.Fatalf("unexpected backend key %q", got)
+	}
+}
+
+func TestUDPMappingBindsUpstreamSocketTuple(t *testing.T) {
+	observer := &recordingObserver{}
+	binder := &recordingBinder{}
+	listener := &UDPListener{
+		cfg:      config.ListenerConfig{BindAddr: "127.0.0.1", BindPort: freeTCPPort(t)},
+		picker:   &fakePicker{selected: selectedUpstream()},
+		observer: observer,
+		binder:   binder,
+		sem:      make(chan struct{}, 1),
+		mappings: make(map[string]*udpMapping),
+		pending:  make(map[string]*udpMappingReservation),
+		ipCounts: make(map[string]int),
+	}
+	listener.sem <- struct{}{}
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 12345}
+	candidate, err := newCandidateMeta(flow.ProtocolUDP, clientAddr.String(), listener.listenAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping, err := listener.buildMapping(clientAddr, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mapping.closeWithReason("test")
+	binder.mu.Lock()
+	defer binder.mu.Unlock()
+	if len(binder.tuples) != 1 || binder.tuples[0].Protocol != flow.ProtocolUDP {
+		t.Fatalf("expected one UDP binding, got %+v", binder.tuples)
+	}
+	if binder.tuples[0].LocalAddr.Port() == 0 || binder.tuples[0].RemoteAddr.Port() == 0 {
+		t.Fatalf("expected concrete UDP socket tuple: %+v", binder.tuples[0])
+	}
+}
+
 func TestTCPConnectionLimitEmitsRejection(t *testing.T) {
 	observer := &recordingObserver{}
 	port := freeTCPPort(t)
@@ -233,6 +317,7 @@ func TestTCPConnectionLimitEmitsRejection(t *testing.T) {
 		&fakePicker{selected: selectedUpstream()},
 		allowedPolicy(),
 		observer,
+		nil,
 		nil,
 		nil,
 	)

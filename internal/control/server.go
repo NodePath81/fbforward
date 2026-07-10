@@ -12,6 +12,7 @@ import (
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/coordination"
+	"github.com/NodePath81/fbforward/internal/flowcontext"
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
@@ -58,6 +59,7 @@ type ControlServer struct {
 	geoipMgr    geoipManager
 	iplogMu     sync.RWMutex
 	iplogStore  *iplog.Store
+	flowContext *flowcontext.Service
 	nextReqID   uint64
 	nextWSID    uint64
 	rpcs        *rpcRegistry
@@ -91,6 +93,9 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	if c.cfg.Metrics.IsEnabled() {
 		mux.HandleFunc("/metrics", c.handleMetrics)
+	}
+	if c.flowContext != nil {
+		mux.HandleFunc("/flow-context/resolve", c.flowContext.HandleResolve)
 	}
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/status", c.handleStatus)
@@ -153,6 +158,12 @@ func (c *ControlServer) SetIPLogStore(store *iplog.Store) {
 	c.iplogMu.Lock()
 	defer c.iplogMu.Unlock()
 	c.iplogStore = store
+}
+
+// SetFlowContextService installs the independent flow-context resolver
+// endpoint. It is deliberately not part of the RPC registry.
+func (c *ControlServer) SetFlowContextService(service *flowcontext.Service) {
+	c.flowContext = service
 }
 
 type identityResponse struct {

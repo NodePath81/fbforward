@@ -16,6 +16,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/flow"
+	"github.com/NodePath81/fbforward/internal/flowcontext"
 	"github.com/NodePath81/fbforward/internal/forwarding"
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/iplog"
@@ -42,6 +43,7 @@ type Runtime struct {
 	status        *control.StatusStore
 	flowObserver  forwarding.FlowObserver
 	flowRegistry  *flow.Registry
+	flowContext   *flowcontext.Registry
 	picker        forwarding.UpstreamPicker
 	policy        forwarding.AdmissionPolicy
 	control       *control.ControlServer
@@ -79,7 +81,14 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	statusHub := control.NewStatusHub(ctx.Done(), util.ComponentLogger(logger, util.CompControl))
 	status := control.NewStatusStore(statusHub)
 	flowRegistry := flow.NewRegistry()
-	flowObservers := flow.MultiObserver{status, metrics.NewFlowObserver(metricSet)}
+	flowContextRegistry := flowcontext.NewRegistry(flowcontext.DefaultOptions())
+	initialized := false
+	defer func() {
+		if !initialized {
+			_ = flowContextRegistry.Shutdown()
+		}
+	}()
+	flowObservers := flow.MultiObserver{status, metrics.NewFlowObserver(metricSet), flowContextRegistry}
 	seed := time.Now().UnixNano()
 	var seedBuf [8]byte
 	if _, err := crand.Read(seedBuf[:]); err == nil {
@@ -100,6 +109,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		metrics:      metricSet,
 		status:       status,
 		flowRegistry: flowRegistry,
+		flowContext:  flowContextRegistry,
 		picker:       &upstreamPicker{manager: manager},
 		upstreams:    upstreams,
 	}
@@ -200,9 +210,11 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	if rt.iplogStore != nil {
 		ctrl.SetIPLogStore(rt.iplogStore)
 	}
+	ctrl.SetFlowContextService(flowcontext.NewService(flowContextRegistry, cfg.Control.AuthToken))
 	rt.control = ctrl
 	rt.coord = coordCtrl
 
+	initialized = true
 	return rt, nil
 }
 
@@ -238,6 +250,11 @@ func (r *Runtime) Start() error {
 
 func (r *Runtime) Stop() {
 	r.cancel()
+	if r.control != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = r.control.Shutdown(ctx)
+		cancel()
+	}
 	if r.flowRegistry != nil {
 		r.flowRegistry.CloseAll()
 	}
@@ -266,10 +283,10 @@ func (r *Runtime) Stop() {
 			util.Event(r.logger, slog.LevelError, "shaping.cleanup_failed", "error", err)
 		}
 	}
-	if r.control != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = r.control.Shutdown(ctx)
-		cancel()
+	if r.flowContext != nil {
+		if err := r.flowContext.Shutdown(); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "flowcontext.shutdown_failed", "error", err)
+		}
 	}
 	if r.notifyPolicy != nil {
 		r.notifyPolicy.Close()
@@ -408,13 +425,13 @@ func (r *Runtime) startListeners() error {
 	for _, ln := range r.cfg.Forwarding.Listeners {
 		switch ln.Protocol {
 		case "tcp":
-			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.picker, r.policy, r.flowObserver, r.flowRegistry, r.logger)
+			tcpListener := forwarding.NewTCPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.TCP.Duration(), r.picker, r.policy, r.flowObserver, r.flowRegistry, r.flowContext, r.logger)
 			if err := tcpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
 			r.listeners = append(r.listeners, tcpListener)
 		case "udp":
-			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.picker, r.policy, r.flowObserver, r.flowRegistry, r.logger)
+			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.picker, r.policy, r.flowObserver, r.flowRegistry, r.flowContext, r.logger)
 			if err := udpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}

@@ -51,3 +51,9 @@ type FlowObserver interface {
 	Close(flow.Summary)
 	Reject(flow.Rejection)
 }
+
+// BackendBinder records the socket tuple used to reach an upstream. It is
+// optional: a binder failure must never tear down an otherwise healthy Flow.
+type BackendBinder interface {
+	Bind(flow.ID, flow.BackendTuple) error
+}

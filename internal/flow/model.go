@@ -21,6 +21,16 @@ type Meta struct {
 	StartedAt  time.Time
 }
 
+// BackendTuple identifies the socket created by fbforward to reach an
+// upstream. Addresses use fbforward's socket perspective: LocalAddr is the
+// source endpoint seen by the backend and RemoteAddr is the backend endpoint.
+type BackendTuple struct {
+	Protocol   string
+	BackendKey string
+	LocalAddr  netip.AddrPort
+	RemoteAddr netip.AddrPort
+}
+
 // Counters is a cumulative snapshot, not a delta.
 type Counters struct {
 	LastActivity time.Time
