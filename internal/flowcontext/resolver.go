@@ -9,6 +9,8 @@ import (
 	"github.com/NodePath81/fbforward/internal/flow"
 )
 
+const maxResolveWaitMS = 5000
+
 // ResolveRequest is the wire-independent request model used by the HTTP
 // service. Addresses are parsed before they reach the registry so the
 // registry's key comparison is always canonical.
@@ -38,7 +40,7 @@ func ParseTuple(request ResolveRequest) (flow.BackendTuple, time.Duration, error
 	if err != nil {
 		return flow.BackendTuple{}, 0, ErrInvalidTuple
 	}
-	if request.WaitMS < 0 {
+	if request.WaitMS < 0 || request.WaitMS > maxResolveWaitMS {
 		return flow.BackendTuple{}, 0, ErrInvalidTuple
 	}
 	return flow.BackendTuple{

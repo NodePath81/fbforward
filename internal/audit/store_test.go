@@ -150,6 +150,15 @@ func TestFlowRejectionTagsAndTopTalkers(t *testing.T) {
 	if tags, err := store.QueryFlowTags("f1"); err != nil || len(tags) != 1 || tags[0].Tag != "trusted" {
 		t.Fatalf("flow tags = %+v err=%v", tags, err)
 	}
+	if result, err := store.Query(QueryParams{Tag: "trusted", Limit: 10}); err != nil || result.Total != 1 || len(result.Records) != 1 || result.Records[0].FlowID != "f1" {
+		t.Fatalf("tag flow query=%+v err=%v", result, err)
+	}
+	if result, err := store.Query(QueryParams{Tag: "customer", Limit: 10}); err != nil || result.Total != 2 {
+		t.Fatalf("client tag flow query=%+v err=%v", result, err)
+	}
+	if talkers, err := store.GetTopTalkers(TopTalkerParams{Tag: "trusted", Limit: 10}); err != nil || len(talkers) != 1 || talkers[0].ClientIP != "192.0.2.1" {
+		t.Fatalf("tag top talkers=%+v err=%v", talkers, err)
+	}
 	if tags, err := store.QueryClientTags("192.0.2.1"); err != nil || len(tags) != 1 || tags[0].Tag != "customer" {
 		t.Fatalf("client tags = %+v err=%v", tags, err)
 	}

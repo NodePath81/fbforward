@@ -14,6 +14,7 @@ type queryIPLogParams struct {
 	CIDR      string `json:"cidr,omitempty"`
 	ASN       *int   `json:"asn,omitempty"`
 	Country   string `json:"country,omitempty"`
+	Tag       string `json:"tag,omitempty"`
 	SortBy    string `json:"sort_by,omitempty"`
 	SortOrder string `json:"sort_order,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
@@ -26,6 +27,7 @@ type queryRejectionLogParams struct {
 	CIDR             string `json:"cidr,omitempty"`
 	ASN              *int   `json:"asn,omitempty"`
 	Country          string `json:"country,omitempty"`
+	Tag              string `json:"tag,omitempty"`
 	Reason           string `json:"reason,omitempty"`
 	Protocol         string `json:"protocol,omitempty"`
 	Port             *int   `json:"port,omitempty"`
@@ -43,6 +45,7 @@ type queryLogEventsParams struct {
 	CIDR             string `json:"cidr,omitempty"`
 	ASN              *int   `json:"asn,omitempty"`
 	Country          string `json:"country,omitempty"`
+	Tag              string `json:"tag,omitempty"`
 	Protocol         string `json:"protocol,omitempty"`
 	Port             *int   `json:"port,omitempty"`
 	Reason           string `json:"reason,omitempty"`
@@ -100,7 +103,7 @@ func (c *ControlServer) rpcQueryIPLog(_ *rpcContext, raw json.RawMessage) (any, 
 	}
 	result, err := store.Query(iplog.QueryParams{
 		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, ASN: params.ASN,
-		Country: params.Country, SortBy: params.SortBy, SortOrder: params.SortOrder,
+		Country: params.Country, Tag: params.Tag, SortBy: params.SortBy, SortOrder: params.SortOrder,
 		Limit: params.Limit, Offset: params.Offset,
 	})
 	if err != nil {
@@ -141,7 +144,7 @@ func (c *ControlServer) rpcQueryLogEvents(_ *rpcContext, raw json.RawMessage) (a
 	}
 	result, err := store.QueryLogEvents(iplog.LogEventQueryParams{
 		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, ASN: params.ASN,
-		Country: params.Country, Protocol: params.Protocol, Port: params.Port, Reason: params.Reason,
+		Country: params.Country, Tag: params.Tag, Protocol: params.Protocol, Port: params.Port, Reason: params.Reason,
 		MatchedRuleType: params.MatchedRuleType, MatchedRuleValue: params.MatchedRuleValue,
 		EntryType: params.EntryType, SortBy: params.SortBy, SortOrder: params.SortOrder,
 		Limit: params.Limit, Offset: params.Offset,
@@ -157,6 +160,7 @@ type topTalkersParams struct {
 	EndTime   *int64 `json:"end_time,omitempty"`
 	Protocol  string `json:"protocol,omitempty"`
 	Upstream  string `json:"upstream,omitempty"`
+	Tag       string `json:"tag,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
 }
 
@@ -174,6 +178,7 @@ func (c *ControlServer) rpcGetTopTalkers(_ *rpcContext, raw json.RawMessage) (an
 		EndTime:   params.EndTime,
 		Protocol:  params.Protocol,
 		Upstream:  params.Upstream,
+		Tag:       params.Tag,
 		Limit:     params.Limit,
 	})
 	if err != nil {

@@ -33,32 +33,33 @@ import (
 const dnsRefreshInterval = 30 * time.Second
 
 type Runtime struct {
-	cfg           config.Config
-	ctx           context.Context
-	cancel        context.CancelFunc
-	logger        util.Logger
-	resolver      *resolver.Resolver
-	manager       *upstream.UpstreamManager
-	metrics       *metrics.Metrics
-	status        *control.StatusStore
-	flowObserver  forwarding.FlowObserver
-	flowRegistry  *flow.Registry
-	flowContext   *flowcontext.Registry
-	picker        forwarding.UpstreamPicker
-	policy        forwarding.AdmissionPolicy
-	control       *control.ControlServer
-	coord         *coordination.Controller
-	shaper        *shaping.TrafficShaper
-	geoipMgr      *geoip.Manager
-	iplogStore    *iplog.Store
-	iplogPipeline *audit.Pipeline
-	firewall      *firewall.Engine
-	upstreams     []*upstream.Upstream
-	listeners     []closer
-	collector     *measure.Collector
-	notifier      *notify.Client
-	notifyPolicy  *notify.Policy
-	wg            sync.WaitGroup
+	cfg                config.Config
+	ctx                context.Context
+	cancel             context.CancelFunc
+	logger             util.Logger
+	resolver           *resolver.Resolver
+	manager            *upstream.UpstreamManager
+	metrics            *metrics.Metrics
+	status             *control.StatusStore
+	flowObserver       forwarding.FlowObserver
+	flowRegistry       *flow.Registry
+	flowContext        *flowcontext.Registry
+	flowContextService *flowcontext.UnixService
+	picker             forwarding.UpstreamPicker
+	policy             forwarding.AdmissionPolicy
+	control            *control.ControlServer
+	coord              *coordination.Controller
+	shaper             *shaping.TrafficShaper
+	geoipMgr           *geoip.Manager
+	iplogStore         *iplog.Store
+	iplogPipeline      *audit.Pipeline
+	firewall           *firewall.Engine
+	upstreams          []*upstream.Upstream
+	listeners          []closer
+	collector          *measure.Collector
+	notifier           *notify.Client
+	notifyPolicy       *notify.Policy
+	wg                 sync.WaitGroup
 }
 
 type closer interface {
@@ -131,6 +132,14 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration(), cfg.IPLog.PruneInterval.Duration())
 		rt.iplogPipeline = audit.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
 		flowObservers = append(flowObservers, rt.iplogPipeline)
+	}
+	if cfg.FlowContext.Enabled {
+		rt.flowContextService = flowcontext.NewUnixService(flowContextRegistry, rt.iplogStore, flowcontext.UnixOptions{
+			SocketPath:        cfg.FlowContext.SocketPath,
+			AuthToken:         cfg.FlowContext.AuthToken,
+			AllowedNamespaces: cfg.FlowContext.AllowedNamespaces,
+			MaxTTL:            cfg.FlowContext.MaxTTL.Duration(),
+		}, logger)
 	}
 	rt.flowObserver = flowObservers
 	if cfg.Firewall.Enabled {
@@ -222,6 +231,12 @@ func (r *Runtime) Start() error {
 	if err := r.control.Start(r.ctx); err != nil {
 		return err
 	}
+	if r.flowContextService != nil {
+		if err := r.flowContextService.Start(r.ctx); err != nil {
+			r.Stop()
+			return err
+		}
+	}
 
 	if r.shaper != nil {
 		if err := r.shaper.Apply(); err != nil {
@@ -250,6 +265,11 @@ func (r *Runtime) Start() error {
 
 func (r *Runtime) Stop() {
 	r.cancel()
+	if r.flowContextService != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = r.flowContextService.Shutdown(ctx)
+		cancel()
+	}
 	if r.control != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = r.control.Shutdown(ctx)

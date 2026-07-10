@@ -54,7 +54,7 @@ export async function queryLogEvents(
 
 export async function getTopTalkers(
   token: string,
-  params: { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; upstream?: string; limit?: number }
+  params: { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; upstream?: string; tag?: string; limit?: number }
 ): Promise<RPCResponse<TopTalker[]>> {
   return callRPC<TopTalker[]>(token, 'GetTopTalkers', params);
 }

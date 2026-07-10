@@ -225,6 +225,7 @@ type QueryParams struct {
 	CIDR      string
 	ASN       *int
 	Country   string
+	Tag       string
 	SortBy    string
 	SortOrder string
 	Limit     int
@@ -237,6 +238,7 @@ type RejectionQueryParams struct {
 	CIDR             string
 	ASN              *int
 	Country          string
+	Tag              string
 	Reason           string
 	Protocol         string
 	Port             *int
@@ -264,6 +266,7 @@ type LogEventQueryParams struct {
 	CIDR             string
 	ASN              *int
 	Country          string
+	Tag              string
 	Protocol         string
 	Port             *int
 	Reason           string
@@ -326,5 +329,6 @@ type TopTalkerParams struct {
 	EndTime   *int64
 	Protocol  string
 	Upstream  string
+	Tag       string
 	Limit     int
 }

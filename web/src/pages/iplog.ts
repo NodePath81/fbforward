@@ -63,6 +63,7 @@ interface IPLogPageState {
   cidr: string;
   asn: string;
   country: string;
+  tag: string;
   protocol: '' | 'tcp' | 'udp';
   port: string;
   reason: string;
@@ -86,6 +87,7 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
     cidr: '',
     asn: '',
     country: '',
+    tag: '',
     protocol: '',
     port: '',
     reason: '',
@@ -129,6 +131,7 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
   const cidrField = createField('CIDR');
   const asnField = createField('ASN');
   const countryField = createField('Country');
+  const tagField = createField('Tag');
   const protocolField = createField('Protocol');
   const portField = createField('Port');
   const reasonField = createField('Reason');
@@ -175,6 +178,12 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
   countryInput.placeholder = 'US';
   countryInput.maxLength = 2;
   countryField.field.appendChild(countryInput);
+
+  const tagInput = createEl('input') as HTMLInputElement;
+  tagInput.type = 'text';
+  tagInput.name = 'tag';
+  tagInput.placeholder = 'app:owner=alice';
+  tagField.field.appendChild(tagInput);
 
   const protocolSelect = createEl('select') as HTMLSelectElement;
   protocolSelect.name = 'protocol';
@@ -229,6 +238,7 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
   filterGrid.appendChild(cidrField.field);
   filterGrid.appendChild(asnField.field);
   filterGrid.appendChild(countryField.field);
+  filterGrid.appendChild(tagField.field);
   filterGrid.appendChild(protocolField.field);
   filterGrid.appendChild(portField.field);
   filterGrid.appendChild(reasonField.field);
@@ -378,6 +388,7 @@ export function createIPLogPage(container: HTMLElement, options: IPLogPageOption
     state.cidr = cidrInput.value.trim();
     state.asn = asnInput.value.trim();
     state.country = countryInput.value.trim().toUpperCase();
+    state.tag = tagInput.value.trim();
     state.protocol = (protocolSelect.value as '' | 'tcp' | 'udp') || '';
     state.port = portInput.value.trim();
     state.reason = reasonInput.value.trim();
@@ -557,6 +568,10 @@ function buildQueryParams(state: IPLogPageState): LogEventQueryParams {
     params.country = state.country;
   }
 
+  if (state.tag) {
+    params.tag = state.tag;
+  }
+
   if (state.protocol) {
     params.protocol = state.protocol;
   }
@@ -590,13 +605,14 @@ function buildQueryParams(state: IPLogPageState): LogEventQueryParams {
   return params;
 }
 
-function buildTopTalkerParams(state: IPLogPageState): { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; limit: number } {
-  const params: { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; limit: number } = { limit: 10 };
+function buildTopTalkerParams(state: IPLogPageState): { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; tag?: string; limit: number } {
+  const params: { start_time?: number; end_time?: number; protocol?: 'tcp' | 'udp'; tag?: string; limit: number } = { limit: 10 };
   const start = parseDateTimeLocal(state.startTime);
   const end = parseDateTimeLocal(state.endTime);
   if (start !== null) params.start_time = start;
   if (end !== null) params.end_time = end;
   if (state.protocol) params.protocol = state.protocol;
+  if (state.tag) params.tag = state.tag;
   return params;
 }
 

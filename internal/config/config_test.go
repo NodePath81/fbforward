@@ -264,6 +264,35 @@ func TestIPLogConfigRequiresDBPathWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestFlowContextConfigRequiresIndependentAuthAndAuditStore(t *testing.T) {
+	cfg := testConfig()
+	cfg.FlowContext.Enabled = true
+	cfg.FlowContext.AuthToken = "0123456789abcdef"
+	cfg.FlowContext.AllowedNamespaces = []string{"app"}
+	cfg.setDefaults()
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "ip_log.enabled") {
+		t.Fatalf("expected flow context to require ip log, got %v", err)
+	}
+	cfg.IPLog.Enabled = true
+	cfg.IPLog.DBPath = "/tmp/flow-context.sqlite"
+	cfg.setDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected valid flow context config: %v", err)
+	}
+}
+
+func TestFlowContextConfigRequiresNamespaceAllowlist(t *testing.T) {
+	cfg := testConfig()
+	cfg.IPLog.Enabled = true
+	cfg.IPLog.DBPath = "/tmp/flow-context.sqlite"
+	cfg.FlowContext.Enabled = true
+	cfg.FlowContext.AuthToken = "0123456789abcdef"
+	cfg.setDefaults()
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "allowed_namespaces") {
+		t.Fatalf("expected namespace validation error, got %v", err)
+	}
+}
+
 func TestIPLogConfigDefaultsQueueSizes(t *testing.T) {
 	cfg := testConfig()
 	cfg.IPLog.Enabled = true

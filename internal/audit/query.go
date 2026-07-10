@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 func eventFlowSQL(params LogEventQueryParams) (string, []any, error) {
@@ -49,6 +50,15 @@ func eventWhere(params LogEventQueryParams, rejection bool) (string, []any, erro
 		}
 		where = append(where, "client_ip_family = ? AND client_ip_bytes >= ? AND client_ip_bytes <= ?")
 		args = append(args, family, start, end)
+	}
+	if params.Tag != "" {
+		if rejection {
+			where = append(where, "1 = 0")
+		} else {
+			where = append(where, `(EXISTS (SELECT 1 FROM flow_tags ft WHERE ft.flow_id = flows.flow_id AND ft.tag = ? AND (ft.expires_at IS NULL OR ft.expires_at > ?)) OR EXISTS (SELECT 1 FROM client_tags ct WHERE ct.client_ip = flows.client_ip AND ct.tag = ? AND (ct.expires_at IS NULL OR ct.expires_at > ?)))`)
+			now := time.Now().UTC().UnixMilli()
+			args = append(args, params.Tag, now, params.Tag, now)
+		}
 	}
 	if params.ASN != nil {
 		where = append(where, "asn = ?")

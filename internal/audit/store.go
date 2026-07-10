@@ -113,7 +113,7 @@ func (s *Store) InsertFlows(records []FlowRecord) error {
 	if err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO flows(flow_id, protocol, client_ip, client_port, client_ip_bytes, client_ip_family, listener, route, upstream, started_at, ended_at, last_activity_at, bytes_up, bytes_down, close_reason, fingerprint, policy_version, rule_id, asn, as_org, country) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO flows(flow_id, protocol, client_ip, client_port, client_ip_bytes, client_ip_family, listener, route, upstream, started_at, ended_at, last_activity_at, bytes_up, bytes_down, close_reason, fingerprint, policy_version, rule_id, asn, as_org, country) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(flow_id) DO UPDATE SET protocol=excluded.protocol, client_ip=excluded.client_ip, client_port=excluded.client_port, client_ip_bytes=excluded.client_ip_bytes, client_ip_family=excluded.client_ip_family, listener=excluded.listener, route=excluded.route, upstream=excluded.upstream, started_at=excluded.started_at, ended_at=excluded.ended_at, last_activity_at=excluded.last_activity_at, bytes_up=excluded.bytes_up, bytes_down=excluded.bytes_down, close_reason=excluded.close_reason, fingerprint=excluded.fingerprint, policy_version=excluded.policy_version, rule_id=excluded.rule_id, asn=excluded.asn, as_org=excluded.as_org, country=excluded.country`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -361,6 +361,12 @@ func (s *Store) GetTopTalkers(params TopTalkerParams) ([]TopTalker, error) {
 		where = append(where, "upstream = ?")
 		args = append(args, strings.TrimSpace(params.Upstream))
 	}
+	if strings.TrimSpace(params.Tag) != "" {
+		where = append(where, `(EXISTS (SELECT 1 FROM flow_tags ft WHERE ft.flow_id = flows.flow_id AND ft.tag = ? AND (ft.expires_at IS NULL OR ft.expires_at > ?)) OR EXISTS (SELECT 1 FROM client_tags ct WHERE ct.client_ip = flows.client_ip AND ct.tag = ? AND (ct.expires_at IS NULL OR ct.expires_at > ?)))`)
+		now := time.Now().UTC().UnixMilli()
+		tag := strings.TrimSpace(params.Tag)
+		args = append(args, tag, now, tag, now)
+	}
 	query := `SELECT client_ip, COALESCE(SUM(bytes_up),0), COALESCE(SUM(bytes_down),0), COALESCE(SUM(bytes_up + bytes_down),0), COUNT(*) FROM flows`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -406,6 +412,54 @@ func (s *Store) AppendFlowTagEvent(event FlowTagEvent) error {
 	return err
 }
 
+// ApplyFlowTag atomically records the audit event and updates the current
+// projection. prefix identifies one namespace/key pair; setting a tag first
+// removes an older value for the same pair so labels have replacement
+// semantics rather than accumulating stale values.
+func (s *Store) ApplyFlowTag(event FlowTagEvent, tag *FlowTag, prefix string) error {
+	if s == nil {
+		return errors.New("audit store is nil")
+	}
+	if event.FlowID == "" || prefix == "" {
+		return errors.New("flow tag event and prefix are required")
+	}
+	if event.EventID == "" {
+		event.EventID = uuid.NewString()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return err
+	}
+	fail := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
+		return fail(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM flow_tags WHERE flow_id = ? AND tag LIKE ?`, event.FlowID, prefix+"%"); err != nil {
+		return fail(err)
+	}
+	if tag != nil {
+		now := time.Now().UTC()
+		if tag.CreatedAt.IsZero() {
+			tag.CreatedAt = now
+		}
+		if tag.UpdatedAt.IsZero() {
+			tag.UpdatedAt = now
+		}
+		if _, err := tx.Exec(`INSERT INTO flow_tags(flow_id, tag, source, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, tag.FlowID, tag.Tag, tag.Source, nullableTime(tag.ExpiresAt), unixMilli(tag.CreatedAt), unixMilli(tag.UpdatedAt)); err != nil {
+			return fail(err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpsertFlowTag(tag FlowTag) error {
 	now := time.Now().UTC()
 	if tag.CreatedAt.IsZero() {
@@ -428,6 +482,149 @@ func (s *Store) UpsertClientTag(tag ClientTag) error {
 	}
 	_, err := s.writeDB.Exec(`INSERT INTO client_tags(client_ip, tag, source, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(client_ip, tag) DO UPDATE SET source=excluded.source, expires_at=excluded.expires_at, updated_at=excluded.updated_at`, tag.ClientIP, tag.Tag, tag.Source, nullableTime(tag.ExpiresAt), unixMilli(tag.CreatedAt), unixMilli(tag.UpdatedAt))
 	return err
+}
+
+// ApplyClientTag is the client-level equivalent of ApplyFlowTag. The flow ID
+// on the event ties the client label to the backend operation that requested
+// it, while the projection is keyed by the resolved client IP.
+func (s *Store) ApplyClientTag(event FlowTagEvent, tag *ClientTag, prefix string) error {
+	if s == nil {
+		return errors.New("audit store is nil")
+	}
+	if event.FlowID == "" || prefix == "" {
+		return errors.New("client tag event and prefix are required")
+	}
+	if event.EventID == "" {
+		event.EventID = uuid.NewString()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return err
+	}
+	fail := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
+		return fail(err)
+	}
+	if tag == nil {
+		return fail(errors.New("client tag projection is required"))
+	}
+	if _, err := tx.Exec(`DELETE FROM client_tags WHERE client_ip = ? AND tag LIKE ?`, tag.ClientIP, prefix+"%"); err != nil {
+		return fail(err)
+	}
+	now := time.Now().UTC()
+	if tag.CreatedAt.IsZero() {
+		tag.CreatedAt = now
+	}
+	if tag.UpdatedAt.IsZero() {
+		tag.UpdatedAt = now
+	}
+	if _, err := tx.Exec(`INSERT INTO client_tags(client_ip, tag, source, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, tag.ClientIP, tag.Tag, tag.Source, nullableTime(tag.ExpiresAt), unixMilli(tag.CreatedAt), unixMilli(tag.UpdatedAt)); err != nil {
+		return fail(err)
+	}
+	return tx.Commit()
+}
+
+// RemoveClientTag atomically records an unset event and removes the matching
+// namespace/key projection.
+func (s *Store) RemoveClientTag(event FlowTagEvent, clientIP, prefix string) error {
+	if s == nil {
+		return errors.New("audit store is nil")
+	}
+	if event.FlowID == "" || clientIP == "" || prefix == "" {
+		return errors.New("client tag removal fields are required")
+	}
+	if event.EventID == "" {
+		event.EventID = uuid.NewString()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return err
+	}
+	fail := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
+		return fail(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM client_tags WHERE client_ip = ? AND tag LIKE ?`, clientIP, prefix+"%"); err != nil {
+		return fail(err)
+	}
+	return tx.Commit()
+}
+
+// RemoveFlowTag atomically records an unset event and removes the matching
+// namespace/key projection.
+func (s *Store) RemoveFlowTag(event FlowTagEvent, prefix string) error {
+	if s == nil {
+		return errors.New("audit store is nil")
+	}
+	if event.FlowID == "" || prefix == "" {
+		return errors.New("flow tag removal fields are required")
+	}
+	if event.EventID == "" {
+		event.EventID = uuid.NewString()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return err
+	}
+	fail := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
+		return fail(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM flow_tags WHERE flow_id = ? AND tag LIKE ?`, event.FlowID, prefix+"%"); err != nil {
+		return fail(err)
+	}
+	return tx.Commit()
+}
+
+// EnsureFlow makes a taggable flow visible to the audit schema before the
+// asynchronous lifecycle pipeline has flushed its final summary. A later
+// complete FlowRecord replaces this placeholder by flow_id.
+func (s *Store) EnsureFlow(record FlowRecord) error {
+	if s == nil || record.FlowID == "" {
+		return errors.New("flow record is required")
+	}
+	if record.Protocol == "" {
+		record.Protocol = "unknown"
+	}
+	blob, family := optionalIPBytes(record.ClientIP)
+	started, ended, last := normalizeFlowTimes(record)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.writeDB.Exec(`INSERT OR IGNORE INTO flows(flow_id, protocol, client_ip, client_port, client_ip_bytes, client_ip_family, listener, route, upstream, started_at, ended_at, last_activity_at, bytes_up, bytes_down, close_reason, fingerprint, policy_version, rule_id, asn, as_org, country) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.FlowID, record.Protocol, record.ClientIP, record.ClientPort, blob, family, record.Listener, record.Route, record.Upstream, unixMilli(started), unixMilli(ended), unixMilli(last), record.BytesUp, record.BytesDown, record.CloseReason, record.Fingerprint, record.PolicyVersion, record.RuleID, nullInt(record.ASN), nullIfEmpty(record.ASOrg), nullIfEmpty(record.Country))
+	return err
+}
+
+func (s *Store) HasFlow(flowID string) (bool, error) {
+	if s == nil || strings.TrimSpace(flowID) == "" {
+		return false, nil
+	}
+	var exists int
+	err := s.readDB.QueryRow(`SELECT EXISTS(SELECT 1 FROM flows WHERE flow_id = ?)`, flowID).Scan(&exists)
+	return exists != 0, err
 }
 
 func (s *Store) UpsertOnlineRule(rule OnlineRule) error {
@@ -470,6 +667,26 @@ func (s *Store) QueryFlowTags(flowID string) ([]FlowTag, error) {
 		tag.CreatedAt = timeFromMillis(created.Int64)
 		tag.UpdatedAt = timeFromMillis(updated.Int64)
 		result = append(result, tag)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) QueryFlowTagEvents(flowID string) ([]FlowTagEvent, error) {
+	rows, err := s.readDB.Query(`SELECT event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata FROM flow_tag_events WHERE flow_id = ? ORDER BY created_at, id`, flowID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]FlowTagEvent, 0)
+	for rows.Next() {
+		var event FlowTagEvent
+		var expires, created sql.NullInt64
+		if err := rows.Scan(&event.EventID, &event.FlowID, &event.Tag, &event.Operation, &event.Source, &event.Actor, &expires, &created, &event.Metadata); err != nil {
+			return nil, err
+		}
+		event.ExpiresAt = timeFromNullable(expires)
+		event.CreatedAt = timeFromMillis(created.Int64)
+		result = append(result, event)
 	}
 	return result, rows.Err()
 }
@@ -675,6 +892,7 @@ func normalizeQuery(params QueryParams) (QueryParams, error) {
 		return QueryParams{}, errors.New("start_time must be <= end_time")
 	}
 	out.Country = strings.ToUpper(strings.TrimSpace(out.Country))
+	out.Tag = strings.TrimSpace(out.Tag)
 	if out.SortBy == "" {
 		out.SortBy = "recorded_at"
 	}
@@ -710,6 +928,7 @@ func normalizeRejectionQuery(params RejectionQueryParams) (RejectionQueryParams,
 	}
 	out.Country = strings.ToUpper(strings.TrimSpace(out.Country))
 	out.Protocol = strings.ToLower(strings.TrimSpace(out.Protocol))
+	out.Tag = strings.TrimSpace(out.Tag)
 	if out.Protocol != "" && out.Protocol != "tcp" && out.Protocol != "udp" {
 		return RejectionQueryParams{}, errors.New("protocol must be tcp or udp")
 	}
@@ -760,6 +979,7 @@ func normalizeLogEventQuery(params LogEventQueryParams) (LogEventQueryParams, er
 		return LogEventQueryParams{}, errors.New("port must be > 0")
 	}
 	params.Country = strings.ToUpper(strings.TrimSpace(params.Country))
+	params.Tag = strings.TrimSpace(params.Tag)
 	params.SortOrder = strings.ToLower(strings.TrimSpace(params.SortOrder))
 	if params.SortOrder == "" {
 		params.SortOrder = "desc"
@@ -810,6 +1030,11 @@ func flowWhere(params QueryParams) (string, []any, error) {
 		where = append(where, "client_ip_family = ? AND client_ip_bytes >= ? AND client_ip_bytes <= ?")
 		args = append(args, family, start, end)
 	}
+	if params.Tag != "" {
+		where = append(where, `(EXISTS (SELECT 1 FROM flow_tags ft WHERE ft.flow_id = flows.flow_id AND ft.tag = ? AND (ft.expires_at IS NULL OR ft.expires_at > ?)) OR EXISTS (SELECT 1 FROM client_tags ct WHERE ct.client_ip = flows.client_ip AND ct.tag = ? AND (ct.expires_at IS NULL OR ct.expires_at > ?)))`)
+		now := time.Now().UTC().UnixMilli()
+		args = append(args, params.Tag, now, params.Tag, now)
+	}
 	if len(where) == 0 {
 		return "", args, nil
 	}
@@ -842,6 +1067,9 @@ func rejectionWhere(params RejectionQueryParams) (string, []any, error) {
 		}
 		where = append(where, "client_ip_family = ? AND client_ip_bytes >= ? AND client_ip_bytes <= ?")
 		args = append(args, family, start, end)
+	}
+	if params.Tag != "" {
+		where = append(where, "1 = 0")
 	}
 	if params.Reason != "" {
 		where = append(where, "reason = ?")

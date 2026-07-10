@@ -288,6 +288,30 @@ func (r *Registry) Resolve(ctx stdcontext.Context, tuple flow.BackendTuple, wait
 	}
 }
 
+// Lookup returns a Flow by its opaque ID while it is active or still within
+// the close grace period. Tag operations use this together with backend
+// identity checks; callers cannot use an expired or tuple-replaced Flow.
+func (r *Registry) Lookup(id flow.ID) (Context, bool) {
+	if r == nil || id == "" {
+		return Context{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return Context{}, false
+	}
+	r.cleanupExpiredLocked(time.Now().UTC())
+	current := r.entries[id]
+	if current == nil {
+		return Context{}, false
+	}
+	now := time.Now().UTC()
+	if current.context.State == StateClosed && !now.Before(current.context.ResolveUntil) {
+		return Context{}, false
+	}
+	return current.context, true
+}
+
 func stopTimer(timer *time.Timer) {
 	if timer == nil || timer.Stop() {
 		return

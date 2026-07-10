@@ -79,6 +79,8 @@ const (
 	defaultIPLogBatchSize        = 100
 	defaultIPLogFlushInterval    = 5 * time.Second
 	defaultIPLogPruneInterval    = 1 * time.Hour
+	defaultFlowContextSocket     = "/run/fbforward/flow-context.sock"
+	defaultFlowContextMaxTTL     = 24 * time.Hour
 
 	defaultMeasurePort    = 9876
 	DefaultShapingIFB     = "ifb0"
@@ -141,6 +143,7 @@ type Config struct {
 	Shaping      ShapingConfig      `yaml:"shaping"`
 	GeoIP        GeoIPConfig        `yaml:"geoip"`
 	IPLog        IPLogConfig        `yaml:"ip_log"`
+	FlowContext  FlowContextConfig  `yaml:"flow_context"`
 	Firewall     FirewallConfig     `yaml:"firewall"`
 	Warnings     []string           `yaml:"-"`
 }
@@ -380,6 +383,14 @@ type IPLogConfig struct {
 	BatchSize      int      `yaml:"batch_size"`
 	FlushInterval  Duration `yaml:"flush_interval"`
 	PruneInterval  Duration `yaml:"prune_interval"`
+}
+
+type FlowContextConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	SocketPath        string   `yaml:"socket_path"`
+	AuthToken         string   `yaml:"auth_token"`
+	AllowedNamespaces []string `yaml:"allowed_namespaces"`
+	MaxTTL            Duration `yaml:"max_ttl"`
 }
 
 type FirewallConfig struct {
@@ -726,6 +737,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.IPLog.PruneInterval == 0 {
 		c.IPLog.PruneInterval = Duration(defaultIPLogPruneInterval)
+	}
+	if c.FlowContext.SocketPath == "" {
+		c.FlowContext.SocketPath = defaultFlowContextSocket
+	}
+	if c.FlowContext.MaxTTL == 0 {
+		c.FlowContext.MaxTTL = Duration(defaultFlowContextMaxTTL)
 	}
 	if c.IPLog.LogRejections == nil && c.IPLog.Enabled {
 		enabled := true
@@ -1129,6 +1146,41 @@ func (c *Config) validate() error {
 		}
 		if c.IPLog.Retention.Duration() > 0 && c.IPLog.PruneInterval.Duration() <= 0 {
 			return errors.New("ip_log.prune_interval must be > 0 when retention is enabled")
+		}
+	}
+
+	c.FlowContext.SocketPath = strings.TrimSpace(c.FlowContext.SocketPath)
+	c.FlowContext.AuthToken = strings.TrimSpace(c.FlowContext.AuthToken)
+	if c.FlowContext.Enabled {
+		if !c.IPLog.Enabled {
+			return errors.New("flow_context.enabled requires ip_log.enabled")
+		}
+		if c.FlowContext.SocketPath == "" {
+			return errors.New("flow_context.socket_path must not be empty")
+		}
+		if c.FlowContext.AuthToken == "" {
+			return errors.New("flow_context.auth_token must not be empty")
+		}
+		if err := validateAuthTokenField(c.FlowContext.AuthToken, "flow_context.auth_token"); err != nil {
+			return err
+		}
+		if len(c.FlowContext.AllowedNamespaces) == 0 {
+			return errors.New("flow_context.allowed_namespaces must not be empty")
+		}
+		if c.FlowContext.MaxTTL.Duration() <= 0 {
+			return errors.New("flow_context.max_ttl must be > 0")
+		}
+		seenNamespaces := make(map[string]struct{}, len(c.FlowContext.AllowedNamespaces))
+		for i, namespace := range c.FlowContext.AllowedNamespaces {
+			namespace = strings.TrimSpace(namespace)
+			if namespace == "" {
+				return fmt.Errorf("flow_context.allowed_namespaces[%d] must not be empty", i)
+			}
+			if _, exists := seenNamespaces[namespace]; exists {
+				return fmt.Errorf("duplicate flow_context namespace: %s", namespace)
+			}
+			seenNamespaces[namespace] = struct{}{}
+			c.FlowContext.AllowedNamespaces[i] = namespace
 		}
 	}
 

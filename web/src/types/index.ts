@@ -211,6 +211,7 @@ export interface IPLogQueryParams {
   cidr?: string;
   asn?: number;
   country?: string;
+  tag?: string;
   sort_by?: IPLogSortBy;
   sort_order?: IPLogSortOrder;
   limit?: number;
@@ -285,6 +286,7 @@ export interface LogEventQueryParams {
   cidr?: string;
   asn?: number;
   country?: string;
+  tag?: string;
   protocol?: 'tcp' | 'udp';
   port?: number;
   reason?: string;

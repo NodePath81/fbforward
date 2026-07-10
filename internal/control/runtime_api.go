@@ -301,6 +301,12 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"flush_interval":   cfg.IPLog.FlushInterval.Duration().String(),
 			"prune_interval":   cfg.IPLog.PruneInterval.Duration().String(),
 		},
+		"flow_context": map[string]interface{}{
+			"enabled":            cfg.FlowContext.Enabled,
+			"socket_path":        cfg.FlowContext.SocketPath,
+			"allowed_namespaces": cfg.FlowContext.AllowedNamespaces,
+			"max_ttl":            cfg.FlowContext.MaxTTL.Duration().String(),
+		},
 		"firewall": map[string]interface{}{
 			"enabled": cfg.Firewall.Enabled,
 			"default": cfg.Firewall.Default,
