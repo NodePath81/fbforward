@@ -239,6 +239,7 @@ type StatusHub struct {
 type statusClient struct {
 	send         chan []byte
 	connID       string
+	sendMu       sync.RWMutex
 	closeOnce    sync.Once
 	subscribed   bool
 	intervalMs   int
@@ -272,9 +273,7 @@ func (h *StatusHub) run() {
 			h.mu.Lock()
 			data, _ := json.Marshal(msg)
 			for client := range h.clients {
-				select {
-				case client.send <- data:
-				default:
+				if !client.enqueue(data) {
 					util.Event(h.logger, slog.LevelDebug, "control.ws.client_queue_drop",
 						"ws.conn_id", client.connID,
 						"queue.capacity", cap(client.send),
@@ -331,6 +330,19 @@ func (s *StatusStore) BroadcastTestHistoryEvent(payload TestHistoryPayload) {
 
 func (c *statusClient) close() {
 	c.closeOnce.Do(func() {
+		c.sendMu.Lock()
+		defer c.sendMu.Unlock()
 		close(c.send)
 	})
+}
+
+func (c *statusClient) enqueue(data []byte) bool {
+	c.sendMu.RLock()
+	defer c.sendMu.RUnlock()
+	select {
+	case c.send <- data:
+		return true
+	default:
+		return false
+	}
 }
