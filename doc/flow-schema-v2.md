@@ -70,6 +70,13 @@ Active Flow identity is kept in the separate `flow_entities` table; the
 close. Persistent policies and online rules remain internal control-plane
 contracts and are not part of the Flow Context API.
 
+Online rules are a separate, TTL-bound runtime policy layer. They are stored in
+SQLite with create/delete/expire audit events and evaluated from an immutable
+in-memory snapshot. Persistent policy reloads do not overwrite them. Online
+denies run before the persistent decision; rate limits and route overrides only
+apply after the persistent policy allows the Flow. Existing Flows retain their
+original decision when either policy layer changes.
+
 ## Explicit non-goals
 
 - PROXY protocol and TProxy are not used for client identity propagation.

@@ -1,5 +1,11 @@
 import { callRPC, getRuntimeConfig } from './api/rpc';
 import { getGeoIPStatus, getIPLogStatus, refreshGeoIP } from './api/iplog';
+import {
+  deleteOnlineRule,
+  expireOnlineRule,
+  getFirewallStatus,
+  listOnlineRules
+} from './api/onlineRules';
 import { fetchJSON, fetchText } from './api/client';
 import { extractMetrics, parseMetrics } from './api/metrics';
 import { createChart, type ChartHandle, type ChartSeries } from './components/Chart';
@@ -18,7 +24,9 @@ import type {
   RawConnectionEntry,
   StatusResponse,
   UpstreamMetrics,
-  WSMessage
+  WSMessage,
+  FirewallStatusResponse,
+  OnlineRule
 } from './types';
 import { clearChildren, createEl, qs } from './utils/dom';
 import { formatBytes, formatBytesRate, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
@@ -92,6 +100,10 @@ function startApp(token: string) {
   const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
   const sessionHistoryTable = qs<HTMLTableSectionElement>(document, '#sessionHistoryTable');
   const configTree = qs<HTMLElement>(document, '#configTree');
+  const firewallPolicyState = qs<HTMLElement>(document, '#firewallPolicyState');
+  const firewallPolicySummary = qs<HTMLElement>(document, '#firewallPolicySummary');
+  const onlineRulesMessage = qs<HTMLElement>(document, '#onlineRulesMessage');
+  const onlineRulesTable = qs<HTMLTableSectionElement>(document, '#onlineRulesTable');
   const ipLogPage = qs<HTMLElement>(document, '#page-iplog');
   const upstreamDetailsModal = qs<HTMLElement>(document, '#upstreamDetailsModal');
   const rttChartContainer = qs<HTMLElement>(document, '#rttChartContainer');
@@ -275,7 +287,7 @@ function startApp(token: string) {
       renderSessionHistory();
     }
     if (page === 'config') {
-      void loadRuntimeConfig();
+      void loadConfigPage();
     }
   }
 
@@ -550,6 +562,123 @@ function startApp(token: string) {
       return;
     }
     configTree.textContent = formatYaml(resp.result);
+  }
+
+  async function loadConfigPage(): Promise<void> {
+    await Promise.all([loadRuntimeConfig(), loadOnlineRules()]);
+  }
+
+  async function loadOnlineRules(): Promise<void> {
+    onlineRulesMessage.textContent = 'Loading...';
+    clearChildren(onlineRulesTable);
+    const [statusResp, rulesResp] = await Promise.all([
+      getFirewallStatus(token),
+      listOnlineRules(token, true)
+    ]);
+    renderFirewallStatus(statusResp);
+    if (!rulesResp.ok || !rulesResp.result) {
+      onlineRulesMessage.textContent = rulesResp.error || 'Unable to load online rules.';
+      return;
+    }
+    onlineRulesMessage.textContent = rulesResp.result.length
+      ? `${rulesResp.result.length} rule${rulesResp.result.length === 1 ? '' : 's'}`
+      : 'No online rules configured.';
+    for (const rule of rulesResp.result) {
+      onlineRulesTable.appendChild(renderOnlineRuleRow(rule));
+    }
+  }
+
+  function renderFirewallStatus(resp: ReturnType<typeof getFirewallStatus> extends Promise<infer T> ? T : never): void {
+    clearChildren(firewallPolicySummary);
+    firewallPolicyState.className = 'status-pill';
+    if (!resp.ok || !resp.result) {
+      firewallPolicyState.textContent = 'Unavailable';
+      firewallPolicyState.classList.add('is-error');
+      firewallPolicySummary.textContent = resp.error || 'Unable to load firewall status.';
+      return;
+    }
+    const status: FirewallStatusResponse = resp.result;
+    firewallPolicyState.textContent = status.state || (status.loaded ? 'active' : 'not loaded');
+    firewallPolicyState.classList.add(status.state === 'degraded' ? 'is-degraded' : 'is-active');
+    const fields: Array<[string, string]> = [
+      ['Source', status.source || status.policy_file || '-'],
+      ['Version', String(status.version)],
+      ['Hash', status.hash || '-'],
+      ['Generation', String(status.generation)],
+      ['Loaded', status.loaded_at ? new Date(status.loaded_at).toLocaleString() : '-']
+    ];
+    for (const [label, value] of fields) {
+      const item = createEl('div');
+      item.appendChild(createEl('span', undefined, `${label}:`));
+      item.appendChild(createEl('strong', undefined, value));
+      firewallPolicySummary.appendChild(item);
+    }
+    if (status.last_error) {
+      firewallPolicySummary.appendChild(createEl('div', 'modal-error', status.last_error));
+    }
+  }
+
+  function renderOnlineRuleRow(rule: OnlineRule): HTMLTableRowElement {
+    const row = createEl('tr');
+    const matcher = Object.entries(rule.matcher || {})
+      .filter(([, value]) => value !== undefined && value !== '')
+      .map(([key, value]) => `${key}=${String(value)}`)
+      .join(' AND ') || '-';
+    const action = rule.action === 'rate_limit' && rule.limit_bps
+      ? `${rule.action} (${rule.limit_bps} bps)`
+      : rule.action === 'route_override' && rule.upstream
+        ? `${rule.action} (${rule.upstream})`
+        : rule.action;
+    const reason = [rule.reason, rule.ticket_ref ? `ticket=${rule.ticket_ref}` : '']
+      .filter(Boolean)
+      .join(' / ') || '-';
+    const cells = [
+      rule.rule_id,
+      action,
+      matcher,
+      String(rule.priority),
+      rule.created_by || '-',
+      reason,
+      rule.expires_at ? new Date(rule.expires_at).toLocaleString() : '-',
+      rule.state_reason ? `${rule.state} (${rule.state_reason})` : rule.state
+    ];
+    for (const [index, value] of cells.entries()) {
+      const cell = createEl('td', index === 2 ? 'rule-matcher' : undefined, value);
+      row.appendChild(cell);
+    }
+    const actions = createEl('td', 'action-cell');
+    if (rule.state === 'active') {
+      const expire = createEl('button', 'secondary', 'Expire');
+      expire.type = 'button';
+      expire.addEventListener('click', async () => {
+        expire.disabled = true;
+        const response = await expireOnlineRule(token, rule.rule_id);
+        if (!response.ok) {
+          toast.show(response.error || 'Unable to expire rule.', 'error');
+          expire.disabled = false;
+          return;
+        }
+        toast.show(`Expired ${rule.rule_id}.`, 'success');
+        await loadOnlineRules();
+      });
+      actions.appendChild(expire);
+    }
+    const remove = createEl('button', 'secondary', 'Delete');
+    remove.type = 'button';
+    remove.addEventListener('click', async () => {
+      remove.disabled = true;
+      const response = await deleteOnlineRule(token, rule.rule_id);
+      if (!response.ok) {
+        toast.show(response.error || 'Unable to delete rule.', 'error');
+        remove.disabled = false;
+        return;
+      }
+      toast.show(`Deleted ${rule.rule_id}.`, 'success');
+      await loadOnlineRules();
+    });
+    actions.appendChild(remove);
+    row.appendChild(actions);
+    return row;
   }
 
   async function loadOperationalStatus(): Promise<void> {

@@ -62,6 +62,8 @@ type ControlServer struct {
 	iplogStore  *iplog.Store
 	firewallMu  sync.RWMutex
 	firewall    *policy.Provider
+	onlineMu    sync.RWMutex
+	online      *policy.OnlineProvider
 	flowContext *flowcontext.Service
 	nextReqID   uint64
 	nextWSID    uint64
@@ -174,6 +176,18 @@ func (c *ControlServer) firewallProvider() *policy.Provider {
 	c.firewallMu.RLock()
 	defer c.firewallMu.RUnlock()
 	return c.firewall
+}
+
+func (c *ControlServer) SetOnlinePolicyProvider(provider *policy.OnlineProvider) {
+	c.onlineMu.Lock()
+	defer c.onlineMu.Unlock()
+	c.online = provider
+}
+
+func (c *ControlServer) onlinePolicyProvider() *policy.OnlineProvider {
+	c.onlineMu.RLock()
+	defer c.onlineMu.RUnlock()
+	return c.online
 }
 
 // SetFlowContextService installs the backend Flow Context HTTP API. It is

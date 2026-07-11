@@ -16,6 +16,9 @@ func TestRenderIncludesIPLogAndFirewallMetrics(t *testing.T) {
 	m.IncIPLogEvent()
 	m.IncIPLogEventDropped()
 	m.AddIPLogWrites(3)
+	m.RecordRateLimitDrop("udp", 1200)
+	m.SetOnlineRulesActive(2)
+	m.IncOnlineRuleExpiryError()
 	m.ObserveIPLogBatchSize(3)
 	m.IncFirewallDenied("cidr", "10.0.0.0/8")
 
@@ -29,6 +32,10 @@ func TestRenderIncludesIPLogAndFirewallMetrics(t *testing.T) {
 		`fbforward_firewall_denied_total{rule_type="cidr",rule_value="10.0.0.0/8"} 1`,
 		"fbforward_iplog_batch_size_count 1",
 		"fbforward_iplog_batch_size_sum 3",
+		"fbforward_udp_rate_limit_drops_total 1",
+		"fbforward_udp_rate_limit_drop_bytes_total 1200",
+		"fbforward_online_rules_active 2",
+		"fbforward_online_rule_expiry_errors_total 1",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected metrics output to contain %q\n%s", needle, rendered)

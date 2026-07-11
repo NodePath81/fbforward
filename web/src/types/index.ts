@@ -96,7 +96,15 @@ export type RPCMethod =
   | 'QueryIPLog'
   | 'QueryRejectionLog'
   | 'QueryLogEvents'
-  | 'GetTopTalkers';
+  | 'GetTopTalkers'
+  | 'GetFirewallPolicy'
+  | 'GetFirewallStatus'
+  | 'ValidateFirewallPolicy'
+  | 'ReloadFirewallPolicy'
+  | 'CreateOnlineRule'
+  | 'ListOnlineRules'
+  | 'DeleteOnlineRule'
+  | 'ExpireOnlineRule';
 
 export interface RPCResponse<T = unknown> {
   ok: boolean;
@@ -164,6 +172,46 @@ export interface TopTalker {
   bytes_down: number;
   bytes_total: number;
   flow_count: number;
+}
+
+export interface FirewallStatusResponse {
+  enabled: boolean;
+  policy_file: string;
+  source: string;
+  loaded: boolean;
+  state: string;
+  version: number;
+  hash: string;
+  generation: number;
+  loaded_at: string;
+  last_error?: string;
+  last_reload_at?: string;
+}
+
+export interface OnlineMatcher {
+  source_cidr?: string;
+  source_ip?: string;
+  protocol?: 'tcp' | 'udp';
+  port?: number;
+}
+
+export type OnlineRuleState = 'active' | 'expired' | 'disabled' | 'unavailable';
+
+export interface OnlineRule {
+  rule_id: string;
+  action: 'deny' | 'rate_limit' | 'route_override' | string;
+  matcher: OnlineMatcher;
+  priority: number;
+  limit_bps?: number;
+  upstream?: string;
+  created_by: string;
+  reason: string;
+  ticket_ref?: string;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string;
+  state: OnlineRuleState;
+  state_reason?: string;
 }
 
 export type IPLogSortBy =

@@ -11,9 +11,13 @@ import (
 // firewall implementations are adapted to this value at the application
 // boundary.
 type Decision struct {
-	Allowed   bool
-	RuleType  string
-	RuleValue string
+	Allowed          bool
+	RuleType         string
+	RuleValue        string
+	RuleID           string
+	Action           string
+	RateLimitBPS     uint64
+	UpstreamOverride string
 }
 
 // AdmissionPolicy decides whether a candidate Flow may be admitted. Candidate
@@ -33,6 +37,12 @@ type Upstream struct {
 // UpstreamPicker selects one upstream for a new Flow.
 type UpstreamPicker interface {
 	Pick(flow.Meta) (Upstream, error)
+}
+
+// OverridePicker selects a named upstream for route_override online rules.
+// It is optional so simple pickers remain valid for ordinary forwarding.
+type OverridePicker interface {
+	PickOverride(flow.Meta, string) (Upstream, error)
 }
 
 // DialFeedback is optional. Pickers that implement it retain the existing
@@ -56,4 +66,11 @@ type FlowObserver interface {
 // optional: a binder failure must never tear down an otherwise healthy Flow.
 type BackendBinder interface {
 	Bind(flow.ID, flow.BackendTuple) error
+}
+
+// RateLimitDropRecorder is optional telemetry for UDP packets rejected by a
+// Flow rate limiter. It keeps the forwarding package independent of the
+// concrete metrics implementation.
+type RateLimitDropRecorder interface {
+	RecordRateLimitDrop(protocol string, bytes uint64)
 }

@@ -17,15 +17,16 @@ import (
 )
 
 type UDPListener struct {
-	cfg      config.ListenerConfig
-	picker   UpstreamPicker
-	policy   AdmissionPolicy
-	timeout  time.Duration
-	observer FlowObserver
-	registry *flow.Registry
-	binder   BackendBinder
-	sem      chan struct{}
-	logger   util.Logger
+	cfg          config.ListenerConfig
+	picker       UpstreamPicker
+	policy       AdmissionPolicy
+	timeout      time.Duration
+	observer     FlowObserver
+	registry     *flow.Registry
+	binder       BackendBinder
+	dropRecorder RateLimitDropRecorder
+	sem          chan struct{}
+	logger       util.Logger
 
 	conn     *net.UDPConn
 	mu       sync.Mutex
@@ -49,6 +50,7 @@ const (
 var errUDPUpstreamSelection = errors.New("udp upstream selection failed")
 var errUDPMappingLimit = errors.New("udp mapping limit reached")
 var errUDPPerIPLimit = errors.New("udp per-ip mapping limit reached")
+var errUDPRateLimited = errors.New("udp packet rate limited")
 
 var udpPacketPool = sync.Pool{
 	New: func() interface{} {
@@ -73,6 +75,10 @@ func NewUDPListener(cfg config.ListenerConfig, limits config.ForwardingLimitsCon
 		ipCounts: make(map[string]int),
 		maxPerIP: udpMaxMappingsPerIP,
 	}
+}
+
+func (l *UDPListener) SetRateLimitDropRecorder(recorder RateLimitDropRecorder) {
+	l.dropRecorder = recorder
 }
 
 func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
@@ -159,12 +165,19 @@ func (l *UDPListener) Close() error {
 func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr, payload []byte) {
 	key := clientAddr.String()
 	clientIP := clientAddr.IP.String()
+	if mapping := l.lookupMapping(key); mapping != nil {
+		if err := mapping.forwardToUpstream(payload); err != nil && !errors.Is(err, errUDPRateLimited) {
+			mapping.closeWithReason("upstream_write_error")
+		}
+		return
+	}
 	candidate, err := newCandidateMeta(flow.ProtocolUDP, key, l.listenAddr())
 	if err != nil {
 		return
 	}
+	decision := Decision{Allowed: true}
 	if l.policy != nil {
-		decision := l.policy.Decide(candidate)
+		decision = l.policy.Decide(candidate)
 		if !decision.Allowed {
 			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "firewall_deny", decision)
 			return
@@ -188,7 +201,7 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 		return
 	}
 	if reservation != nil {
-		mapping, err = l.buildMapping(clientAddr, candidate)
+		mapping, err = l.buildMapping(clientAddr, candidate, decision)
 		l.finishReservation(key, clientIP, reservation, mapping, err)
 		if err != nil {
 			if errors.Is(err, errUDPUpstreamSelection) {
@@ -198,9 +211,15 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 		}
 		l.activateMapping(ctx, mapping)
 	}
-	if err := mapping.forwardToUpstream(payload); err != nil {
+	if err := mapping.forwardToUpstream(payload); err != nil && !errors.Is(err, errUDPRateLimited) {
 		mapping.closeWithReason("upstream_write_error")
 	}
+}
+
+func (l *UDPListener) lookupMapping(key string) *udpMapping {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.mappings[key]
 }
 
 func (l *UDPListener) getOrReserveMapping(key, clientIP string) (*udpMapping, *udpMappingReservation, error) {
@@ -238,11 +257,25 @@ func (l *UDPListener) getOrReserveMapping(key, clientIP string) (*udpMapping, *u
 	}
 }
 
-func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta) (*udpMapping, error) {
+func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta, decisions ...Decision) (*udpMapping, error) {
+	decision := Decision{Allowed: true}
+	if len(decisions) > 0 {
+		decision = decisions[0]
+	}
 	if l.picker == nil {
 		return nil, errors.New("upstream picker is unavailable")
 	}
-	selected, err := l.picker.Pick(candidate)
+	var selected Upstream
+	var err error
+	if decision.UpstreamOverride != "" {
+		picker, ok := l.picker.(OverridePicker)
+		if !ok {
+			return nil, errors.New("upstream override is not supported")
+		}
+		selected, err = picker.PickOverride(candidate, decision.UpstreamOverride)
+	} else {
+		selected, err = l.picker.Pick(candidate)
+	}
 	if err != nil {
 		return nil, errors.Join(errUDPUpstreamSelection, err)
 	}
@@ -284,6 +317,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta)
 		observer:      l.observer,
 		registry:      l.registry,
 		binder:        l.binder,
+		rateLimiter:   newByteRateLimiter(decision.RateLimitBPS),
 		activityCh:    make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		created:       candidate.StartedAt,
@@ -376,6 +410,7 @@ type udpMapping struct {
 	observer      FlowObserver
 	registry      *flow.Registry
 	binder        BackendBinder
+	rateLimiter   *byteRateLimiter
 	created       time.Time
 	upstreamIP    string
 	upstreamAddr  string
@@ -396,6 +431,11 @@ type udpMappingReservation struct {
 }
 
 func (m *udpMapping) forwardToUpstream(payload []byte) error {
+	if m.rateLimiter != nil && !m.rateLimiter.Try(len(payload)) {
+		m.parent.recordRateLimitDrop(len(payload))
+		util.Event(m.logger, slog.LevelDebug, "forward.udp.rate_limited", "flow.id", m.id, "bytes", len(payload), "result", "dropped")
+		return errUDPRateLimited
+	}
 	if _, err := m.upstreamConn.Write(payload); err != nil {
 		return err
 	}
@@ -428,6 +468,11 @@ func (m *udpMapping) readLoop(ctx context.Context) {
 			return
 		}
 		if n > 0 {
+			if m.rateLimiter != nil && !m.rateLimiter.Try(n) {
+				m.parent.recordRateLimitDrop(n)
+				util.Event(m.logger, slog.LevelDebug, "forward.udp.rate_limited", "flow.id", m.id, "bytes", n, "result", "dropped")
+				continue
+			}
 			_, werr := m.parent.conn.WriteToUDP(buf[:n], m.clientAddr)
 			if werr != nil {
 				m.closeWithReason("client_write_error")
@@ -447,6 +492,12 @@ func (m *udpMapping) readLoop(ctx context.Context) {
 			return
 		default:
 		}
+	}
+}
+
+func (l *UDPListener) recordRateLimitDrop(bytes int) {
+	if l != nil && l.dropRecorder != nil && bytes > 0 {
+		l.dropRecorder.RecordRateLimitDrop(flow.ProtocolUDP, uint64(bytes))
 	}
 }
 

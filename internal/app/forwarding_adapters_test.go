@@ -66,3 +66,4 @@ func TestUpstreamPickerAdapterMapsActiveIPAndDialFeedback(t *testing.T) {
 var _ forwarding.AdmissionPolicy = (*firewallPolicy)(nil)
 var _ forwarding.UpstreamPicker = (*upstreamPicker)(nil)
 var _ forwarding.DialFeedback = (*upstreamPicker)(nil)
+var _ forwarding.OverridePicker = (*upstreamPicker)(nil)

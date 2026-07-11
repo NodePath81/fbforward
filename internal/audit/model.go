@@ -182,12 +182,30 @@ type OnlineRule struct {
 	RuleValue   string
 	Protocol    string
 	Port        *int
+	Priority    int
 	Enabled     bool
 	ExpiresAt   *time.Time
 	Source      string
+	CreatedBy   string
+	Reason      string
+	TicketRef   string
+	MatcherJSON string
+	ParamsJSON  string
 	PayloadJSON string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type OnlineRuleEvent struct {
+	EventID     string
+	RuleID      string
+	Operation   string
+	Action      string
+	Actor       string
+	Reason      string
+	TicketRef   string
+	PayloadJSON string
+	OccurredAt  time.Time
 }
 
 type PolicyEvent struct {

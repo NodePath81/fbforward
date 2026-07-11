@@ -289,6 +289,38 @@
           </div>
           <pre id="configTree" class="config-json"></pre>
         </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Persistent Firewall Policy</h2>
+            <span id="firewallPolicyState" class="status-pill">Loading...</span>
+          </div>
+          <div id="firewallPolicySummary" class="policy-summary"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Online Rules</h2>
+            <span class="panel-meta">Runtime rules are independent of the policy file</span>
+          </div>
+          <p id="onlineRulesMessage" class="hint">Loading...</p>
+          <div class="table-wrap">
+            <table class="online-rules-table">
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th>Action</th>
+                  <th>Matcher</th>
+                  <th>Priority</th>
+                  <th>Source</th>
+                  <th>Reason / Ticket</th>
+                  <th>Expires</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="onlineRulesTable"></tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </main>
 

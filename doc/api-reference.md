@@ -446,6 +446,7 @@ The control plane follows a single-source-of-truth architecture:
 | Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
 | Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetFirewallPolicy`, `GetFirewallStatus`, `ValidateFirewallPolicy`, `ReloadFirewallPolicy`, `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents` |
+| Online rule operations | RPC `/rpc` | `CreateOnlineRule`, `ListOnlineRules`, `DeleteOnlineRule`, `ExpireOnlineRule` |
 | GeoIP/IP-log operations | RPC `/rpc` | `RefreshGeoIP` (trigger re-download) |
 
 **Key principles:**
@@ -866,6 +867,62 @@ Atomically load and activate the configured policy file.
 **Parameters:** Empty object `{}`
 
 The operation does not restart listeners. A failed parse, validation, or compilation leaves the previous policy active and is recorded in the request audit log.
+
+#### CreateOnlineRule
+
+Create a temporary runtime rule in the IP-log SQLite database.
+
+**Method:** `CreateOnlineRule`
+
+**Parameters:**
+
+```json
+{
+  "rule_id": "block-office",
+  "action": "deny",
+  "matcher": {"source_cidr": "198.51.100.0/24", "protocol": "tcp", "port": 443},
+  "priority": 100,
+  "ttl_seconds": 3600,
+  "reason": "incident",
+  "ticket_ref": "INC-123"
+}
+```
+
+Actions are `deny`, `rate_limit` (with `limit_bps`), and `route_override`
+(with `upstream`). At least one matcher is required. TTL is limited to 24
+hours, and online allow rules are rejected. The server sets `created_by` from
+the authenticated control request. Duplicate IDs return HTTP `409`.
+
+#### ListOnlineRules
+
+List runtime rules ordered by priority, creation time, and rule ID.
+
+**Method:** `ListOnlineRules`
+
+**Parameters:** `{ "include_expired": false }` (optional)
+
+By default only enabled, unexpired rules are returned. Set `include_expired`
+to `true` to include expired and disabled records.
+
+#### DeleteOnlineRule
+
+Hard-delete one runtime rule while retaining its delete audit event.
+
+**Method:** `DeleteOnlineRule`
+
+**Parameters:** `{ "rule_id": "block-office" }`
+
+#### ExpireOnlineRule
+
+Disable a runtime rule immediately and retain its expire audit event.
+
+**Method:** `ExpireOnlineRule`
+
+**Parameters:** `{ "rule_id": "block-office" }`
+
+Online-rule APIs return HTTP `503` when `ip_log.enabled` is false. Persistent
+firewall reloads do not remove or replace online rules. TCP rate limits wait
+before forwarding bytes; UDP excess packets are dropped and logged.
 
 #### GetIPLogStatus
 

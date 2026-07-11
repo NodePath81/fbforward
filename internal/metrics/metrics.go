@@ -34,47 +34,51 @@ type protocolBytes struct {
 }
 
 type Metrics struct {
-	mu                 sync.Mutex
-	upstreams          map[string]*UpstreamMetrics
-	mode               upstream.Mode
-	activeTag          string
-	coordConnected     bool
-	coordAuthoritative bool
-	coordFallback      bool
-	coordVersion       int64
-	coordSelectedTag   string
-	coordPicksReceived uint64
-	coordPicksApplied  uint64
-	coordPicksRejected uint64
-	coordReconnects    uint64
-	tcpActive          int
-	udpActive          int
-	bytesUpTotal       map[string]*atomic.Uint64
-	bytesDownTotal     map[string]*atomic.Uint64
-	bytesTCP           map[string]*protocolBytes
-	bytesUDP           map[string]*protocolBytes
-	bytesUpPerSec      map[string]uint64
-	bytesDownPerSec    map[string]uint64
-	bytesTCPUpPerSec   map[string]uint64
-	bytesTCPDownPerSec map[string]uint64
-	bytesUDPUpPerSec   map[string]uint64
-	bytesUDPDownPerSec map[string]uint64
-	lastBytesUpTotal   map[string]uint64
-	lastBytesDownTotal map[string]uint64
-	lastBytesTCPUp     map[string]uint64
-	lastBytesTCPDown   map[string]uint64
-	lastBytesUDPUp     map[string]uint64
-	lastBytesUDPDown   map[string]uint64
-	iplogEventsTotal   uint64
-	iplogEventsDropped uint64
-	iplogWritesTotal   uint64
-	firewallDenied     map[string]uint64
-	batchBuckets       []uint64
-	batchCount         uint64
-	batchSum           uint64
-	schedule           ScheduleMetrics
-	memoryAllocBytes   uint64
-	startTime          time.Time
+	mu                     sync.Mutex
+	upstreams              map[string]*UpstreamMetrics
+	mode                   upstream.Mode
+	activeTag              string
+	coordConnected         bool
+	coordAuthoritative     bool
+	coordFallback          bool
+	coordVersion           int64
+	coordSelectedTag       string
+	coordPicksReceived     uint64
+	coordPicksApplied      uint64
+	coordPicksRejected     uint64
+	coordReconnects        uint64
+	tcpActive              int
+	udpActive              int
+	bytesUpTotal           map[string]*atomic.Uint64
+	bytesDownTotal         map[string]*atomic.Uint64
+	bytesTCP               map[string]*protocolBytes
+	bytesUDP               map[string]*protocolBytes
+	bytesUpPerSec          map[string]uint64
+	bytesDownPerSec        map[string]uint64
+	bytesTCPUpPerSec       map[string]uint64
+	bytesTCPDownPerSec     map[string]uint64
+	bytesUDPUpPerSec       map[string]uint64
+	bytesUDPDownPerSec     map[string]uint64
+	lastBytesUpTotal       map[string]uint64
+	lastBytesDownTotal     map[string]uint64
+	lastBytesTCPUp         map[string]uint64
+	lastBytesTCPDown       map[string]uint64
+	lastBytesUDPUp         map[string]uint64
+	lastBytesUDPDown       map[string]uint64
+	iplogEventsTotal       uint64
+	iplogEventsDropped     uint64
+	iplogWritesTotal       uint64
+	rateLimitDrops         uint64
+	rateLimitDropBytes     uint64
+	onlineRulesActive      int
+	onlineRuleExpiryErrors uint64
+	firewallDenied         map[string]uint64
+	batchBuckets           []uint64
+	batchCount             uint64
+	batchSum               uint64
+	schedule               ScheduleMetrics
+	memoryAllocBytes       uint64
+	startTime              time.Time
 }
 
 type ScheduleMetrics struct {
@@ -389,6 +393,28 @@ func (m *Metrics) AddIPLogWrites(n uint64) {
 	m.iplogWritesTotal += n
 }
 
+func (m *Metrics) RecordRateLimitDrop(_ string, bytes uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rateLimitDrops++
+	m.rateLimitDropBytes += bytes
+}
+
+func (m *Metrics) SetOnlineRulesActive(count int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if count < 0 {
+		count = 0
+	}
+	m.onlineRulesActive = count
+}
+
+func (m *Metrics) IncOnlineRuleExpiryError() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onlineRuleExpiryErrors++
+}
+
 func (m *Metrics) ObserveIPLogBatchSize(n int) {
 	if n <= 0 {
 		return
@@ -449,6 +475,10 @@ func (m *Metrics) Render() string {
 	iplogEventsTotal := m.iplogEventsTotal
 	iplogEventsDropped := m.iplogEventsDropped
 	iplogWritesTotal := m.iplogWritesTotal
+	rateLimitDrops := m.rateLimitDrops
+	rateLimitDropBytes := m.rateLimitDropBytes
+	onlineRulesActive := m.onlineRulesActive
+	onlineRuleExpiryErrors := m.onlineRuleExpiryErrors
 	firewallDenied := copyUint64Map(m.firewallDenied)
 	batchBuckets := append([]uint64(nil), m.batchBuckets...)
 	batchCount := m.batchCount
@@ -766,6 +796,22 @@ func (m *Metrics) Render() string {
 	b.WriteString("# TYPE fbforward_iplog_writes_total counter\n")
 	b.WriteString("fbforward_iplog_writes_total ")
 	b.WriteString(strconv.FormatUint(iplogWritesTotal, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_udp_rate_limit_drops_total counter\n")
+	b.WriteString("fbforward_udp_rate_limit_drops_total ")
+	b.WriteString(strconv.FormatUint(rateLimitDrops, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_udp_rate_limit_drop_bytes_total counter\n")
+	b.WriteString("fbforward_udp_rate_limit_drop_bytes_total ")
+	b.WriteString(strconv.FormatUint(rateLimitDropBytes, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_online_rules_active gauge\n")
+	b.WriteString("fbforward_online_rules_active ")
+	b.WriteString(strconv.Itoa(onlineRulesActive))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_online_rule_expiry_errors_total counter\n")
+	b.WriteString("fbforward_online_rule_expiry_errors_total ")
+	b.WriteString(strconv.FormatUint(onlineRuleExpiryErrors, 10))
 	b.WriteString("\n")
 	b.WriteString("# TYPE fbforward_firewall_denied_total counter\n")
 	firewallKeys := make([]string, 0, len(firewallDenied))

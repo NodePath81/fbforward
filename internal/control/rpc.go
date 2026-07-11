@@ -89,6 +89,10 @@ func (c *ControlServer) registerRPCHandlers() {
 		"GetFirewallStatus":      c.rpcGetFirewallStatus,
 		"ValidateFirewallPolicy": c.rpcValidateFirewallPolicy,
 		"ReloadFirewallPolicy":   c.rpcReloadFirewallPolicy,
+		"CreateOnlineRule":       c.rpcCreateOnlineRule,
+		"ListOnlineRules":        c.rpcListOnlineRules,
+		"DeleteOnlineRule":       c.rpcDeleteOnlineRule,
+		"ExpireOnlineRule":       c.rpcExpireOnlineRule,
 	}
 	for name, handler := range registrations {
 		if err := c.rpcs.Register(name, handler); err != nil {

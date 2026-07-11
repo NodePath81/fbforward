@@ -199,6 +199,7 @@ geoip:
 
 ip_log:
   enabled: false
+  # Required for persistent online runtime rules (CreateOnlineRule, etc.).
   log_rejections: true   # Defaults to true when ip_log.enabled is true.
   db_path: "/var/lib/fbforward/iplog.sqlite"
   retention: 720h

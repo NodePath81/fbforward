@@ -470,6 +470,7 @@ For automation that only needs accepted flow-close records, `QueryIPLog` remains
 
 - GeoIP databases are **hot-reloaded** after a successful refresh. No restart needed.
 - Firewall policy changes can be applied by atomically replacing the policy file and calling `ReloadFirewallPolicy`; listeners do not restart and existing flows keep their original decision.
+- Emergency runtime rules are managed separately through `CreateOnlineRule`, `ListOnlineRules`, `ExpireOnlineRule`, and `DeleteOnlineRule`. They require `ip_log.enabled`, have a one-second to 24-hour TTL, and are not overwritten by persistent-policy reloads. The Config page shows their action, matcher, priority, expiry, and lifecycle status; creation remains an API operation.
 - ASN/country firewall rules **fail open** when the corresponding GeoIP database is unavailable. CIDR rules always work.
 - When `ip_log.log_rejections` is enabled (default when IP logging is enabled), firewall denies, TCP connection-limit rejects, UDP per-IP mapping-limit rejects, and UDP global mapping-limit rejects are written to rejection history in the IP Log database. They do **not** appear as normal flow-close records.
 

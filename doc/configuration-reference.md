@@ -1323,6 +1323,22 @@ Rules are evaluated top-to-bottom. The first matching rule determines the action
 
 Ansible or another configuration manager can atomically replace `policy_file` and then call `ReloadFirewallPolicy` through the authenticated control RPC. Reload does not restart listeners and only affects new flows. A malformed replacement leaves the previous policy active. There is no file watcher.
 
+### Online rules
+
+Online rules are emergency runtime controls stored in the IP-log SQLite database;
+they are not part of `policy_file` and are not replaced by a persistent-policy
+reload. Enable `ip_log` when these rules must survive a restart. The first
+version supports `deny`, `rate_limit`, and `route_override`, with a required TTL
+between one second and 24 hours. A `rate_limit` uses `limit_bps`; a
+`route_override` names an existing upstream. Online allow rules are not
+supported, so a persistent deny cannot be bypassed by an online rule.
+
+Rules are created, listed, expired, and deleted through the authenticated
+`CreateOnlineRule`, `ListOnlineRules`, `ExpireOnlineRule`, and
+`DeleteOnlineRule` RPCs. The background expiry task runs once per minute.
+Creation and lifecycle changes are written together with their audit events;
+if SQLite is disabled, these RPCs return `503`.
+
 ---
 
 ## Cross-reference

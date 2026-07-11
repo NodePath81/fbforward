@@ -211,6 +211,21 @@ The firewall provider keeps an immutable, atomically swapped policy snapshot:
 - Existing flows retain their original admission decision; reload affects new flows only
 - A failed reload leaves the previous snapshot active
 
+**Online rule state:**
+
+- Runtime rules are loaded from the audit SQLite store at startup and expire
+  automatically once per minute.
+- Create, delete, and expire operations update SQLite and the corresponding
+  audit event in one transaction before publishing an immutable in-memory
+  snapshot.
+- Online denies have precedence over a persistent allow. Rate limits and route
+  overrides are only applied after persistent admission succeeds; no online
+  allow can bypass a persistent deny.
+- TCP uses a per-Flow bidirectional token bucket and waits for budget. UDP uses
+  the same Flow budget but drops packets that exceed it.
+- The policy-file reload path and online-rule snapshot are independent, so an
+  Ansible policy replacement cannot remove emergency runtime rules.
+
 **Configuration reload:**
 
 On `Restart` RPC call:

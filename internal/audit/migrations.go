@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 var schemaV2Statements = []string{
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -177,24 +177,31 @@ func migrateDBWithHook(db *sql.DB, hook migrationHook) error {
 		_ = tx.Rollback()
 		return cause
 	}
-	for i, statement := range schemaV2Statements {
-		if _, err := tx.Exec(statement); err != nil {
-			return rollback(fmt.Errorf("migration statement %d: %w", i, err))
-		}
-		if hook != nil {
-			if err := hook(i, statement); err != nil {
-				return rollback(err)
+	if version < 3 {
+		for i, statement := range schemaV2Statements {
+			if _, err := tx.Exec(statement); err != nil {
+				return rollback(fmt.Errorf("migration statement %d: %w", i, err))
+			}
+			if hook != nil {
+				if err := hook(i, statement); err != nil {
+					return rollback(err)
+				}
 			}
 		}
+		if err := migrateLegacyRows(tx); err != nil {
+			return rollback(err)
+		}
+		if err := migrateSchemaV3(tx); err != nil {
+			return rollback(err)
+		}
 	}
-	if err := migrateLegacyRows(tx); err != nil {
-		return rollback(err)
-	}
-	if err := migrateSchemaV3(tx); err != nil {
-		return rollback(err)
+	if version < 4 {
+		if err := migrateSchemaV4(tx); err != nil {
+			return rollback(err)
+		}
 	}
 	now := time.Now().UTC().UnixMilli()
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`, currentSchemaVersion, "audit schema v3", now); err != nil {
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`, currentSchemaVersion, "audit schema v4", now); err != nil {
 		return rollback(fmt.Errorf("record sqlite migration: %w", err))
 	}
 	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
@@ -204,6 +211,75 @@ func migrateDBWithHook(db *sql.DB, hook migrationHook) error {
 		return fmt.Errorf("commit sqlite migration: %w", err)
 	}
 	return nil
+}
+
+func migrateSchemaV4(tx *sql.Tx) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"priority", "INTEGER NOT NULL DEFAULT 0"},
+		{"created_by", "TEXT NOT NULL DEFAULT ''"},
+		{"reason", "TEXT NOT NULL DEFAULT ''"},
+		{"ticket_ref", "TEXT NOT NULL DEFAULT ''"},
+		{"matcher_json", "TEXT NOT NULL DEFAULT ''"},
+		{"params_json", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		exists, err := columnExists(tx, "online_rules", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE online_rules ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+			return fmt.Errorf("add online_rules.%s: %w", column.name, err)
+		}
+	}
+	for _, statement := range []string{
+		`UPDATE online_rules SET source = 'legacy' WHERE source = ''`,
+		`CREATE TABLE IF NOT EXISTS online_rule_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        rule_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        action TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        ticket_ref TEXT NOT NULL DEFAULT '',
+        payload_json TEXT NOT NULL DEFAULT '',
+        occurred_at INTEGER NOT NULL
+    )`,
+		`CREATE INDEX IF NOT EXISTS idx_online_rules_priority_expiry ON online_rules(enabled, priority DESC, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_online_rule_events_rule_time ON online_rule_events(rule_id, occurred_at)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("create online rule v4 schema: %w", err)
+		}
+	}
+	return nil
+}
+
+func columnExists(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, primary int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primary); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func migrateSchemaV3(tx *sql.Tx) error {

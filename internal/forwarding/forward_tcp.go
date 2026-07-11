@@ -120,8 +120,9 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		_ = client.Close()
 		return
 	}
+	decision := Decision{Allowed: true}
 	if l.policy != nil {
-		decision := l.policy.Decide(candidate)
+		decision = l.policy.Decide(candidate)
 		if !decision.Allowed {
 			emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "firewall_deny", decision)
 			_ = client.Close()
@@ -132,7 +133,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		_ = client.Close()
 		return
 	}
-	selected, err := l.picker.Pick(candidate)
+	selected, err := l.pickUpstream(candidate, decision)
 	if err != nil {
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.upstream_selection_failed", "error", err)
 		_ = client.Close()
@@ -180,6 +181,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		observer:     l.observer,
 		registry:     l.registry,
 		binder:       l.binder,
+		rateLimiter:  newByteRateLimiter(decision.RateLimitBPS),
 		upstreamIP:   upstreamIP,
 		upstreamAddr: remoteAddr,
 		listenAddr:   net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
@@ -187,6 +189,20 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		created:      candidate.StartedAt,
 	}
 	conn.start(ctx)
+}
+
+func (l *TCPListener) pickUpstream(candidate flow.Meta, decision Decision) (Upstream, error) {
+	if l.picker == nil {
+		return Upstream{}, errors.New("upstream picker is unavailable")
+	}
+	if decision.UpstreamOverride != "" {
+		picker, ok := l.picker.(OverridePicker)
+		if !ok {
+			return Upstream{}, errors.New("upstream override is not supported")
+		}
+		return picker.PickOverride(candidate, decision.UpstreamOverride)
+	}
+	return l.picker.Pick(candidate)
 }
 
 type tcpConn struct {
@@ -199,6 +215,7 @@ type tcpConn struct {
 	observer     FlowObserver
 	registry     *flow.Registry
 	binder       BackendBinder
+	rateLimiter  *byteRateLimiter
 	upstreamIP   string
 	upstreamAddr string
 	listenAddr   string
@@ -282,6 +299,12 @@ func (c *tcpConn) proxy(ctx context.Context, dst, src net.Conn, up bool) {
 		_ = src.SetReadDeadline(time.Now().Add(c.timeout))
 		n, err := src.Read(buf)
 		if n > 0 {
+			if c.rateLimiter != nil {
+				if waitErr := c.rateLimiter.Wait(ctx, n); waitErr != nil {
+					c.closeWithReason("rate_limit_context_done")
+					return
+				}
+			}
 			if werr := writeAll(dst, buf[:n]); werr != nil {
 				c.closeWithReason("write_error")
 				return

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func newTestStore(t *testing.T) *Store {
 	return store
 }
 
-func TestEmptyStoreInitializesSchemaV3(t *testing.T) {
+func TestEmptyStoreInitializesSchemaV4(t *testing.T) {
 	store := newTestStore(t)
 	var version int
 	if err := store.readDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
@@ -30,7 +31,7 @@ func TestEmptyStoreInitializesSchemaV3(t *testing.T) {
 	if version != currentSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
 	}
-	for _, table := range []string{"flows", "flow_entities", "flow_checkpoints", "rejection_events", "flow_tag_events", "flow_tags", "client_tags", "online_rules", "policy_events", "schema_migrations", "ip_log", "rejection_log"} {
+	for _, table := range []string{"flows", "flow_entities", "flow_checkpoints", "rejection_events", "flow_tag_events", "flow_tags", "client_tags", "online_rules", "online_rule_events", "policy_events", "schema_migrations", "ip_log", "rejection_log"} {
 		var count int
 		if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -42,6 +43,115 @@ func TestEmptyStoreInitializesSchemaV3(t *testing.T) {
 		} else if count != 1 {
 			t.Fatalf("missing table %s", table)
 		}
+	}
+}
+
+func TestSchemaV3MigratesToV4OnlineRules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v3.sqlite")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range schemaV2Statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaV3(tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO online_rules(rule_id, version, action, rule_type, rule_value, created_at, updated_at) VALUES ('legacy-rule', '1', 'deny', 'cidr', '198.51.100.0/24', 1, 1)`); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDB(db); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 4 {
+		t.Fatalf("schema version = %d, want 4", version)
+	}
+	for _, column := range []string{"priority", "created_by", "reason", "ticket_ref", "matcher_json", "params_json"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('online_rules') WHERE name = ?`, column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("missing online_rules.%s", column)
+		}
+	}
+	var eventTable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='online_rule_events'`).Scan(&eventTable); err != nil {
+		t.Fatal(err)
+	}
+	if eventTable != 1 {
+		t.Fatal("missing online_rule_events")
+	}
+	var source string
+	if err := db.QueryRow(`SELECT source FROM online_rules WHERE rule_id = 'legacy-rule'`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "legacy" {
+		t.Fatalf("legacy source = %q, want legacy", source)
+	}
+	_ = db.Close()
+}
+
+func TestOnlineRuleStoreLifecycleAndAudit(t *testing.T) {
+	store := newTestStore(t)
+	expires := time.Now().UTC().Add(time.Hour)
+	rule := OnlineRule{RuleID: "online-1", Action: "deny", RuleType: "source_cidr", RuleValue: "198.51.100.0/24", Priority: 10, Enabled: true, ExpiresAt: &expires, CreatedBy: "control:test", Reason: "incident", TicketRef: "INC-1", MatcherJSON: `{"source_cidr":"198.51.100.0/24"}`}
+	if err := store.CreateOnlineRule(rule, OnlineRuleEvent{Operation: "create", Actor: "control:test"}); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := store.ListOnlineRules(time.Now().UTC(), false)
+	if err != nil || len(rules) != 1 || rules[0].RuleID != rule.RuleID {
+		t.Fatalf("active rules=%+v err=%v", rules, err)
+	}
+	if err := store.ExpireOnlineRule(rule.RuleID, time.Now().UTC(), OnlineRuleEvent{Operation: "expire", Actor: "control:test"}); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.ListOnlineRules(time.Now().UTC(), false)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("expired rule remained active: %+v err=%v", active, err)
+	}
+	all, err := store.ListOnlineRules(time.Now().UTC(), true)
+	if err != nil || len(all) != 1 || all[0].Enabled {
+		t.Fatalf("all rules=%+v err=%v", all, err)
+	}
+	events, err := store.QueryOnlineRuleEvents(rule.RuleID)
+	if err != nil || len(events) != 2 || events[0].Operation != "create" || events[1].Operation != "expire" {
+		t.Fatalf("online rule events=%+v err=%v", events, err)
+	}
+	for _, event := range events {
+		if event.PayloadJSON == "" || !strings.Contains(event.PayloadJSON, "online-1") {
+			t.Fatalf("event payload missing rule snapshot: %+v", event)
+		}
+	}
+	if err := store.DeleteOnlineRule(rule.RuleID, OnlineRuleEvent{Operation: "delete", Actor: "control:test"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err = store.QueryOnlineRuleEvents(rule.RuleID)
+	if err != nil || len(events) != 3 || events[2].Operation != "delete" {
+		t.Fatalf("delete event missing: %+v err=%v", events, err)
+	}
+	if events[2].PayloadJSON == "" || !strings.Contains(events[2].PayloadJSON, "online-1") {
+		t.Fatalf("delete event payload missing rule snapshot: %+v", events[2])
 	}
 }
 

@@ -54,6 +54,7 @@ type Runtime struct {
 	iplogStore         *iplog.Store
 	iplogPipeline      *audit.Pipeline
 	firewall           *policy.Provider
+	onlinePolicy       *policy.OnlineProvider
 	upstreams          []*upstream.Upstream
 	listeners          []closer
 	collector          *measure.Collector
@@ -152,6 +153,17 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		rt.iplogPipeline = audit.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
 		flowObservers = append(flowObservers, rt.iplogPipeline)
 		flowContextRegistry.SetSnapshotSink(auditContextSink{pipeline: rt.iplogPipeline})
+		onlinePolicy, onlineErr := policy.NewOnlineProvider(rt.iplogStore, policy.OnlineProviderOptions{
+			UpstreamAvailable: func(tag string) bool { return manager.Get(tag) != nil },
+			Logger:            util.ComponentLogger(logger, util.CompControl),
+			Telemetry:         metricSet,
+		})
+		if onlineErr != nil {
+			cancel()
+			_ = rt.iplogStore.Close()
+			return nil, onlineErr
+		}
+		rt.onlinePolicy = onlinePolicy
 	}
 	if cfg.FlowContext.Enabled {
 		identities := make([]flowcontext.Identity, 0, len(cfg.FlowContext.Identities))
@@ -169,7 +181,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}, logger)
 	}
 	rt.flowObserver = flowObservers
-	rt.policy = &firewallPolicy{provider: rt.firewall}
+	rt.policy = &firewallPolicy{provider: rt.firewall, onlineProvider: rt.onlinePolicy}
 	if cfg.Shaping.Enabled {
 		// Build upstream shaping entries with resolved IPs
 		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
@@ -236,6 +248,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		ctrl.SetIPLogStore(rt.iplogStore)
 	}
 	ctrl.SetFirewallProvider(rt.firewall)
+	ctrl.SetOnlinePolicyProvider(rt.onlinePolicy)
 	ctrl.SetFlowContextService(rt.flowContextService)
 	rt.control = ctrl
 	rt.coord = coordCtrl
@@ -259,6 +272,9 @@ func (r *Runtime) Start() error {
 	}
 	if r.iplogPipeline != nil {
 		r.iplogPipeline.Start()
+	}
+	if r.onlinePolicy != nil {
+		r.onlinePolicy.Start(r.ctx.Done())
 	}
 
 	r.runFastStart()
@@ -457,6 +473,7 @@ func (r *Runtime) startListeners() error {
 			r.listeners = append(r.listeners, tcpListener)
 		case "udp":
 			udpListener := forwarding.NewUDPListener(ln, r.cfg.Forwarding.Limits, r.cfg.Forwarding.IdleTimeout.UDP.Duration(), r.picker, r.policy, r.flowObserver, r.flowRegistry, r.flowContext, r.logger)
+			udpListener.SetRateLimitDropRecorder(r.metrics)
 			if err := udpListener.Start(r.ctx, &r.wg); err != nil {
 				return err
 			}
