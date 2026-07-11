@@ -203,11 +203,13 @@ The IP-log subsystem uses a two-stage async pipeline:
 
 **Firewall state:**
 
-The firewall engine is stateless at runtime:
-- Rules are loaded from configuration at startup
+The firewall provider keeps an immutable, atomically swapped policy snapshot:
+- The external policy file is strictly decoded, validated, and compiled before activation
 - Each incoming flow is checked against rules top-to-bottom
 - ASN/country rules call into the GeoIP manager; if the required database is unavailable, the rule is skipped (fail-open)
-- Changes to firewall rules require a process restart or `Restart` RPC
+- `ReloadFirewallPolicy` swaps the snapshot without restarting listeners
+- Existing flows retain their original admission decision; reload affects new flows only
+- A failed reload leaves the previous snapshot active
 
 **Configuration reload:**
 

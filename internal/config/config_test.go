@@ -481,6 +481,46 @@ func TestFirewallRejectsInvalidDefaultAndAction(t *testing.T) {
 	}
 }
 
+func TestFirewallPolicyFileRejectsLegacyRules(t *testing.T) {
+	cfg := testConfig()
+	cfg.Firewall.Enabled = true
+	cfg.Firewall.PolicyFile = "/etc/fbforward/firewall.yaml"
+	cfg.Firewall.Rules = []FirewallRule{{Action: "deny", CIDR: "10.0.0.0/8"}}
+	cfg.setDefaults()
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("expected policy file and legacy rules conflict, got %v", err)
+	}
+}
+
+func TestFirewallLegacyRulesProduceDeprecationWarning(t *testing.T) {
+	cfg := testConfig()
+	cfg.Firewall.Enabled = true
+	cfg.Firewall.Rules = []FirewallRule{{Action: "deny", CIDR: "10.0.0.0/8"}}
+	cfg.setDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected legacy firewall config to remain valid: %v", err)
+	}
+	found := false
+	for _, warning := range cfg.Warnings {
+		if strings.Contains(warning, "firewall.policy_file") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected firewall migration warning, got %#v", cfg.Warnings)
+	}
+}
+
+func TestFirewallFailOnInitialLoadDefaultsToTrue(t *testing.T) {
+	if !(FirewallConfig{}).ShouldFailOnInitialLoad() {
+		t.Fatal("expected fail_on_initial_load to default to true")
+	}
+	value := false
+	if (FirewallConfig{FailOnInitialLoad: &value}).ShouldFailOnInitialLoad() {
+		t.Fatal("expected explicit false to be preserved")
+	}
+}
+
 func testConfig() Config {
 	return Config{
 		Forwarding: ForwardingConfig{

@@ -321,9 +321,9 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"identities": flowContextIdentityView(cfg.FlowContext.Identities),
 		},
 		"firewall": map[string]interface{}{
-			"enabled": cfg.Firewall.Enabled,
-			"default": cfg.Firewall.Default,
-			"rules":   cfg.Firewall.Rules,
+			"enabled":              cfg.Firewall.Enabled,
+			"policy_file":          cfg.Firewall.PolicyFile,
+			"fail_on_initial_load": cfg.Firewall.ShouldFailOnInitialLoad(),
 		},
 		"shaping": map[string]interface{}{
 			"enabled":         cfg.Shaping.Enabled,

@@ -442,7 +442,7 @@ These optional features are controlled by the `geoip`, `ip_log`, and `firewall` 
 
 - `geoip`: At least one complete URL+path pair (`asn_db_url` + `asn_db_path`, or `country_db_url` + `country_db_path`)
 - `ip_log`: `db_path` is required when enabled. `log_rejections` defaults to `true`. `retention` is optional; `0s` disables background pruning.
-- `firewall`: Each rule must specify exactly one of `cidr`, `asn`, or `country`
+- `firewall`: Set `policy_file` and keep each external rule to exactly one of `source_cidr`, `source_asn`, or `source_country`
 
 **Dashboard operational rows:**
 
@@ -469,7 +469,7 @@ For automation that only needs accepted flow-close records, `QueryIPLog` remains
 **Key operational semantics:**
 
 - GeoIP databases are **hot-reloaded** after a successful refresh. No restart needed.
-- Firewall rule changes require a **restart** (or `Restart` RPC) to take effect.
+- Firewall policy changes can be applied by atomically replacing the policy file and calling `ReloadFirewallPolicy`; listeners do not restart and existing flows keep their original decision.
 - ASN/country firewall rules **fail open** when the corresponding GeoIP database is unavailable. CIDR rules always work.
 - When `ip_log.log_rejections` is enabled (default when IP logging is enabled), firewall denies, TCP connection-limit rejects, UDP per-IP mapping-limit rejects, and UDP global mapping-limit rejects are written to rejection history in the IP Log database. They do **not** appear as normal flow-close records.
 

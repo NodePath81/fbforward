@@ -400,9 +400,20 @@ type FlowContextIdentity struct {
 }
 
 type FirewallConfig struct {
-	Enabled bool           `yaml:"enabled"`
+	Enabled           bool   `yaml:"enabled"`
+	PolicyFile        string `yaml:"policy_file"`
+	FailOnInitialLoad *bool  `yaml:"fail_on_initial_load"`
+	// Default and Rules are retained for one migration period. New
+	// configurations should use PolicyFile instead.
 	Default string         `yaml:"default"`
 	Rules   []FirewallRule `yaml:"rules"`
+}
+
+func (c FirewallConfig) ShouldFailOnInitialLoad() bool {
+	if c.FailOnInitialLoad == nil {
+		return true
+	}
+	return *c.FailOnInitialLoad
 }
 
 type FirewallRule struct {
@@ -1204,6 +1215,13 @@ func (c *Config) validate() error {
 		}
 	}
 
+	c.Firewall.PolicyFile = strings.TrimSpace(c.Firewall.PolicyFile)
+	if c.Firewall.PolicyFile != "" && len(c.Firewall.Rules) > 0 {
+		return errors.New("firewall.policy_file cannot be combined with legacy firewall.rules")
+	}
+	if c.Firewall.PolicyFile == "" && c.Firewall.Enabled {
+		c.Warnings = append(c.Warnings, "firewall.default/rules are deprecated; use firewall.policy_file")
+	}
 	c.Firewall.Default = strings.ToLower(strings.TrimSpace(c.Firewall.Default))
 	if c.Firewall.Enabled {
 		switch c.Firewall.Default {

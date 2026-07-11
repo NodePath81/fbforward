@@ -8,22 +8,22 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/forwarding"
+	"github.com/NodePath81/fbforward/internal/policy"
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
 func TestFirewallPolicyAdapterMapsDecision(t *testing.T) {
-	engine, err := firewall.NewEngine(config.FirewallConfig{
+	provider, err := policy.NewProvider(config.FirewallConfig{
 		Enabled: true,
 		Default: "allow",
 		Rules:   []config.FirewallRule{{Action: "deny", CIDR: "10.0.0.0/8"}},
 	}, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewEngine error: %v", err)
+		t.Fatalf("NewProvider error: %v", err)
 	}
-	policy := &firewallPolicy{engine: engine}
+	policy := &firewallPolicy{provider: provider}
 	decision := policy.Decide(flow.Meta{ClientAddr: netip.MustParseAddrPort("10.1.2.3:1234")})
 	if decision.Allowed || decision.RuleType != "cidr" || decision.RuleValue != "10.0.0.0/8" {
 		t.Fatalf("unexpected policy decision: %+v", decision)

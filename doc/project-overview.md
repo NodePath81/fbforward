@@ -199,7 +199,7 @@ fbforward initializes components in a specific order to ensure dependencies are 
    - Initializes Metrics aggregator and StatusStore
    - Creates GeoIP manager (if `geoip.enabled`): loads MMDB databases from disk or downloads from URLs, starts background refresh goroutine
    - Creates IP-log store and pipeline (if `ip_log.enabled`): opens SQLite database, starts enrichment/writer goroutines and retention prune loop
-   - Creates firewall engine (if `firewall.enabled`): loads rules, wires GeoIP lookups for ASN/country rules
+   - Creates firewall policy provider: loads and compiles the external policy file (or deprecated inline fallback), wires GeoIP lookups for ASN/country rules, and supports atomic reload
    - Runs fast-start mode: Performs lightweight TCP dial probes to each upstream's measurement endpoint, computes fast-start scores from dial RTT, and selects initial primary
    - Starts ICMP prober for reachability monitoring (does not affect scoring)
    - Starts measurement collector for full TCP/UDP probe cycles

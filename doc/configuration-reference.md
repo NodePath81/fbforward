@@ -1276,38 +1276,37 @@ Accepted flow-close records can be queried via the `QueryIPLog` RPC method. Reje
 
 ## 4.15 firewall section
 
-The `firewall` section configures optional connection-level firewall rules. Rules are evaluated before upstream selection; denied flows are rejected immediately and never forwarded. When rejection logging is enabled under `ip_log`, deny decisions are also persisted as rejection records.
+The `firewall` section configures optional connection-level firewall policy. Rules are evaluated before upstream selection; denied flows are rejected immediately and never forwarded. When rejection logging is enabled under `ip_log`, deny decisions are also persisted as rejection records.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable firewall |
-| `default` | string | `allow` | Default action when no rule matches: `allow` or `deny` |
-| `rules` | array | `[]` | Ordered list of firewall rules |
+| `policy_file` | string | empty | External YAML policy file |
+| `fail_on_initial_load` | bool | `true` | Fail startup when the external policy cannot be loaded |
 
-### Rule fields
+The recommended policy file is separate from the main configuration:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `action` | string | `allow` or `deny` |
-| `cidr` | string | CIDR range to match (e.g., `10.0.0.0/8`) |
-| `asn` | int | Autonomous System Number to match (requires GeoIP ASN database) |
-| `country` | string | ISO 3166-1 alpha-2 country code to match (requires GeoIP country database) |
+```yaml
+version: 1
+default: deny
+rules:
+  - id: allow-office
+    action: allow
+    match:
+      source_cidr: 203.0.113.0/24
+```
 
-Each rule must specify exactly one match criterion: `cidr`, `asn`, or `country`.
+Policy rules use `source_cidr`, `source_asn`, or `source_country`. Each rule must specify exactly one matcher, and rule IDs must be unique.
+
+The old inline `default` and `rules` fields remain supported for one migration period. They are converted to an in-memory policy and produce a deprecation warning. They cannot be combined with `policy_file`.
 
 **Example:**
 
 ```yaml
 firewall:
   enabled: true
-  default: allow
-  rules:
-    - action: deny
-      cidr: 10.0.0.0/8
-    - action: deny
-      asn: 4134
-    - action: allow
-      country: US
+  policy_file: /etc/fbforward/firewall.yaml
+  fail_on_initial_load: true
 ```
 
 ### Evaluation order
@@ -1316,13 +1315,13 @@ Rules are evaluated top-to-bottom. The first matching rule determines the action
 
 ### GeoIP dependency
 
-- `cidr` rules always work regardless of GeoIP availability.
-- `asn` rules require the GeoIP ASN database (`geoip.asn_db_path`). If the database is unavailable, ASN rules **fail open** (are skipped).
-- `country` rules require the GeoIP country database (`geoip.country_db_path`). If the database is unavailable, country rules **fail open** (are skipped).
+- `source_cidr` rules always work regardless of GeoIP availability.
+- `source_asn` rules require the GeoIP ASN database (`geoip.asn_db_path`). If the database is unavailable, ASN rules **fail open** (are skipped).
+- `source_country` rules require the GeoIP country database (`geoip.country_db_path`). If the database is unavailable, country rules **fail open** (are skipped).
 
 ### Configuration changes
 
-Firewall rules are applied at startup. Changes to `firewall` rules require a restart or `Restart` RPC call to take effect. There is no live config reload for firewall rules.
+Ansible or another configuration manager can atomically replace `policy_file` and then call `ReloadFirewallPolicy` through the authenticated control RPC. Reload does not restart listeners and only affects new flows. A malformed replacement leaves the previous policy active. There is no file watcher.
 
 ---
 

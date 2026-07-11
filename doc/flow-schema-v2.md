@@ -15,7 +15,7 @@ forwarding, status, metrics, audit, policy, and Flow Context components.
   counters, and close reason.
 - **FlowTag**: a tag attached to one Flow through Flow Context.
 - **ClientTag**: a tag attached to a client identity and usable by later Flows.
-- **Persistent policy**: a rule declared in the managed configuration file.
+- **Persistent policy**: a rule declared in the versioned firewall policy file referenced by the managed configuration.
 - **Online rule**: a temporary rule stored through the control API and subject
   to an explicit TTL.
 - **Simple route**: a listener uses one configured upstream.
@@ -25,7 +25,9 @@ forwarding, status, metrics, audit, policy, and Flow Context components.
 ## Lifecycle contract
 
 1. Firewall admission happens before a Flow is created. A rejected request
-   produces a `Rejection`, not a Flow.
+   produces a `Rejection`, not a Flow. Persistent firewall policy is loaded
+   from a strict versioned YAML file and atomically reloaded; a reload only
+   affects subsequently admitted Flows.
 2. After admission and successful upstream selection, a Flow receives a random
    FlowID and immutable `FlowMeta`.
 3. One Flow selects one upstream. A later health change never moves an

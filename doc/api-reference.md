@@ -445,7 +445,7 @@ The control plane follows a single-source-of-truth architecture:
 | Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
 | Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
-| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents` |
+| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetFirewallPolicy`, `GetFirewallStatus`, `ValidateFirewallPolicy`, `ReloadFirewallPolicy`, `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents` |
 | GeoIP/IP-log operations | RPC `/rpc` | `RefreshGeoIP` (trigger re-download) |
 
 **Key principles:**
@@ -822,6 +822,50 @@ Trigger an immediate GeoIP download/validate/swap cycle outside the normal refre
 **Failure:**
 - HTTP `503` with `{ "ok": false, "error": "geoip manager not available" }` when GeoIP is not enabled
 - HTTP `503` with `{ "ok": false, "error": "no geoip databases configured" }` if no DB pairs are configured
+
+#### GetFirewallPolicy
+
+Return the currently active persistent firewall policy.
+
+**Method:** `GetFirewallPolicy`
+
+**Parameters:** Empty object `{}` or omitted `params`
+
+**Result:** The normalized policy document plus `source`, SHA-256 `hash`, `generation`, and `loaded_at` metadata.
+
+#### GetFirewallStatus
+
+Return firewall policy loading and reload status.
+
+**Method:** `GetFirewallStatus`
+
+**Parameters:** Empty object `{}` or omitted `params`
+
+**Result:** Includes `enabled`, `policy_file`, `state`, `loaded`, `version`, `hash`, `generation`, `loaded_at`, `last_reload_at`, and any `last_error`.
+
+#### ValidateFirewallPolicy
+
+Validate the configured policy file or candidate YAML without changing the active policy.
+
+**Method:** `ValidateFirewallPolicy`
+
+**Parameters:** Optional candidate content:
+
+```json
+{ "content": "version: 1\ndefault: deny\nrules: []\n" }
+```
+
+When `content` is omitted, the configured `policy_file` is validated. Invalid YAML or policy semantics return HTTP 400.
+
+#### ReloadFirewallPolicy
+
+Atomically load and activate the configured policy file.
+
+**Method:** `ReloadFirewallPolicy`
+
+**Parameters:** Empty object `{}`
+
+The operation does not restart listeners. A failed parse, validation, or compilation leaves the previous policy active and is recorded in the request audit log.
 
 #### GetIPLogStatus
 

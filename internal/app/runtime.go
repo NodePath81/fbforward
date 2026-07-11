@@ -14,7 +14,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
 	"github.com/NodePath81/fbforward/internal/coordination"
-	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/flowcontext"
 	"github.com/NodePath81/fbforward/internal/forwarding"
@@ -23,6 +22,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/notify"
+	"github.com/NodePath81/fbforward/internal/policy"
 	"github.com/NodePath81/fbforward/internal/probe"
 	"github.com/NodePath81/fbforward/internal/resolver"
 	"github.com/NodePath81/fbforward/internal/shaping"
@@ -53,7 +53,7 @@ type Runtime struct {
 	geoipMgr           *geoip.Manager
 	iplogStore         *iplog.Store
 	iplogPipeline      *audit.Pipeline
-	firewall           *firewall.Engine
+	firewall           *policy.Provider
 	upstreams          []*upstream.Upstream
 	listeners          []closer
 	collector          *measure.Collector
@@ -132,6 +132,15 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 		rt.geoipMgr = geoMgr
 	}
+	fw, err := policy.NewProvider(cfg.Firewall, rt.geoipMgr, metricSet, logger)
+	if err != nil {
+		cancel()
+		if rt.geoipMgr != nil {
+			_ = rt.geoipMgr.Close()
+		}
+		return nil, err
+	}
+	rt.firewall = fw
 	if cfg.IPLog.Enabled {
 		store, err := iplog.NewStore(cfg.IPLog.DBPath)
 		if err != nil {
@@ -160,18 +169,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}, logger)
 	}
 	rt.flowObserver = flowObservers
-	if cfg.Firewall.Enabled {
-		fw, err := firewall.NewEngine(cfg.Firewall, rt.geoipMgr, metricSet, logger)
-		if err != nil {
-			cancel()
-			if rt.iplogStore != nil {
-				_ = rt.iplogStore.Close()
-			}
-			return nil, err
-		}
-		rt.firewall = fw
-	}
-	rt.policy = &firewallPolicy{engine: rt.firewall}
+	rt.policy = &firewallPolicy{provider: rt.firewall}
 	if cfg.Shaping.Enabled {
 		// Build upstream shaping entries with resolved IPs
 		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
@@ -237,6 +235,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	if rt.iplogStore != nil {
 		ctrl.SetIPLogStore(rt.iplogStore)
 	}
+	ctrl.SetFirewallProvider(rt.firewall)
 	ctrl.SetFlowContextService(rt.flowContextService)
 	rt.control = ctrl
 	rt.coord = coordCtrl

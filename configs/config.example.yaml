@@ -222,14 +222,8 @@ flow_context:
 
 firewall:
   enabled: false
-  default: allow
-  rules:
-    - action: deny
-      cidr: 10.0.0.0/8
-    - action: deny
-      asn: 4134
-    - action: allow
-      country: US
+  policy_file: /etc/fbforward/firewall.yaml
+  fail_on_initial_load: true
 
 shaping:
   # Linux tc shaping via netlink (requires CAP_NET_ADMIN).

@@ -1,0 +1,16 @@
+version: 1
+default: deny
+rules:
+  - id: allow-office
+    action: allow
+    match:
+      source_cidr: 203.0.113.0/24
+  # The external policy keeps the existing GeoIP match capabilities.
+  - id: deny-example-asn
+    action: deny
+    match:
+      source_asn: 4134
+  - id: allow-us
+    action: allow
+    match:
+      source_country: US

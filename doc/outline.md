@@ -583,9 +583,10 @@ This outline defines the complete documentation structure for the fbforward mono
 | **Depth** | Reference |
 
 **Content:**
-- enabled, default action, rules (action, cidr, asn, country)
+- enabled, policy_file, fail_on_initial_load
+- Versioned policy file with rule IDs and source_cidr/source_asn/source_country matchers
 - Evaluation order, GeoIP dependency, fail-open behavior
-- Changes require restart
+- Atomic `ReloadFirewallPolicy` without listener restart
 
 ---
 

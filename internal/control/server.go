@@ -18,6 +18,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/notify"
+	"github.com/NodePath81/fbforward/internal/policy"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 	"github.com/NodePath81/fbforward/internal/version"
@@ -59,6 +60,8 @@ type ControlServer struct {
 	geoipMgr    geoipManager
 	iplogMu     sync.RWMutex
 	iplogStore  *iplog.Store
+	firewallMu  sync.RWMutex
+	firewall    *policy.Provider
 	flowContext *flowcontext.Service
 	nextReqID   uint64
 	nextWSID    uint64
@@ -159,6 +162,18 @@ func (c *ControlServer) SetIPLogStore(store *iplog.Store) {
 	c.iplogMu.Lock()
 	defer c.iplogMu.Unlock()
 	c.iplogStore = store
+}
+
+func (c *ControlServer) SetFirewallProvider(provider *policy.Provider) {
+	c.firewallMu.Lock()
+	defer c.firewallMu.Unlock()
+	c.firewall = provider
+}
+
+func (c *ControlServer) firewallProvider() *policy.Provider {
+	c.firewallMu.RLock()
+	defer c.firewallMu.RUnlock()
+	return c.firewall
 }
 
 // SetFlowContextService installs the backend Flow Context HTTP API. It is

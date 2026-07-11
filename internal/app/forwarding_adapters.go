@@ -5,9 +5,9 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/NodePath81/fbforward/internal/firewall"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/forwarding"
+	"github.com/NodePath81/fbforward/internal/policy"
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
@@ -51,14 +51,14 @@ func (p *upstreamPicker) ClearDialFailure(selected forwarding.Upstream) {
 }
 
 type firewallPolicy struct {
-	engine *firewall.Engine
+	provider *policy.Provider
 }
 
 func (p *firewallPolicy) Decide(meta flow.Meta) forwarding.Decision {
-	if p == nil || p.engine == nil || !meta.ClientAddr.IsValid() {
+	if p == nil || p.provider == nil || !meta.ClientAddr.IsValid() {
 		return forwarding.Decision{Allowed: true}
 	}
-	decision := p.engine.Decide(meta.ClientAddr.Addr().AsSlice())
+	decision := p.provider.Decide(meta.ClientAddr.Addr().AsSlice())
 	return forwarding.Decision{
 		Allowed:   decision.Allowed,
 		RuleType:  decision.RuleType,
