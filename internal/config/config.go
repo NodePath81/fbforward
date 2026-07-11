@@ -79,7 +79,6 @@ const (
 	defaultIPLogBatchSize        = 100
 	defaultIPLogFlushInterval    = 5 * time.Second
 	defaultIPLogPruneInterval    = 1 * time.Hour
-	defaultFlowContextSocket     = "/run/fbforward/flow-context.sock"
 	defaultFlowContextMaxTTL     = 24 * time.Hour
 
 	defaultMeasurePort    = 9876
@@ -173,6 +172,7 @@ type ListenerConfig struct {
 	BindAddr string              `yaml:"bind_addr"`
 	BindPort int                 `yaml:"bind_port"`
 	Protocol string              `yaml:"protocol"`
+	Route    string              `yaml:"route,omitempty"`
 	Shaping  *ShapingLimitConfig `yaml:"shaping"`
 }
 
@@ -386,11 +386,17 @@ type IPLogConfig struct {
 }
 
 type FlowContextConfig struct {
-	Enabled           bool     `yaml:"enabled"`
-	SocketPath        string   `yaml:"socket_path"`
-	AuthToken         string   `yaml:"auth_token"`
-	AllowedNamespaces []string `yaml:"allowed_namespaces"`
-	MaxTTL            Duration `yaml:"max_ttl"`
+	Enabled    bool                  `yaml:"enabled"`
+	MaxTTL     Duration              `yaml:"max_ttl"`
+	Identities []FlowContextIdentity `yaml:"identities"`
+}
+
+type FlowContextIdentity struct {
+	ID         string   `yaml:"id"`
+	Token      string   `yaml:"token"`
+	Routes     []string `yaml:"routes"`
+	Upstreams  []string `yaml:"upstreams"`
+	Namespaces []string `yaml:"namespaces"`
 }
 
 type FirewallConfig struct {
@@ -738,9 +744,6 @@ func (c *Config) setDefaults() {
 	if c.IPLog.PruneInterval == 0 {
 		c.IPLog.PruneInterval = Duration(defaultIPLogPruneInterval)
 	}
-	if c.FlowContext.SocketPath == "" {
-		c.FlowContext.SocketPath = defaultFlowContextSocket
-	}
 	if c.FlowContext.MaxTTL == 0 {
 		c.FlowContext.MaxTTL = Duration(defaultFlowContextMaxTTL)
 	}
@@ -871,6 +874,10 @@ func (c *Config) validate() error {
 	seenListeners := make(map[string]struct{}, len(c.Forwarding.Listeners))
 	for i := range c.Forwarding.Listeners {
 		ln := &c.Forwarding.Listeners[i]
+		ln.Route = strings.TrimSpace(ln.Route)
+		if ln.Route == "" {
+			ln.Route = fmt.Sprintf("%s:%d", ln.BindAddr, ln.BindPort)
+		}
 		ln.Protocol = strings.ToLower(strings.TrimSpace(ln.Protocol))
 		key := fmt.Sprintf("%s:%d:%s", ln.BindAddr, ln.BindPort, ln.Protocol)
 		if _, ok := seenListeners[key]; ok {
@@ -1149,38 +1156,51 @@ func (c *Config) validate() error {
 		}
 	}
 
-	c.FlowContext.SocketPath = strings.TrimSpace(c.FlowContext.SocketPath)
-	c.FlowContext.AuthToken = strings.TrimSpace(c.FlowContext.AuthToken)
 	if c.FlowContext.Enabled {
 		if !c.IPLog.Enabled {
 			return errors.New("flow_context.enabled requires ip_log.enabled")
 		}
-		if c.FlowContext.SocketPath == "" {
-			return errors.New("flow_context.socket_path must not be empty")
-		}
-		if c.FlowContext.AuthToken == "" {
-			return errors.New("flow_context.auth_token must not be empty")
-		}
-		if err := validateAuthTokenField(c.FlowContext.AuthToken, "flow_context.auth_token"); err != nil {
-			return err
-		}
-		if len(c.FlowContext.AllowedNamespaces) == 0 {
-			return errors.New("flow_context.allowed_namespaces must not be empty")
+		if len(c.FlowContext.Identities) == 0 {
+			return errors.New("flow_context.identities must not be empty")
 		}
 		if c.FlowContext.MaxTTL.Duration() <= 0 {
 			return errors.New("flow_context.max_ttl must be > 0")
 		}
-		seenNamespaces := make(map[string]struct{}, len(c.FlowContext.AllowedNamespaces))
-		for i, namespace := range c.FlowContext.AllowedNamespaces {
-			namespace = strings.TrimSpace(namespace)
-			if namespace == "" {
-				return fmt.Errorf("flow_context.allowed_namespaces[%d] must not be empty", i)
+		seenIDs := make(map[string]struct{}, len(c.FlowContext.Identities))
+		seenTokens := make(map[string]struct{}, len(c.FlowContext.Identities))
+		for i := range c.FlowContext.Identities {
+			identity := &c.FlowContext.Identities[i]
+			identity.ID = strings.TrimSpace(identity.ID)
+			identity.Token = strings.TrimSpace(identity.Token)
+			if identity.ID == "" {
+				return fmt.Errorf("flow_context.identities[%d].id must not be empty", i)
 			}
-			if _, exists := seenNamespaces[namespace]; exists {
-				return fmt.Errorf("duplicate flow_context namespace: %s", namespace)
+			if _, exists := seenIDs[identity.ID]; exists {
+				return fmt.Errorf("duplicate flow_context identity: %s", identity.ID)
 			}
-			seenNamespaces[namespace] = struct{}{}
-			c.FlowContext.AllowedNamespaces[i] = namespace
+			seenIDs[identity.ID] = struct{}{}
+			if identity.Token == "" {
+				return fmt.Errorf("flow_context.identities[%d].token must not be empty", i)
+			}
+			if err := validateAuthTokenField(identity.Token, fmt.Sprintf("flow_context.identities[%d].token", i)); err != nil {
+				return err
+			}
+			if identity.Token == c.Control.AuthToken {
+				return fmt.Errorf("flow_context.identities[%d].token must differ from control.auth_token", i)
+			}
+			if _, exists := seenTokens[identity.Token]; exists {
+				return fmt.Errorf("duplicate flow_context identity token")
+			}
+			seenTokens[identity.Token] = struct{}{}
+			if err := normalizeFlowContextScope(&identity.Routes, "routes", i); err != nil {
+				return err
+			}
+			if err := normalizeFlowContextScope(&identity.Upstreams, "upstreams", i); err != nil {
+				return err
+			}
+			if err := normalizeFlowContextScope(&identity.Namespaces, "namespaces", i); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1267,6 +1287,25 @@ func validateAuthTokenField(token, field string) error {
 	}
 	if len(token) < 16 {
 		return fmt.Errorf("%s must be at least 16 characters long", field)
+	}
+	return nil
+}
+
+func normalizeFlowContextScope(values *[]string, field string, index int) error {
+	if values == nil || len(*values) == 0 {
+		return fmt.Errorf("flow_context.identities[%d].%s must not be empty", index, field)
+	}
+	seen := make(map[string]struct{}, len(*values))
+	for i, value := range *values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return fmt.Errorf("flow_context.identities[%d].%s[%d] must not be empty", index, field, i)
+		}
+		if _, exists := seen[value]; exists {
+			return fmt.Errorf("duplicate flow_context identity %s: %s", field, value)
+		}
+		seen[value] = struct{}{}
+		(*values)[i] = value
 	}
 	return nil
 }

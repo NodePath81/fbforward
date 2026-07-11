@@ -4,11 +4,28 @@ import (
 	"context"
 	"net/netip"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/flow"
 )
+
+type snapshotRecorder struct {
+	mu     sync.Mutex
+	values []Context
+	ready  chan struct{}
+}
+
+func (s *snapshotRecorder) Publish(value Context) {
+	s.mu.Lock()
+	s.values = append(s.values, value)
+	s.mu.Unlock()
+	select {
+	case s.ready <- struct{}{}:
+	default:
+	}
+}
 
 func testMeta(id flow.ID, protocol string) flow.Meta {
 	return flow.Meta{
@@ -54,6 +71,80 @@ func TestRegistryOpenBindResolve(t *testing.T) {
 		t.Fatalf("unexpected context: %+v", got)
 	}
 }
+
+func TestRegistryPublishesContextSnapshots(t *testing.T) {
+	r := NewRegistry(Options{CleanupInterval: time.Millisecond, SnapshotQueueSize: 16})
+	recorder := &snapshotRecorder{ready: make(chan struct{}, 8)}
+	r.SetSnapshotSink(recorder)
+	defer r.Shutdown()
+	meta := testMeta("f1", flow.ProtocolTCP)
+	tuple := testTuple(flow.ProtocolTCP)
+	r.Open(meta)
+	if err := r.Bind(meta.ID, tuple); err != nil {
+		t.Fatal(err)
+	}
+	ended := time.Now().UTC()
+	r.Close(flow.Summary{Meta: meta, EndedAt: ended})
+	deadline := time.After(time.Second)
+	for {
+		recorder.mu.Lock()
+		count := len(recorder.values)
+		recorder.mu.Unlock()
+		if count >= 3 {
+			break
+		}
+		select {
+		case <-recorder.ready:
+		case <-deadline:
+			t.Fatal("context snapshots were not published")
+		}
+	}
+	recorder.mu.Lock()
+	values := append([]Context(nil), recorder.values...)
+	recorder.mu.Unlock()
+	if values[0].State != StateActive || values[1].BackendKey != tuple.BackendKey || values[2].State != StateClosed {
+		t.Fatalf("unexpected snapshots: %+v", values)
+	}
+	if values[1].BackendTuple.LocalAddr != tuple.LocalAddr || values[1].Generation == 0 {
+		t.Fatalf("bind snapshot missing tuple/generation: %+v", values[1])
+	}
+	if !values[2].ResolveUntil.After(values[2].EndedAt) {
+		t.Fatalf("close snapshot missing grace period: %+v", values[2])
+	}
+}
+
+func TestRegistrySnapshotQueueDoesNotBlock(t *testing.T) {
+	r := NewRegistry(Options{SnapshotQueueSize: 1})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	r.SetSnapshotSink(snapshotSinkFunc(func(Context) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+	}))
+	meta := testMeta("f1", flow.ProtocolTCP)
+	r.Open(meta)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("snapshot sink did not start")
+	}
+	for i := 0; i < 20; i++ {
+		r.Open(flow.Meta{ID: flow.ID("extra-" + strconv.Itoa(i)), Protocol: flow.ProtocolTCP, ClientAddr: meta.ClientAddr, StartedAt: time.Now().UTC()})
+	}
+	if got := r.Stats().SnapshotDrops; got == 0 {
+		t.Fatal("expected snapshot queue drops")
+	}
+	close(release)
+	_ = r.Shutdown()
+}
+
+type snapshotSinkFunc func(Context)
+
+func (f snapshotSinkFunc) Publish(value Context) { f(value) }
 
 func TestRegistryTupleReuseDoesNotReturnOldFlow(t *testing.T) {
 	r := NewRegistry(Options{CleanupInterval: time.Millisecond, GracePeriod: time.Second})

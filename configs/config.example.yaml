@@ -6,6 +6,7 @@ forwarding:
     - bind_addr: 0.0.0.0
       bind_port: 9000
       protocol: tcp
+      route: web
       # Optional per-listener shaping (requires shaping.enabled).
       shaping:
         upload_limit: 50m
@@ -13,6 +14,7 @@ forwarding:
     - bind_addr: 0.0.0.0
       bind_port: 9000
       protocol: udp
+      route: web
 
   # Flow management.
   limits:
@@ -205,6 +207,18 @@ ip_log:
   batch_size: 100
   flush_interval: 5s
   prune_interval: 1h
+
+# Optional remote Flow Context API. It reuses the control HTTP listener.
+# Protect remote calls with TLS at a reverse proxy or a trusted private network.
+flow_context:
+  enabled: false
+  max_ttl: 24h
+  identities:
+    - id: caddy
+      token: "replace-with-a-long-random-backend-token"
+      routes: [web]
+      upstreams: [primary]
+      namespaces: [app]
 
 firewall:
   enabled: false

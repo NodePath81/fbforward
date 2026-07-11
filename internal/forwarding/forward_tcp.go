@@ -183,6 +183,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		upstreamIP:   upstreamIP,
 		upstreamAddr: remoteAddr,
 		listenAddr:   net.JoinHostPort(l.cfg.BindAddr, util.FormatPort(l.cfg.BindPort)),
+		route:        l.cfg.Route,
 		created:      candidate.StartedAt,
 	}
 	conn.start(ctx)
@@ -201,6 +202,7 @@ type tcpConn struct {
 	upstreamIP   string
 	upstreamAddr string
 	listenAddr   string
+	route        string
 	clientAddr   string
 	clientIP     string
 
@@ -242,7 +244,7 @@ func (c *tcpConn) start(ctx context.Context) {
 		Protocol:   flow.ProtocolTCP,
 		ClientAddr: clientEndpoint,
 		Listener:   c.listenAddr,
-		Route:      "",
+		Route:      c.route,
 		Upstream:   c.upstreamTag,
 		StartedAt:  c.created,
 	}, c.observer, c.registry, c.close)

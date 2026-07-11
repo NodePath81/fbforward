@@ -128,10 +128,39 @@ func (s *Store) InsertFlows(records []FlowRecord) error {
 		}
 		blob, family := optionalIPBytes(record.ClientIP)
 		started, ended, last := normalizeFlowTimes(record)
+		endedCopy := ended
+		if err := upsertFlowEntityTx(tx, FlowEntity{
+			FlowID: record.FlowID, Protocol: record.Protocol, ClientIP: record.ClientIP, ClientPort: record.ClientPort,
+			Listener: record.Listener, Route: record.Route, Upstream: record.Upstream, CreatedAt: started,
+			EndedAt: &endedCopy, State: "closed", LastActivity: last,
+			BytesUp: record.BytesUp, BytesDown: record.BytesDown,
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 		if _, err := stmt.Exec(record.FlowID, record.Protocol, record.ClientIP, record.ClientPort, blob, family,
 			record.Listener, record.Route, record.Upstream, unixMilli(started), unixMilli(ended), unixMilli(last),
 			record.BytesUp, record.BytesDown, record.CloseReason, record.Fingerprint, record.PolicyVersion, record.RuleID,
 			nullInt(record.ASN), nullIfEmpty(record.ASOrg), nullIfEmpty(record.Country)); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) InsertFlowEntities(records []FlowEntity) error {
+	if s == nil || len(records) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := upsertFlowEntityTx(tx, record); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -208,7 +237,7 @@ func (s *Store) Prune(olderThan time.Time) (int64, error) {
 	}
 	cutoff := unixMilli(olderThan)
 	var deleted int64
-	for _, query := range []string{`DELETE FROM flows WHERE ended_at < ?`, `DELETE FROM rejection_events WHERE recorded_at < ?`, `DELETE FROM ip_log WHERE recorded_at < ?`, `DELETE FROM rejection_log WHERE recorded_at < ?`} {
+	for _, query := range []string{`DELETE FROM flows WHERE ended_at < ?`, `DELETE FROM flow_entities WHERE ended_at IS NOT NULL AND ended_at < ?`, `DELETE FROM client_tags WHERE expires_at IS NOT NULL AND expires_at < ?`, `DELETE FROM rejection_events WHERE recorded_at < ?`, `DELETE FROM ip_log WHERE recorded_at < ?`, `DELETE FROM rejection_log WHERE recorded_at < ?`} {
 		result, err := tx.Exec(query, cutoff)
 		if strings.Contains(query, "ip_log") || strings.Contains(query, "rejection_log") {
 			// Legacy tables use Unix seconds.
@@ -226,7 +255,9 @@ func (s *Store) Prune(olderThan time.Time) (int64, error) {
 			_ = tx.Rollback()
 			return 0, err
 		}
-		deleted += count
+		if !strings.Contains(query, "flow_entities") && !strings.Contains(query, "client_tags") {
+			deleted += count
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -416,7 +447,7 @@ func (s *Store) AppendFlowTagEvent(event FlowTagEvent) error {
 // projection. prefix identifies one namespace/key pair; setting a tag first
 // removes an older value for the same pair so labels have replacement
 // semantics rather than accumulating stale values.
-func (s *Store) ApplyFlowTag(event FlowTagEvent, tag *FlowTag, prefix string) error {
+func (s *Store) ApplyFlowTag(entity FlowEntity, event FlowTagEvent, tag *FlowTag, prefix string) error {
 	if s == nil {
 		return errors.New("audit store is nil")
 	}
@@ -438,6 +469,9 @@ func (s *Store) ApplyFlowTag(event FlowTagEvent, tag *FlowTag, prefix string) er
 	fail := func(cause error) error {
 		_ = tx.Rollback()
 		return cause
+	}
+	if err := upsertFlowEntityTx(tx, entity); err != nil {
+		return fail(err)
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
 		return fail(err)
@@ -487,7 +521,7 @@ func (s *Store) UpsertClientTag(tag ClientTag) error {
 // ApplyClientTag is the client-level equivalent of ApplyFlowTag. The flow ID
 // on the event ties the client label to the backend operation that requested
 // it, while the projection is keyed by the resolved client IP.
-func (s *Store) ApplyClientTag(event FlowTagEvent, tag *ClientTag, prefix string) error {
+func (s *Store) ApplyClientTag(entity FlowEntity, event FlowTagEvent, tag *ClientTag, prefix string) error {
 	if s == nil {
 		return errors.New("audit store is nil")
 	}
@@ -509,6 +543,9 @@ func (s *Store) ApplyClientTag(event FlowTagEvent, tag *ClientTag, prefix string
 	fail := func(cause error) error {
 		_ = tx.Rollback()
 		return cause
+	}
+	if err := upsertFlowEntityTx(tx, entity); err != nil {
+		return fail(err)
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
 		return fail(err)
@@ -534,7 +571,7 @@ func (s *Store) ApplyClientTag(event FlowTagEvent, tag *ClientTag, prefix string
 
 // RemoveClientTag atomically records an unset event and removes the matching
 // namespace/key projection.
-func (s *Store) RemoveClientTag(event FlowTagEvent, clientIP, prefix string) error {
+func (s *Store) RemoveClientTag(entity FlowEntity, event FlowTagEvent, clientIP, prefix string) error {
 	if s == nil {
 		return errors.New("audit store is nil")
 	}
@@ -557,6 +594,9 @@ func (s *Store) RemoveClientTag(event FlowTagEvent, clientIP, prefix string) err
 		_ = tx.Rollback()
 		return cause
 	}
+	if err := upsertFlowEntityTx(tx, entity); err != nil {
+		return fail(err)
+	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
 		return fail(err)
 	}
@@ -568,7 +608,7 @@ func (s *Store) RemoveClientTag(event FlowTagEvent, clientIP, prefix string) err
 
 // RemoveFlowTag atomically records an unset event and removes the matching
 // namespace/key projection.
-func (s *Store) RemoveFlowTag(event FlowTagEvent, prefix string) error {
+func (s *Store) RemoveFlowTag(entity FlowEntity, event FlowTagEvent, prefix string) error {
 	if s == nil {
 		return errors.New("audit store is nil")
 	}
@@ -591,6 +631,9 @@ func (s *Store) RemoveFlowTag(event FlowTagEvent, prefix string) error {
 		_ = tx.Rollback()
 		return cause
 	}
+	if err := upsertFlowEntityTx(tx, entity); err != nil {
+		return fail(err)
+	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO flow_tag_events(event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.FlowID, event.Tag, event.Operation, event.Source, event.Actor, nullableTime(event.ExpiresAt), unixMilli(event.CreatedAt), event.Metadata); err != nil {
 		return fail(err)
 	}
@@ -600,31 +643,43 @@ func (s *Store) RemoveFlowTag(event FlowTagEvent, prefix string) error {
 	return tx.Commit()
 }
 
-// EnsureFlow makes a taggable flow visible to the audit schema before the
-// asynchronous lifecycle pipeline has flushed its final summary. A later
-// complete FlowRecord replaces this placeholder by flow_id.
-func (s *Store) EnsureFlow(record FlowRecord) error {
-	if s == nil || record.FlowID == "" {
-		return errors.New("flow record is required")
+func (s *Store) UpsertFlowEntity(entity FlowEntity) error {
+	if s == nil || strings.TrimSpace(entity.FlowID) == "" {
+		return errors.New("flow entity is required")
 	}
-	if record.Protocol == "" {
-		record.Protocol = "unknown"
-	}
-	blob, family := optionalIPBytes(record.ClientIP)
-	started, ended, last := normalizeFlowTimes(record)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.writeDB.Exec(`INSERT OR IGNORE INTO flows(flow_id, protocol, client_ip, client_port, client_ip_bytes, client_ip_family, listener, route, upstream, started_at, ended_at, last_activity_at, bytes_up, bytes_down, close_reason, fingerprint, policy_version, rule_id, asn, as_org, country) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.FlowID, record.Protocol, record.ClientIP, record.ClientPort, blob, family, record.Listener, record.Route, record.Upstream, unixMilli(started), unixMilli(ended), unixMilli(last), record.BytesUp, record.BytesDown, record.CloseReason, record.Fingerprint, record.PolicyVersion, record.RuleID, nullInt(record.ASN), nullIfEmpty(record.ASOrg), nullIfEmpty(record.Country))
-	return err
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return err
+	}
+	if err := upsertFlowEntityTx(tx, entity); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
-func (s *Store) HasFlow(flowID string) (bool, error) {
-	if s == nil || strings.TrimSpace(flowID) == "" {
-		return false, nil
+func upsertFlowEntityTx(tx *sql.Tx, entity FlowEntity) error {
+	if strings.TrimSpace(entity.FlowID) == "" {
+		return errors.New("flow entity is required")
 	}
-	var exists int
-	err := s.readDB.QueryRow(`SELECT EXISTS(SELECT 1 FROM flows WHERE flow_id = ?)`, flowID).Scan(&exists)
-	return exists != 0, err
+	if entity.Protocol == "" {
+		entity.Protocol = "unknown"
+	}
+	if entity.State == "" {
+		entity.State = "active"
+	}
+	created := entity.CreatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	last := entity.LastActivity
+	if last.IsZero() {
+		last = created
+	}
+	_, err := tx.Exec(`INSERT INTO flow_entities(flow_id, protocol, client_ip, client_port, listener, route, upstream, backend_key, backend_protocol, backend_local, backend_remote, created_at, ended_at, resolve_until, state, generation, last_activity_at, bytes_up, bytes_down) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(flow_id) DO UPDATE SET protocol=excluded.protocol, client_ip=excluded.client_ip, client_port=excluded.client_port, listener=excluded.listener, route=excluded.route, upstream=excluded.upstream, backend_key=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_key <> '' THEN excluded.backend_key ELSE flow_entities.backend_key END, backend_protocol=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_protocol <> '' THEN excluded.backend_protocol ELSE flow_entities.backend_protocol END, backend_local=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_local <> '' THEN excluded.backend_local ELSE flow_entities.backend_local END, backend_remote=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_remote <> '' THEN excluded.backend_remote ELSE flow_entities.backend_remote END, created_at=MIN(flow_entities.created_at, excluded.created_at), ended_at=CASE WHEN excluded.ended_at IS NOT NULL THEN excluded.ended_at ELSE flow_entities.ended_at END, resolve_until=CASE WHEN excluded.resolve_until IS NOT NULL THEN excluded.resolve_until ELSE flow_entities.resolve_until END, state=CASE WHEN flow_entities.state = 'closed' AND excluded.state <> 'closed' THEN flow_entities.state ELSE excluded.state END, generation=MAX(flow_entities.generation, excluded.generation), last_activity_at=MAX(flow_entities.last_activity_at, excluded.last_activity_at), bytes_up=MAX(flow_entities.bytes_up, excluded.bytes_up), bytes_down=MAX(flow_entities.bytes_down, excluded.bytes_down)`, entity.FlowID, entity.Protocol, entity.ClientIP, entity.ClientPort, entity.Listener, entity.Route, entity.Upstream, entity.BackendKey, entity.BackendProtocol, entity.BackendLocal, entity.BackendRemote, unixMilli(created), nullableTime(entity.EndedAt), nullableTime(entity.ResolveUntil), entity.State, entity.Generation, unixMilli(last), entity.BytesUp, entity.BytesDown)
+	return err
 }
 
 func (s *Store) UpsertOnlineRule(rule OnlineRule) error {

@@ -17,6 +17,7 @@ import (
 )
 
 type pipelineItem struct {
+	entity     *FlowEntity
 	flow       *FlowRecord
 	checkpoint *FlowCheckpoint
 	rejection  *RejectionRow
@@ -89,6 +90,17 @@ func (p *Pipeline) Open(meta flow.Meta) {
 	p.mu.Lock()
 	p.active[meta.ID] = activeFlow{meta: meta}
 	p.mu.Unlock()
+	p.enqueue(pipelineItem{entity: &FlowEntity{
+		FlowID: meta.ID.String(), Protocol: meta.Protocol, ClientIP: meta.ClientAddr.Addr().String(), ClientPort: int(meta.ClientAddr.Port()),
+		Listener: meta.Listener, Route: meta.Route, Upstream: meta.Upstream, CreatedAt: meta.StartedAt, State: "active", LastActivity: meta.StartedAt,
+	}})
+}
+
+func (p *Pipeline) PublishEntity(entity FlowEntity) {
+	if p == nil {
+		return
+	}
+	p.enqueue(pipelineItem{entity: &entity})
 }
 
 func (p *Pipeline) Update(id flow.ID, counters flow.Counters) {
@@ -140,7 +152,11 @@ func (p *Pipeline) Close(summary flow.Summary) {
 	}
 	record := FlowRecord{FlowID: summary.ID.String(), Protocol: summary.Protocol, ClientIP: summary.ClientAddr.Addr().String(), ClientPort: int(summary.ClientAddr.Port()), Listener: summary.Listener, Route: summary.Route, Upstream: summary.Upstream, StartedAt: started, EndedAt: ended, LastActivity: last, BytesUp: summary.BytesUp, BytesDown: summary.BytesDown, CloseReason: summary.CloseReason}
 	checkpoint := FlowCheckpoint{FlowID: record.FlowID, RecordedAt: ended, LastActivity: last, BytesUp: summary.BytesUp, BytesDown: summary.BytesDown, SegmentsUp: current.lastCounters.SegmentsUp, SegmentsDown: current.lastCounters.SegmentsDown}
-	p.enqueue(pipelineItem{flow: &record, checkpoint: &checkpoint})
+	p.enqueue(pipelineItem{entity: &FlowEntity{
+		FlowID: record.FlowID, Protocol: record.Protocol, ClientIP: record.ClientIP, ClientPort: record.ClientPort,
+		Listener: record.Listener, Route: record.Route, Upstream: record.Upstream, CreatedAt: started, EndedAt: &ended,
+		State: "closed", LastActivity: last, BytesUp: record.BytesUp, BytesDown: record.BytesDown,
+	}, flow: &record, checkpoint: &checkpoint})
 }
 
 func (p *Pipeline) Reject(rejection flow.Rejection) {
@@ -221,6 +237,7 @@ func (p *Pipeline) runGeoWorker() {
 }
 
 func (p *Pipeline) runWriteWorker() {
+	entities := make([]FlowEntity, 0, p.batchSize)
 	flows := make([]FlowRecord, 0, p.batchSize)
 	checkpoints := make([]FlowCheckpoint, 0, p.batchSize)
 	rejections := make([]RejectionRow, 0, p.batchSize)
@@ -228,10 +245,17 @@ func (p *Pipeline) runWriteWorker() {
 	defer ticker.Stop()
 	flush := func() {
 		if p.store == nil {
+			entities = entities[:0]
 			flows = flows[:0]
 			checkpoints = checkpoints[:0]
 			rejections = rejections[:0]
 			return
+		}
+		if len(entities) > 0 {
+			if err := p.store.InsertFlowEntities(entities); err != nil {
+				util.Event(p.logger, slog.LevelError, "audit.flow_entity_write_failed", "error", err)
+			}
+			entities = entities[:0]
 		}
 		if len(flows) > 0 {
 			if err := p.store.InsertFlows(flows); err != nil {
@@ -259,6 +283,9 @@ func (p *Pipeline) runWriteWorker() {
 				flush()
 				return
 			}
+			if item.entity != nil {
+				entities = append(entities, *item.entity)
+			}
 			if item.flow != nil {
 				flows = append(flows, *item.flow)
 			}
@@ -268,7 +295,7 @@ func (p *Pipeline) runWriteWorker() {
 			if item.rejection != nil {
 				rejections = append(rejections, *item.rejection)
 			}
-			if len(flows)+len(checkpoints)+len(rejections) >= p.batchSize {
+			if len(entities)+len(flows)+len(checkpoints)+len(rejections) >= p.batchSize {
 				flush()
 			}
 		case <-ticker.C:

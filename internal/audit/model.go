@@ -91,6 +91,31 @@ type FlowRecord struct {
 	Country       string
 }
 
+// FlowEntity is the durable identity/context row created when a Flow opens.
+// It is deliberately separate from FlowRecord: flows is reserved for the
+// complete lifecycle summary written at close time.
+type FlowEntity struct {
+	FlowID          string
+	Protocol        string
+	ClientIP        string
+	ClientPort      int
+	Listener        string
+	Route           string
+	Upstream        string
+	BackendKey      string
+	BackendProtocol string
+	BackendLocal    string
+	BackendRemote   string
+	CreatedAt       time.Time
+	EndedAt         *time.Time
+	ResolveUntil    *time.Time
+	State           string
+	Generation      uint64
+	LastActivity    time.Time
+	BytesUp         uint64
+	BytesDown       uint64
+}
+
 type FlowCheckpoint struct {
 	FlowID       string
 	RecordedAt   time.Time

@@ -91,7 +91,6 @@ func (c *ControlServer) registerRPCHandlers() {
 			panic(err)
 		}
 	}
-	c.registerFirewallRPCs()
 }
 
 func decodeOptionalParams(raw json.RawMessage, target any) *rpcFault {

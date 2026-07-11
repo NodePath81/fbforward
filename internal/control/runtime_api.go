@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/util"
@@ -24,6 +25,19 @@ func (c *ControlServer) rpcRestart(ctx *rpcContext, _ json.RawMessage) (any, *rp
 	}(ctx.Meta.id)
 	util.Event(c.logger, slogLevelInfo(), "control.rpc.restart_requested", "rpc.method", "Restart")
 	return rpcOK(nil)
+}
+
+func flowContextIdentityView(identities []config.FlowContextIdentity) []map[string]any {
+	result := make([]map[string]any, 0, len(identities))
+	for _, identity := range identities {
+		result = append(result, map[string]any{
+			"id":         identity.ID,
+			"routes":     append([]string(nil), identity.Routes...),
+			"upstreams":  append([]string(nil), identity.Upstreams...),
+			"namespaces": append([]string(nil), identity.Namespaces...),
+		})
+	}
+	return result
 }
 
 func (c *ControlServer) rpcSendTestNotification(_ *rpcContext, _ json.RawMessage) (any, *rpcFault) {
@@ -302,10 +316,9 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"prune_interval":   cfg.IPLog.PruneInterval.Duration().String(),
 		},
 		"flow_context": map[string]interface{}{
-			"enabled":            cfg.FlowContext.Enabled,
-			"socket_path":        cfg.FlowContext.SocketPath,
-			"allowed_namespaces": cfg.FlowContext.AllowedNamespaces,
-			"max_ttl":            cfg.FlowContext.MaxTTL.Duration().String(),
+			"enabled":    cfg.FlowContext.Enabled,
+			"max_ttl":    cfg.FlowContext.MaxTTL.Duration().String(),
+			"identities": flowContextIdentityView(cfg.FlowContext.Identities),
 		},
 		"firewall": map[string]interface{}{
 			"enabled": cfg.Firewall.Enabled,

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 var schemaV2Statements = []string{
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -190,8 +190,11 @@ func migrateDBWithHook(db *sql.DB, hook migrationHook) error {
 	if err := migrateLegacyRows(tx); err != nil {
 		return rollback(err)
 	}
+	if err := migrateSchemaV3(tx); err != nil {
+		return rollback(err)
+	}
 	now := time.Now().UTC().UnixMilli()
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`, currentSchemaVersion, "audit schema v2", now); err != nil {
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`, currentSchemaVersion, "audit schema v3", now); err != nil {
 		return rollback(fmt.Errorf("record sqlite migration: %w", err))
 	}
 	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
@@ -199,6 +202,116 @@ func migrateDBWithHook(db *sql.DB, hook migrationHook) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite migration: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV3(tx *sql.Tx) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS flow_entities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        flow_id TEXT NOT NULL UNIQUE,
+        protocol TEXT NOT NULL,
+        client_ip TEXT NOT NULL,
+        client_port INTEGER NOT NULL DEFAULT 0,
+        listener TEXT NOT NULL DEFAULT '',
+        route TEXT NOT NULL DEFAULT '',
+        upstream TEXT NOT NULL DEFAULT '',
+        backend_key TEXT NOT NULL DEFAULT '',
+        backend_protocol TEXT NOT NULL DEFAULT '',
+        backend_local TEXT NOT NULL DEFAULT '',
+        backend_remote TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        resolve_until INTEGER,
+        state TEXT NOT NULL,
+        generation INTEGER NOT NULL DEFAULT 0,
+        last_activity_at INTEGER NOT NULL,
+        bytes_up INTEGER NOT NULL DEFAULT 0,
+        bytes_down INTEGER NOT NULL DEFAULT 0
+    )`,
+		`CREATE INDEX IF NOT EXISTS idx_flow_entities_state_time ON flow_entities(state, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_flow_entities_client_time ON flow_entities(client_ip, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_flow_entities_backend ON flow_entities(backend_key, backend_local, backend_remote)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("create flow entity schema: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO flow_entities(flow_id, protocol, client_ip, client_port, listener, route, upstream, backend_key, backend_protocol, backend_local, backend_remote, created_at, ended_at, resolve_until, state, generation, last_activity_at, bytes_up, bytes_down) SELECT flow_id, protocol, client_ip, client_port, listener, route, upstream, '', protocol, '', '', started_at, ended_at, ended_at, 'closed', 0, last_activity_at, bytes_up, bytes_down FROM flows`); err != nil {
+		return fmt.Errorf("backfill flow entities: %w", err)
+	}
+	if err := rebuildFlowTagTables(tx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func rebuildFlowTagTables(tx *sql.Tx) error {
+	for _, table := range []string{"flow_tag_events", "flow_tags"} {
+		if _, err := tx.Exec(`DROP INDEX IF EXISTS idx_flow_tag_events_flow_time`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DROP INDEX IF EXISTS idx_flow_tags_tag_flow`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DROP INDEX IF EXISTS idx_flow_tags_expiry`); err != nil {
+			return err
+		}
+		legacy := table + "_v2"
+		if _, err := tx.Exec(`ALTER TABLE ` + table + ` RENAME TO ` + legacy); err != nil {
+			return fmt.Errorf("rename %s: %w", table, err)
+		}
+		var create string
+		var copy string
+		switch table {
+		case "flow_tag_events":
+			create = `CREATE TABLE flow_tag_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        flow_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL DEFAULT '',
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL,
+        metadata TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY(flow_id) REFERENCES flow_entities(flow_id) ON DELETE CASCADE
+    )`
+			copy = `INSERT OR IGNORE INTO flow_tag_events(id, event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata) SELECT id, event_id, flow_id, tag, operation, source, actor, expires_at, created_at, metadata FROM flow_tag_events_v2`
+		case "flow_tags":
+			create = `CREATE TABLE flow_tags (
+        flow_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT '',
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(flow_id, tag),
+        FOREIGN KEY(flow_id) REFERENCES flow_entities(flow_id) ON DELETE CASCADE
+    )`
+			copy = `INSERT OR IGNORE INTO flow_tags(flow_id, tag, source, expires_at, created_at, updated_at) SELECT flow_id, tag, source, expires_at, created_at, updated_at FROM flow_tags_v2`
+		}
+		if _, err := tx.Exec(create); err != nil {
+			return fmt.Errorf("create %s: %w", table, err)
+		}
+		if _, err := tx.Exec(copy); err != nil {
+			return fmt.Errorf("copy %s: %w", table, err)
+		}
+		if _, err := tx.Exec(`DROP TABLE ` + legacy); err != nil {
+			return fmt.Errorf("drop %s: %w", legacy, err)
+		}
+	}
+	for _, statement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_flow_tag_events_flow_time ON flow_tag_events(flow_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_flow_tags_tag_flow ON flow_tags(tag, flow_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_flow_tags_expiry ON flow_tags(expires_at)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
 	}
 	return nil
 }

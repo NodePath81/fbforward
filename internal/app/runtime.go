@@ -44,7 +44,7 @@ type Runtime struct {
 	flowObserver       forwarding.FlowObserver
 	flowRegistry       *flow.Registry
 	flowContext        *flowcontext.Registry
-	flowContextService *flowcontext.UnixService
+	flowContextService *flowcontext.Service
 	picker             forwarding.UpstreamPicker
 	policy             forwarding.AdmissionPolicy
 	control            *control.ControlServer
@@ -64,6 +64,16 @@ type Runtime struct {
 
 type closer interface {
 	Close() error
+}
+
+type auditContextSink struct {
+	pipeline *audit.Pipeline
+}
+
+func (s auditContextSink) Publish(value flowcontext.Context) {
+	if s.pipeline != nil {
+		s.pipeline.PublishEntity(value.AuditEntity())
+	}
 }
 
 func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (*Runtime, error) {
@@ -132,13 +142,21 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration(), cfg.IPLog.PruneInterval.Duration())
 		rt.iplogPipeline = audit.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
 		flowObservers = append(flowObservers, rt.iplogPipeline)
+		flowContextRegistry.SetSnapshotSink(auditContextSink{pipeline: rt.iplogPipeline})
 	}
 	if cfg.FlowContext.Enabled {
-		rt.flowContextService = flowcontext.NewUnixService(flowContextRegistry, rt.iplogStore, flowcontext.UnixOptions{
-			SocketPath:        cfg.FlowContext.SocketPath,
-			AuthToken:         cfg.FlowContext.AuthToken,
-			AllowedNamespaces: cfg.FlowContext.AllowedNamespaces,
-			MaxTTL:            cfg.FlowContext.MaxTTL.Duration(),
+		identities := make([]flowcontext.Identity, 0, len(cfg.FlowContext.Identities))
+		for _, identity := range cfg.FlowContext.Identities {
+			identities = append(identities, flowcontext.Identity{
+				ID: identity.ID, Token: identity.Token,
+				Routes:     append([]string(nil), identity.Routes...),
+				Upstreams:  append([]string(nil), identity.Upstreams...),
+				Namespaces: append([]string(nil), identity.Namespaces...),
+			})
+		}
+		rt.flowContextService = flowcontext.NewService(flowContextRegistry, rt.iplogStore, flowcontext.HTTPOptions{
+			Identities: identities,
+			MaxTTL:     cfg.FlowContext.MaxTTL.Duration(),
 		}, logger)
 	}
 	rt.flowObserver = flowObservers
@@ -219,7 +237,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	if rt.iplogStore != nil {
 		ctrl.SetIPLogStore(rt.iplogStore)
 	}
-	ctrl.SetFlowContextService(flowcontext.NewService(flowContextRegistry, cfg.Control.AuthToken))
+	ctrl.SetFlowContextService(rt.flowContextService)
 	rt.control = ctrl
 	rt.coord = coordCtrl
 
@@ -231,13 +249,6 @@ func (r *Runtime) Start() error {
 	if err := r.control.Start(r.ctx); err != nil {
 		return err
 	}
-	if r.flowContextService != nil {
-		if err := r.flowContextService.Start(r.ctx); err != nil {
-			r.Stop()
-			return err
-		}
-	}
-
 	if r.shaper != nil {
 		if err := r.shaper.Apply(); err != nil {
 			r.Stop()
@@ -265,11 +276,6 @@ func (r *Runtime) Start() error {
 
 func (r *Runtime) Stop() {
 	r.cancel()
-	if r.flowContextService != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = r.flowContextService.Shutdown(ctx)
-		cancel()
-	}
 	if r.control != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = r.control.Shutdown(ctx)
@@ -280,6 +286,11 @@ func (r *Runtime) Stop() {
 	}
 	for _, ln := range r.listeners {
 		_ = ln.Close()
+	}
+	if r.flowContext != nil {
+		if err := r.flowContext.Shutdown(); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "flowcontext.shutdown_failed", "error", err)
+		}
 	}
 	if r.iplogPipeline != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -301,11 +312,6 @@ func (r *Runtime) Stop() {
 	if r.shaper != nil {
 		if err := r.shaper.Cleanup(); err != nil {
 			util.Event(r.logger, slog.LevelError, "shaping.cleanup_failed", "error", err)
-		}
-	}
-	if r.flowContext != nil {
-		if err := r.flowContext.Shutdown(); err != nil {
-			util.Event(r.logger, slog.LevelWarn, "flowcontext.shutdown_failed", "error", err)
 		}
 	}
 	if r.notifyPolicy != nil {

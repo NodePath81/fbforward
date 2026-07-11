@@ -290,6 +290,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta)
 		upstreamIP:    upstreamIP,
 		upstreamAddr:  upAddr.String(),
 		listenAddr:    listenAddr,
+		route:         l.cfg.Route,
 	}
 	clientEndpoint, err := netip.ParseAddrPort(clientAddrStr)
 	if err != nil {
@@ -306,7 +307,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta)
 		Protocol:   flow.ProtocolUDP,
 		ClientAddr: clientEndpoint,
 		Listener:   listenAddr,
-		Route:      "",
+		Route:      mapping.route,
 		Upstream:   selected.Tag,
 		StartedAt:  candidate.StartedAt,
 	}, mapping.observer, mapping.registry, mapping.close)
@@ -379,6 +380,7 @@ type udpMapping struct {
 	upstreamIP    string
 	upstreamAddr  string
 	listenAddr    string
+	route         string
 
 	id         flow.ID
 	closeOnce  sync.Once

@@ -21,7 +21,7 @@ func newTestStore(t *testing.T) *Store {
 	return store
 }
 
-func TestEmptyStoreInitializesSchemaV2(t *testing.T) {
+func TestEmptyStoreInitializesSchemaV3(t *testing.T) {
 	store := newTestStore(t)
 	var version int
 	if err := store.readDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
@@ -30,7 +30,7 @@ func TestEmptyStoreInitializesSchemaV2(t *testing.T) {
 	if version != currentSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
 	}
-	for _, table := range []string{"flows", "flow_checkpoints", "rejection_events", "flow_tag_events", "flow_tags", "client_tags", "online_rules", "policy_events", "schema_migrations", "ip_log", "rejection_log"} {
+	for _, table := range []string{"flows", "flow_entities", "flow_checkpoints", "rejection_events", "flow_tag_events", "flow_tags", "client_tags", "online_rules", "policy_events", "schema_migrations", "ip_log", "rejection_log"} {
 		var count int
 		if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -85,6 +85,69 @@ func TestLegacyDatabaseMigratesIdempotently(t *testing.T) {
 	stats, err := store.Stats()
 	if err != nil || stats.FlowRecordCount != 1 || stats.RejectionRecordCount != 1 {
 		t.Fatalf("repeat migration stats = %+v err=%v", stats, err)
+	}
+}
+
+func TestSchemaV3MigratesV2TagTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v2.sqlite")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range schemaV2Statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO flows(flow_id, protocol, client_ip, started_at, ended_at, last_activity_at) VALUES ('v2-flow', 'tcp', '192.0.2.1', 1, 2, 2); INSERT INTO flow_tags(flow_id, tag, created_at, updated_at) VALUES ('v2-flow', 'app:owner=legacy', 2, 2); PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDB(db); err != nil {
+		t.Fatal(err)
+	}
+	var entityCount, tagCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM flow_entities WHERE flow_id = 'v2-flow'`).Scan(&entityCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM flow_tags WHERE flow_id = 'v2-flow'`).Scan(&tagCount); err != nil {
+		t.Fatal(err)
+	}
+	if entityCount != 1 || tagCount != 1 {
+		t.Fatalf("migrated entity/tag counts = %d/%d", entityCount, tagCount)
+	}
+	var foreignTable string
+	if err := db.QueryRow(`SELECT "table" FROM pragma_foreign_key_list('flow_tags') WHERE "table" = 'flow_entities'`).Scan(&foreignTable); err != nil {
+		t.Fatalf("flow_tags foreign key = %v", err)
+	}
+	_ = db.Close()
+}
+
+func TestFlowEntityUpdatesAreMonotonic(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC()
+	newLocal := "10.0.0.1:43122"
+	oldLocal := "10.0.0.1:43121"
+	if err := store.UpsertFlowEntity(FlowEntity{FlowID: "entity-1", Protocol: "tcp", ClientIP: "192.0.2.1", CreatedAt: now, State: "active", Generation: 2, BackendKey: "primary@new", BackendProtocol: "tcp", BackendLocal: newLocal, BackendRemote: "192.0.2.10:443", LastActivity: now, BytesUp: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowEntity(FlowEntity{FlowID: "entity-1", Protocol: "tcp", ClientIP: "192.0.2.1", CreatedAt: now.Add(-time.Minute), State: "active", Generation: 1, BackendKey: "primary@old", BackendProtocol: "tcp", BackendLocal: oldLocal, BackendRemote: "192.0.2.10:443", LastActivity: now.Add(-time.Minute), BytesUp: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ended := now.Add(time.Second)
+	resolveUntil := ended.Add(30 * time.Second)
+	if err := store.UpsertFlowEntity(FlowEntity{FlowID: "entity-1", Protocol: "tcp", ClientIP: "192.0.2.1", CreatedAt: now, State: "closed", Generation: 2, EndedAt: &ended, ResolveUntil: &resolveUntil, LastActivity: ended, BytesUp: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowEntity(FlowEntity{FlowID: "entity-1", Protocol: "tcp", ClientIP: "192.0.2.1", CreatedAt: now, State: "active", Generation: 3, BackendKey: "primary@newer", BackendLocal: "10.0.0.1:43123", LastActivity: now.Add(-time.Minute), BytesUp: 2}); err != nil {
+		t.Fatal(err)
+	}
+	var state, backendKey, backendLocal string
+	var generation, bytesUp, resolve int64
+	if err := store.readDB.QueryRow(`SELECT state, backend_key, backend_local, generation, bytes_up, resolve_until FROM flow_entities WHERE flow_id = 'entity-1'`).Scan(&state, &backendKey, &backendLocal, &generation, &bytesUp, &resolve); err != nil {
+		t.Fatal(err)
+	}
+	if state != "closed" || backendKey != "primary@new" || backendLocal != newLocal || generation != 3 || bytesUp != 30 || resolve != resolveUntil.UnixMilli() {
+		t.Fatalf("non-monotonic entity row: state=%s backend=%s local=%s generation=%d bytes=%d resolve=%d", state, backendKey, backendLocal, generation, bytesUp, resolve)
 	}
 }
 

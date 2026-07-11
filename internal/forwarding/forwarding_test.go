@@ -258,6 +258,7 @@ func TestTCPFlowBindsUpstreamSocketTuple(t *testing.T) {
 		observer:     observer,
 		binder:       binder,
 		listenAddr:   "127.0.0.1:9000",
+		route:        "web",
 		upstreamAddr: "192.0.2.10:443",
 		created:      time.Now().UTC(),
 	}
@@ -271,13 +272,18 @@ func TestTCPFlowBindsUpstreamSocketTuple(t *testing.T) {
 	if got := binder.tuples[0].BackendKey; got != "primary@192.0.2.10:443" {
 		t.Fatalf("unexpected backend key %q", got)
 	}
+	observer.mu.Lock()
+	if len(observer.opens) != 1 || observer.opens[0].Route != "web" {
+		t.Fatalf("unexpected TCP route metadata: %+v", observer.opens)
+	}
+	observer.mu.Unlock()
 }
 
 func TestUDPMappingBindsUpstreamSocketTuple(t *testing.T) {
 	observer := &recordingObserver{}
 	binder := &recordingBinder{}
 	listener := &UDPListener{
-		cfg:      config.ListenerConfig{BindAddr: "127.0.0.1", BindPort: freeTCPPort(t)},
+		cfg:      config.ListenerConfig{BindAddr: "127.0.0.1", BindPort: freeTCPPort(t), Route: "web"},
 		picker:   &fakePicker{selected: selectedUpstream()},
 		observer: observer,
 		binder:   binder,
@@ -305,6 +311,11 @@ func TestUDPMappingBindsUpstreamSocketTuple(t *testing.T) {
 	if binder.tuples[0].LocalAddr.Port() == 0 || binder.tuples[0].RemoteAddr.Port() == 0 {
 		t.Fatalf("expected concrete UDP socket tuple: %+v", binder.tuples[0])
 	}
+	observer.mu.Lock()
+	if len(observer.opens) != 1 || observer.opens[0].Route != "web" {
+		t.Fatalf("unexpected UDP route metadata: %+v", observer.opens)
+	}
+	observer.mu.Unlock()
 }
 
 func TestTCPConnectionLimitEmitsRejection(t *testing.T) {

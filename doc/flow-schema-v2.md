@@ -62,9 +62,11 @@ canonical host:port representation for addresses. `close_reason` is an
 extensible string; current reasons include `eof`, `idle_timeout`,
 `context_done`, `read_error`, and `write_error`.
 
-Flow tags, client tags, persistent policies, and online rules are intentionally
-described here as contracts only. Their SQLite migration and API are separate
-follow-up work.
+Flow tags and client tags are persisted through the Flow Context HTTP API.
+Active Flow identity is kept in the separate `flow_entities` table; the
+`flows` table remains a complete lifecycle summary and is written only at
+close. Persistent policies and online rules remain internal control-plane
+contracts and are not part of the Flow Context API.
 
 ## Explicit non-goals
 

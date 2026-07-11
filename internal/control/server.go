@@ -96,6 +96,7 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	}
 	if c.flowContext != nil {
 		mux.HandleFunc("/flow-context/resolve", c.flowContext.HandleResolve)
+		mux.HandleFunc("/flow-context/rpc", c.flowContext.HandleRPC)
 	}
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/status", c.handleStatus)
@@ -160,8 +161,9 @@ func (c *ControlServer) SetIPLogStore(store *iplog.Store) {
 	c.iplogStore = store
 }
 
-// SetFlowContextService installs the independent flow-context resolver
-// endpoint. It is deliberately not part of the RPC registry.
+// SetFlowContextService installs the backend Flow Context HTTP API. It is
+// deliberately separate from the control RPC registry because it has its own
+// identity tokens and route/upstream authorization.
 func (c *ControlServer) SetFlowContextService(service *flowcontext.Service) {
 	c.flowContext = service
 }

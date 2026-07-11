@@ -267,8 +267,7 @@ func TestIPLogConfigRequiresDBPathWhenEnabled(t *testing.T) {
 func TestFlowContextConfigRequiresIndependentAuthAndAuditStore(t *testing.T) {
 	cfg := testConfig()
 	cfg.FlowContext.Enabled = true
-	cfg.FlowContext.AuthToken = "0123456789abcdef"
-	cfg.FlowContext.AllowedNamespaces = []string{"app"}
+	cfg.FlowContext.Identities = []FlowContextIdentity{{ID: "caddy", Token: "abcdef0123456789", Routes: []string{"web"}, Upstreams: []string{"primary"}, Namespaces: []string{"app"}}}
 	cfg.setDefaults()
 	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "ip_log.enabled") {
 		t.Fatalf("expected flow context to require ip log, got %v", err)
@@ -286,10 +285,21 @@ func TestFlowContextConfigRequiresNamespaceAllowlist(t *testing.T) {
 	cfg.IPLog.Enabled = true
 	cfg.IPLog.DBPath = "/tmp/flow-context.sqlite"
 	cfg.FlowContext.Enabled = true
-	cfg.FlowContext.AuthToken = "0123456789abcdef"
 	cfg.setDefaults()
-	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "allowed_namespaces") {
-		t.Fatalf("expected namespace validation error, got %v", err)
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "identities") {
+		t.Fatalf("expected identity validation error, got %v", err)
+	}
+}
+
+func TestFlowContextConfigRejectsSharedControlToken(t *testing.T) {
+	cfg := testConfig()
+	cfg.IPLog.Enabled = true
+	cfg.IPLog.DBPath = "/tmp/flow-context.sqlite"
+	cfg.FlowContext.Enabled = true
+	cfg.FlowContext.Identities = []FlowContextIdentity{{ID: "backend", Token: cfg.Control.AuthToken, Routes: []string{"web"}, Upstreams: []string{"primary"}, Namespaces: []string{"app"}}}
+	cfg.setDefaults()
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("expected shared-token validation error, got %v", err)
 	}
 }
 
@@ -318,6 +328,26 @@ func TestIPLogConfigDefaultsQueueSizes(t *testing.T) {
 	}
 	if cfg.IPLog.LogRejections == nil || !*cfg.IPLog.LogRejections {
 		t.Fatalf("expected log_rejections default to true when ip_log is enabled, got %#v", cfg.IPLog.LogRejections)
+	}
+}
+
+func TestListenerRouteDefaultsAndExplicitValue(t *testing.T) {
+	cfg := testConfig()
+	cfg.setDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Forwarding.Listeners[0].Route, "0.0.0.0:9000"; got != want {
+		t.Fatalf("default route=%q want %q", got, want)
+	}
+	cfg = testConfig()
+	cfg.Forwarding.Listeners[0].Route = "web"
+	cfg.setDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Forwarding.Listeners[0].Route; got != "web" {
+		t.Fatalf("explicit route=%q", got)
 	}
 }
 

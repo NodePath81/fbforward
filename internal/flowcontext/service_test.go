@@ -25,7 +25,7 @@ func serviceWithFlow(t *testing.T, options Options) (*Service, *Registry, flow.B
 	if err := registry.Bind(meta.ID, tuple); err != nil {
 		t.Fatal(err)
 	}
-	return NewService(registry, "secret"), registry, tuple
+	return NewService(registry, nil, HTTPOptions{Identities: []Identity{{ID: "caddy", Token: "secret", Routes: []string{""}, Upstreams: []string{"primary"}, Namespaces: []string{"app"}}}}, nil), registry, tuple
 }
 
 func doResolve(service *Service, method, token, body string) *httptest.ResponseRecorder {
@@ -78,7 +78,7 @@ func TestServiceAuthMethodAndTupleErrors(t *testing.T) {
 func TestServiceBodyLimitAndNotFound(t *testing.T) {
 	service, registry, _ := serviceWithFlow(t, Options{CleanupInterval: time.Millisecond})
 	defer registry.Shutdown()
-	response := doResolve(service, http.MethodPost, "secret", strings.Repeat("x", int(maxResolveBodyBytes)+1))
+	response := doResolve(service, http.MethodPost, "secret", strings.Repeat("x", int(maxFlowContextBodyBytes)+1))
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("body limit status=%d", response.Code)
 	}
