@@ -122,7 +122,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		status:       status,
 		flowRegistry: flowRegistry,
 		flowContext:  flowContextRegistry,
-		picker:       &upstreamPicker{manager: manager},
+		picker:       newUpstreamPicker(manager, cfg.Routes),
 		upstreams:    upstreams,
 	}
 	if cfg.GeoIP.Enabled {

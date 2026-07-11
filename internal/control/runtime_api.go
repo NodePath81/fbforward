@@ -159,9 +159,11 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 	listeners := make([]map[string]interface{}, 0, len(cfg.Forwarding.Listeners))
 	for _, ln := range cfg.Forwarding.Listeners {
 		entry := map[string]interface{}{
+			"name":      ln.Name,
 			"bind_addr": ln.BindAddr,
 			"bind_port": ln.BindPort,
 			"protocol":  ln.Protocol,
+			"route":     ln.Route,
 		}
 		if ln.Shaping != nil {
 			entry["shaping"] = map[string]interface{}{
@@ -170,6 +172,19 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			}
 		}
 		listeners = append(listeners, entry)
+	}
+
+	modernListeners := make([]map[string]interface{}, 0, len(cfg.Listeners))
+	for _, ln := range cfg.Listeners {
+		modernListeners = append(modernListeners, map[string]interface{}{
+			"name": ln.Name, "bind": ln.Bind, "protocol": ln.Protocol, "route": ln.Route,
+		})
+	}
+	routes := make([]map[string]interface{}, 0, len(cfg.Routes))
+	for _, route := range cfg.Routes {
+		routes = append(routes, map[string]interface{}{
+			"name": route.Name, "strategy": route.Strategy, "upstreams": append([]string(nil), route.Upstreams...),
+		})
 	}
 
 	upstreams := make([]map[string]interface{}, 0, len(cfg.Upstreams))
@@ -196,7 +211,9 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"hostname": cfg.Hostname,
+		"hostname":  cfg.Hostname,
+		"listeners": modernListeners,
+		"routes":    routes,
 		"forwarding": map[string]interface{}{
 			"listeners": listeners,
 			"limits": map[string]interface{}{

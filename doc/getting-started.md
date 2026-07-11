@@ -239,14 +239,28 @@ Both commands should complete without errors for the TCP control path.
 Create `config.yaml` with the following content:
 
 ```yaml
+listeners:
+  - name: proxy-tcp
+    bind: 0.0.0.0:9000
+    protocol: tcp
+    route: proxy
+  - name: proxy-udp
+    bind: 0.0.0.0:9000
+    protocol: udp
+    route: proxy
+
+routes:
+  - name: proxy
+    strategy: adaptive
+    upstreams: [primary, backup]
+
 forwarding:
-  listeners:
-    - bind_addr: 0.0.0.0
-      bind_port: 9000
-      protocol: tcp
-    - bind_addr: 0.0.0.0
-      bind_port: 9000
-      protocol: udp
+  limits:
+    max_tcp_connections: 50
+    max_udp_mappings: 500
+  idle_timeout:
+    tcp: 60s
+    udp: 30s
 
 upstreams:
   - tag: primary

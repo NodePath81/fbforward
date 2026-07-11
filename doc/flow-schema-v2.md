@@ -18,8 +18,8 @@ forwarding, status, metrics, audit, policy, and Flow Context components.
 - **Persistent policy**: a rule declared in the versioned firewall policy file referenced by the managed configuration.
 - **Online rule**: a temporary rule stored through the control API and subject
   to an explicit TTL.
-- **Simple route**: a listener uses one configured upstream.
-- **Adaptive route**: a listener chooses one upstream for each new Flow using
+- **Simple route**: a route uses one configured upstream.
+- **Adaptive route**: a route chooses one upstream for each new Flow using
   health state and raw RTT; the choice is pinned for that Flow.
 
 ## Lifecycle contract

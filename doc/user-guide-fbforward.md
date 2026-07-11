@@ -157,8 +157,10 @@ Configuration is organized into sections:
 ```yaml
 hostname: "fbforward-host"          # Optional hostname override
 
+listeners: [...]                    # Listener -> route bindings
+routes: [...]                       # Route strategies and upstream sets
+
 forwarding:
-  listeners: [...]                  # TCP/UDP bind addresses
   limits: {...}                     # Connection/mapping limits
   idle_timeout: {...}               # TCP/UDP idle timeouts
 

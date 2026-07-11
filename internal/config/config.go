@@ -127,24 +127,29 @@ func (d Duration) Duration() time.Duration {
 }
 
 type Config struct {
-	Hostname     string             `yaml:"hostname"`
-	Forwarding   ForwardingConfig   `yaml:"forwarding"`
-	Upstreams    []UpstreamConfig   `yaml:"upstreams"`
-	DNS          DNSConfig          `yaml:"dns"`
-	Reachability ReachabilityConfig `yaml:"reachability"`
-	Measurement  MeasurementConfig  `yaml:"measurement"`
-	Scoring      ScoringConfig      `yaml:"scoring"`
-	Switching    SwitchingConfig    `yaml:"switching"`
-	Control      ControlConfig      `yaml:"control"`
-	Notify       NotifyConfig       `yaml:"notify"`
-	Coordination CoordinationConfig `yaml:"coordination"`
-	Logging      LoggingConfig      `yaml:"logging"`
-	Shaping      ShapingConfig      `yaml:"shaping"`
-	GeoIP        GeoIPConfig        `yaml:"geoip"`
-	IPLog        IPLogConfig        `yaml:"ip_log"`
-	FlowContext  FlowContextConfig  `yaml:"flow_context"`
-	Firewall     FirewallConfig     `yaml:"firewall"`
-	Warnings     []string           `yaml:"-"`
+	Hostname           string             `yaml:"hostname"`
+	Listeners          []ListenerSpec     `yaml:"listeners"`
+	Routes             []RouteConfig      `yaml:"routes"`
+	Forwarding         ForwardingConfig   `yaml:"forwarding"`
+	Upstreams          []UpstreamConfig   `yaml:"upstreams"`
+	DNS                DNSConfig          `yaml:"dns"`
+	Reachability       ReachabilityConfig `yaml:"reachability"`
+	Measurement        MeasurementConfig  `yaml:"measurement"`
+	Scoring            ScoringConfig      `yaml:"scoring"`
+	Switching          SwitchingConfig    `yaml:"switching"`
+	Control            ControlConfig      `yaml:"control"`
+	Notify             NotifyConfig       `yaml:"notify"`
+	Coordination       CoordinationConfig `yaml:"coordination"`
+	Logging            LoggingConfig      `yaml:"logging"`
+	Shaping            ShapingConfig      `yaml:"shaping"`
+	GeoIP              GeoIPConfig        `yaml:"geoip"`
+	IPLog              IPLogConfig        `yaml:"ip_log"`
+	FlowContext        FlowContextConfig  `yaml:"flow_context"`
+	Firewall           FirewallConfig     `yaml:"firewall"`
+	Warnings           []string           `yaml:"-"`
+	topologyMode       string             `yaml:"-"`
+	topologyNormalized bool               `yaml:"-"`
+	configLoaded       bool               `yaml:"-"`
 }
 
 type LoggingConfig struct {
@@ -169,11 +174,29 @@ type IdleTimeoutConfig struct {
 }
 
 type ListenerConfig struct {
+	Name     string              `yaml:"name,omitempty"`
 	BindAddr string              `yaml:"bind_addr"`
 	BindPort int                 `yaml:"bind_port"`
 	Protocol string              `yaml:"protocol"`
 	Route    string              `yaml:"route,omitempty"`
 	Shaping  *ShapingLimitConfig `yaml:"shaping"`
+}
+
+// ListenerSpec is the explicit listener form used by the current topology
+// configuration. It is converted to ListenerConfig after parsing so the
+// forwarding data plane continues to use a normalized address and port.
+type ListenerSpec struct {
+	Name     string              `yaml:"name"`
+	Bind     string              `yaml:"bind"`
+	Protocol string              `yaml:"protocol"`
+	Route    string              `yaml:"route"`
+	Shaping  *ShapingLimitConfig `yaml:"shaping"`
+}
+
+type RouteConfig struct {
+	Name      string   `yaml:"name"`
+	Strategy  string   `yaml:"strategy"`
+	Upstreams []string `yaml:"upstreams"`
 }
 
 type UpstreamConfig struct {
@@ -470,7 +493,12 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("removed config keys are not supported: %s", strings.Join(removed, ", "))
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	cfg.configLoaded = true
+	cfg.topologyMode = "legacy"
+	if hasModernTopology(raw) {
+		cfg.topologyMode = "modern"
+	}
+	if err := decodeConfig(raw, &cfg, cfg.topologyMode == "modern"); err != nil {
 		return Config{}, err
 	}
 	cfg.setDefaults()
@@ -831,6 +859,9 @@ func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
 
 func (c *Config) validate() error {
 	c.Warnings = nil
+	if err := c.normalizeTopology(); err != nil {
+		return err
+	}
 
 	if len(c.Forwarding.Listeners) == 0 {
 		return errors.New("forwarding.listeners must not be empty")
@@ -883,10 +914,24 @@ func (c *Config) validate() error {
 	}
 
 	seenListeners := make(map[string]struct{}, len(c.Forwarding.Listeners))
+	seenListenerNames := make(map[string]struct{}, len(c.Forwarding.Listeners))
 	for i := range c.Forwarding.Listeners {
 		ln := &c.Forwarding.Listeners[i]
+		ln.Name = strings.TrimSpace(ln.Name)
+		if ln.Name == "" && c.topologyMode == "modern" {
+			return fmt.Errorf("forwarding.listeners[%d].name must not be empty", i)
+		}
+		if ln.Name != "" {
+			if _, ok := seenListenerNames[ln.Name]; ok {
+				return fmt.Errorf("duplicate listener name: %s", ln.Name)
+			}
+			seenListenerNames[ln.Name] = struct{}{}
+		}
 		ln.Route = strings.TrimSpace(ln.Route)
 		if ln.Route == "" {
+			if c.topologyMode == "modern" {
+				return fmt.Errorf("listeners[%d].route must not be empty", i)
+			}
 			ln.Route = fmt.Sprintf("%s:%d", ln.BindAddr, ln.BindPort)
 		}
 		ln.Protocol = strings.ToLower(strings.TrimSpace(ln.Protocol))
@@ -908,6 +953,57 @@ func (c *Config) validate() error {
 			if err := validateShapingLimits(ln.Shaping, fmt.Sprintf("forwarding.listeners[%d].shaping", i)); err != nil {
 				return err
 			}
+		}
+	}
+
+	seenRoutes := make(map[string]struct{}, len(c.Routes))
+	upstreamTags := make(map[string]struct{}, len(c.Upstreams))
+	for _, upstream := range c.Upstreams {
+		upstreamTags[upstream.Tag] = struct{}{}
+	}
+	for i := range c.Routes {
+		route := &c.Routes[i]
+		route.Name = strings.TrimSpace(route.Name)
+		route.Strategy = strings.ToLower(strings.TrimSpace(route.Strategy))
+		if route.Name == "" {
+			return fmt.Errorf("routes[%d].name must not be empty", i)
+		}
+		if _, ok := seenRoutes[route.Name]; ok {
+			return fmt.Errorf("duplicate route name: %s", route.Name)
+		}
+		seenRoutes[route.Name] = struct{}{}
+		switch route.Strategy {
+		case "static":
+			if len(route.Upstreams) != 1 {
+				return fmt.Errorf("routes[%s].upstreams must contain exactly one upstream for static strategy", route.Name)
+			}
+		case "adaptive":
+			if len(route.Upstreams) < 2 {
+				return fmt.Errorf("routes[%s].upstreams must contain at least two upstreams for adaptive strategy", route.Name)
+			}
+		default:
+			return fmt.Errorf("routes[%s].strategy must be static or adaptive", route.Name)
+		}
+		seenRouteUpstreams := make(map[string]struct{}, len(route.Upstreams))
+		for j, tag := range route.Upstreams {
+			tag = strings.TrimSpace(tag)
+			route.Upstreams[j] = tag
+			if tag == "" {
+				return fmt.Errorf("routes[%s].upstreams must not contain empty tags", route.Name)
+			}
+			if _, ok := seenRouteUpstreams[tag]; ok {
+				return fmt.Errorf("duplicate upstream %s in route %s", tag, route.Name)
+			}
+			seenRouteUpstreams[tag] = struct{}{}
+			if _, ok := upstreamTags[tag]; !ok {
+				return fmt.Errorf("routes[%s].upstreams references unknown upstream %s", route.Name, tag)
+			}
+		}
+	}
+	for i := range c.Forwarding.Listeners {
+		listener := &c.Forwarding.Listeners[i]
+		if _, ok := seenRoutes[listener.Route]; !ok {
+			return fmt.Errorf("listener %s references unknown route %s", listener.Name, listener.Route)
 		}
 	}
 

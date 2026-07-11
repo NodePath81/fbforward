@@ -63,6 +63,52 @@ func TestUpstreamPickerAdapterMapsActiveIPAndDialFeedback(t *testing.T) {
 	}
 }
 
+func TestUpstreamPickerScopesAdaptiveRoutesAndKeepsStaticFixed(t *testing.T) {
+	makeUpstream := func(tag, ip string) *upstream.Upstream {
+		up := &upstream.Upstream{Tag: tag}
+		up.SetActiveIP(net.ParseIP(ip))
+		return up
+	}
+	manager := upstream.NewUpstreamManager([]*upstream.Upstream{
+		makeUpstream("outside", "203.0.113.10"),
+		makeUpstream("route-a", "203.0.113.11"),
+		makeUpstream("route-b", "203.0.113.12"),
+		makeUpstream("static", "203.0.113.13"),
+	}, rand.New(rand.NewSource(1)), nil)
+	for _, tag := range []string{"outside", "route-a", "route-b", "static"} {
+		manager.UpdateReachability(tag, true)
+	}
+	if err := manager.SetManual("outside"); err != nil {
+		t.Fatal(err)
+	}
+	picker := newUpstreamPicker(manager, []config.RouteConfig{
+		{Name: "adaptive", Strategy: "adaptive", Upstreams: []string{"route-a", "route-b"}},
+		{Name: "static", Strategy: "static", Upstreams: []string{"static"}},
+	})
+	adaptive, err := picker.Pick(flow.Meta{Route: "adaptive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adaptive.Tag != "route-a" && adaptive.Tag != "route-b" {
+		t.Fatalf("adaptive route escaped its upstream set: %+v", adaptive)
+	}
+	fixed, err := picker.Pick(flow.Meta{Route: "static"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixed.Tag != "static" {
+		t.Fatalf("static route changed with global active selection: %+v", fixed)
+	}
+}
+
+func TestUpstreamPickerRejectsUnknownRoute(t *testing.T) {
+	manager := upstream.NewUpstreamManager(nil, rand.New(rand.NewSource(1)), nil)
+	picker := newUpstreamPicker(manager, []config.RouteConfig{{Name: "known", Strategy: "static", Upstreams: []string{"missing"}}})
+	if _, err := picker.Pick(flow.Meta{Route: "unknown"}); err == nil {
+		t.Fatal("expected unknown route error")
+	}
+}
+
 var _ forwarding.AdmissionPolicy = (*firewallPolicy)(nil)
 var _ forwarding.UpstreamPicker = (*upstreamPicker)(nil)
 var _ forwarding.DialFeedback = (*upstreamPicker)(nil)

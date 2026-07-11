@@ -312,6 +312,12 @@ Logged but operation continues:
 
 ### Adding new protocol forwarders
 
+The current configuration model uses top-level `listeners` and `routes`.
+Forwarding receives a normalized `ListenerConfig`; route-aware upstream
+selection is applied before the protocol listener is started. The legacy
+`forwarding.listeners` form is migrated by `internal/config` and should not be
+used for new features.
+
 To add support for a new protocol (e.g., SCTP, QUIC), follow the TCP/UDP pattern in `internal/forwarding/`.
 
 **Step 1: Define listener config**

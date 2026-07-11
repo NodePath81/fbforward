@@ -8,11 +8,13 @@ This reference documents all configuration options for fbforward. For operationa
 
 ### YAML structure
 
-fbforward uses YAML for configuration. The top-level structure contains 16 top-level fields: the optional `hostname` plus 15 configuration sections.
+fbforward uses YAML for configuration. The current format exposes explicit top-level `listeners` and `routes`; the legacy `forwarding.listeners` form remains accepted during the migration period.
 
 ```yaml
 hostname: fbforward-01           # Optional identifier
-forwarding: {...}                 # Listeners and flow management
+listeners: [...]                 # Explicit listener -> route bindings
+routes: [...]                    # Route strategy and upstream membership
+forwarding: {...}                 # Flow management and legacy listeners
 upstreams: [...]                  # Upstream list
 dns: {...}                        # DNS resolution
 reachability: {...}               # ICMP probing
@@ -98,9 +100,36 @@ fbforward does not support environment variable overrides. All configuration mus
 
 ---
 
+### Listener and route topology
+
+The preferred topology is an explicit listener-to-route mapping:
+
+```yaml
+listeners:
+  - name: https
+    bind: 0.0.0.0:443
+    protocol: tcp
+    route: web
+
+routes:
+  - name: web
+    strategy: static
+    upstreams: [web-local]
+```
+
+`static` routes require exactly one upstream. `adaptive` routes require at
+least two upstreams and choose only among their listed members. Listener names
+and route names must be unique, and every upstream reference must exist.
+
+The old `forwarding.listeners` form is converted explicitly at load time and
+produces a deprecation warning. New-format YAML uses strict unknown-field
+validation; do not combine top-level `listeners` with
+`forwarding.listeners`.
+
 ## 4.2 forwarding section
 
-The `forwarding` section configures listeners and flow management.
+The `forwarding` section configures flow management. Its `listeners` field is
+the legacy form and is migrated to the top-level listener/route topology.
 
 ### listeners
 

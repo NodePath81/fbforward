@@ -1,22 +1,28 @@
 hostname: fbforward-01
 
-forwarding:
-  # Where fbforward listens for client connections.
-  listeners:
-    - bind_addr: 0.0.0.0
-      bind_port: 9000
-      protocol: tcp
-      route: web
-      # Optional per-listener shaping (requires shaping.enabled).
-      shaping:
-        upload_limit: 50m
-        download_limit: 200m
-    - bind_addr: 0.0.0.0
-      bind_port: 9000
-      protocol: udp
-      route: web
+listeners:
+  # Explicit listener -> route mapping.
+  - name: web-tcp
+    bind: 0.0.0.0:9000
+    protocol: tcp
+    route: web
+    # Optional per-listener shaping (requires shaping.enabled):
+    # shaping:
+    #   upload_limit: 50m
+    #   download_limit: 200m
+  - name: web-udp
+    bind: 0.0.0.0:9000
+    protocol: udp
+    route: web
 
+routes:
+  - name: web
+    strategy: adaptive
+    upstreams: [primary, backup]
+
+forwarding:
   # Flow management.
+
   limits:
     max_tcp_connections: 50
     max_udp_mappings: 500
@@ -26,7 +32,7 @@ forwarding:
     udp: 30s
 
 upstreams:
-  # Global upstream list shared by all listeners.
+  # Definitions are referenced by routes; listeners do not share them implicitly.
   - tag: primary
     destination:
       host: 203.0.113.10
@@ -39,16 +45,16 @@ upstreams:
     bias: 0
     # Optional per-upstream shaping (requires shaping.enabled).
     # Limits bandwidth to/from this upstream's IP address.
-    shaping:
-      upload_limit: 100m     # fbforward sends to upstream
-      download_limit: 500m   # fbforward receives from upstream
+    # shaping:
+    #   upload_limit: 100m     # fbforward sends to upstream
+    #   download_limit: 500m   # fbforward receives from upstream
   - tag: backup
     destination:
       host: example.net
     # Shaping also works with hostname upstreams (resolved IPs are shaped).
-    shaping:
-      upload_limit: 50m
-      download_limit: 200m
+    # shaping:
+    #   upload_limit: 50m
+    #   download_limit: 200m
 
 dns:
   # Optional custom DNS servers (ip or ip:port). Empty = system DNS.

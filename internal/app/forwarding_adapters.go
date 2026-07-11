@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/forwarding"
 	"github.com/NodePath81/fbforward/internal/policy"
@@ -13,13 +14,27 @@ import (
 
 type upstreamPicker struct {
 	manager *upstream.UpstreamManager
+	routes  map[string]routeSelection
 }
 
-func (p *upstreamPicker) Pick(_ flow.Meta) (forwarding.Upstream, error) {
+type routeSelection struct {
+	strategy  string
+	upstreams []string
+}
+
+func (p *upstreamPicker) Pick(meta flow.Meta) (forwarding.Upstream, error) {
 	if p == nil || p.manager == nil {
 		return forwarding.Upstream{}, fmt.Errorf("upstream picker is unavailable")
 	}
-	selected, err := p.manager.SelectUpstream()
+	var tags []string
+	if len(p.routes) > 0 {
+		route, ok := p.routes[meta.Route]
+		if !ok {
+			return forwarding.Upstream{}, fmt.Errorf("route %q not found", meta.Route)
+		}
+		tags = route.upstreams
+	}
+	selected, err := p.manager.SelectUpstreamFrom(tags)
 	if err != nil {
 		return forwarding.Upstream{}, err
 	}
@@ -36,6 +51,20 @@ func (p *upstreamPicker) Pick(_ flow.Meta) (forwarding.Upstream, error) {
 	}
 	addr = addr.Unmap()
 	return forwarding.Upstream{Tag: selected.Tag, Addr: addr}, nil
+}
+
+func newUpstreamPicker(manager *upstream.UpstreamManager, routes []config.RouteConfig) *upstreamPicker {
+	picker := &upstreamPicker{manager: manager}
+	if len(routes) == 0 {
+		return picker
+	}
+	picker.routes = make(map[string]routeSelection, len(routes))
+	for _, route := range routes {
+		picker.routes[route.Name] = routeSelection{
+			strategy: route.Strategy, upstreams: append([]string(nil), route.Upstreams...),
+		}
+	}
+	return picker
 }
 
 func (p *upstreamPicker) PickOverride(_ flow.Meta, tag string) (forwarding.Upstream, error) {

@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -413,7 +414,6 @@ func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-
 	if m.mode == ModeManual {
 		up, ok := m.upstreams[m.manualTag]
 		if !ok {
@@ -435,6 +435,91 @@ func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
 		return nil, errors.New("active upstream temporarily unavailable")
 	}
 	return up, nil
+}
+
+// SelectUpstreamFrom selects an upstream from an optional route-scoped set.
+// A singleton set is treated as a static route and is independent of the
+// manager's global active tag. For larger sets, manual/active selections are
+// honored only when they belong to the set and are not in dial-failure
+// cooldown; otherwise the best usable member is selected by score.
+func (m *UpstreamManager) SelectUpstreamFrom(tags []string) (*Upstream, error) {
+	if len(tags) == 0 {
+		return m.SelectUpstream()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	allowed := make(map[string]struct{}, len(tags))
+	orderedTags := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag != "" {
+			if _, exists := allowed[tag]; !exists {
+				orderedTags = append(orderedTags, tag)
+			}
+			allowed[tag] = struct{}{}
+		}
+	}
+	contains := func(tag string) bool {
+		if len(allowed) == 0 {
+			return true
+		}
+		_, ok := allowed[tag]
+		return ok
+	}
+	usable := func(up *Upstream) bool {
+		return up != nil && up.stats.Usable && !up.dialFailUntil.After(now)
+	}
+	if len(allowed) == 1 {
+		for _, tag := range orderedTags {
+			up := m.upstreams[tag]
+			if up == nil {
+				return nil, fmt.Errorf("upstream %q is unavailable", tag)
+			}
+			if up.dialFailUntil.After(now) {
+				return nil, fmt.Errorf("upstream %q is temporarily unavailable", tag)
+			}
+			return up, nil
+		}
+	}
+
+	if m.mode == ModeManual {
+		up, ok := m.upstreams[m.manualTag]
+		if !ok {
+			return nil, errors.New("manual upstream not found")
+		}
+		if contains(m.manualTag) {
+			if up.dialFailUntil.After(now) {
+				return nil, errors.New("manual upstream temporarily unavailable")
+			}
+			return up, nil
+		}
+		// A global manual selection outside this route must not escape the
+		// route boundary. Fall through to the best usable member instead.
+	}
+	if m.activeTag != "" && contains(m.activeTag) {
+		if up := m.upstreams[m.activeTag]; up != nil && !up.dialFailUntil.After(now) {
+			return up, nil
+		}
+	}
+	bestTag := ""
+	bestScore := -1.0
+	for _, tag := range orderedTags {
+		up := m.upstreams[tag]
+		if !usable(up) {
+			continue
+		}
+		if bestTag == "" || up.stats.Score > bestScore+scoreEpsilon {
+			bestTag, bestScore = tag, up.stats.Score
+		}
+	}
+	if len(allowed) == 0 {
+		bestTag, _ = m.selectBestLocked("")
+	}
+	if bestTag == "" {
+		return nil, errors.New("no usable upstream in route")
+	}
+	return m.upstreams[bestTag], nil
 }
 
 func (m *UpstreamManager) UpdateReachability(tag string, reachable bool) UpstreamStats {
