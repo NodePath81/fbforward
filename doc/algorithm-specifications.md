@@ -883,3 +883,9 @@ Server expires idle sessions after timeout period (default: 60s since last activ
 | Upstream selection | [internal/upstream/upstream.go](../internal/upstream/upstream.go) | [4.7](configuration-reference.md#47-scoring-section), [4.8](configuration-reference.md#48-switching-section) | [3.1.1](user-guide-fbforward.md#311-overview) |
 | Bandwidth measurement | [bwprobe/internal/engine/](../bwprobe/internal/engine/) | [4.6](configuration-reference.md#46-measurement-section) | [3.2](user-guide-bwprobe.md) |
 | RPC protocol | [bwprobe/internal/rpc/](../bwprobe/internal/rpc/) | — | [3.2.1](user-guide-bwprobe.md#321-overview) |
+# Historical algorithm reference
+
+This document describes the pre-Phase-10 scoring implementation. It is kept
+for migration and audit history only. Current fbforward uses the unified
+health/RTT model documented in `configuration-reference.md`; none of the
+scoring, bias, weight, or protocol-blend settings below are accepted.

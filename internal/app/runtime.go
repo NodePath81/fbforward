@@ -109,7 +109,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	rng := rand.New(rand.NewSource(seed))
 	manager := upstream.NewUpstreamManager(upstreams, rng, util.ComponentLogger(logger, util.CompUpstream))
 	manager.SetSwitching(cfg.Switching)
-	manager.SetMeasurementConfig(cfg.Measurement)
+	manager.SetHealthConfig(cfg.Health)
 
 	rt := &Runtime{
 		cfg:          cfg,
@@ -124,6 +124,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		flowContext:  flowContextRegistry,
 		picker:       newUpstreamPicker(manager, cfg.Routes),
 		upstreams:    upstreams,
+	}
+	if picker, ok := rt.picker.(*upstreamPicker); ok {
+		picker.metrics = metricSet
 	}
 	if cfg.GeoIP.Enabled {
 		geoMgr, err := geoip.NewManager(cfg.GeoIP, logger)
@@ -346,7 +349,7 @@ func (r *Runtime) Stop() {
 }
 
 func (r *Runtime) startProbes() {
-	for _, up := range r.upstreams {
+	for _, up := range r.measurementUpstreams() {
 		r.wg.Add(1)
 		go func(u *upstream.Upstream) {
 			defer r.wg.Done()
@@ -356,6 +359,10 @@ func (r *Runtime) startProbes() {
 }
 
 func (r *Runtime) startMeasurement() {
+	measurementUpstreams := r.measurementUpstreams()
+	if len(measurementUpstreams) == 0 {
+		return
+	}
 	tcpCfg := r.cfg.Measurement.Protocols.TCP
 	udpCfg := r.cfg.Measurement.Protocols.UDP
 
@@ -376,12 +383,12 @@ func (r *Runtime) startMeasurement() {
 		MaxInterval:      r.cfg.Measurement.Schedule.Interval.Max.Duration(),
 		InterUpstreamGap: r.cfg.Measurement.Schedule.UpstreamGap.Duration(),
 		Protocols:        protocols,
-	}, r.upstreams, nil)
+	}, measurementUpstreams, nil)
 	if r.control != nil {
 		r.control.SetScheduler(scheduler)
 	}
 
-	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Scoring, r.manager, r.metrics, scheduler, measureLogger)
+	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Health, r.manager, r.metrics, scheduler, measureLogger)
 	r.collector.OnTestComplete = func(upstream, protocol string, startTime time.Time, duration time.Duration, success bool, result *measure.TestResultMetrics, errMsg string) {
 		if r.status == nil {
 			return
@@ -395,9 +402,6 @@ func (r *Runtime) startMeasurement() {
 		}
 		if result != nil {
 			payload.RTTMs = result.RTTMs
-			payload.JitterMs = result.JitterMs
-			payload.LossRate = result.LossRate
-			payload.RetransRate = result.RetransRate
 		}
 		if !success && errMsg != "" {
 			payload.Error = errMsg
@@ -416,7 +420,7 @@ func (r *Runtime) startMeasurement() {
 }
 
 func (r *Runtime) runFastStart() {
-	if !util.BoolValue(r.cfg.Measurement.FastStart.Enabled, true) {
+	if !util.BoolValue(r.cfg.Measurement.FastStart.Enabled, true) || len(r.measurementUpstreams()) == 0 {
 		return
 	}
 	timeout := r.cfg.Measurement.FastStart.Timeout.Duration()
@@ -424,11 +428,10 @@ func (r *Runtime) runFastStart() {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	scores := make(map[string]float64)
 	rtts := make(map[string]float64)
 	var mu sync.Mutex
 
-	for _, up := range r.upstreams {
+	for _, up := range r.measurementUpstreams() {
 		wg.Add(1)
 		go func(u *upstream.Upstream) {
 			defer wg.Done()
@@ -441,16 +444,18 @@ func (r *Runtime) runFastStart() {
 				port = 9876
 			}
 			rtt, reachable := measure.FastStartProbe(ctx, host, port, timeout)
-			score := measure.FastStartScore(rtt, reachable, u.Priority)
 			mu.Lock()
-			scores[u.Tag] = score
 			rtts[u.Tag] = rtt
 			mu.Unlock()
+			if reachable {
+				r.manager.UpdateMeasurement(u.Tag, &upstream.MeasurementResult{RTTMs: rtt, Timestamp: time.Now(), Network: "tcp"}, r.cfg.Health)
+			} else {
+				r.manager.RecordProbeFailure(u.Tag, "tcp", time.Now())
+			}
 		}(up)
 	}
 	wg.Wait()
 
-	r.manager.SelectByFastStart(scores)
 	active := r.manager.ActiveTag()
 	if active != "" {
 		util.Event(util.ComponentLogger(r.logger, util.CompUpstream), slog.LevelInfo, "upstream.fast_start_selected",
@@ -458,7 +463,28 @@ func (r *Runtime) runFastStart() {
 			"measure.rtt_ms", rtts[active],
 		)
 	}
-	r.manager.StartWarmup(r.cfg.Measurement.FastStart.WarmupDuration.Duration())
+}
+
+func (r *Runtime) measurementUpstreams() []*upstream.Upstream {
+	needed := make(map[string]struct{})
+	for _, route := range r.cfg.Routes {
+		if route.Strategy != "adaptive" {
+			continue
+		}
+		for _, tag := range route.Upstreams {
+			needed[tag] = struct{}{}
+		}
+	}
+	if len(needed) == 0 {
+		return nil
+	}
+	result := make([]*upstream.Upstream, 0, len(needed))
+	for _, up := range r.upstreams {
+		if _, ok := needed[up.Tag]; ok {
+			result = append(result, up)
+		}
+	}
+	return result
 }
 
 func (r *Runtime) startListeners() error {
@@ -560,7 +586,6 @@ func resolveUpstreams(ctx context.Context, cfg config.Config, res *resolver.Reso
 			MeasureHost: item.Measurement.Host,
 			MeasurePort: item.Measurement.Port,
 			Priority:    item.Priority,
-			Bias:        item.Bias,
 			IPs:         ips,
 		}
 		up.SetActiveIP(ips[0])

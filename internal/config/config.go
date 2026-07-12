@@ -18,45 +18,27 @@ const (
 	defaultReachabilityWindowSize = 5
 
 	defaultMeasurementStartupDelay          = 10 * time.Second
-	defaultMeasurementStaleThreshold        = 60 * time.Minute
 	defaultMeasurementFallbackToICMPOnStale = true
 	defaultMeasurementScheduleMinInterval   = 15 * time.Minute
 	defaultMeasurementScheduleMaxInterval   = 45 * time.Minute
 	defaultMeasurementScheduleUpstreamGap   = 5 * time.Second
 	defaultFastStartEnabled                 = true
 	defaultFastStartTimeout                 = 500 * time.Millisecond
-	defaultWarmupDuration                   = 15 * time.Second
 
 	defaultMeasurementPingCount    = 5
-	defaultMeasurementRetransmit   = "500kb"
-	defaultMeasurementLossPackets  = 64
-	defaultMeasurementPacketSize   = "1200"
 	defaultMeasurementPerSample    = 10 * time.Second
 	defaultMeasurementPerCycle     = 30 * time.Second
 	defaultMeasurementTCPEnabled   = true
 	defaultMeasurementUDPEnabled   = true
 	defaultMeasurementSecurityMode = "off"
 
-	defaultEMAAlpha          = 0.2
-	defaultRefRTTMs          = 50
-	defaultRefJitterMs       = 10
-	defaultRefRetransRate    = 0.01
-	defaultRefLossRate       = 0.01
-	defaultWeightTCPRTT      = 0.25
-	defaultWeightTCPJitter   = 0.10
-	defaultWeightTCPRetrans  = 0.25
-	defaultWeightUDPRTT      = 0.15
-	defaultWeightUDPJitter   = 0.30
-	defaultWeightUDPLoss     = 0.15
-	defaultProtocolWeightTCP = 0.5
-	defaultProtocolWeightUDP = 0.5
-	defaultBiasKappa         = 0.693147
-
 	defaultSwitchConfirmDuration = 15 * time.Second
-	defaultSwitchScoreDelta      = 5.0
 	defaultSwitchMinHold         = 30 * time.Second
-	defaultFailureLoss           = 0.2
-	defaultFailureRetrans        = 0.2
+	defaultLatencyImprovement    = 10 * time.Millisecond
+	defaultHealthAlpha           = 0.25
+	defaultHealthFailure         = 3
+	defaultHealthRecovery        = 2
+	defaultHealthStale           = 60 * time.Second
 
 	defaultForwardingMaxTCPConnections = 50
 	defaultForwardingMaxUDPMappings    = 500
@@ -135,7 +117,7 @@ type Config struct {
 	DNS                DNSConfig          `yaml:"dns"`
 	Reachability       ReachabilityConfig `yaml:"reachability"`
 	Measurement        MeasurementConfig  `yaml:"measurement"`
-	Scoring            ScoringConfig      `yaml:"scoring"`
+	Health             HealthConfig       `yaml:"health"`
 	Switching          SwitchingConfig    `yaml:"switching"`
 	Control            ControlConfig      `yaml:"control"`
 	Notify             NotifyConfig       `yaml:"notify"`
@@ -204,7 +186,6 @@ type UpstreamConfig struct {
 	Destination DestinationConfig         `yaml:"destination"`
 	Measurement UpstreamMeasurementConfig `yaml:"measurement"`
 	Priority    float64                   `yaml:"priority"`
-	Bias        float64                   `yaml:"bias"`
 	Shaping     *ShapingLimitConfig       `yaml:"shaping"`
 }
 
@@ -230,7 +211,6 @@ type ReachabilityConfig struct {
 
 type MeasurementConfig struct {
 	StartupDelay          Duration                   `yaml:"startup_delay"`
-	StaleThreshold        Duration                   `yaml:"stale_threshold"`
 	FallbackToICMPOnStale *bool                      `yaml:"fallback_to_icmp_on_stale"`
 	Schedule              MeasurementScheduleConfig  `yaml:"schedule"`
 	FastStart             MeasurementFastStartConfig `yaml:"fast_start"`
@@ -257,9 +237,8 @@ type MeasurementIntervalConfig struct {
 }
 
 type MeasurementFastStartConfig struct {
-	Enabled        *bool    `yaml:"enabled"`
-	Timeout        Duration `yaml:"timeout"`
-	WarmupDuration Duration `yaml:"warmup_duration"`
+	Enabled *bool    `yaml:"enabled"`
+	Timeout Duration `yaml:"timeout"`
 }
 
 type MeasurementProtocolsConfig struct {
@@ -268,12 +247,9 @@ type MeasurementProtocolsConfig struct {
 }
 
 type MeasurementProtocolConfig struct {
-	Enabled         *bool                    `yaml:"enabled"`
-	PingCount       int                      `yaml:"ping_count"`
-	RetransmitBytes string                   `yaml:"retransmit_bytes"`
-	LossPackets     int                      `yaml:"loss_packets"`
-	PacketSize      string                   `yaml:"packet_size"`
-	Timeout         MeasurementTimeoutConfig `yaml:"timeout"`
+	Enabled   *bool                    `yaml:"enabled"`
+	PingCount int                      `yaml:"ping_count"`
+	Timeout   MeasurementTimeoutConfig `yaml:"timeout"`
 }
 
 type MeasurementTimeoutConfig struct {
@@ -281,75 +257,18 @@ type MeasurementTimeoutConfig struct {
 	PerCycle  Duration `yaml:"per_cycle"`
 }
 
-type ScoringConfig struct {
-	Smoothing     ScoringSmoothingConfig `yaml:"smoothing"`
-	Reference     ScoringReferenceConfig `yaml:"reference"`
-	Weights       ScoringWeightsConfig   `yaml:"weights"`
-	BiasTransform BiasTransformConfig    `yaml:"bias_transform"`
-}
-
-type ScoringSmoothingConfig struct {
-	Alpha float64 `yaml:"alpha"`
-}
-
-type ScoringReferenceConfig struct {
-	TCP ProtocolReferenceConfig `yaml:"tcp"`
-	UDP ProtocolReferenceConfig `yaml:"udp"`
-}
-
-type ProtocolReferenceConfig struct {
-	Latency        ReferenceLatencyConfig `yaml:"latency"`
-	RetransmitRate float64                `yaml:"retransmit_rate"`
-	LossRate       float64                `yaml:"loss_rate"`
-}
-
-type ReferenceLatencyConfig struct {
-	RTT    float64 `yaml:"rtt"`
-	Jitter float64 `yaml:"jitter"`
-}
-
-type ScoringWeightsConfig struct {
-	TCP           WeightsTCPConfig    `yaml:"tcp"`
-	UDP           WeightsUDPConfig    `yaml:"udp"`
-	ProtocolBlend ProtocolBlendConfig `yaml:"protocol_blend"`
-}
-
-type WeightsTCPConfig struct {
-	RTT            float64 `yaml:"rtt"`
-	Jitter         float64 `yaml:"jitter"`
-	RetransmitRate float64 `yaml:"retransmit_rate"`
-}
-
-type WeightsUDPConfig struct {
-	RTT      float64 `yaml:"rtt"`
-	Jitter   float64 `yaml:"jitter"`
-	LossRate float64 `yaml:"loss_rate"`
-}
-
-type ProtocolBlendConfig struct {
-	TCPWeight float64 `yaml:"tcp_weight"`
-	UDPWeight float64 `yaml:"udp_weight"`
-}
-
-type BiasTransformConfig struct {
-	Kappa float64 `yaml:"kappa"`
+type HealthConfig struct {
+	RTTEWMAAlpha      float64  `yaml:"rtt_ewma_alpha"`
+	FailureThreshold  int      `yaml:"failure_threshold"`
+	RecoveryThreshold int      `yaml:"recovery_threshold"`
+	StaleThreshold    Duration `yaml:"stale_threshold"`
 }
 
 type SwitchingConfig struct {
-	Auto                 SwitchingAutoConfig     `yaml:"auto"`
-	Failover             SwitchingFailoverConfig `yaml:"failover"`
-	CloseFlowsOnFailover bool                    `yaml:"close_flows_on_failover"`
-}
-
-type SwitchingAutoConfig struct {
-	ConfirmDuration     Duration `yaml:"confirm_duration"`
-	ScoreDeltaThreshold float64  `yaml:"score_delta_threshold"`
-	MinHoldTime         Duration `yaml:"min_hold_time"`
-}
-
-type SwitchingFailoverConfig struct {
-	LossRateThreshold       float64 `yaml:"loss_rate_threshold"`
-	RetransmitRateThreshold float64 `yaml:"retransmit_rate_threshold"`
+	ConfirmDuration      Duration `yaml:"confirm_duration"`
+	MinHoldTime          Duration `yaml:"min_hold_time"`
+	LatencyImprovement   Duration `yaml:"latency_improvement"`
+	CloseFlowsOnFailover bool     `yaml:"close_flows_on_failover"`
 }
 
 type ControlConfig struct {
@@ -498,7 +417,7 @@ func LoadConfig(path string) (Config, error) {
 	if hasModernTopology(raw) {
 		cfg.topologyMode = "modern"
 	}
-	if err := decodeConfig(raw, &cfg, cfg.topologyMode == "modern"); err != nil {
+	if err := decodeConfig(raw, &cfg, true); err != nil {
 		return Config{}, err
 	}
 	cfg.setDefaults()
@@ -521,11 +440,6 @@ func detectRemovedConfigPaths(raw []byte) []string {
 	collectSpecificRemovedKeys(root, []string{"measurement", "protocols", "tcp"}, []string{"alternate", "chunk_size", "sample_size", "sample_count"}, &removed)
 	collectSpecificRemovedKeys(root, []string{"measurement", "protocols", "udp"}, []string{"chunk_size", "sample_size", "sample_count"}, &removed)
 	collectSpecificRemovedKeys(root, []string{"notify"}, []string{"token_env"}, &removed)
-	collectRemovedTree(root, []string{"scoring", "reference", "tcp", "bandwidth"}, &removed)
-	collectRemovedTree(root, []string{"scoring", "reference", "udp", "bandwidth"}, &removed)
-	collectRemovedTree(root, []string{"scoring", "utilization_penalty"}, &removed)
-	collectSpecificRemovedKeys(root, []string{"scoring", "weights", "tcp"}, []string{"bandwidth_upload", "bandwidth_download"}, &removed)
-	collectSpecificRemovedKeys(root, []string{"scoring", "weights", "udp"}, []string{"bandwidth_upload", "bandwidth_download"}, &removed)
 
 	if len(removed) == 0 {
 		return nil
@@ -637,9 +551,6 @@ func (c *Config) setDefaults() {
 	if c.Measurement.StartupDelay == 0 {
 		c.Measurement.StartupDelay = Duration(defaultMeasurementStartupDelay)
 	}
-	if c.Measurement.StaleThreshold == 0 {
-		c.Measurement.StaleThreshold = Duration(defaultMeasurementStaleThreshold)
-	}
 	if c.Measurement.FallbackToICMPOnStale == nil {
 		val := defaultMeasurementFallbackToICMPOnStale
 		c.Measurement.FallbackToICMPOnStale = &val
@@ -662,9 +573,6 @@ func (c *Config) setDefaults() {
 	if c.Measurement.FastStart.Timeout == 0 {
 		c.Measurement.FastStart.Timeout = Duration(defaultFastStartTimeout)
 	}
-	if c.Measurement.FastStart.WarmupDuration == 0 {
-		c.Measurement.FastStart.WarmupDuration = Duration(defaultWarmupDuration)
-	}
 	if strings.TrimSpace(c.Measurement.Security.Mode) == "" {
 		c.Measurement.Security.Mode = defaultMeasurementSecurityMode
 	}
@@ -672,65 +580,26 @@ func (c *Config) setDefaults() {
 	setProtocolDefaults(&c.Measurement.Protocols.TCP, true)
 	setProtocolDefaults(&c.Measurement.Protocols.UDP, false)
 
-	if c.Scoring.Smoothing.Alpha == 0 {
-		c.Scoring.Smoothing.Alpha = defaultEMAAlpha
+	if c.Health.RTTEWMAAlpha == 0 {
+		c.Health.RTTEWMAAlpha = defaultHealthAlpha
 	}
-	if c.Scoring.Reference.TCP.Latency.RTT == 0 {
-		c.Scoring.Reference.TCP.Latency.RTT = defaultRefRTTMs
+	if c.Health.FailureThreshold == 0 {
+		c.Health.FailureThreshold = defaultHealthFailure
 	}
-	if c.Scoring.Reference.TCP.Latency.Jitter == 0 {
-		c.Scoring.Reference.TCP.Latency.Jitter = defaultRefJitterMs
+	if c.Health.RecoveryThreshold == 0 {
+		c.Health.RecoveryThreshold = defaultHealthRecovery
 	}
-	if c.Scoring.Reference.TCP.RetransmitRate == 0 {
-		c.Scoring.Reference.TCP.RetransmitRate = defaultRefRetransRate
+	if c.Health.StaleThreshold == 0 {
+		c.Health.StaleThreshold = Duration(defaultHealthStale)
 	}
-	if c.Scoring.Reference.UDP.Latency.RTT == 0 {
-		c.Scoring.Reference.UDP.Latency.RTT = defaultRefRTTMs
+	if c.Switching.ConfirmDuration == 0 {
+		c.Switching.ConfirmDuration = Duration(defaultSwitchConfirmDuration)
 	}
-	if c.Scoring.Reference.UDP.Latency.Jitter == 0 {
-		c.Scoring.Reference.UDP.Latency.Jitter = defaultRefJitterMs
+	if c.Switching.MinHoldTime == 0 {
+		c.Switching.MinHoldTime = Duration(defaultSwitchMinHold)
 	}
-	if c.Scoring.Reference.UDP.LossRate == 0 {
-		c.Scoring.Reference.UDP.LossRate = defaultRefLossRate
-	}
-
-	if weightsTCPZero(c.Scoring.Weights.TCP) {
-		c.Scoring.Weights.TCP = WeightsTCPConfig{
-			RTT:            defaultWeightTCPRTT,
-			Jitter:         defaultWeightTCPJitter,
-			RetransmitRate: defaultWeightTCPRetrans,
-		}
-	}
-	if weightsUDPZero(c.Scoring.Weights.UDP) {
-		c.Scoring.Weights.UDP = WeightsUDPConfig{
-			RTT:      defaultWeightUDPRTT,
-			Jitter:   defaultWeightUDPJitter,
-			LossRate: defaultWeightUDPLoss,
-		}
-	}
-	if c.Scoring.Weights.ProtocolBlend.TCPWeight == 0 && c.Scoring.Weights.ProtocolBlend.UDPWeight == 0 {
-		c.Scoring.Weights.ProtocolBlend.TCPWeight = defaultProtocolWeightTCP
-		c.Scoring.Weights.ProtocolBlend.UDPWeight = defaultProtocolWeightUDP
-	}
-
-	if c.Scoring.BiasTransform.Kappa == 0 {
-		c.Scoring.BiasTransform.Kappa = defaultBiasKappa
-	}
-
-	if c.Switching.Auto.ConfirmDuration == 0 {
-		c.Switching.Auto.ConfirmDuration = Duration(defaultSwitchConfirmDuration)
-	}
-	if c.Switching.Auto.ScoreDeltaThreshold == 0 {
-		c.Switching.Auto.ScoreDeltaThreshold = defaultSwitchScoreDelta
-	}
-	if c.Switching.Auto.MinHoldTime == 0 {
-		c.Switching.Auto.MinHoldTime = Duration(defaultSwitchMinHold)
-	}
-	if c.Switching.Failover.LossRateThreshold == 0 {
-		c.Switching.Failover.LossRateThreshold = defaultFailureLoss
-	}
-	if c.Switching.Failover.RetransmitRateThreshold == 0 {
-		c.Switching.Failover.RetransmitRateThreshold = defaultFailureRetrans
+	if c.Switching.LatencyImprovement == 0 {
+		c.Switching.LatencyImprovement = Duration(defaultLatencyImprovement)
 	}
 
 	if c.Control.BindAddr == "" {
@@ -814,18 +683,6 @@ func (c *Config) setDefaults() {
 	}
 }
 
-func weightsTCPZero(cfg WeightsTCPConfig) bool {
-	return cfg.RTT == 0 &&
-		cfg.Jitter == 0 &&
-		cfg.RetransmitRate == 0
-}
-
-func weightsUDPZero(cfg WeightsUDPConfig) bool {
-	return cfg.RTT == 0 &&
-		cfg.Jitter == 0 &&
-		cfg.LossRate == 0
-}
-
 func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
 	if cfg.Enabled == nil {
 		val := defaultMeasurementTCPEnabled
@@ -836,18 +693,6 @@ func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
 	}
 	if cfg.PingCount == 0 {
 		cfg.PingCount = defaultMeasurementPingCount
-	}
-	if isTCP {
-		if cfg.RetransmitBytes == "" {
-			cfg.RetransmitBytes = defaultMeasurementRetransmit
-		}
-	} else {
-		if cfg.LossPackets == 0 {
-			cfg.LossPackets = defaultMeasurementLossPackets
-		}
-		if cfg.PacketSize == "" {
-			cfg.PacketSize = defaultMeasurementPacketSize
-		}
 	}
 	if cfg.Timeout.PerSample == 0 {
 		cfg.Timeout.PerSample = Duration(defaultMeasurementPerSample)
@@ -899,9 +744,6 @@ func (c *Config) validate() error {
 		}
 		if up.Priority < 0 {
 			return fmt.Errorf("upstreams[%s].priority must be >= 0", up.Tag)
-		}
-		if up.Bias < -1 || up.Bias > 1 {
-			return fmt.Errorf("upstreams[%s].bias must be in [-1,1]", up.Tag)
 		}
 		if up.Shaping != nil && !c.Shaping.Enabled {
 			return fmt.Errorf("upstreams[%s].shaping requires shaping.enabled", up.Tag)
@@ -1118,14 +960,8 @@ func (c *Config) validate() error {
 	if c.Measurement.StartupDelay.Duration() < 0 {
 		return errors.New("measurement.startup_delay must be >= 0")
 	}
-	if c.Measurement.StaleThreshold.Duration() <= 0 {
-		return errors.New("measurement.stale_threshold must be > 0")
-	}
 	if c.Measurement.FastStart.Timeout.Duration() <= 0 {
 		return errors.New("measurement.fast_start.timeout must be > 0")
-	}
-	if c.Measurement.FastStart.WarmupDuration.Duration() < 0 {
-		return errors.New("measurement.fast_start.warmup_duration must be >= 0")
 	}
 
 	if c.Measurement.Schedule.Interval.Min.Duration() <= 0 {
@@ -1156,41 +992,26 @@ func (c *Config) validate() error {
 		return err
 	}
 
-	if c.Scoring.Smoothing.Alpha <= 0 || c.Scoring.Smoothing.Alpha > 1 {
-		return errors.New("scoring.smoothing.alpha must be in (0,1]")
+	if c.Health.RTTEWMAAlpha <= 0 || c.Health.RTTEWMAAlpha > 1 {
+		return errors.New("health.rtt_ewma_alpha must be in (0,1]")
 	}
-	if err := validateReferenceConfig("tcp", c.Scoring.Reference.TCP); err != nil {
-		return err
+	if c.Health.FailureThreshold <= 0 {
+		return errors.New("health.failure_threshold must be > 0")
 	}
-	if err := validateReferenceConfig("udp", c.Scoring.Reference.UDP); err != nil {
-		return err
+	if c.Health.RecoveryThreshold <= 0 {
+		return errors.New("health.recovery_threshold must be > 0")
 	}
-
-	if err := normalizeTCPWeights(&c.Scoring.Weights.TCP); err != nil {
-		return err
+	if c.Health.StaleThreshold.Duration() <= 0 {
+		return errors.New("health.stale_threshold must be > 0")
 	}
-	if err := normalizeUDPWeights(&c.Scoring.Weights.UDP); err != nil {
-		return err
+	if c.Switching.ConfirmDuration.Duration() < 0 {
+		return errors.New("switching.confirm_duration must be >= 0")
 	}
-	if err := normalizeProtocolBlend(&c.Scoring.Weights.ProtocolBlend); err != nil {
-		return err
+	if c.Switching.MinHoldTime.Duration() < 0 {
+		return errors.New("switching.min_hold_time must be >= 0")
 	}
-
-	if c.Scoring.BiasTransform.Kappa <= 0 {
-		return errors.New("scoring.bias_transform.kappa must be > 0")
-	}
-
-	if c.Switching.Auto.ConfirmDuration.Duration() < 0 {
-		return errors.New("switching.auto.confirm_duration must be >= 0")
-	}
-	if c.Switching.Auto.MinHoldTime.Duration() < 0 {
-		return errors.New("switching.auto.min_hold_time must be >= 0")
-	}
-	if c.Switching.Failover.LossRateThreshold <= 0 || c.Switching.Failover.LossRateThreshold > 1 {
-		return errors.New("switching.failover.loss_rate_threshold must be in (0,1]")
-	}
-	if c.Switching.Failover.RetransmitRateThreshold <= 0 || c.Switching.Failover.RetransmitRateThreshold > 1 {
-		return errors.New("switching.failover.retransmit_rate_threshold must be in (0,1]")
+	if c.Switching.LatencyImprovement.Duration() < 0 {
+		return errors.New("switching.latency_improvement must be >= 0")
 	}
 
 	c.DNS.Strategy = strings.ToLower(strings.TrimSpace(c.DNS.Strategy))
@@ -1447,49 +1268,11 @@ func validateProtocolConfig(proto string, cfg MeasurementProtocolConfig, enabled
 	if cfg.PingCount <= 0 {
 		return fmt.Errorf("measurement.protocols.%s.ping_count must be > 0", proto)
 	}
-	switch proto {
-	case "tcp":
-		retransmitBytes, err := ParseSize(cfg.RetransmitBytes)
-		if err != nil {
-			return fmt.Errorf("measurement.protocols.%s.retransmit_bytes: %w", proto, err)
-		}
-		if retransmitBytes == 0 {
-			return fmt.Errorf("measurement.protocols.%s.retransmit_bytes must be > 0", proto)
-		}
-	case "udp":
-		if cfg.LossPackets <= 0 {
-			return fmt.Errorf("measurement.protocols.%s.loss_packets must be > 0", proto)
-		}
-		packetSize, err := ParseSize(cfg.PacketSize)
-		if err != nil {
-			return fmt.Errorf("measurement.protocols.%s.packet_size: %w", proto, err)
-		}
-		if packetSize == 0 {
-			return fmt.Errorf("measurement.protocols.%s.packet_size must be > 0", proto)
-		}
-	}
 	if cfg.Timeout.PerSample.Duration() <= 0 {
 		return fmt.Errorf("measurement.protocols.%s.timeout.per_sample must be > 0", proto)
 	}
 	if cfg.Timeout.PerCycle.Duration() <= 0 {
 		return fmt.Errorf("measurement.protocols.%s.timeout.per_cycle must be > 0", proto)
-	}
-	return nil
-}
-
-func validateReferenceConfig(proto string, cfg ProtocolReferenceConfig) error {
-	if cfg.Latency.RTT <= 0 || cfg.Latency.Jitter <= 0 {
-		return fmt.Errorf("scoring.reference.%s.latency.rtt/jitter must be > 0", proto)
-	}
-	if proto == "tcp" {
-		if cfg.RetransmitRate <= 0 || cfg.RetransmitRate > 1 {
-			return fmt.Errorf("scoring.reference.%s.retransmit_rate must be in (0,1]", proto)
-		}
-	}
-	if proto == "udp" {
-		if cfg.LossRate <= 0 || cfg.LossRate > 1 {
-			return fmt.Errorf("scoring.reference.%s.loss_rate must be in (0,1]", proto)
-		}
 	}
 	return nil
 }
@@ -1519,100 +1302,11 @@ func validateShapingLimits(cfg *ShapingLimitConfig, path string) error {
 	return nil
 }
 
-func normalizeTCPWeights(cfg *WeightsTCPConfig) error {
-	sum := cfg.RTT + cfg.Jitter + cfg.RetransmitRate
-	if sum <= 0 {
-		return errors.New("scoring.weights.tcp must sum to > 0")
-	}
-	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
-		cfg.RTT /= sum
-		cfg.Jitter /= sum
-		cfg.RetransmitRate /= sum
-	}
-	return nil
-}
-
-func normalizeUDPWeights(cfg *WeightsUDPConfig) error {
-	sum := cfg.RTT + cfg.Jitter + cfg.LossRate
-	if sum <= 0 {
-		return errors.New("scoring.weights.udp must sum to > 0")
-	}
-	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
-		cfg.RTT /= sum
-		cfg.Jitter /= sum
-		cfg.LossRate /= sum
-	}
-	return nil
-}
-
-func normalizeProtocolBlend(cfg *ProtocolBlendConfig) error {
-	sum := cfg.TCPWeight + cfg.UDPWeight
-	if sum <= 0 {
-		return errors.New("scoring.weights.protocol_blend must sum to > 0")
-	}
-	if diff := sum - 1; diff > 0.001 || diff < -0.001 {
-		cfg.TCPWeight /= sum
-		cfg.UDPWeight /= sum
-	}
-	return nil
-}
-
 func DefaultSwitchingConfig() SwitchingConfig {
 	return SwitchingConfig{
-		Auto: SwitchingAutoConfig{
-			ConfirmDuration:     Duration(defaultSwitchConfirmDuration),
-			ScoreDeltaThreshold: defaultSwitchScoreDelta,
-			MinHoldTime:         Duration(defaultSwitchMinHold),
-		},
-		Failover: SwitchingFailoverConfig{
-			LossRateThreshold:       defaultFailureLoss,
-			RetransmitRateThreshold: defaultFailureRetrans,
-		},
+		ConfirmDuration:      Duration(defaultSwitchConfirmDuration),
+		MinHoldTime:          Duration(defaultSwitchMinHold),
+		LatencyImprovement:   Duration(defaultLatencyImprovement),
 		CloseFlowsOnFailover: false,
-	}
-}
-
-// DefaultScoringConfig returns a ScoringConfig populated with the built-in defaults.
-// This is primarily used by tests to construct a valid scoring configuration without parsing YAML.
-func DefaultScoringConfig() ScoringConfig {
-	return ScoringConfig{
-		Smoothing: ScoringSmoothingConfig{
-			Alpha: defaultEMAAlpha,
-		},
-		Reference: ScoringReferenceConfig{
-			TCP: ProtocolReferenceConfig{
-				Latency: ReferenceLatencyConfig{
-					RTT:    defaultRefRTTMs,
-					Jitter: defaultRefJitterMs,
-				},
-				RetransmitRate: defaultRefRetransRate,
-			},
-			UDP: ProtocolReferenceConfig{
-				Latency: ReferenceLatencyConfig{
-					RTT:    defaultRefRTTMs,
-					Jitter: defaultRefJitterMs,
-				},
-				LossRate: defaultRefLossRate,
-			},
-		},
-		Weights: ScoringWeightsConfig{
-			TCP: WeightsTCPConfig{
-				RTT:            defaultWeightTCPRTT,
-				Jitter:         defaultWeightTCPJitter,
-				RetransmitRate: defaultWeightTCPRetrans,
-			},
-			UDP: WeightsUDPConfig{
-				RTT:      defaultWeightUDPRTT,
-				Jitter:   defaultWeightUDPJitter,
-				LossRate: defaultWeightUDPLoss,
-			},
-			ProtocolBlend: ProtocolBlendConfig{
-				TCPWeight: defaultProtocolWeightTCP,
-				UDPWeight: defaultProtocolWeightUDP,
-			},
-		},
-		BiasTransform: BiasTransformConfig{
-			Kappa: defaultBiasKappa,
-		},
 	}
 }

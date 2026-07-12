@@ -83,6 +83,32 @@ func TestModernTopologyRejectsMissingReferencesAndDuplicates(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsRemovedScoringSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := `listeners:
+  - name: web
+    bind: 127.0.0.1:8080
+    protocol: tcp
+    route: web
+routes:
+  - name: web
+    strategy: static
+    upstreams: [primary]
+upstreams:
+  - tag: primary
+    destination: {host: 127.0.0.1}
+    measurement: {port: 9876}
+scoring: {}
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected removed scoring section to be rejected")
+	}
+}
+
 func TestLegacyTopologyMigrationCreatesRoutesAndWarning(t *testing.T) {
 	cfg := testConfig()
 	cfg.configLoaded = true

@@ -15,7 +15,7 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `cmd/fbforward/` - Main entry point, CLI flag parsing, signal handling
 - `internal/app/` - Application lifecycle (Supervisor, Runtime)
 - `internal/config/` - Configuration loading, validation, custom unmarshaling
-- `internal/upstream/` - Upstream state, scoring, switching logic
+- `internal/upstream/` - Upstream state, health, route selection, and switching logic
 - `internal/forwarding/` - TCP/UDP listeners and proxy logic
 - `internal/control/` - HTTP server, RPC handlers, WebSocket status stream
 - `internal/metrics/` - Prometheus metrics aggregation
@@ -878,3 +878,8 @@ If PR adds new Go or npm dependencies:
 2. Prefer standard library over third-party when possible
 3. Check license compatibility (prefer MIT, BSD, Apache 2.0)
 4. Run `go mod tidy` and commit `go.mod` and `go.sum` changes
+# Current health model
+
+The active implementation uses a unified health state (`unknown`, `healthy`,
+`stale`, `down`) and RTT-based route-local selection. Older scoring-oriented
+sections are historical migration notes.

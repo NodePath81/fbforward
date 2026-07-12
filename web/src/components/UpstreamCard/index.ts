@@ -1,11 +1,9 @@
 import type { UpstreamSnapshot, UpstreamMetrics } from '../../types';
 import { createEl, clearChildren } from '../../utils/dom';
-import { formatMs, formatPercent, formatScore } from '../../utils/format';
+import { formatMs } from '../../utils/format';
 
 export interface BestFlags {
   bestRtt: boolean;
-  bestLoss: boolean;
-  bestScore: boolean;
 }
 
 export interface UpstreamCardHandle {
@@ -31,23 +29,15 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
   header.appendChild(title);
   header.appendChild(badges);
 
-  const scoreTrack = createEl('div', 'score-track');
-  const scoreFill = createEl('div', 'score-fill');
-  scoreTrack.appendChild(scoreFill);
-
   const list = createEl('div', 'metric-list');
   const rows = {
     rtt: createMetricRow('RTT'),
-    jitter: createMetricRow('Jitter'),
-    retrans: createMetricRow('Retrans'),
-    loss: createMetricRow('Loss'),
-    score: createMetricRow('Score'),
-    scoreTcp: createMetricRow('Score TCP'),
-    scoreUdp: createMetricRow('Score UDP'),
+    health: createMetricRow('Health'),
     reachable: createMetricRow('Reachable')
   };
 
-  list.appendChild(rows.score.row);
+  list.appendChild(rows.health.row);
+  list.appendChild(rows.rtt.row);
   list.appendChild(rows.reachable.row);
 
   const actions = createEl('div', 'upstream-actions');
@@ -55,7 +45,6 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
   actions.appendChild(detailsBtn);
 
   card.appendChild(header);
-  card.appendChild(scoreTrack);
   card.appendChild(list);
   card.appendChild(actions);
 
@@ -70,15 +59,9 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
 
   const update = (metrics: UpstreamMetrics, flags: BestFlags) => {
     rows.rtt.value.textContent = formatMs(metrics.rtt);
-    rows.jitter.value.textContent = formatMs(metrics.jitter);
-    rows.retrans.value.textContent = formatPercent(metrics.retransRate, 2);
-    rows.loss.value.textContent = formatPercent(metrics.loss, 2);
-    rows.score.value.textContent = formatScore(metrics.score);
-    rows.scoreTcp.value.textContent = formatScore(metrics.scoreTcp);
-    rows.scoreUdp.value.textContent = formatScore(metrics.scoreUdp);
+    rows.health.value.textContent = metrics.healthState;
     rows.reachable.value.textContent = metrics.reachable ? 'yes' : 'no';
 
-    scoreFill.style.width = `${Math.max(0, Math.min(100, metrics.score))}%`;
     card.classList.toggle('active', metrics.active);
     card.classList.toggle('unusable', metrics.unusable);
 
@@ -89,14 +72,8 @@ export function createUpstreamCard(upstream: UpstreamSnapshot): UpstreamCardHand
     if (metrics.unusable) {
       badges.appendChild(createBadge('unusable', 'unusable'));
     }
-    if (flags.bestScore) {
-      badges.appendChild(createBadge('top score', 'best'));
-    }
     if (flags.bestRtt) {
       badges.appendChild(createBadge('best rtt', 'best'));
-    }
-    if (flags.bestLoss) {
-      badges.appendChild(createBadge('best loss', 'best'));
     }
   };
 
@@ -118,12 +95,7 @@ export function getAllMetrics(metrics: UpstreamMetrics, upstream: UpstreamSnapsh
     host: upstream.host,
     activeIp: upstream.active_ip,
     rtt: metrics.rtt,
-    jitter: metrics.jitter,
-    retrans: metrics.retransRate,
-    loss: metrics.loss,
-    score: metrics.score,
-    scoreTcp: metrics.scoreTcp,
-    scoreUdp: metrics.scoreUdp,
+    health: metrics.healthState,
     reachable: metrics.reachable
   };
 }

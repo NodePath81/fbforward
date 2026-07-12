@@ -15,11 +15,6 @@ export interface TrafficSeriesSnapshot {
   download: Point[];
 }
 
-export interface ScoreSeries {
-  tag: string;
-  points: Point[];
-}
-
 interface SeriesBuffer {
   timestamps: number[];
   values: number[];
@@ -37,7 +32,6 @@ function appendSample(buffer: SeriesBuffer, timestamp: number, value: number, ma
 export class TimeSeriesStore {
   private readonly maxPoints: number;
   private readonly rtt = new Map<string, SeriesBuffer>();
-  private readonly score = new Map<string, SeriesBuffer>();
   private readonly trafficUpload: SeriesBuffer = { timestamps: [], values: [] };
   private readonly trafficDownload: SeriesBuffer = { timestamps: [], values: [] };
 
@@ -78,30 +72,6 @@ export class TimeSeriesStore {
       }
       return a.protocol.localeCompare(b.protocol);
     });
-    return series;
-  }
-
-  pushScore(tag: string, timestamp: number, value: number): void {
-    if (!Number.isFinite(timestamp) || !Number.isFinite(value)) {
-      return;
-    }
-    let buffer = this.score.get(tag);
-    if (!buffer) {
-      buffer = { timestamps: [], values: [] };
-      this.score.set(tag, buffer);
-    }
-    appendSample(buffer, timestamp, value, this.maxPoints);
-  }
-
-  getScoreSeries(): ScoreSeries[] {
-    const series: ScoreSeries[] = [];
-    for (const [tag, buffer] of this.score.entries()) {
-      series.push({
-        tag,
-        points: buffer.timestamps.map((x, index) => ({ x, y: buffer.values[index] }))
-      });
-    }
-    series.sort((a, b) => a.tag.localeCompare(b.tag));
     return series;
   }
 

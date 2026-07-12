@@ -14,18 +14,12 @@ import (
 )
 
 type UpstreamMetrics struct {
-	Reachable   bool
-	RTTMs       float64
-	RTTTcpMs    float64
-	RTTUdpMs    float64
-	JitterMs    float64
-	RetransRate float64
-	LossRate    float64
-	Loss        float64
-	ScoreTCP    float64
-	ScoreUDP    float64
-	Score       float64
-	Unusable    bool
+	HealthState         string
+	Reachable           bool
+	RTTMs               float64
+	Unusable            bool
+	LastSuccess         time.Time
+	ConsecutiveFailures int
 }
 
 type protocolBytes struct {
@@ -36,6 +30,8 @@ type protocolBytes struct {
 type Metrics struct {
 	mu                     sync.Mutex
 	upstreams              map[string]*UpstreamMetrics
+	routeSelected          map[string]string
+	routeSwitches          map[string]uint64
 	mode                   upstream.Mode
 	activeTag              string
 	coordConnected         bool
@@ -128,6 +124,8 @@ func NewMetrics(tags []string) *Metrics {
 	}
 	return &Metrics{
 		upstreams:          upstreams,
+		routeSelected:      make(map[string]string),
+		routeSwitches:      make(map[string]uint64),
 		bytesUpTotal:       bytesUpTotal,
 		bytesDownTotal:     bytesDownTotal,
 		bytesTCP:           bytesTCP,
@@ -229,18 +227,24 @@ func (m *Metrics) SetUpstreamMetrics(tag string, stats upstream.UpstreamStats) {
 	if !ok {
 		return
 	}
+	up.HealthState = string(stats.HealthState)
 	up.Reachable = stats.Reachable
 	up.RTTMs = stats.RTTMs
-	up.RTTTcpMs = stats.RTTTcpMs
-	up.RTTUdpMs = stats.RTTUdpMs
-	up.JitterMs = stats.JitterMs
-	up.RetransRate = stats.RetransRate
-	up.LossRate = stats.LossRate
-	up.Loss = stats.Loss
-	up.ScoreTCP = stats.ScoreTCP
-	up.ScoreUDP = stats.ScoreUDP
-	up.Score = stats.Score
 	up.Unusable = !stats.Usable
+	up.LastSuccess = stats.LastReachable
+	up.ConsecutiveFailures = stats.ConsecutiveFailures
+}
+
+func (m *Metrics) SetRouteSelected(route, tag string) {
+	if route == "" || tag == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if previous := m.routeSelected[route]; previous != tag {
+		m.routeSelected[route] = tag
+		m.routeSwitches[route]++
+	}
 }
 
 func (m *Metrics) GetUpstreamMetrics(tag string) (UpstreamMetrics, bool) {
@@ -460,6 +464,11 @@ func (m *Metrics) Render() string {
 	coordPicksApplied := m.coordPicksApplied
 	coordPicksRejected := m.coordPicksRejected
 	coordReconnects := m.coordReconnects
+	routeSelected := make(map[string]string, len(m.routeSelected))
+	for route, tag := range m.routeSelected {
+		routeSelected[route] = tag
+	}
+	routeSwitches := copyUint64Map(m.routeSwitches)
 	tcpActive := m.tcpActive
 	udpActive := m.udpActive
 	upstreams := make(map[string]UpstreamMetrics, len(m.upstreams))
@@ -497,8 +506,23 @@ func (m *Metrics) Render() string {
 			bytesDownTotal[tag] = counter.Load()
 		}
 	}
-
 	var b strings.Builder
+	b.WriteString("# TYPE fbforward_route_selected_upstream gauge\n")
+	for route, selected := range routeSelected {
+		b.WriteString("fbforward_route_selected_upstream{route=\"")
+		b.WriteString(route)
+		b.WriteString("\",upstream=\"")
+		b.WriteString(selected)
+		b.WriteString("\"} 1\n")
+	}
+	b.WriteString("# TYPE fbforward_route_switches_total counter\n")
+	for route, count := range routeSwitches {
+		b.WriteString("fbforward_route_switches_total{route=\"")
+		b.WriteString(route)
+		b.WriteString("\"} ")
+		b.WriteString(strconv.FormatUint(count, 10))
+		b.WriteString("\n")
+	}
 	b.WriteString("# TYPE fbforward_upstream_rtt_ms gauge\n")
 	for _, tag := range tags {
 		b.WriteString("fbforward_upstream_rtt_ms{upstream=\"")
@@ -507,76 +531,40 @@ func (m *Metrics) Render() string {
 		b.WriteString(formatFloat(upstreams[tag].RTTMs))
 		b.WriteString("\n")
 	}
-	b.WriteString("# TYPE fbforward_upstream_rtt_tcp_ms gauge\n")
+	b.WriteString("# TYPE fbforward_upstream_health_state gauge\n")
 	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_rtt_tcp_ms{upstream=\"")
+		for _, state := range []string{"healthy", "stale", "unknown", "down"} {
+			value := "0"
+			if upstreams[tag].HealthState == state {
+				value = "1"
+			}
+			b.WriteString("fbforward_upstream_health_state{upstream=\"")
+			b.WriteString(tag)
+			b.WriteString("\",state=\"")
+			b.WriteString(state)
+			b.WriteString("\"} ")
+			b.WriteString(value)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("# TYPE fbforward_upstream_consecutive_failures gauge\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_consecutive_failures{upstream=\"")
 		b.WriteString(tag)
 		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].RTTTcpMs))
+		b.WriteString(strconv.Itoa(upstreams[tag].ConsecutiveFailures))
 		b.WriteString("\n")
 	}
-	b.WriteString("# TYPE fbforward_upstream_rtt_udp_ms gauge\n")
+	b.WriteString("# TYPE fbforward_upstream_last_success_timestamp_seconds gauge\n")
 	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_rtt_udp_ms{upstream=\"")
+		lastSuccess := float64(0)
+		if !upstreams[tag].LastSuccess.IsZero() {
+			lastSuccess = float64(upstreams[tag].LastSuccess.UnixNano()) / 1e9
+		}
+		b.WriteString("fbforward_upstream_last_success_timestamp_seconds{upstream=\"")
 		b.WriteString(tag)
 		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].RTTUdpMs))
-		b.WriteString("\n")
-	}
-	b.WriteString("# TYPE fbforward_upstream_jitter_ms gauge\n")
-	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_jitter_ms{upstream=\"")
-		b.WriteString(tag)
-		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].JitterMs))
-		b.WriteString("\n")
-	}
-	b.WriteString("# TYPE fbforward_upstream_retrans_rate gauge\n")
-	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_retrans_rate{upstream=\"")
-		b.WriteString(tag)
-		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].RetransRate))
-		b.WriteString("\n")
-	}
-	b.WriteString("# TYPE fbforward_upstream_loss_rate gauge\n")
-	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_loss_rate{upstream=\"")
-		b.WriteString(tag)
-		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].LossRate))
-		b.WriteString("\n")
-	}
-	b.WriteString("# TYPE fbforward_upstream_loss gauge\n")
-	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_loss{upstream=\"")
-		b.WriteString(tag)
-		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].Loss))
-		b.WriteString("\n")
-	}
-	b.WriteString("# TYPE fbforward_upstream_score_tcp gauge\n")
-	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_score_tcp{upstream=\"")
-		b.WriteString(tag)
-		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].ScoreTCP))
-		b.WriteString("\n")
-	}
-	b.WriteString("# TYPE fbforward_upstream_score_udp gauge\n")
-	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_score_udp{upstream=\"")
-		b.WriteString(tag)
-		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].ScoreUDP))
-		b.WriteString("\n")
-	}
-	b.WriteString("# TYPE fbforward_upstream_score gauge\n")
-	for _, tag := range tags {
-		b.WriteString("fbforward_upstream_score{upstream=\"")
-		b.WriteString(tag)
-		b.WriteString("\"} ")
-		b.WriteString(formatFloat(upstreams[tag].Score))
+		b.WriteString(formatFloat(lastSuccess))
 		b.WriteString("\n")
 	}
 	b.WriteString("# TYPE fbforward_upstream_reachable gauge\n")

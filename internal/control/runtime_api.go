@@ -111,7 +111,6 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 	cfg := c.measurement
 	return map[string]interface{}{
 		"startup_delay":             cfg.StartupDelay.Duration().String(),
-		"stale_threshold":           cfg.StaleThreshold.Duration().String(),
 		"fallback_to_icmp_on_stale": util.BoolValue(cfg.FallbackToICMPOnStale, true),
 		"schedule": map[string]interface{}{
 			"interval": map[string]interface{}{
@@ -121,9 +120,8 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 			"upstream_gap": cfg.Schedule.UpstreamGap.Duration().String(),
 		},
 		"fast_start": map[string]interface{}{
-			"enabled":         util.BoolValue(cfg.FastStart.Enabled, true),
-			"timeout":         cfg.FastStart.Timeout.Duration().String(),
-			"warmup_duration": cfg.FastStart.WarmupDuration.Duration().String(),
+			"enabled": util.BoolValue(cfg.FastStart.Enabled, true),
+			"timeout": cfg.FastStart.Timeout.Duration().String(),
 		},
 		"security": map[string]interface{}{
 			"mode":        cfg.Security.Mode,
@@ -131,19 +129,16 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 		},
 		"protocols": map[string]interface{}{
 			"tcp": map[string]interface{}{
-				"enabled":          util.BoolValue(cfg.Protocols.TCP.Enabled, true),
-				"ping_count":       cfg.Protocols.TCP.PingCount,
-				"retransmit_bytes": cfg.Protocols.TCP.RetransmitBytes,
+				"enabled":    util.BoolValue(cfg.Protocols.TCP.Enabled, true),
+				"ping_count": cfg.Protocols.TCP.PingCount,
 				"timeout": map[string]interface{}{
 					"per_sample": cfg.Protocols.TCP.Timeout.PerSample.Duration().String(),
 					"per_cycle":  cfg.Protocols.TCP.Timeout.PerCycle.Duration().String(),
 				},
 			},
 			"udp": map[string]interface{}{
-				"enabled":      util.BoolValue(cfg.Protocols.UDP.Enabled, true),
-				"ping_count":   cfg.Protocols.UDP.PingCount,
-				"loss_packets": cfg.Protocols.UDP.LossPackets,
-				"packet_size":  cfg.Protocols.UDP.PacketSize,
+				"enabled":    util.BoolValue(cfg.Protocols.UDP.Enabled, true),
+				"ping_count": cfg.Protocols.UDP.PingCount,
 				"timeout": map[string]interface{}{
 					"per_sample": cfg.Protocols.UDP.Timeout.PerSample.Duration().String(),
 					"per_cycle":  cfg.Protocols.UDP.Timeout.PerCycle.Duration().String(),
@@ -199,7 +194,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 				"port": up.Measurement.Port,
 			},
 			"priority": up.Priority,
-			"bias":     up.Bias,
 		}
 		if up.Shaping != nil {
 			entry["shaping"] = map[string]interface{}{
@@ -236,58 +230,16 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"startup_delay":  cfg.Reachability.StartupDelay.Duration().String(),
 		},
 		"measurement": c.getMeasurementConfig(),
-		"scoring": map[string]interface{}{
-			"smoothing": map[string]interface{}{
-				"alpha": cfg.Scoring.Smoothing.Alpha,
-			},
-			"reference": map[string]interface{}{
-				"tcp": map[string]interface{}{
-					"latency": map[string]interface{}{
-						"rtt":    cfg.Scoring.Reference.TCP.Latency.RTT,
-						"jitter": cfg.Scoring.Reference.TCP.Latency.Jitter,
-					},
-					"retransmit_rate": cfg.Scoring.Reference.TCP.RetransmitRate,
-					"loss_rate":       cfg.Scoring.Reference.TCP.LossRate,
-				},
-				"udp": map[string]interface{}{
-					"latency": map[string]interface{}{
-						"rtt":    cfg.Scoring.Reference.UDP.Latency.RTT,
-						"jitter": cfg.Scoring.Reference.UDP.Latency.Jitter,
-					},
-					"retransmit_rate": cfg.Scoring.Reference.UDP.RetransmitRate,
-					"loss_rate":       cfg.Scoring.Reference.UDP.LossRate,
-				},
-			},
-			"weights": map[string]interface{}{
-				"tcp": map[string]interface{}{
-					"rtt":             cfg.Scoring.Weights.TCP.RTT,
-					"jitter":          cfg.Scoring.Weights.TCP.Jitter,
-					"retransmit_rate": cfg.Scoring.Weights.TCP.RetransmitRate,
-				},
-				"udp": map[string]interface{}{
-					"rtt":       cfg.Scoring.Weights.UDP.RTT,
-					"jitter":    cfg.Scoring.Weights.UDP.Jitter,
-					"loss_rate": cfg.Scoring.Weights.UDP.LossRate,
-				},
-				"protocol_blend": map[string]interface{}{
-					"tcp_weight": cfg.Scoring.Weights.ProtocolBlend.TCPWeight,
-					"udp_weight": cfg.Scoring.Weights.ProtocolBlend.UDPWeight,
-				},
-			},
-			"bias_transform": map[string]interface{}{
-				"kappa": cfg.Scoring.BiasTransform.Kappa,
-			},
+		"health": map[string]interface{}{
+			"rtt_ewma_alpha":     cfg.Health.RTTEWMAAlpha,
+			"failure_threshold":  cfg.Health.FailureThreshold,
+			"recovery_threshold": cfg.Health.RecoveryThreshold,
+			"stale_threshold":    cfg.Health.StaleThreshold.Duration().String(),
 		},
 		"switching": map[string]interface{}{
-			"auto": map[string]interface{}{
-				"confirm_duration":      cfg.Switching.Auto.ConfirmDuration.Duration().String(),
-				"score_delta_threshold": cfg.Switching.Auto.ScoreDeltaThreshold,
-				"min_hold_time":         cfg.Switching.Auto.MinHoldTime.Duration().String(),
-			},
-			"failover": map[string]interface{}{
-				"loss_rate_threshold":       cfg.Switching.Failover.LossRateThreshold,
-				"retransmit_rate_threshold": cfg.Switching.Failover.RetransmitRateThreshold,
-			},
+			"confirm_duration":        cfg.Switching.ConfirmDuration.Duration().String(),
+			"min_hold_time":           cfg.Switching.MinHoldTime.Duration().String(),
+			"latency_improvement":     cfg.Switching.LatencyImprovement.Duration().String(),
 			"close_flows_on_failover": cfg.Switching.CloseFlowsOnFailover,
 		},
 		"control": map[string]interface{}{

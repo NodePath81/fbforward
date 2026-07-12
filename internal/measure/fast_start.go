@@ -18,11 +18,3 @@ func FastStartProbe(ctx context.Context, host string, port int, timeout time.Dur
 	_ = conn.Close()
 	return float64(time.Since(start)) / float64(time.Millisecond), true
 }
-
-func FastStartScore(rttMs float64, reachable bool, priority float64) float64 {
-	if !reachable {
-		return 0
-	}
-	ref := 50.0
-	return 100/(1+rttMs/ref) + priority
-}

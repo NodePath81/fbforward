@@ -8,6 +8,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/forwarding"
+	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/policy"
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
@@ -15,6 +16,7 @@ import (
 type upstreamPicker struct {
 	manager *upstream.UpstreamManager
 	routes  map[string]routeSelection
+	metrics *metrics.Metrics
 }
 
 type routeSelection struct {
@@ -50,6 +52,9 @@ func (p *upstreamPicker) Pick(meta flow.Meta) (forwarding.Upstream, error) {
 		return forwarding.Upstream{}, fmt.Errorf("upstream %q has invalid active IP %q", selected.Tag, ip.String())
 	}
 	addr = addr.Unmap()
+	if p.metrics != nil {
+		p.metrics.SetRouteSelected(meta.Route, selected.Tag)
+	}
 	return forwarding.Upstream{Tag: selected.Tag, Addr: addr}, nil
 }
 

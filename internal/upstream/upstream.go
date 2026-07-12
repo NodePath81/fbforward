@@ -25,10 +25,7 @@ const (
 	ModeCoordination
 )
 
-const (
-	scoreEpsilon        = 0.0001
-	dialFailSwitchCount = 2
-)
+const dialFailSwitchCount = 2
 
 func (m Mode) String() string {
 	switch m {
@@ -36,8 +33,9 @@ func (m Mode) String() string {
 		return "manual"
 	case ModeCoordination:
 		return "coordination"
+	default:
+		return "auto"
 	}
-	return "auto"
 }
 
 type CoordinationState struct {
@@ -48,28 +46,16 @@ type CoordinationState struct {
 	FallbackActive   bool   `json:"fallback_active"`
 }
 
+// UpstreamStats is a compact, selection-facing health snapshot. Probe
+// protocol details remain in measurement history, not in route selection.
 type UpstreamStats struct {
-	Reachable     bool      `json:"reachable"`
-	LastReachable time.Time `json:"last_reachable"`
-
-	RTTMs    float64 `json:"rtt_ms"`
-	RTTTcpMs float64 `json:"rtt_tcp_ms"`
-	RTTUdpMs float64 `json:"rtt_udp_ms"`
-	JitterMs float64 `json:"jitter_ms"`
-
-	RetransRate   float64   `json:"retrans_rate"`
-	LastTCPUpdate time.Time `json:"last_tcp_update"`
-
-	LossRate      float64   `json:"loss_rate"`
-	LastUDPUpdate time.Time `json:"last_udp_update"`
-
-	ScoreTCP float64 `json:"score_tcp"`
-	ScoreUDP float64 `json:"score_udp"`
-
-	Usable bool `json:"usable"`
-
-	Loss  float64 `json:"loss"`
-	Score float64 `json:"score"`
+	HealthState          HealthState `json:"health_state"`
+	Reachable            bool        `json:"reachable"`
+	LastReachable        time.Time   `json:"last_reachable"`
+	RTTMs                float64     `json:"rtt_ms"`
+	Usable               bool        `json:"usable"`
+	ConsecutiveSuccesses int         `json:"consecutive_successes"`
+	ConsecutiveFailures  int         `json:"consecutive_failures"`
 }
 
 type Upstream struct {
@@ -78,17 +64,11 @@ type Upstream struct {
 	MeasureHost string
 	MeasurePort int
 	Priority    float64
-	Bias        float64
 	IPs         []net.IP
 	activeIP    atomic.Value
 
 	stats         UpstreamStats
-	rttInit       bool
-	rttTCPInit    bool
-	rttUDPInit    bool
-	jitInit       bool
-	retransInit   bool
-	lossInit      bool
+	health        HealthSnapshot
 	dialFailUntil time.Time
 	dialFailCount int
 }
@@ -100,6 +80,8 @@ type WindowMetrics struct {
 	HasRTT   bool
 }
 
+// MeasurementResult is retained as the fbmeasure adapter boundary. Only
+// RTT, timestamp and success are consumed by the health model.
 type MeasurementResult struct {
 	BandwidthUpBps   float64
 	BandwidthDownBps float64
@@ -127,108 +109,91 @@ type UpstreamManager struct {
 	onStateChange  func(change UsabilityChange)
 	onCoordState   func(state CoordinationState)
 	switching      config.SwitchingConfig
-	staleThreshold time.Duration
-	scorer         Scorer
+	healthConfig   config.HealthConfig
 	logger         util.Logger
 
-	pendingSwitch  string
-	pendingSince   time.Time
-	lastSwitchTime time.Time
-	inWarmup       bool
-	warmupStart    time.Time
-	warmupDuration time.Duration
-	warmupLogged   bool
+	pendingSwitch string
+	pendingSince  time.Time
+	lastSwitch    time.Time
 }
 
 func NewUpstreamManager(upstreams []*Upstream, rng *rand.Rand, logger util.Logger) *UpstreamManager {
+	if rng == nil {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
 	m := &UpstreamManager{
-		upstreams: make(map[string]*Upstream, len(upstreams)),
-		order:     make([]string, 0, len(upstreams)),
-		mode:      ModeAuto,
-		rng:       rng,
-		switching: config.DefaultSwitchingConfig(),
-		scorer:    DefaultScorer{},
-		logger:    logger,
+		upstreams:    make(map[string]*Upstream, len(upstreams)),
+		order:        make([]string, 0, len(upstreams)),
+		mode:         ModeAuto,
+		rng:          rng,
+		switching:    config.DefaultSwitchingConfig(),
+		healthConfig: config.HealthConfig{RTTEWMAAlpha: 0.25, FailureThreshold: 3, RecoveryThreshold: 2, StaleThreshold: config.Duration(time.Minute)},
+		logger:       logger,
 	}
 	for _, up := range upstreams {
+		if up == nil || up.Tag == "" {
+			continue
+		}
 		m.upstreams[up.Tag] = up
 		m.order = append(m.order, up.Tag)
 	}
 	return m
 }
 
-func (m *UpstreamManager) SetScorer(scorer Scorer) {
+func (m *UpstreamManager) SetCallbacks(onSelect func(change ActiveChange), onStateChange func(change UsabilityChange)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if scorer == nil {
-		m.scorer = DefaultScorer{}
-		return
-	}
-	m.scorer = scorer
-}
-
-func (m *UpstreamManager) SetCallbacks(onSelect func(change ActiveChange), onStateChange func(change UsabilityChange)) {
 	m.onSelect = onSelect
 	m.onStateChange = onStateChange
 }
 
 func (m *UpstreamManager) SetCoordinationStateCallback(callback func(state CoordinationState)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.onCoordState = callback
+}
+
+func (m *UpstreamManager) SetHealthConfig(cfg config.HealthConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cfg.RTTEWMAAlpha <= 0 || cfg.RTTEWMAAlpha > 1 {
+		cfg.RTTEWMAAlpha = 0.25
+	}
+	if cfg.FailureThreshold <= 0 {
+		cfg.FailureThreshold = 3
+	}
+	if cfg.RecoveryThreshold <= 0 {
+		cfg.RecoveryThreshold = 2
+	}
+	if cfg.StaleThreshold.Duration() <= 0 {
+		cfg.StaleThreshold = config.Duration(time.Minute)
+	}
+	m.healthConfig = cfg
+	for _, up := range m.upstreams {
+		m.refreshStatsLocked(up)
+	}
 }
 
 func (m *UpstreamManager) SetSwitching(cfg config.SwitchingConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	defaults := config.DefaultSwitchingConfig()
+	if cfg.ConfirmDuration.Duration() < 0 {
+		cfg.ConfirmDuration = defaults.ConfirmDuration
+	}
+	if cfg.MinHoldTime.Duration() < 0 {
+		cfg.MinHoldTime = defaults.MinHoldTime
+	}
+	if cfg.LatencyImprovement.Duration() < 0 {
+		cfg.LatencyImprovement = defaults.LatencyImprovement
+	}
 	m.switching = cfg
-	if m.switching.Auto.ConfirmDuration.Duration() < 0 {
-		m.switching.Auto.ConfirmDuration = defaults.Auto.ConfirmDuration
-	}
-	if m.switching.Failover.LossRateThreshold <= 0 || m.switching.Failover.LossRateThreshold > 1 {
-		m.switching.Failover.LossRateThreshold = defaults.Failover.LossRateThreshold
-	}
-	if m.switching.Failover.RetransmitRateThreshold <= 0 || m.switching.Failover.RetransmitRateThreshold > 1 {
-		m.switching.Failover.RetransmitRateThreshold = defaults.Failover.RetransmitRateThreshold
-	}
-	if m.switching.Auto.ScoreDeltaThreshold < 0 {
-		m.switching.Auto.ScoreDeltaThreshold = defaults.Auto.ScoreDeltaThreshold
-	}
-	if m.switching.Auto.MinHoldTime.Duration() < 0 {
-		m.switching.Auto.MinHoldTime = defaults.Auto.MinHoldTime
-	}
 	m.resetPendingLocked()
 }
 
-func (m *UpstreamManager) SetMeasurementConfig(cfg config.MeasurementConfig) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.staleThreshold = cfg.StaleThreshold.Duration()
-	if m.staleThreshold <= 0 {
-		m.staleThreshold = 2 * time.Minute
-	}
-}
-
-func (m *UpstreamManager) StartWarmup(duration time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.inWarmup = true
-	m.warmupStart = time.Now()
-	m.warmupDuration = duration
-	m.warmupLogged = false
-}
-
-func (m *UpstreamManager) IsInWarmup() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.inWarmup {
-		return false
-	}
-	if time.Since(m.warmupStart) > m.warmupDuration {
-		m.inWarmup = false
-		return false
-	}
-	return true
-}
+// SetMeasurementConfig is kept as a source-compatible no-op for integrations
+// that used the old manager API. Health configuration is now explicit.
+func (m *UpstreamManager) SetMeasurementConfig(_ config.MeasurementConfig) {}
 
 func (m *UpstreamManager) PickInitial() {
 	m.mu.Lock()
@@ -236,17 +201,9 @@ func (m *UpstreamManager) PickInitial() {
 	if m.activeTag != "" {
 		return
 	}
-	usable := make([]string, 0, len(m.order))
-	for _, tag := range m.order {
-		if m.upstreams[tag].stats.Usable {
-			usable = append(usable, tag)
-		}
+	if tag, _ := m.selectBestLocked(nil); tag != "" {
+		m.setActiveLocked(tag, "initial")
 	}
-	if len(usable) == 0 {
-		return
-	}
-	chosen := usable[m.rng.Intn(len(usable))]
-	m.setActiveLocked(chosen, "score_delta")
 }
 
 func (m *UpstreamManager) Mode() Mode {
@@ -273,61 +230,65 @@ func (m *UpstreamManager) Get(tag string) *Upstream {
 	return m.upstreams[tag]
 }
 
+func (m *UpstreamManager) Health(tag string) (HealthSnapshot, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	up, ok := m.upstreams[tag]
+	if !ok || up == nil {
+		return HealthSnapshot{}, false
+	}
+	m.refreshStatsLocked(up)
+	snapshot := up.health
+	snapshot.State = up.stats.HealthState
+	return snapshot, true
+}
+
 func (m *UpstreamManager) RankedTags() []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	type candidate struct {
-		tag   string
-		score float64
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, up := range m.upstreams {
+		m.refreshStatsLocked(up)
 	}
-
-	now := time.Now()
-	candidates := make([]candidate, 0, len(m.order))
-	for _, tag := range m.order {
-		up := m.upstreams[tag]
-		if up == nil || !up.stats.Usable || up.dialFailUntil.After(now) {
-			continue
-		}
-		candidates = append(candidates, candidate{tag: tag, score: up.stats.Score})
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score+scoreEpsilon
+	tags := append([]string(nil), m.order...)
+	sort.SliceStable(tags, func(i, j int) bool {
+		return m.betterLocked(m.upstreams[tags[i]], m.upstreams[tags[j]], tags[i] == m.activeTag)
 	})
-	ranked := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		ranked = append(ranked, candidate.tag)
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		up := m.upstreams[tag]
+		if up != nil && m.selectableLocked(up, time.Now()) {
+			result = append(result, tag)
+		}
 	}
-	return ranked
+	return result
 }
 
 func (m *UpstreamManager) SetAuto() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.mode = ModeAuto
-	m.manualTag = ""
+	m.mode, m.manualTag = ModeAuto, ""
 	m.clearCoordinationLocked()
 	m.resetPendingLocked()
-	best, _ := m.selectBestLocked("")
-	m.setActiveLocked(best, "manual")
+	if best, _ := m.selectBestLocked(nil); best != "" {
+		m.setActiveLocked(best, "auto")
+	}
 	m.emitCoordinationStateLocked()
 }
 
 func (m *UpstreamManager) SetManual(tag string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	up, ok := m.upstreams[tag]
+	up, ok := m.upstreams[strings.TrimSpace(tag)]
 	if !ok {
 		return errors.New("unknown upstream tag")
 	}
-	if !up.stats.Usable {
+	if !m.selectableLocked(up, time.Now()) {
 		return errors.New("selected upstream is unusable")
 	}
-	m.mode = ModeManual
-	m.manualTag = tag
+	m.mode, m.manualTag = ModeManual, up.Tag
 	m.clearCoordinationLocked()
 	m.resetPendingLocked()
-	m.setActiveLocked(tag, "manual")
+	m.setActiveLocked(up.Tag, "manual")
 	m.emitCoordinationStateLocked()
 	return nil
 }
@@ -335,13 +296,13 @@ func (m *UpstreamManager) SetManual(tag string) error {
 func (m *UpstreamManager) SetCoordination() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.mode = ModeCoordination
-	m.manualTag = ""
+	m.mode, m.manualTag = ModeCoordination, ""
 	m.clearCoordinationLocked()
 	m.coordFallback = true
 	m.resetPendingLocked()
-	best, _ := m.selectBestLocked("")
-	m.setActiveLocked(best, "coordination_fallback")
+	if best, _ := m.selectBestLocked(nil); best != "" {
+		m.setActiveLocked(best, "coordination_fallback")
+	}
 	m.emitCoordinationStateLocked()
 }
 
@@ -349,26 +310,20 @@ func (m *UpstreamManager) SetCoordinationConnected(connected bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.coordConnected = connected
-	if connected {
+	if !connected {
+		m.activateCoordinationFallbackLocked("coordination_fallback")
+	} else {
 		m.emitCoordinationStateLocked()
-		return
 	}
-	m.activateCoordinationFallbackLocked("coordination_fallback")
 }
 
 func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if version < m.coordVersion {
+	if version < m.coordVersion || (version == m.coordVersion && !m.coordFallback && strings.TrimSpace(tag) != m.coordTag) {
 		return false, errors.New("stale coordination version")
 	}
 	tag = strings.TrimSpace(tag)
-	if version == m.coordVersion && !m.coordFallback {
-		if tag == m.coordTag {
-			return false, nil
-		}
-		return false, errors.New("stale coordination version")
-	}
 	if tag == "" {
 		m.coordVersion = version
 		m.activateCoordinationFallbackLocked("coordination_fallback")
@@ -379,13 +334,11 @@ func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool
 		m.activateCoordinationFallbackLocked("coordination_fallback")
 		return false, errors.New("coordinated upstream not found")
 	}
-	if !up.stats.Usable || up.dialFailUntil.After(time.Now()) {
+	if !m.selectableLocked(up, time.Now()) {
 		m.activateCoordinationFallbackLocked("coordination_fallback")
 		return false, errors.New("coordinated upstream is unusable")
 	}
-	m.coordVersion = version
-	m.coordTag = tag
-	m.coordFallback = false
+	m.coordVersion, m.coordTag, m.coordFallback = version, tag, false
 	if m.mode == ModeCoordination {
 		m.setActiveLocked(tag, "coordination")
 	}
@@ -393,362 +346,151 @@ func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool
 	return true, nil
 }
 
-func (m *UpstreamManager) SelectByFastStart(scores map[string]float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	bestTag := ""
-	bestScore := -1.0
-	for tag, score := range scores {
-		if score > bestScore {
-			bestScore = score
-			bestTag = tag
-		}
-	}
-	if bestTag == "" {
-		return
-	}
-	m.setActiveLocked(bestTag, "fast_start")
-}
-
 func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	if m.mode == ModeManual {
-		up, ok := m.upstreams[m.manualTag]
-		if !ok {
-			return nil, errors.New("manual upstream not found")
-		}
-		if up.dialFailUntil.After(now) {
-			return nil, errors.New("manual upstream temporarily unavailable")
-		}
-		return up, nil
-	}
-	if m.activeTag == "" {
-		return nil, errors.New("no active upstream")
-	}
-	up := m.upstreams[m.activeTag]
-	if up == nil {
-		return nil, errors.New("active upstream not found")
-	}
-	if up.dialFailUntil.After(now) {
-		return nil, errors.New("active upstream temporarily unavailable")
-	}
-	return up, nil
+	return m.SelectUpstreamFrom(nil)
 }
 
-// SelectUpstreamFrom selects an upstream from an optional route-scoped set.
-// A singleton set is treated as a static route and is independent of the
-// manager's global active tag. For larger sets, manual/active selections are
-// honored only when they belong to the set and are not in dial-failure
-// cooldown; otherwise the best usable member is selected by score.
+// SelectUpstreamFrom enforces route membership and ranks candidates by
+// health, RTT, priority and stable configuration order.
 func (m *UpstreamManager) SelectUpstreamFrom(tags []string) (*Upstream, error) {
-	if len(tags) == 0 {
-		return m.SelectUpstream()
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now()
+	for _, up := range m.upstreams {
+		m.refreshStatsLocked(up)
+	}
 	allowed := make(map[string]struct{}, len(tags))
-	orderedTags := make([]string, 0, len(tags))
+	ordered := make([]string, 0, len(tags))
 	for _, tag := range tags {
 		tag = strings.TrimSpace(tag)
 		if tag != "" {
 			if _, exists := allowed[tag]; !exists {
-				orderedTags = append(orderedTags, tag)
+				ordered = append(ordered, tag)
 			}
 			allowed[tag] = struct{}{}
 		}
 	}
-	contains := func(tag string) bool {
-		if len(allowed) == 0 {
-			return true
+	contains := func(tag string) bool { return len(allowed) == 0 || hasTag(allowed, tag) }
+	now := time.Now()
+	if len(ordered) == 1 {
+		up := m.upstreams[ordered[0]]
+		if up == nil {
+			return nil, fmt.Errorf("upstream %q is unavailable", ordered[0])
 		}
-		_, ok := allowed[tag]
-		return ok
+		if !m.selectableLocked(up, now) {
+			return nil, fmt.Errorf("upstream %q is unavailable", ordered[0])
+		}
+		return up, nil
 	}
-	usable := func(up *Upstream) bool {
-		return up != nil && up.stats.Usable && !up.dialFailUntil.After(now)
-	}
-	if len(allowed) == 1 {
-		for _, tag := range orderedTags {
-			up := m.upstreams[tag]
-			if up == nil {
-				return nil, fmt.Errorf("upstream %q is unavailable", tag)
-			}
-			if up.dialFailUntil.After(now) {
-				return nil, fmt.Errorf("upstream %q is temporarily unavailable", tag)
-			}
+	if m.mode == ModeManual && contains(m.manualTag) {
+		if up := m.upstreams[m.manualTag]; up != nil && m.selectableLocked(up, now) {
 			return up, nil
 		}
 	}
-
-	if m.mode == ModeManual {
-		up, ok := m.upstreams[m.manualTag]
-		if !ok {
-			return nil, errors.New("manual upstream not found")
-		}
-		if contains(m.manualTag) {
-			if up.dialFailUntil.After(now) {
-				return nil, errors.New("manual upstream temporarily unavailable")
-			}
-			return up, nil
-		}
-		// A global manual selection outside this route must not escape the
-		// route boundary. Fall through to the best usable member instead.
-	}
-	if m.activeTag != "" && contains(m.activeTag) {
-		if up := m.upstreams[m.activeTag]; up != nil && !up.dialFailUntil.After(now) {
+	if m.mode == ModeCoordination && !m.coordFallback && contains(m.coordTag) {
+		if up := m.upstreams[m.coordTag]; up != nil && m.selectableLocked(up, now) {
 			return up, nil
 		}
 	}
-	bestTag := ""
-	bestScore := -1.0
-	for _, tag := range orderedTags {
-		up := m.upstreams[tag]
-		if !usable(up) {
-			continue
-		}
-		if bestTag == "" || up.stats.Score > bestScore+scoreEpsilon {
-			bestTag, bestScore = tag, up.stats.Score
-		}
-	}
-	if len(allowed) == 0 {
-		bestTag, _ = m.selectBestLocked("")
-	}
-	if bestTag == "" {
+	best, _ := m.selectBestLocked(ordered)
+	if best == "" {
 		return nil, errors.New("no usable upstream in route")
 	}
-	return m.upstreams[bestTag], nil
+	return m.upstreams[best], nil
+}
+
+func hasTag(tags map[string]struct{}, tag string) bool {
+	_, ok := tags[tag]
+	return ok
 }
 
 func (m *UpstreamManager) UpdateReachability(tag string, reachable bool) UpstreamStats {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	up, ok := m.upstreams[tag]
-	if !ok {
-		return UpstreamStats{}
-	}
-
-	prevUsable := up.stats.Usable
-	up.stats.Reachable = reachable
-	if reachable {
-		up.stats.LastReachable = time.Now()
-	}
-	up.stats.Usable = up.stats.ComputeUsable(m.staleThreshold)
-	if prevUsable != up.stats.Usable {
-		if up.stats.Usable {
-			util.Event(m.logger, slog.LevelInfo, "upstream.recovered", "upstream", tag)
-		} else {
-			util.Event(m.logger, slog.LevelWarn, "upstream.became_unusable", "upstream", tag, "switch.reason", m.usabilityReason(up.stats))
-		}
-	}
-	if prevUsable != up.stats.Usable && m.onStateChange != nil {
-		reason := "recovered"
-		if !up.stats.Usable {
-			reason = m.usabilityReason(up.stats)
-		}
-		m.onStateChange(UsabilityChange{
-			Tag:    tag,
-			Usable: up.stats.Usable,
-			Reason: reason,
-		})
-	}
-	if tag == m.coordTag && !up.stats.Usable {
-		m.activateCoordinationFallbackLocked("coordination_fallback")
-	}
-	return up.stats
+	return m.applyObservation(tag, ProbeObservation{Success: reachable, Protocol: "icmp", ObservedAt: time.Now()})
 }
 
-func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult, scoring config.ScoringConfig) UpstreamStats {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	up, ok := m.upstreams[tag]
-	if !ok || result == nil {
+func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult, health ...config.HealthConfig) UpstreamStats {
+	if result == nil || !sanitizeMeasurementResult(result) {
 		return UpstreamStats{}
 	}
-	if !sanitizeMeasurementResult(result) {
-		util.Event(m.logger, slog.LevelWarn, "upstream.measurement_rejected",
-			"upstream", tag,
-			"network.protocol", result.Network,
-		)
-		return up.stats
+	return m.applyObservation(tag, ProbeObservation{
+		Success:    result.RTTMs > 0,
+		RTT:        time.Duration(result.RTTMs * float64(time.Millisecond)),
+		Protocol:   result.Network,
+		ObservedAt: result.Timestamp,
+	}, health...)
+}
+
+func (m *UpstreamManager) RecordProbeFailure(tag, protocol string, observedAt time.Time) UpstreamStats {
+	return m.applyObservation(tag, ProbeObservation{Protocol: protocol, ObservedAt: observedAt})
+}
+
+func (m *UpstreamManager) applyObservation(tag string, observation ProbeObservation, cfg ...config.HealthConfig) UpstreamStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	up := m.upstreams[tag]
+	if up == nil {
+		return UpstreamStats{}
 	}
-
-	now := result.Timestamp
-	up.stats.RTTMs = applyEMA(result.RTTMs, up.stats.RTTMs, scoring.Smoothing.Alpha, &up.rttInit)
-	up.stats.JitterMs = applyEMA(result.JitterMs, up.stats.JitterMs, scoring.Smoothing.Alpha, &up.jitInit)
-
-	if result.Network == "tcp" {
-		up.stats.RTTTcpMs = applyEMA(result.RTTMs, up.stats.RTTTcpMs, scoring.Smoothing.Alpha, &up.rttTCPInit)
-		up.stats.RetransRate = applyEMA(result.RetransRate, up.stats.RetransRate, scoring.Smoothing.Alpha, &up.retransInit)
-		up.stats.LastTCPUpdate = now
-	} else {
-		up.stats.RTTUdpMs = applyEMA(result.RTTMs, up.stats.RTTUdpMs, scoring.Smoothing.Alpha, &up.rttUDPInit)
-		up.stats.LossRate = applyEMA(result.LossRate, up.stats.LossRate, scoring.Smoothing.Alpha, &up.lossInit)
-		up.stats.LastUDPUpdate = now
+	if len(cfg) > 0 {
+		m.healthConfig = cfg[0]
 	}
-
-	up.stats.Loss = maxFloat(up.stats.RetransRate, up.stats.LossRate)
-
-	prevUsable := up.stats.Usable
-	prevOverall := up.stats.Score
-	up.stats.Usable = up.stats.ComputeUsable(m.staleThreshold)
-	up.stats.ScoreTCP, up.stats.ScoreUDP, up.stats.Score = m.scorer.ComputeScore(up.stats, scoring, up.Bias, m.staleThreshold)
-	util.Event(m.logger, slog.LevelDebug, "upstream.score_updated",
-		"upstream", tag,
-		"score.tcp", up.stats.ScoreTCP,
-		"score.udp", up.stats.ScoreUDP,
-		"score.overall", up.stats.Score,
-		"score.previous", prevOverall,
-	)
-
-	if prevUsable != up.stats.Usable {
-		if up.stats.Usable {
-			util.Event(m.logger, slog.LevelInfo, "upstream.recovered", "upstream", tag)
-		} else {
-			util.Event(m.logger, slog.LevelWarn, "upstream.became_unusable", "upstream", tag, "switch.reason", m.usabilityReason(up.stats))
-		}
+	previous := up.stats
+	up.health = ApplyObservation(up.health, observation, m.healthConfig)
+	m.refreshStatsLocked(up)
+	if previous.HealthState != up.stats.HealthState {
+		reason := string(up.stats.HealthState)
+		util.Event(m.logger, slog.LevelInfo, "upstream.health_changed", "upstream", tag, "health.state", reason)
 		if m.onStateChange != nil {
-			reason := "recovered"
-			if !up.stats.Usable {
-				reason = m.usabilityReason(up.stats)
-			}
-			m.onStateChange(UsabilityChange{
-				Tag:    tag,
-				Usable: up.stats.Usable,
-				Reason: reason,
-			})
+			m.onStateChange(UsabilityChange{Tag: tag, Usable: up.stats.Usable, Reason: reason})
+		}
+		if tag == m.coordTag && !up.stats.Usable {
+			m.activateCoordinationFallbackLocked("health_down")
 		}
 	}
-	if tag == m.coordTag && !up.stats.Usable {
-		m.activateCoordinationFallbackLocked("coordination_fallback")
-	}
-
-	m.evaluateSwitching(tag, up.stats)
+	m.evaluateSwitchingLocked(tag)
 	return up.stats
 }
 
-func (m *UpstreamManager) evaluateSwitching(updatedTag string, stats UpstreamStats) {
-	if !m.autoSelectionEnabledLocked() {
-		return
-	}
-
-	if m.warmupDuration > 0 && !m.isInWarmupLocked() && !m.warmupStart.IsZero() && !m.warmupLogged {
-		util.Event(m.logger, slog.LevelInfo, "upstream.warmup_ended")
-		m.warmupLogged = true
-	}
-
-	active := m.upstreams[m.activeTag]
-	if active != nil && updatedTag == m.activeTag {
-		if stats.LossRate >= m.switching.Failover.LossRateThreshold {
-			m.immediateFailoverLocked("failover_loss")
-			return
-		}
-		if stats.RetransRate >= m.switching.Failover.RetransmitRateThreshold {
-			m.immediateFailoverLocked("failover_retrans")
-			return
-		}
-	}
-
-	bestTag, bestScore := m.selectBestLocked("")
-	if bestTag == "" || bestTag == m.activeTag {
-		m.resetPendingLocked()
-		return
-	}
-
-	activeScore := 0.0
-	if active != nil {
-		activeScore = active.stats.Score
-	}
-
-	threshold := m.switching.Auto.ScoreDeltaThreshold
-	inWarmup := m.isInWarmupLocked()
-	if inWarmup {
-		threshold /= 2
-	}
-	if bestScore-activeScore < threshold {
-		m.resetPendingLocked()
-		return
-	}
-
-	if m.pendingSwitch != bestTag {
-		util.Event(m.logger, slog.LevelDebug, "upstream.pending_switch_started",
-			"switch.from", m.activeTag,
-			"switch.to", bestTag,
-		)
-		m.pendingSwitch = bestTag
-		m.pendingSince = time.Now()
-		return
-	}
-
-	confirmDur := m.switching.Auto.ConfirmDuration.Duration()
-	if inWarmup {
-		confirmDur = 0
-	}
-	if time.Since(m.pendingSince) < confirmDur {
-		return
-	}
-
-	holdDur := m.switching.Auto.MinHoldTime.Duration()
-	if inWarmup {
-		holdDur = 0
-	}
-	if !m.lastSwitchTime.IsZero() && time.Since(m.lastSwitchTime) < holdDur {
-		return
-	}
-
-	reason := "score_delta"
-	if inWarmup {
-		reason = "warmup"
-	}
-	m.setActiveLocked(bestTag, reason)
+func (m *UpstreamManager) refreshStatsLocked(up *Upstream) {
+	state := EffectiveHealth(up.health, time.Now(), m.healthConfig.StaleThreshold.Duration())
+	up.stats.HealthState = state
+	up.stats.Reachable = state == HealthHealthy || state == HealthStale
+	up.stats.Usable = state != HealthDown
+	up.stats.LastReachable = up.health.LastSuccessAt
+	up.stats.RTTMs = up.health.RTTMs()
+	up.stats.ConsecutiveSuccesses = up.health.ConsecutiveSuccesses
+	up.stats.ConsecutiveFailures = up.health.ConsecutiveFailures
 }
 
-func (m *UpstreamManager) immediateFailoverLocked(reason string) {
-	m.resetPendingLocked()
-	best, _ := m.selectBestLocked(m.activeTag)
-	if best != "" {
-		m.setActiveLocked(best, reason)
+func (m *UpstreamManager) evaluateSwitchingLocked(updated string) {
+	if m.mode == ModeManual || (m.mode == ModeCoordination && !m.coordFallback) {
 		return
 	}
 	active := m.upstreams[m.activeTag]
-	if active != nil && !active.stats.Usable {
-		m.setActiveLocked("", reason)
-	}
-}
-
-func (m *UpstreamManager) isInWarmupLocked() bool {
-	if !m.inWarmup {
-		return false
-	}
-	if time.Since(m.warmupStart) > m.warmupDuration {
-		m.inWarmup = false
-		return false
-	}
-	return true
-}
-
-func (m *UpstreamManager) UpdateResolved(tag string, ips []net.IP) bool {
-	if len(ips) == 0 {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	up, ok := m.upstreams[tag]
-	if !ok {
-		return false
-	}
-	changed := !sameIPs(up.IPs, ips)
-	oldActive := up.ActiveIP()
-	up.IPs = ips
-	if oldActive == nil || !containsIP(ips, oldActive) {
-		up.SetActiveIP(ips[0])
-		if oldActive == nil || !ips[0].Equal(oldActive) {
-			changed = true
+	if active == nil || !m.selectableLocked(active, time.Now()) {
+		if best, _ := m.selectBestLocked(nil); best != "" {
+			m.setActiveLocked(best, "health_failover")
 		}
+		return
 	}
-	return changed
+	best, _ := m.selectBestLocked(nil)
+	if best == "" || best == m.activeTag {
+		m.resetPendingLocked()
+		return
+	}
+	candidate := m.upstreams[best]
+	if candidate.stats.HealthState != HealthHealthy || active.stats.HealthState != HealthHealthy || candidate.stats.RTTMs <= 0 || active.stats.RTTMs-candidate.stats.RTTMs < float64(m.switching.LatencyImprovement.Duration()/time.Millisecond) {
+		m.resetPendingLocked()
+		return
+	}
+	if m.pendingSwitch != best {
+		m.pendingSwitch, m.pendingSince = best, time.Now()
+		return
+	}
+	if time.Since(m.pendingSince) < m.switching.ConfirmDuration.Duration() || (!m.lastSwitch.IsZero() && time.Since(m.lastSwitch) < m.switching.MinHoldTime.Duration()) {
+		return
+	}
+	m.setActiveLocked(best, "latency_improvement")
+	_ = updated
 }
 
 func (m *UpstreamManager) MarkDialFailure(tag string, cooldown time.Duration) {
@@ -757,44 +499,61 @@ func (m *UpstreamManager) MarkDialFailure(tag string, cooldown time.Duration) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	up, ok := m.upstreams[tag]
-	if !ok {
+	up := m.upstreams[tag]
+	if up == nil {
 		return
 	}
 	up.dialFailUntil = time.Now().Add(cooldown)
 	up.dialFailCount++
-	util.Event(m.logger, slog.LevelWarn, "upstream.dial_failure_marked",
-		"upstream", tag,
-		"dial_fail_count", up.dialFailCount,
-	)
-	if m.autoSelectionEnabledLocked() && tag == m.activeTag && up.dialFailCount >= dialFailSwitchCount {
-		m.immediateFailoverLocked("failover_dial")
-	}
-	if tag == m.coordTag && up.dialFailUntil.After(time.Now()) {
-		m.activateCoordinationFallbackLocked("coordination_fallback")
+	util.Event(m.logger, slog.LevelWarn, "upstream.dial_failure_marked", "upstream", tag, "dial_fail_count", up.dialFailCount)
+	if up.dialFailCount >= dialFailSwitchCount && tag == m.activeTag {
+		if best, _ := m.selectBestLocked(nil); best != "" {
+			m.setActiveLocked(best, "dial_failover")
+		}
 	}
 }
 
 func (m *UpstreamManager) ClearDialFailure(tag string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	up, ok := m.upstreams[tag]
-	if !ok {
-		return
+	if up := m.upstreams[tag]; up != nil {
+		up.dialFailUntil = time.Time{}
+		up.dialFailCount = 0
 	}
-	if up.dialFailCount > 0 || !up.dialFailUntil.IsZero() {
-		util.Event(m.logger, slog.LevelDebug, "upstream.dial_failure_cleared", "upstream", tag)
+}
+
+func (m *UpstreamManager) UpdateResolved(tag string, ips []net.IP) bool {
+	if len(ips) == 0 {
+		return false
 	}
-	up.dialFailUntil = time.Time{}
-	up.dialFailCount = 0
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	up := m.upstreams[tag]
+	if up == nil {
+		return false
+	}
+	changed := !sameIPs(up.IPs, ips)
+	old := up.ActiveIP()
+	up.IPs = ips
+	if old == nil || !containsIP(ips, old) {
+		up.SetActiveIP(ips[0])
+		changed = true
+	}
+	return changed
 }
 
 func (m *UpstreamManager) Snapshot() []UpstreamSnapshot {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, up := range m.upstreams {
+		m.refreshStatsLocked(up)
+	}
 	out := make([]UpstreamSnapshot, 0, len(m.order))
 	for _, tag := range m.order {
 		up := m.upstreams[tag]
+		if up == nil {
+			continue
+		}
 		ips := make([]string, 0, len(up.IPs))
 		for _, ip := range up.IPs {
 			ips = append(ips, ip.String())
@@ -803,41 +562,75 @@ func (m *UpstreamManager) Snapshot() []UpstreamSnapshot {
 		if ip := up.ActiveIP(); ip != nil {
 			activeIP = ip.String()
 		}
-		active := tag == m.activeTag
-		out = append(out, UpstreamSnapshot{
-			Tag:       up.Tag,
-			Host:      up.Host,
-			IPs:       ips,
-			ActiveIP:  activeIP,
-			Active:    active,
-			Usable:    up.stats.Usable,
-			Reachable: up.stats.Reachable,
-		})
+		out = append(out, UpstreamSnapshot{Tag: up.Tag, Host: up.Host, IPs: ips, ActiveIP: activeIP, Active: tag == m.activeTag, Usable: up.stats.Usable, Reachable: up.stats.Reachable, HealthState: up.stats.HealthState, RTTMs: up.stats.RTTMs})
 	}
 	return out
 }
 
-func (m *UpstreamManager) selectBestLocked(exclude string) (string, float64) {
-	var bestTag string
-	bestScore := -1.0
+func (m *UpstreamManager) selectBestLocked(tags []string) (string, float64) {
+	allowed := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		allowed[tag] = struct{}{}
+	}
+	var best *Upstream
+	bestTag := ""
 	now := time.Now()
 	for _, tag := range m.order {
-		if tag == exclude {
+		if len(allowed) > 0 && !hasTag(allowed, tag) {
 			continue
 		}
 		up := m.upstreams[tag]
-		if !up.stats.Usable || up.dialFailUntil.After(now) {
+		if !m.selectableLocked(up, now) {
 			continue
 		}
-		score := up.stats.Score
-		if bestTag == "" || score > bestScore+scoreEpsilon {
-			bestTag = tag
-			bestScore = score
-		} else if math.Abs(score-bestScore) <= scoreEpsilon && tag == m.activeTag {
-			bestTag = tag
+		if best == nil || m.betterLocked(up, best, tag == m.activeTag) {
+			best, bestTag = up, tag
 		}
 	}
-	return bestTag, bestScore
+	if best == nil {
+		return "", 0
+	}
+	return bestTag, best.stats.RTTMs
+}
+
+func (m *UpstreamManager) selectableLocked(up *Upstream, now time.Time) bool {
+	return up != nil && up.stats.HealthState != HealthDown && !up.dialFailUntil.After(now)
+}
+
+func healthRank(state HealthState) int {
+	switch state {
+	case HealthHealthy:
+		return 0
+	case HealthStale:
+		return 1
+	case HealthUnknown:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func (m *UpstreamManager) betterLocked(a, b *Upstream, aCurrent bool) bool {
+	ra, rb := healthRank(a.stats.HealthState), healthRank(b.stats.HealthState)
+	if ra != rb {
+		return ra < rb
+	}
+	if a.stats.RTTMs > 0 && b.stats.RTTMs > 0 && a.stats.RTTMs != b.stats.RTTMs {
+		return a.stats.RTTMs < b.stats.RTTMs
+	}
+	if a.stats.RTTMs > 0 && b.stats.RTTMs == 0 {
+		return true
+	}
+	if a.stats.RTTMs == 0 && b.stats.RTTMs > 0 {
+		return false
+	}
+	if a.Priority != b.Priority {
+		return a.Priority > b.Priority
+	}
+	if aCurrent != (b.Tag == m.activeTag) {
+		return aCurrent
+	}
+	return false
 }
 
 func (m *UpstreamManager) setActiveLocked(tag, reason string) {
@@ -845,260 +638,62 @@ func (m *UpstreamManager) setActiveLocked(tag, reason string) {
 		return
 	}
 	old := m.activeTag
-	prevScore := 0.0
-	nextScore := 0.0
-	if oldUp := m.upstreams[old]; oldUp != nil {
-		prevScore = oldUp.stats.Score
-	}
-	if nextUp := m.upstreams[tag]; nextUp != nil {
-		nextScore = nextUp.stats.Score
-	}
 	m.activeTag = tag
-	m.lastSwitchTime = time.Now()
+	m.lastSwitch = time.Now()
 	m.resetPendingLocked()
-	if tag != "" {
-		if up := m.upstreams[tag]; up != nil {
-			up.dialFailCount = 0
-		}
-	}
-	if tag == "" {
-		util.Event(m.logger, slog.LevelWarn, "upstream.active_cleared",
-			"switch.from", old,
-			"switch.reason", reason,
-		)
-	} else {
-		util.Event(m.logger, slog.LevelInfo, "upstream.active_changed",
-			"switch.from", old,
-			"switch.to", tag,
-			"switch.reason", reason,
-			"score.previous", prevScore,
-			"score.overall", nextScore,
-		)
-	}
+	util.Event(m.logger, slog.LevelInfo, "upstream.active_changed", "switch.from", old, "switch.to", tag, "switch.reason", reason)
 	if m.onSelect != nil {
-		m.onSelect(ActiveChange{
-			OldTag:        old,
-			NewTag:        tag,
-			Reason:        reason,
-			PreviousScore: prevScore,
-			NextScore:     nextScore,
-		})
+		m.onSelect(ActiveChange{OldTag: old, NewTag: tag, Reason: reason})
 	}
 }
 
 func (m *UpstreamManager) coordinationStateLocked() CoordinationState {
-	return CoordinationState{
-		Connected:        m.coordConnected,
-		Authoritative:    m.coordConnected && !m.coordFallback && m.coordTag != "",
-		SelectedUpstream: m.coordTag,
-		Version:          m.coordVersion,
-		FallbackActive:   m.coordFallback,
-	}
+	return CoordinationState{Connected: m.coordConnected, Authoritative: m.coordConnected && !m.coordFallback && m.coordTag != "", SelectedUpstream: m.coordTag, Version: m.coordVersion, FallbackActive: m.coordFallback}
 }
 
 func (m *UpstreamManager) emitCoordinationStateLocked() {
-	if m.onCoordState == nil {
-		return
+	if m.onCoordState != nil {
+		m.onCoordState(m.coordinationStateLocked())
 	}
-	m.onCoordState(m.coordinationStateLocked())
 }
 
 func (m *UpstreamManager) resetPendingLocked() {
-	if m.pendingSwitch != "" {
-		util.Event(m.logger, slog.LevelDebug, "upstream.pending_switch_cancelled",
-			"switch.from", m.activeTag,
-			"switch.to", m.pendingSwitch,
-		)
-	}
 	m.pendingSwitch = ""
 	m.pendingSince = time.Time{}
 }
 
 func (m *UpstreamManager) clearCoordinationLocked() {
-	m.coordConnected = false
-	m.coordTag = ""
-	m.coordVersion = 0
-	m.coordFallback = false
-}
-
-func (m *UpstreamManager) autoSelectionEnabledLocked() bool {
-	return m.mode == ModeAuto || (m.mode == ModeCoordination && m.coordTag == "")
+	m.coordConnected, m.coordTag, m.coordVersion, m.coordFallback = false, "", 0, false
 }
 
 func (m *UpstreamManager) activateCoordinationFallbackLocked(reason string) {
 	m.coordTag = ""
-	if m.mode == ModeCoordination {
-		m.coordFallback = true
-		best, _ := m.selectBestLocked("")
-		m.setActiveLocked(best, reason)
-		m.emitCoordinationStateLocked()
-		return
-	}
-	m.coordFallback = false
-	m.emitCoordinationStateLocked()
-}
-
-func (m *UpstreamManager) usabilityReason(stats UpstreamStats) string {
-	if stats.LossRate >= m.switching.Failover.LossRateThreshold {
-		return "failover_loss"
-	}
-	if stats.RetransRate >= m.switching.Failover.RetransmitRateThreshold {
-		return "failover_retrans"
-	}
-	return "score_delta"
-}
-
-func (s *UpstreamStats) ComputeUsable(staleThresh time.Duration) bool {
-	if !s.Reachable {
-		return false
-	}
-	if staleThresh <= 0 {
-		return true
-	}
-	tcpStale := s.LastTCPUpdate.IsZero() || time.Since(s.LastTCPUpdate) > staleThresh
-	udpStale := s.LastUDPUpdate.IsZero() || time.Since(s.LastUDPUpdate) > staleThresh
-	if tcpStale && udpStale {
-		return false
-	}
-	return true
-}
-
-func computeFullScore(stats UpstreamStats, cfg config.ScoringConfig, bias float64, staleThresh time.Duration) (float64, float64, float64) {
-	const epsilon = 0.001
-
-	tcpRtt := stats.RTTMs
-	tcpJit := stats.JitterMs
-	udpRtt := stats.RTTMs
-	udpJit := stats.JitterMs
-	retrans := stats.RetransRate
-	loss := stats.LossRate
-
-	tcpStale := staleThresh > 0 && (stats.LastTCPUpdate.IsZero() || time.Since(stats.LastTCPUpdate) > staleThresh)
-	if tcpStale {
-		tcpRtt = cfg.Reference.TCP.Latency.RTT * 2
-		tcpJit = cfg.Reference.TCP.Latency.Jitter * 2
-		retrans = cfg.Reference.TCP.RetransmitRate * 2
-	}
-
-	udpStale := staleThresh > 0 && (stats.LastUDPUpdate.IsZero() || time.Since(stats.LastUDPUpdate) > staleThresh)
-	if udpStale {
-		udpRtt = cfg.Reference.UDP.Latency.RTT * 2
-		udpJit = cfg.Reference.UDP.Latency.Jitter * 2
-		loss = cfg.Reference.UDP.LossRate * 2
-	}
-
-	sRTTTCP := maxFloat(math.Exp(-tcpRtt/cfg.Reference.TCP.Latency.RTT), epsilon)
-	sJitTCP := maxFloat(math.Exp(-tcpJit/cfg.Reference.TCP.Latency.Jitter), epsilon)
-	sRetrans := maxFloat(math.Exp(-retrans/cfg.Reference.TCP.RetransmitRate), epsilon)
-
-	sRTTUDP := maxFloat(math.Exp(-udpRtt/cfg.Reference.UDP.Latency.RTT), epsilon)
-	sJitUDP := maxFloat(math.Exp(-udpJit/cfg.Reference.UDP.Latency.Jitter), epsilon)
-	sLoss := maxFloat(math.Exp(-loss/cfg.Reference.UDP.LossRate), epsilon)
-
-	wTCP := cfg.Weights.TCP
-	tcpScore := 100 * math.Pow(sRTTTCP, wTCP.RTT) *
-		math.Pow(sJitTCP, wTCP.Jitter) *
-		math.Pow(sRetrans, wTCP.RetransmitRate)
-
-	wUDP := cfg.Weights.UDP
-	udpScore := 100 * math.Pow(sRTTUDP, wUDP.RTT) *
-		math.Pow(sJitUDP, wUDP.Jitter) *
-		math.Pow(sLoss, wUDP.LossRate)
-
-	biasMult := math.Exp(cfg.BiasTransform.Kappa * bias)
-	biasMult = clampFloat(biasMult, 0.67, 1.5)
-
-	tcpScore = clampFloat(tcpScore*biasMult, 0, 100)
-	udpScore = clampFloat(udpScore*biasMult, 0, 100)
-
-	overall := 0.0
-	if tcpStale && !udpStale {
-		overall = udpScore
-	} else if udpStale && !tcpStale {
-		overall = tcpScore
-	} else {
-		overall = cfg.Weights.ProtocolBlend.TCPWeight*tcpScore + cfg.Weights.ProtocolBlend.UDPWeight*udpScore
-	}
-
-	return tcpScore, udpScore, overall
-}
-
-func applyEMA(newValue, oldValue, alpha float64, initialized *bool) float64 {
-	if !*initialized {
-		*initialized = true
-		return newValue
-	}
-	return alpha*newValue + (1-alpha)*oldValue
-}
-
-func sanitizeMeasurementResult(result *MeasurementResult) bool {
-	if result == nil {
-		return false
-	}
-	values := []*float64{
-		&result.RTTMs,
-		&result.JitterMs,
-		&result.LossRate,
-		&result.RetransRate,
-	}
-	for _, value := range values {
-		if math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0 {
-			return false
+	m.coordFallback = m.mode == ModeCoordination
+	if m.coordFallback {
+		if best, _ := m.selectBestLocked(nil); best != "" {
+			m.setActiveLocked(best, reason)
 		}
 	}
-	result.RTTMs = clampFloat(result.RTTMs, 0.01, 10000)
-	result.JitterMs = clampFloat(result.JitterMs, 0, 5000)
-	result.LossRate = clampFloat(result.LossRate, 0, 1)
-	result.RetransRate = clampFloat(result.RetransRate, 0, 1)
-	return true
-}
-
-func clampFloat(val, min, max float64) float64 {
-	if val < min {
-		return min
-	}
-	if val > max {
-		return max
-	}
-	return val
-}
-
-func maxFloat(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-type UpstreamSnapshot struct {
-	Tag       string   `json:"tag"`
-	Host      string   `json:"host"`
-	IPs       []string `json:"ips"`
-	ActiveIP  string   `json:"active_ip"`
-	Active    bool     `json:"active"`
-	Usable    bool     `json:"usable"`
-	Reachable bool     `json:"reachable"`
+	m.emitCoordinationStateLocked()
 }
 
 func (u *Upstream) SetActiveIP(ip net.IP) {
 	if ip == nil {
 		return
 	}
-	clone := make(net.IP, len(ip))
-	copy(clone, ip)
+	clone := append(net.IP(nil), ip...)
 	u.activeIP.Store(clone)
 }
 
 func (u *Upstream) ActiveIP() net.IP {
-	val := u.activeIP.Load()
-	if val == nil {
+	value := u.activeIP.Load()
+	if value == nil {
 		return nil
 	}
-	ip, ok := val.(net.IP)
-	if !ok {
-		return nil
+	if ip, ok := value.(net.IP); ok {
+		return append(net.IP(nil), ip...)
 	}
-	return ip
+	return nil
 }
 
 func sameIPs(a, b []net.IP) bool {
@@ -1113,11 +708,36 @@ func sameIPs(a, b []net.IP) bool {
 	return true
 }
 
-func containsIP(list []net.IP, target net.IP) bool {
-	for _, ip := range list {
+func containsIP(ips []net.IP, target net.IP) bool {
+	for _, ip := range ips {
 		if ip.Equal(target) {
 			return true
 		}
 	}
 	return false
+}
+
+func sanitizeMeasurementResult(result *MeasurementResult) bool {
+	if result == nil || math.IsNaN(result.RTTMs) || math.IsInf(result.RTTMs, 0) || result.RTTMs <= 0 {
+		return false
+	}
+	if result.Timestamp.IsZero() {
+		result.Timestamp = time.Now()
+	}
+	if result.RTTMs > 10000 {
+		result.RTTMs = 10000
+	}
+	return true
+}
+
+type UpstreamSnapshot struct {
+	Tag         string      `json:"tag"`
+	Host        string      `json:"host"`
+	IPs         []string    `json:"ips"`
+	ActiveIP    string      `json:"active_ip"`
+	Active      bool        `json:"active"`
+	Usable      bool        `json:"usable"`
+	Reachable   bool        `json:"reachable"`
+	HealthState HealthState `json:"health_state"`
+	RTTMs       float64     `json:"rtt_ms"`
 }

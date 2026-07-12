@@ -1,29 +1,11 @@
 package upstream
 
-import (
-	"time"
-
-	"github.com/NodePath81/fbforward/internal/config"
-)
-
-// Scorer encapsulates upstream scoring logic for isolated testing.
-type Scorer interface {
-	ComputeScore(stats UpstreamStats, cfg config.ScoringConfig, bias float64, staleThreshold time.Duration) (tcp, udp, overall float64)
-}
-
-// DefaultScorer uses computeFullScore, preserving existing scoring behavior.
-type DefaultScorer struct{}
-
-func (DefaultScorer) ComputeScore(stats UpstreamStats, cfg config.ScoringConfig, bias float64, staleThreshold time.Duration) (float64, float64, float64) {
-	return computeFullScore(stats, cfg, bias, staleThreshold)
-}
+import "time"
 
 type ActiveChange struct {
-	OldTag        string
-	NewTag        string
-	Reason        string
-	PreviousScore float64
-	NextScore     float64
+	OldTag string
+	NewTag string
+	Reason string
 }
 
 type UsabilityChange struct {

@@ -54,13 +54,6 @@ export function formatMs(value: number, digits = 2): string {
   return `${value.toFixed(digits)} ms`;
 }
 
-export function formatScore(value: number): string {
-  if (!Number.isFinite(value)) {
-    return '-';
-  }
-  return value.toFixed(1);
-}
-
 export function formatAge(seconds: number): string {
   if (!Number.isFinite(seconds)) {
     return '-';

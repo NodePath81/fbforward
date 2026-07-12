@@ -29,7 +29,7 @@ import type {
   OnlineRule
 } from './types';
 import { clearChildren, createEl, qs } from './utils/dom';
-import { formatBytes, formatBytesRate, formatDuration, formatMs, formatPercent, formatScore } from './utils/format';
+import { formatBytes, formatBytesRate, formatDuration, formatMs } from './utils/format';
 import { connectStatusSocket } from './websocket/status';
 
 const storedToken = localStorage.getItem('fbforward_token') || '';
@@ -107,7 +107,6 @@ function startApp(token: string) {
   const ipLogPage = qs<HTMLElement>(document, '#page-iplog');
   const upstreamDetailsModal = qs<HTMLElement>(document, '#upstreamDetailsModal');
   const rttChartContainer = qs<HTMLElement>(document, '#rttChartContainer');
-  const scoreChartContainer = qs<HTMLElement>(document, '#scoreChartContainer');
   const trafficChartContainer = qs<HTMLElement>(document, '#trafficChartContainer');
 
   let pollTimer: number | null = null;
@@ -118,7 +117,6 @@ function startApp(token: string) {
   let pollIntervalMs = getDefaultPollInterval(intervalButtons);
   let upstreamCards = new Map<string, ReturnType<typeof createUpstreamCard>>();
   let rttChart: ChartHandle | null = null;
-  let scoreChart: ChartHandle | null = null;
   let trafficChart: ChartHandle | null = null;
   let prevBytesUp: number | null = null;
   let prevBytesDown: number | null = null;
@@ -341,9 +339,7 @@ function startApp(token: string) {
     for (const [tag, card] of upstreamCards.entries()) {
       const snapshot = metrics[tag] || defaultMetrics(tag, state.activeUpstream);
       card.update(snapshot, {
-        bestRtt: best.bestRtt === tag,
-        bestLoss: best.bestLoss === tag,
-        bestScore: best.bestScore === tag
+        bestRtt: best.bestRtt === tag
       });
     }
     updateUpstreamInteractivity();
@@ -442,13 +438,6 @@ function startApp(token: string) {
         yFormatter: value => formatMs(value, 1)
       });
     }
-    if (!scoreChart) {
-      scoreChart = createChart(scoreChartContainer, {
-        emptyLabel: 'Waiting for score samples',
-        yFormatter: value => formatScore(value),
-        baselineZero: true
-      });
-    }
     if (!trafficChart) {
       trafficChart = createChart(trafficChartContainer, {
         emptyLabel: 'Waiting for traffic samples',
@@ -461,7 +450,6 @@ function startApp(token: string) {
   function renderGraphPage(): void {
     ensureCharts();
     rttChart?.update(buildRTTChartSeries());
-    scoreChart?.update(buildScoreChartSeries());
     trafficChart?.update(buildTrafficChartSeries());
   }
 
@@ -490,13 +478,6 @@ function startApp(token: string) {
     ];
   }
 
-  function buildScoreChartSeries(): ChartSeries[] {
-    return timeSeriesStore.getScoreSeries().map(series => ({
-      label: series.tag,
-      color: getSeriesColor(series.tag),
-      points: series.points
-    }));
-  }
 
   function getSeriesColor(tag: string): string {
     let color = tagColors.get(tag);
@@ -815,15 +796,8 @@ function startApp(token: string) {
     card.appendChild(meta);
 
     const metrics = createEl('div', 'modal-metrics');
-    metrics.appendChild(createDetailRow('Score', formatScore(liveMetrics.score)));
-    metrics.appendChild(createDetailRow('Score TCP', formatScore(liveMetrics.scoreTcp)));
-    metrics.appendChild(createDetailRow('Score UDP', formatScore(liveMetrics.scoreUdp)));
+    metrics.appendChild(createDetailRow('Health', liveMetrics.healthState));
     metrics.appendChild(createDetailRow('RTT', formatMs(liveMetrics.rtt)));
-    metrics.appendChild(createDetailRow('RTT TCP', formatMs(liveMetrics.rttTcp)));
-    metrics.appendChild(createDetailRow('RTT UDP', formatMs(liveMetrics.rttUdp)));
-    metrics.appendChild(createDetailRow('Jitter', formatMs(liveMetrics.jitter)));
-    metrics.appendChild(createDetailRow('Retrans rate', formatPercent(liveMetrics.retransRate, 2)));
-    metrics.appendChild(createDetailRow('Loss rate', formatPercent(liveMetrics.lossRate, 2)));
     card.appendChild(metrics);
 
     closeButton.addEventListener('click', hideUpstreamDetails);
@@ -916,9 +890,7 @@ function startApp(token: string) {
       const now = Date.now();
 
       for (const [tag, metrics] of Object.entries(snapshot.upstreams)) {
-        timeSeriesStore.pushRTT(tag, 'tcp', now, metrics.rttTcp);
-        timeSeriesStore.pushRTT(tag, 'udp', now, metrics.rttUdp);
-        timeSeriesStore.pushScore(tag, now, metrics.score);
+        timeSeriesStore.pushRTT(tag, 'tcp', now, metrics.rtt);
       }
 
       if (
@@ -1252,15 +1224,7 @@ function filterSessions(entries: SessionHistoryEntry[], query: string): SessionH
 function defaultMetrics(tag: string, activeTag: string): UpstreamMetrics {
   return {
     rtt: 0,
-    rttTcp: Number.NaN,
-    rttUdp: Number.NaN,
-    jitter: 0,
-    loss: 0,
-    lossRate: 0,
-    retransRate: 0,
-    score: 0,
-    scoreTcp: 0,
-    scoreUdp: 0,
+    healthState: 'unknown',
     reachable: false,
     unusable: true,
     active: tag === activeTag
@@ -1269,11 +1233,7 @@ function defaultMetrics(tag: string, activeTag: string): UpstreamMetrics {
 
 function computeBestMetrics(metrics: Record<string, UpstreamMetrics>) {
   let bestRtt = '';
-  let bestLoss = '';
-  let bestScore = '';
   let minRtt = Number.POSITIVE_INFINITY;
-  let minLoss = Number.POSITIVE_INFINITY;
-  let maxScore = Number.NEGATIVE_INFINITY;
 
   for (const [tag, snapshot] of Object.entries(metrics)) {
     if (snapshot.unusable) {
@@ -1283,17 +1243,9 @@ function computeBestMetrics(metrics: Record<string, UpstreamMetrics>) {
       minRtt = snapshot.rtt;
       bestRtt = tag;
     }
-    if (snapshot.loss < minLoss) {
-      minLoss = snapshot.loss;
-      bestLoss = tag;
-    }
-    if (snapshot.score > maxScore) {
-      maxScore = snapshot.score;
-      bestScore = tag;
-    }
   }
 
-  return { bestRtt, bestLoss, bestScore };
+  return { bestRtt };
 }
 
 function compareEntries(

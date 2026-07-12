@@ -713,7 +713,7 @@ Retrieve complete runtime configuration (all sections).
 
 **Parameters:** Empty object `{}`
 
-**Result:** Full configuration object with all sections (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `logging`, `shaping`, `geoip`, `ip_log`, `firewall`).
+**Result:** Full configuration object with all sections (`forwarding`, `listeners`, `routes`, `upstreams`, `dns`, `reachability`, `measurement`, `health`, `switching`, `control`, `coordination`, `logging`, `shaping`, `geoip`, `ip_log`, `firewall`).
 
 **Note:** The `coordination` block includes non-secret effective fields such as
 `endpoint` and `heartbeat_interval`. The coordination token is not returned.
@@ -1506,9 +1506,9 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 | `fbforward_upstream_retrans_rate` | gauge | `upstream` | TCP retransmit rate [0, 1] |
 | `fbforward_upstream_loss_rate` | gauge | `upstream` | UDP loss rate [0, 1] |
 | `fbforward_upstream_loss` | gauge | `upstream` | Generic loss metric |
-| `fbforward_upstream_score_tcp` | gauge | `upstream` | TCP quality score |
-| `fbforward_upstream_score_udp` | gauge | `upstream` | UDP quality score |
-| `fbforward_upstream_score` | gauge | `upstream` | Final blended score |
+| `fbforward_upstream_health_state` | gauge | `upstream,state` | One-hot upstream health state |
+| `fbforward_upstream_consecutive_failures` | gauge | `upstream` | Consecutive failed probe cycles |
+| `fbforward_upstream_last_success_timestamp_seconds` | gauge | `upstream` | Last successful probe time |
 | `fbforward_upstream_reachable` | gauge | `upstream` | Reachable (1) or not (0) |
 | `fbforward_upstream_unusable` | gauge | `upstream` | Unusable (1) or usable (0) |
 

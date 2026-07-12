@@ -325,7 +325,7 @@ Expected log output:
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=tcp
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=udp
 2025/01/26 12:00:00 INFO control server started addr=127.0.0.1:8080
-2025/01/26 12:00:05 INFO primary selected tag=primary score=0.85 mode=fast-start
+2025/01/26 12:00:05 INFO upstream health state=healthy upstream=primary rtt_ms=12
 ```
 
 The `primary selected` line confirms fbforward has chosen an upstream. In
@@ -342,7 +342,7 @@ http://127.0.0.1:8080/
 
 The UI displays:
 - Current primary upstream
-- Per-upstream metrics (bandwidth, RTT, jitter, loss/retransmit rates)
+- Per-upstream health state and RTT metrics
 - Active flow counts
 - Score history chart
 
@@ -368,7 +368,7 @@ Check Prometheus metrics:
 curl -H "Authorization: Bearer change-me-to-random-string" http://127.0.0.1:8080/metrics
 ```
 
-Metrics include `fbforward_flows_active`, `fbforward_upstream_score`, `fbforward_bytes_sent_total`, and others.
+Metrics include `fbforward_flows_active`, `fbforward_upstream_health_state`, `fbforward_upstream_rtt_ms`, and others.
 
 ### Step 6: Monitor switching behavior
 

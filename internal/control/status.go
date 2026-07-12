@@ -197,16 +197,13 @@ func listenerPort(listener string) int {
 }
 
 type TestHistoryPayload struct {
-	Upstream    string  `json:"upstream"`
-	Protocol    string  `json:"protocol"`
-	Timestamp   int64   `json:"timestamp"`
-	DurationMs  int64   `json:"duration_ms"`
-	Success     bool    `json:"success"`
-	RTTMs       float64 `json:"rtt_ms"`
-	JitterMs    float64 `json:"jitter_ms"`
-	LossRate    float64 `json:"loss_rate"`
-	RetransRate float64 `json:"retrans_rate"`
-	Error       string  `json:"error,omitempty"`
+	Upstream   string  `json:"upstream"`
+	Protocol   string  `json:"protocol"`
+	Timestamp  int64   `json:"timestamp"`
+	DurationMs int64   `json:"duration_ms"`
+	Success    bool    `json:"success"`
+	RTTMs      float64 `json:"rtt_ms"`
+	Error      string  `json:"error,omitempty"`
 }
 
 type statusErrorPayload struct {

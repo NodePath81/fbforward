@@ -19,8 +19,8 @@ upstreams: [...]                  # Upstream list
 dns: {...}                        # DNS resolution
 reachability: {...}               # ICMP probing
 measurement: {...}                # fbmeasure probe settings
-scoring: {...}                    # Quality scoring algorithm
-switching: {...}                  # Upstream switching behavior
+health: {...}                     # Unified health and RTT state
+switching: {...}                  # Route-local upstream switching behavior
 control: {...}                    # Control plane (HTTP API, web UI)
 notify: {...}                     # fbnotify event delivery
 coordination: {...}               # Optional fbcoord participation
@@ -252,8 +252,7 @@ The `upstreams` section defines the list of available forwarding destinations. E
 | `tag` | string | *required* | Unique identifier for this upstream |
 | `destination` | object | *required* | Forwarding destination (see below) |
 | `measurement` | object | *optional* | Measurement endpoint (see below) |
-| `priority` | float64 | `0` | Static priority adjustment (≥ 0) |
-| `bias` | float64 | `0` | Additive bias adjustment ([-1, 1]) |
+| `priority` | float64 | `0` | Tie-break preference for adaptive route selection (≥ 0) |
 | `shaping` | object | *none* | Per-upstream shaping (requires `shaping.enabled`) |
 
 ### destination
@@ -319,7 +318,8 @@ Typically `measurement.host` matches `destination.host`. Separate measurement ho
 
 ### priority
 
-Static priority bonus used by fast-start preselection. It is not applied in steady-state scoring.
+Priority is used after health and RTT when adaptive candidates are otherwise
+equivalent. It does not override a `down` or `stale` health state.
 
 **Type:** float64
 
@@ -340,34 +340,6 @@ upstreams:
       host: 203.0.113.20
     priority: 50   # Lower priority
 ```
-
-Fast-start score uses `100 / (1 + RTT / 50) + priority`. Steady-state scoring excludes priority. See [Section 6.1.2](algorithm-specifications.md#612-formal-description).
-
-### bias
-
-Additive bias adjustment. Positive bias increases score, negative bias decreases score.
-
-**Type:** float64
-
-**Default:** `0`
-
-**Range:** [-1, 1]
-
-**Example:**
-
-```yaml
-upstreams:
-  - tag: primary
-    destination:
-      host: 203.0.113.10
-    bias: 0.1   # Slight boost
-  - tag: backup
-    destination:
-      host: 203.0.113.20
-    bias: -0.05 # Slight penalty
-```
-
-Bias is transformed via exponential function and applied to quality score. See `scoring.bias_transform.kappa` for bias scaling. See [Section 6.1.2](algorithm-specifications.md#612-formal-description) for details.
 
 ### Per-upstream shaping
 
@@ -397,7 +369,6 @@ At least one of `upload_limit` or `download_limit` must be specified. Shaping ap
 - `tag` must not be empty after trimming whitespace
 - `destination.host` must not be empty
 - `priority` must be ≥ 0
-- `bias` must be in range [-1, 1]
 - If `shaping` is set, `shaping.enabled` must be `true`
 
 ---
@@ -459,7 +430,9 @@ When `strategy` is omitted, both A and AAAA results are used. fbforward selects 
 
 ## 4.5 reachability section
 
-The `reachability` section configures ICMP echo (ping) probing for upstream reachability. ICMP probes run continuously and determine whether upstreams are usable. ICMP probes do not affect quality scoring.
+The `reachability` section configures ICMP echo (ping) probing for adaptive
+route health. ICMP observations update the same unified health state as
+fbmeasure RTT probes.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -535,15 +508,14 @@ Default value ensures at least one full window of probes before reachability aff
 
 ## 4.6 measurement section
 
-The `measurement` section configures fbmeasure-based quality measurements.
-These measurements feed scoring (RTT, jitter, retransmit/loss).
+The `measurement` section configures fbmeasure-based TCP and UDP probes.
+Probe results are reduced to a unified upstream health state and RTT.
 
 ### Startup and staleness
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `startup_delay` | duration | `10s` | Delay before first measurement loop scheduling |
-| `stale_threshold` | duration | `60m` | Age after which protocol measurements are treated as stale |
 | `fallback_to_icmp_on_stale` | bool | `true` | Controls stale-warning logging only |
 
 **Example:**
@@ -551,11 +523,12 @@ These measurements feed scoring (RTT, jitter, retransmit/loss).
 ```yaml
 measurement:
   startup_delay: 30s
-  stale_threshold: 2h
   fallback_to_icmp_on_stale: false
 ```
 
-When measurements are stale, scoring substitutes degraded reference values for the stale protocol (RTT/jitter/retransmit/loss). ICMP remains reachability-only and does not contribute numeric quality scores.
+Staleness is evaluated by the `health.stale_threshold` setting. ICMP and
+fbmeasure observations update the same health state; protocol-specific scores
+are not calculated.
 
 **Validation:**
 - `startup_delay` must be ≥ 0
@@ -615,13 +588,14 @@ measurement:
 
 ### fast_start
 
-Fast-start uses TCP connect RTT probes to `upstreams[].measurement.host:port` for startup preselection, then transitions to normal scoring after warmup.
+Fast-start uses TCP connect RTT probes to seed the unified health state before
+the regular scheduler begins. It does not calculate a separate score or warmup
+model.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable fast-start preselection |
 | `timeout` | duration | `500ms` | Per-probe TCP connect timeout |
-| `warmup_duration` | duration | `15s` | Warmup duration with relaxed switching |
 
 **Example:**
 
@@ -630,14 +604,12 @@ measurement:
   fast_start:
     enabled: true
     timeout: 1s
-    warmup_duration: 30s
 ```
 
 When `enabled` is `false`, startup skips preselection and proceeds directly with normal runtime startup (listeners still start; no blocking on first full measurement).
 
 **Validation:**
 - `timeout` must be > 0
-- `warmup_duration` must be ≥ 0
 
 ### security
 
@@ -684,7 +656,6 @@ Protocol-specific measurement parameters for TCP and UDP probe cycles.
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable TCP measurements |
 | `ping_count` | int | `5` | Number of TCP RTT pings per cycle |
-| `retransmit_bytes` | string | `"500kb"` | Payload sent during the TCP retransmission test |
 | `timeout` | object | *see below* | Timeout configuration |
 
 **timeout:**
@@ -702,7 +673,6 @@ measurement:
     tcp:
       enabled: true
       ping_count: 5
-      retransmit_bytes: 1mb
       timeout:
         per_sample: 15s
         per_cycle: 60s
@@ -714,8 +684,6 @@ measurement:
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable UDP measurements |
 | `ping_count` | int | `5` | Number of UDP RTT pings per cycle |
-| `loss_packets` | int | `64` | Number of UDP datagrams sent for the loss test |
-| `packet_size` | string | `"1200"` | UDP datagram size in bytes |
 | `timeout` | object | *see tcp* | Timeout configuration |
 
 **Example:**
@@ -726,8 +694,6 @@ measurement:
     udp:
       enabled: true
       ping_count: 5
-      loss_packets: 64
-      packet_size: 1200
       timeout:
         per_sample: 10s
         per_cycle: 30s
@@ -736,9 +702,6 @@ measurement:
 **Validation:**
 - At least one of TCP or UDP must be enabled
 - `ping_count` must be > 0
-- `retransmit_bytes` (TCP) must be > 0
-- `loss_packets` (UDP) must be > 0
-- `packet_size` (UDP) must be > 0
 - `timeout.per_sample` must be > 0
 - `timeout.per_cycle` must be > 0
 
@@ -747,7 +710,43 @@ and `sample_count` are rejected during configuration load.
 
 ---
 
-## 4.7 scoring section
+## 4.7 health section
+
+The `health` section controls the unified state machine used by adaptive
+routes. A measurement cycle succeeds when any enabled TCP/UDP probe succeeds;
+all failed probes count as one failure.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `rtt_ewma_alpha` | float64 | `0.25` | RTT EWMA smoothing factor |
+| `failure_threshold` | integer | `3` | Failed cycles before `down` |
+| `recovery_threshold` | integer | `2` | Successful cycles before recovery |
+| `stale_threshold` | duration | `60s` | Age after which a successful state is `stale` |
+
+States are `unknown`, `healthy`, `stale`, and `down`. Adaptive route
+selection filters `down`, prefers healthy candidates, then compares RTT and
+priority. Static routes do not start a measurement scheduler.
+
+## 4.8 switching section
+
+Switching hysteresis applies only to adaptive routes when two healthy
+candidates differ in latency.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `confirm_duration` | duration | `15s` | Candidate advantage must persist this long |
+| `min_hold_time` | duration | `30s` | Minimum time between latency-driven switches |
+| `latency_improvement` | duration | `10ms` | Minimum RTT improvement required |
+| `close_flows_on_failover` | bool | `false` | Close existing flows on immediate failover |
+
+The old `scoring` section and nested switching score/loss thresholds are no
+longer accepted. Existing configurations must be migrated to `health` and the
+flat `switching` fields.
+
+<!-- Historical scoring documentation below is retained only as migration
+reference and is not part of the active configuration contract. -->
+
+## Appendix: removed scoring section
 
 The `scoring` section configures upstream quality scoring. Steady-state scoring uses RTT, jitter, and protocol-specific quality-loss signals (TCP retransmit rate, UDP loss rate), plus protocol blend and bias transform.
 
@@ -846,7 +845,7 @@ The following keys are no longer supported and fail config loading with explicit
 
 ---
 
-## 4.8 switching section
+## Appendix: historical switching section
 
 The `switching` section configures upstream switching behavior in auto mode and fast failover triggers.
 

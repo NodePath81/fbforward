@@ -42,7 +42,6 @@ upstreams:
       port: 9876
     # Optional tuning.
     priority: 0
-    bias: 0
     # Optional per-upstream shaping (requires shaping.enabled).
     # Limits bandwidth to/from this upstream's IP address.
     # shaping:
@@ -72,9 +71,8 @@ reachability:
   startup_delay: 5s
 
 measurement:
-  # Measurement startup delay and staleness behavior.
+  # fbmeasure startup and probe scheduling.
   startup_delay: 10s
-  stale_threshold: 60s
   fallback_to_icmp_on_stale: true
 
   # Scheduling.
@@ -88,7 +86,6 @@ measurement:
   fast_start:
     enabled: true
     timeout: 500ms
-    warmup_duration: 5s
 
   # Optional transport security for fbmeasure.
   security:
@@ -103,61 +100,26 @@ measurement:
     tcp:
       enabled: true
       ping_count: 5
-      retransmit_bytes: 500kb
       timeout:
         per_sample: 10s
         per_cycle: 30s
     udp:
       enabled: true
       ping_count: 5
-      loss_packets: 64
-      packet_size: 1200
       timeout:
         per_sample: 10s
         per_cycle: 30s
 
-scoring:
-  # EMA smoothing and reference values.
-  smoothing:
-    alpha: 0.2
-
-  reference:
-    tcp:
-      latency:
-        rtt: 50
-        jitter: 10
-      retransmit_rate: 0.01
-    udp:
-      latency:
-        rtt: 50
-        jitter: 10
-      loss_rate: 0.01
-
-  weights:
-    tcp:
-      rtt: 0.25
-      jitter: 0.10
-      retransmit_rate: 0.25
-    udp:
-      rtt: 0.15
-      jitter: 0.30
-      loss_rate: 0.15
-    protocol_blend:
-      tcp_weight: 0.5
-      udp_weight: 0.5
-
-  bias_transform:
-    kappa: 0.693
+health:
+  rtt_ewma_alpha: 0.25
+  failure_threshold: 3
+  recovery_threshold: 2
+  stale_threshold: 60s
 
 switching:
-  # Auto mode switch confirmation and failover behavior.
-  auto:
-    confirm_duration: 15s
-    score_delta_threshold: 5
-    min_hold_time: 30s
-  failover:
-    loss_rate_threshold: 0.2
-    retransmit_rate_threshold: 0.2
+  confirm_duration: 15s
+  min_hold_time: 30s
+  latency_improvement: 10ms
   close_flows_on_failover: false
 
 control:

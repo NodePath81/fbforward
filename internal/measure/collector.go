@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -26,7 +25,7 @@ const (
 
 type Collector struct {
 	cfg            config.MeasurementConfig
-	scoring        config.ScoringConfig
+	health         config.HealthConfig
 	manager        *upstream.UpstreamManager
 	metrics        *metrics.Metrics
 	logger         util.Logger
@@ -52,16 +51,13 @@ type RunningTest struct {
 }
 
 type TestResultMetrics struct {
-	RTTMs       float64
-	JitterMs    float64
-	LossRate    float64
-	RetransRate float64
+	RTTMs float64
 }
 
-func NewCollector(cfg config.MeasurementConfig, scoring config.ScoringConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, scheduler *Scheduler, logger util.Logger) *Collector {
+func NewCollector(cfg config.MeasurementConfig, health config.HealthConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, scheduler *Scheduler, logger util.Logger) *Collector {
 	return &Collector{
 		cfg:       cfg,
-		scoring:   scoring,
+		health:    health,
 		manager:   manager,
 		metrics:   metrics,
 		scheduler: scheduler,
@@ -129,6 +125,7 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 }
 
 func (c *Collector) handleMeasurementFailure(tag string, err error) error {
+	c.manager.RecordProbeFailure(tag, "", time.Now())
 	c.failuresMu.Lock()
 	state := c.failureLocked(tag)
 	state.consecutiveFailures++
@@ -154,7 +151,7 @@ func (c *Collector) handleMeasurementSuccess(tag string, result *upstream.Measur
 		state.inFallbackMode = false
 	}
 	c.failuresMu.Unlock()
-	stats := c.manager.UpdateMeasurement(tag, result, c.scoring)
+	stats := c.manager.UpdateMeasurement(tag, result, c.health)
 	if c.metrics != nil {
 		c.metrics.SetUpstreamMetrics(tag, stats)
 	}
@@ -237,57 +234,8 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		Timestamp: time.Now(),
 		Network:   network,
 		RTTMs:     float64(rttStats.Mean) / float64(time.Millisecond),
-		JitterMs:  float64(rttStats.Jitter) / float64(time.Millisecond),
 	}
 	resultMetrics.RTTMs = result.RTTMs
-	resultMetrics.JitterMs = result.JitterMs
-
-	sampleCtx, cancel := context.WithTimeout(ctx, protoCfg.Timeout.PerSample.Duration())
-	switch network {
-	case "tcp":
-		retransBytes, parseErr := config.ParseSize(protoCfg.RetransmitBytes)
-		if parseErr != nil {
-			cancel()
-			err = fmt.Errorf("parse retransmit_bytes: %w", parseErr)
-			errMsg = err.Error()
-			return nil, err
-		}
-		retrans, callErr := client.TCPRetrans(sampleCtx, uint64(retransBytes))
-		cancel()
-		if callErr != nil {
-			errMsg = callErr.Error()
-			return nil, callErr
-		}
-		if err = validateRetransResult(retrans); err != nil {
-			errMsg = err.Error()
-			return nil, err
-		}
-		result.RetransRate = retrans.Rate()
-		resultMetrics.RetransRate = result.RetransRate
-	case "udp":
-		packetSize, parseErr := config.ParseSize(protoCfg.PacketSize)
-		if parseErr != nil {
-			cancel()
-			err = fmt.Errorf("parse packet_size: %w", parseErr)
-			errMsg = err.Error()
-			return nil, err
-		}
-		loss, callErr := client.UDPLoss(sampleCtx, protoCfg.LossPackets, int(packetSize))
-		cancel()
-		if callErr != nil {
-			errMsg = callErr.Error()
-			return nil, callErr
-		}
-		if err = validateLossResult(loss); err != nil {
-			errMsg = err.Error()
-			return nil, err
-		}
-		result.LossRate = loss.LossRate
-		resultMetrics.LossRate = result.LossRate
-	default:
-		cancel()
-		return nil, fmt.Errorf("unsupported protocol %q", network)
-	}
 
 	success = true
 	util.Event(c.logger, slog.LevelInfo, "measure.completed",
@@ -296,8 +244,6 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		"network.protocol", network,
 		"measure.duration_ms", time.Since(startTime).Milliseconds(),
 		"measure.rtt_ms", result.RTTMs,
-		"measure.jitter_ms", result.JitterMs,
-		"measure.loss_rate", maxMetric(result.LossRate, result.RetransRate),
 	)
 	return result, nil
 }
@@ -350,37 +296,4 @@ func (c *Collector) failureLocked(tag string) *failureState {
 
 func (c *Collector) newCycleID() string {
 	return fmt.Sprintf("m-%d", atomic.AddUint64(&c.nextCycleID, 1))
-}
-
-func maxMetric(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func validateRetransResult(result fbmeasure.RetransResult) error {
-	if math.IsNaN(result.Rate()) || math.IsInf(result.Rate(), 0) {
-		return fmt.Errorf("invalid tcp retransmission rate")
-	}
-	if result.Retransmits > result.SegmentsSent {
-		return fmt.Errorf("invalid tcp retransmission counters")
-	}
-	if result.SegmentsSent == 0 && result.Retransmits != 0 {
-		return fmt.Errorf("invalid tcp retransmission counters")
-	}
-	return nil
-}
-
-func validateLossResult(result fbmeasure.LossResult) error {
-	if result.PacketsRecv > result.PacketsSent {
-		return fmt.Errorf("invalid udp loss counters")
-	}
-	if result.PacketsLost > result.PacketsSent {
-		return fmt.Errorf("invalid udp loss counters")
-	}
-	if math.IsNaN(result.LossRate) || math.IsInf(result.LossRate, 0) || result.LossRate < 0 || result.LossRate > 1 {
-		return fmt.Errorf("invalid udp loss rate")
-	}
-	return nil
 }

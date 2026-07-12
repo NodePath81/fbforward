@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
+	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
 func TestNewRuntimeWithIPLogAndFirewallCleansUp(t *testing.T) {
@@ -78,4 +79,22 @@ func TestNewRuntimeWithIPLogAndFirewallCleansUp(t *testing.T) {
 	}
 
 	rt.Stop()
+}
+
+func TestMeasurementUpstreamsOnlyIncludesAdaptiveRoutes(t *testing.T) {
+	r := &Runtime{
+		cfg: config.Config{Routes: []config.RouteConfig{
+			{Name: "static", Strategy: "static", Upstreams: []string{"local"}},
+			{Name: "adaptive", Strategy: "adaptive", Upstreams: []string{"primary", "backup"}},
+		}},
+		upstreams: []*upstream.Upstream{{Tag: "local"}, {Tag: "primary"}, {Tag: "backup"}, {Tag: "unused"}},
+	}
+	got := r.measurementUpstreams()
+	if len(got) != 2 || got[0].Tag != "primary" || got[1].Tag != "backup" {
+		t.Fatalf("unexpected adaptive measurement set: %+v", got)
+	}
+	r.cfg.Routes = []config.RouteConfig{{Name: "static", Strategy: "static", Upstreams: []string{"local"}}}
+	if got := r.measurementUpstreams(); len(got) != 0 {
+		t.Fatalf("static-only routes should not start measurement, got %d upstreams", len(got))
+	}
 }

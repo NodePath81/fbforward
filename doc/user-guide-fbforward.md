@@ -8,7 +8,7 @@ This guide covers fbforward operation, configuration, and troubleshooting.
 
 ### What fbforward does
 
-fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on measured network quality. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures upstream quality using fbmeasure probes (RTT, jitter, TCP retransmit rate, UDP loss rate) and ICMP reachability probes.
+fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on health, RTT, and priority. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures adaptive-route upstreams using fbmeasure RTT probes and ICMP reachability probes.
 
 ### NAT-style forwarding model
 
@@ -44,7 +44,10 @@ Once a [flow](glossary.md#flow) (TCP connection or UDP 5-tuple mapping) is assig
 
 fbforward supports three upstream selection modes:
 
-**Auto mode** (default): The [scoring engine](glossary.md#scoring-engine) evaluates upstream quality using fbmeasure results. When a candidate upstream's score exceeds the current primary's score by the configured [threshold](glossary.md#score-delta-threshold) for the [confirmation duration](glossary.md#confirm-duration), fbforward switches to the new primary. Switching requires the [hold time](glossary.md#hold-time) to have elapsed since the last switch.
+**Auto mode** (default): adaptive routes select from healthy upstreams, then
+compare RTT and priority. A latency improvement must remain for the configured
+confirmation duration and hold time before an existing route preference is
+changed.
 
 **Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
 
@@ -80,7 +83,7 @@ For deploying and operating the coordination service itself, see [fbcoord user g
 
 fbforward triggers immediate upstream switching on severe quality degradation:
 
-- **High loss/retransmit rate**: When TCP retransmit rate or UDP loss rate exceeds configured thresholds (default 20%) over recent measurement windows
+- **Health failure**: When consecutive probe cycles fail, the upstream enters `down` and adaptive routes fail over
 - **Dial failures**: When consecutive TCP dial attempts to an upstream fail
 
 Fast failover bypasses normal confirmation duration requirements.
@@ -138,7 +141,7 @@ Use `check` before deploying configuration changes to catch syntax and schema er
 
 ## 3.1.2 Configuration
 
-fbforward loads configuration from a YAML file specified via `--config` flag. The configuration defines listeners, upstreams, measurement parameters, scoring weights, switching policy, and control plane settings.
+fbforward loads configuration from a YAML file specified via `--config` flag. The configuration defines listeners, routes, upstreams, health/measurement parameters, switching policy, and control plane settings.
 
 ### Configuration file format
 
@@ -169,7 +172,6 @@ upstreams:                          # List of upstream definitions
     destination: {...}
     measurement: {...}
     priority: 0
-    bias: 0
     shaping: {...}
 
 dns:
@@ -182,22 +184,22 @@ reachability:
 
 measurement:
   startup_delay: 10s                # Delay before first measurement
-  stale_threshold: 60m              # Max age for valid measurements
   fallback_to_icmp_on_stale: true   # Log warning when measurements stale
   schedule: {...}                   # Measurement scheduling
   fast_start: {...}                 # Fast-start mode config
   security: {...}                   # fbmeasure TCP transport security
   protocols: {...}                  # TCP/UDP test parameters
 
-scoring:
-  smoothing: {...}                  # EMA smoothing parameters
-  reference: {...}                  # Target/ideal metric values
-  weights: {...}                    # Metric importance weights
-  bias_transform: {...}             # Bias multiplier configuration
+health:
+  rtt_ewma_alpha: 0.25              # RTT EWMA factor
+  failure_threshold: 3              # Failed cycles before down
+  recovery_threshold: 2             # Successful cycles before recovery
+  stale_threshold: 60s              # Health staleness window
 
 switching:
-  auto: {...}                       # Auto mode switching parameters
-  failover: {...}                   # Fast failover thresholds
+  confirm_duration: 15s             # Candidate confirmation window
+  min_hold_time: 30s                # Minimum time between switches
+  latency_improvement: 10ms         # Required RTT improvement
   close_flows_on_failover: false    # Whether to close existing flows
 
 control:
@@ -266,9 +268,9 @@ The forwarder runs in the foreground and logs to stderr. Startup sequence:
 
 1. Load and validate configuration
 2. Resolve upstream hostnames via DNS
-3. Create upstream manager with scoring configuration
-4. Start ICMP reachability prober
-5. Start measurement collector
+3. Create upstream manager with health configuration
+4. Start health probes only for adaptive-route upstreams
+5. Start measurement collector only when adaptive routes require it
 6. Start TCP/UDP listeners
 7. Start control plane HTTP server
 8. Enter running state
@@ -285,7 +287,7 @@ Expected startup logs:
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=tcp
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=udp
 2025/01/26 12:00:00 INFO control server started addr=127.0.0.1:8080
-2025/01/26 12:00:05 INFO primary selected tag=primary score=0.85 mode=fast-start
+2025/01/26 12:00:05 INFO upstream health state=healthy upstream=primary rtt_ms=12
 ```
 
 Stop fbforward:
@@ -364,9 +366,7 @@ The UI displays:
 
 **Upstream status**:
 - Current primary upstream (highlighted)
-- Per-upstream scores and metrics
-- RTT and jitter
-- Loss/retransmit rates
+- Per-upstream health state and RTT
 - Reachability status
 
 **Flow statistics**:
@@ -380,8 +380,8 @@ The UI displays:
 - IP-log total/rejection record counts and file size
 - Manual `Refresh GeoIP` action from the dashboard status card
 
-**Score history**:
-- Time-series chart of upstream scores
+**RTT history**:
+- Time-series chart of unified upstream RTT
 - Switching events marked on chart
 
 **IP log page**:
@@ -395,7 +395,7 @@ The UI displays:
 - Measurement errors
 
 **Update mechanisms**:
-- Upstream metrics (RTT, loss/retransmit, scores, traffic rates) are polled from `/metrics` endpoint at a user-selectable interval (1s, 2s, or 5s via UI buttons)
+- Upstream health, RTT and traffic rates are polled from `/metrics` endpoint at a user-selectable interval (1s, 2s, or 5s via UI buttons)
 - Connection and queue snapshots are delivered via WebSocket subscription
 - Connection/flow events and measurement completions are pushed via WebSocket for real-time updates to the active connections list and test history
 
@@ -411,7 +411,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/metrics
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `fbforward_upstream_score` | Gauge | `upstream` | Final upstream quality score |
+| `fbforward_upstream_health_state` | Gauge | `upstream,state` | One-hot health state |
 | `fbforward_upstream_reachable` | Gauge | `upstream` | Reachability (1=reachable, 0=unreachable) |
 | `fbforward_active_upstream` | Gauge | `upstream` | Active upstream (1=active, 0=inactive) |
 | `fbforward_tcp_active` | Gauge | - | Active TCP connections |
@@ -419,9 +419,8 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/metrics
 | `fbforward_bytes_up_total` | Counter | `upstream` | Total uploaded bytes |
 | `fbforward_bytes_down_total` | Counter | `upstream` | Total downloaded bytes |
 | `fbforward_upstream_rtt_ms` | Gauge | `upstream` | Mean RTT (milliseconds) |
-| `fbforward_upstream_jitter_ms` | Gauge | `upstream` | RTT jitter (milliseconds) |
-| `fbforward_upstream_loss_rate` | Gauge | `upstream` | UDP loss rate [0, 1] |
-| `fbforward_upstream_retrans_rate` | Gauge | `upstream` | TCP retransmit rate [0, 1] |
+| `fbforward_upstream_consecutive_failures` | Gauge | `upstream` | Consecutive failed probe cycles |
+| `fbforward_upstream_last_success_timestamp_seconds` | Gauge | `upstream` | Last successful probe time |
 | `fbforward_measurement_queue_size` | Gauge | - | Pending measurements in queue |
 
 For the complete metrics catalog, see [Section 5.2.4 Prometheus metrics](api-reference.md#524-prometheus-metrics).
@@ -489,9 +488,9 @@ Common log patterns:
 
 **Primary selection**:
 ```
-INFO primary selected tag=backup score=0.92 reason="score delta" old_primary=primary
+INFO upstream health state=healthy upstream=backup rtt_ms=12
 ```
-Indicates upstream switch. Check `tag` for new primary, `reason` for trigger.
+Health and route-switch events identify the selected upstream and measured RTT.
 
 **Measurement errors**:
 ```
@@ -501,9 +500,9 @@ Indicates connectivity issue to measurement endpoint. Check fbmeasure status on 
 
 **Fast failover**:
 ```
-INFO fast failover triggered tag=primary reason="high retransmit rate" rate=0.25
+INFO upstream health changed tag=primary state=down
 ```
-Indicates immediate switch due to quality degradation. Check network conditions.
+Indicates immediate failover after consecutive probe failures.
 
 **Unusable upstream**:
 ```
@@ -588,7 +587,7 @@ Resolution: Verify DNS configuration or use IP address in `upstreams[].destinati
 
 **"measurement stale: falling back to ICMP"**
 
-Cause: fbmeasure probe cycles have not completed within `measurement.stale_threshold`.
+Cause: fbmeasure probe cycles have not completed within `health.stale_threshold`.
 
 Resolution: Check fbmeasure connectivity and network conditions. Review measurement logs for errors.
 
@@ -671,12 +670,13 @@ If traffic shaping is enabled, verify `shaping.aggregate_limit` and per-upstream
 
 **Frequent switching**:
 
-Check score history in web UI. Frequent switches indicate unstable network conditions or misconfigured switching policy.
+Check RTT and health history in web UI. Frequent switches indicate unstable
+network conditions or an overly small latency improvement threshold.
 
 Adjust:
-- Increase `switching.auto.confirm_duration` (default 15s)
-- Increase `switching.auto.min_hold_time` (default 30s)
-- Increase `switching.auto.score_delta_threshold` (default 5.0)
+- Increase `switching.confirm_duration` (default 15s)
+- Increase `switching.min_hold_time` (default 30s)
+- Increase `switching.latency_improvement` (default 10ms)
 
 **Upstream marked unusable**:
 

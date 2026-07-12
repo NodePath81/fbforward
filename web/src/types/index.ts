@@ -25,6 +25,8 @@ export interface UpstreamSnapshot {
   active: boolean;
   usable: boolean;
   reachable: boolean;
+  health_state?: 'unknown' | 'healthy' | 'down' | 'stale';
+  rtt_ms?: number;
 }
 
 export interface UpstreamConfig {
@@ -36,15 +38,7 @@ export interface UpstreamConfig {
 
 export interface UpstreamMetrics {
   rtt: number;
-  rttTcp: number;
-  rttUdp: number;
-  jitter: number;
-  loss: number;
-  lossRate: number;
-  retransRate: number;
-  score: number;
-  scoreTcp: number;
-  scoreUdp: number;
+  healthState: 'unknown' | 'healthy' | 'down' | 'stale';
   reachable: boolean;
   unusable: boolean;
   active: boolean;
@@ -397,9 +391,6 @@ export interface WSMessage {
   duration_ms?: number;
   success?: boolean;
   rtt_ms?: number;
-  jitter_ms?: number;
-  loss_rate?: number;
-  retrans_rate?: number;
   error?: string;
   code?: string;
   message?: string;

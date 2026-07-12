@@ -19,7 +19,7 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 - Accepts client connections on configured TCP and UDP listeners
 - Forwards traffic to one of multiple configured upstreams
 - Measures upstream quality using fbmeasure targeted probes and ICMP reachability probes
-- Selects the best upstream automatically based on a composite quality score
+- Selects the best upstream automatically based on health, RTT, and priority
 - Can optionally participate in an external fbcoord service to coordinate upstream selection across multiple fbforward nodes in one shared global state
 - Pins each flow to its assigned upstream until completion, ensuring in-flight connections are not disrupted
 - Can optionally manage GeoIP databases for ASN and country lookups
@@ -195,13 +195,13 @@ fbforward initializes components in a specific order to ensure dependencies are 
 2. **Supervisor**: Loads YAML configuration, validates schema, constructs Runtime
 3. **Runtime**:
    - Resolves upstream hostnames via DNS
-   - Creates UpstreamManager with scoring configuration
+   - Creates UpstreamManager with health and switching configuration
    - Initializes Metrics aggregator and StatusStore
    - Creates GeoIP manager (if `geoip.enabled`): loads MMDB databases from disk or downloads from URLs, starts background refresh goroutine
    - Creates IP-log store and pipeline (if `ip_log.enabled`): opens SQLite database, starts enrichment/writer goroutines and retention prune loop
    - Creates firewall policy provider: loads and compiles the external policy file (or deprecated inline fallback), wires GeoIP lookups for ASN/country rules, and supports atomic reload
-   - Runs fast-start mode: Performs lightweight TCP dial probes to each upstream's measurement endpoint, computes fast-start scores from dial RTT, and selects initial primary
-   - Starts ICMP prober for reachability monitoring (does not affect scoring)
+   - Runs fast-start mode: Performs lightweight TCP dial probes and seeds health/RTT state
+   - Starts ICMP and fbmeasure probes only for upstreams used by adaptive routes
    - Starts measurement collector for full TCP/UDP probe cycles
    - Creates and starts TCP/UDP listeners for each configured bind address
    - Starts ControlServer with RPC, metrics, WebSocket, and UI endpoints
@@ -264,3 +264,8 @@ fbforward uses goroutines for concurrency:
 - One goroutine for IP-log retention pruning (if `ip_log.enabled`)
 
 All goroutines receive a context derived from `Runtime.ctx`. Canceling the context triggers shutdown. Components use channels for cross-goroutine communication and `sync.RWMutex` for shared state access.
+# Current selection model
+
+The active implementation uses a unified upstream health state and RTT EWMA.
+Older references to composite scoring in this document describe historical
+behavior and are not valid configuration or runtime concepts.
