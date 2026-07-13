@@ -339,19 +339,21 @@ stateDiagram-v2
     Primary --> Unusable: Fast failover
 ```
 
-### D12: Auto mode switching decision
+### D12: Route-local selection decision
 
 **Section:** 4.8 Switching section
-**Purpose:** Show decision tree for automatic upstream switching
+**Purpose:** Show route-local decision tree for static defaults and adaptive selection
 **Type:** Flowchart
 
 ```mermaid
 flowchart TB
-    Start[Health snapshot] --> Healthy{Healthy candidate?}
-    Healthy -->|No| Fallback[Filter down/cooldown]
-    Healthy -->|Yes| RTT[Compare RTT]
-    RTT --> Priority[Compare priority and order]
-    Priority --> Select[Select route-local upstream]
+    Start[New Flow] --> Strategy{Route strategy}
+    Strategy -->|static| Default[Select default upstream]
+    Strategy -->|adaptive| Override{Usable route override?}
+    Override -->|Yes| SelectOverride[Select override]
+    Override -->|No or unavailable| Healthy[Filter down/cooldown]
+    Healthy --> RTT[Compare health, RTT, priority, order]
+    RTT --> Select[Select route-local upstream]
 ```
 
 ---
@@ -451,8 +453,8 @@ sequenceDiagram
     end
 
     Note over Client,Store: RPC Operations
-    Client->>RPC: POST SetUpstream (Bearer token)
-    RPC->>Store: Update primary
+    Client->>RPC: POST SetRouteOverride (Bearer token)
+    RPC->>Store: Update route-local override
     Store-->>RPC: OK
     RPC-->>UI: Success response
 ```

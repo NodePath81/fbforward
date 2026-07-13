@@ -34,6 +34,43 @@ func TestModernTopologyNormalizesListenersAndRoutes(t *testing.T) {
 	if len(cfg.Forwarding.Listeners) != 2 || cfg.Forwarding.Listeners[0].BindPort != 443 || cfg.Forwarding.Listeners[1].BindAddr != "::" {
 		t.Fatalf("unexpected normalized listeners: %+v", cfg.Forwarding.Listeners)
 	}
+	if cfg.Routes[0].DefaultUpstream != "local" {
+		t.Fatalf("expected single static route default, got %q", cfg.Routes[0].DefaultUpstream)
+	}
+}
+
+func TestStaticRouteDefaultAndMultiUpstreamValidation(t *testing.T) {
+	base := func(route RouteConfig) Config {
+		cfg := Config{
+			Listeners: []ListenerSpec{{Name: "web", Bind: ":443", Protocol: "tcp", Route: "web"}},
+			Routes:    []RouteConfig{route},
+			Upstreams: []UpstreamConfig{
+				{Tag: "a", Destination: DestinationConfig{Host: "127.0.0.1"}, Measurement: UpstreamMeasurementConfig{Port: 9876}},
+				{Tag: "b", Destination: DestinationConfig{Host: "127.0.0.2"}, Measurement: UpstreamMeasurementConfig{Port: 9876}},
+			},
+		}
+		cfg.Forwarding.Limits = ForwardingLimitsConfig{MaxTCPConnections: 1, MaxUDPMappings: 1}
+		cfg.Forwarding.IdleTimeout = IdleTimeoutConfig{TCP: Duration(time.Second), UDP: Duration(time.Second)}
+		cfg.Control.AuthToken = "0123456789abcdef"
+		cfg.setDefaults()
+		return cfg
+	}
+	for _, test := range []struct {
+		name  string
+		route RouteConfig
+		want  string
+	}{
+		{name: "multiple requires default", route: RouteConfig{Name: "web", Strategy: "static", Upstreams: []string{"a", "b"}}, want: "must explicitly set default_upstream"},
+		{name: "default must be a member", route: RouteConfig{Name: "web", Strategy: "static", Upstreams: []string{"a", "b"}, DefaultUpstream: "missing"}, want: "is not in route upstreams"},
+		{name: "adaptive rejects default", route: RouteConfig{Name: "web", Strategy: "adaptive", Upstreams: []string{"a", "b"}, DefaultUpstream: "a"}, want: "only valid for static"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base(test.route)
+			if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q, got %v", test.want, err)
+			}
+		})
+	}
 }
 
 func TestModernTopologyValidationRules(t *testing.T) {

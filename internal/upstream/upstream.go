@@ -210,9 +210,36 @@ func (m *UpstreamManager) SelectStatic(tag string) (*Upstream, error) {
 	return up, nil
 }
 
+// SelectOverride checks an operator-selected upstream. Adaptive overrides
+// additionally require a non-down health state; static routes intentionally
+// do not consult health and only validate address/cooldown here.
+func (m *UpstreamManager) SelectOverride(tag string, adaptive bool) (*Upstream, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	up := m.upstreams[strings.TrimSpace(tag)]
+	if up == nil {
+		return nil, fmt.Errorf("upstream %q is unavailable", tag)
+	}
+	m.refreshStatsLocked(up)
+	if up.ActiveIP() == nil || up.dialFailUntil.After(time.Now()) || (adaptive && up.stats.HealthState == HealthDown) {
+		return nil, fmt.Errorf("upstream %q is unavailable", tag)
+	}
+	return up, nil
+}
+
 // SelectUpstreamFrom enforces route membership and ranks candidates by
 // health, RTT, priority and stable configuration order.
 func (m *UpstreamManager) SelectUpstreamFrom(tags []string) (*Upstream, error) {
+	return m.selectUpstreamFrom(tags, true)
+}
+
+// SelectAdaptiveFrom performs route-local health selection without consulting
+// the deprecated global manual mode.
+func (m *UpstreamManager) SelectAdaptiveFrom(tags []string) (*Upstream, error) {
+	return m.selectUpstreamFrom(tags, false)
+}
+
+func (m *UpstreamManager) selectUpstreamFrom(tags []string, honorGlobalManual bool) (*Upstream, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, up := range m.upstreams {
@@ -241,7 +268,7 @@ func (m *UpstreamManager) SelectUpstreamFrom(tags []string) (*Upstream, error) {
 		}
 		return up, nil
 	}
-	if m.mode == ModeManual && contains(m.manualTag) {
+	if honorGlobalManual && m.mode == ModeManual && contains(m.manualTag) {
 		if up := m.upstreams[m.manualTag]; up != nil && m.selectableLocked(up, now) {
 			return up, nil
 		}

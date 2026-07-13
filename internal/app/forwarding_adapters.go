@@ -15,35 +15,20 @@ import (
 
 type upstreamPicker struct {
 	manager *upstream.UpstreamManager
-	routes  map[string]routeSelection
+	routes  *upstream.RouteSelector
 	metrics *metrics.Metrics
-}
-
-type routeSelection struct {
-	strategy  string
-	upstreams []string
 }
 
 func (p *upstreamPicker) Pick(meta flow.Meta) (forwarding.Upstream, error) {
 	if p == nil || p.manager == nil {
 		return forwarding.Upstream{}, fmt.Errorf("upstream picker is unavailable")
 	}
-	var tags []string
-	strategy := "adaptive"
-	if len(p.routes) > 0 {
-		route, ok := p.routes[meta.Route]
-		if !ok {
-			return forwarding.Upstream{}, fmt.Errorf("route %q not found", meta.Route)
-		}
-		tags = route.upstreams
-		strategy = route.strategy
-	}
 	var selected *upstream.Upstream
 	var err error
-	if strategy == "static" && len(tags) == 1 {
-		selected, err = p.manager.SelectStatic(tags[0])
+	if p.routes != nil && p.routes.HasRoutes() {
+		selected, _, err = p.routes.Pick(meta.Route)
 	} else {
-		selected, err = p.manager.SelectUpstreamFrom(tags)
+		selected, err = p.manager.SelectAdaptiveFrom(nil)
 	}
 	if err != nil {
 		return forwarding.Upstream{}, err
@@ -67,17 +52,28 @@ func (p *upstreamPicker) Pick(meta flow.Meta) (forwarding.Upstream, error) {
 }
 
 func newUpstreamPicker(manager *upstream.UpstreamManager, routes []config.RouteConfig) *upstreamPicker {
-	picker := &upstreamPicker{manager: manager}
-	if len(routes) == 0 {
-		return picker
+	return &upstreamPicker{manager: manager, routes: upstream.NewRouteSelector(manager, routes)}
+}
+
+func (p *upstreamPicker) SetRouteOverride(route, tag string) error {
+	if p == nil || p.routes == nil {
+		return fmt.Errorf("route selector is unavailable")
 	}
-	picker.routes = make(map[string]routeSelection, len(routes))
-	for _, route := range routes {
-		picker.routes[route.Name] = routeSelection{
-			strategy: route.Strategy, upstreams: append([]string(nil), route.Upstreams...),
-		}
+	return p.routes.SetOverride(route, tag)
+}
+
+func (p *upstreamPicker) ClearRouteOverride(route string) error {
+	if p == nil || p.routes == nil {
+		return fmt.Errorf("route selector is unavailable")
 	}
-	return picker
+	return p.routes.ClearOverride(route)
+}
+
+func (p *upstreamPicker) RouteStatus() []upstream.RouteStatus {
+	if p == nil || p.routes == nil {
+		return nil
+	}
+	return p.routes.Status()
 }
 
 func (p *upstreamPicker) PickOverride(_ flow.Meta, tag string) (forwarding.Upstream, error) {

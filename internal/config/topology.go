@@ -106,7 +106,11 @@ func (c *Config) normalizeTopology() error {
 				if len(upstreams) == 1 {
 					strategy = "static"
 				}
-				c.Routes = append(c.Routes, RouteConfig{Name: listener.Route, Strategy: strategy, Upstreams: append([]string(nil), upstreams...)})
+				routeConfig := RouteConfig{Name: listener.Route, Strategy: strategy, Upstreams: append([]string(nil), upstreams...)}
+				if strategy == "static" && len(upstreams) == 1 {
+					routeConfig.DefaultUpstream = upstreams[0]
+				}
+				c.Routes = append(c.Routes, routeConfig)
 			}
 		}
 		if c.configLoaded {

@@ -31,9 +31,16 @@ A bind address and port where fbforward accepts client connections. Each listene
 The subsystem that probes adaptive-route upstreams with fbmeasure TCP/UDP RTT
 probes and maintains a unified health state. It does not calculate a score.
 
+### Route-local override
+An in-memory operator preference attached to one route. It affects only new
+flows. Adaptive routes temporarily fall back within their configured members
+when the override is unavailable; static routes remain strict and do not
+automatically fail over.
+
 ### Primary upstream
-Legacy control-plane term for the currently selected upstream. Adaptive routes
-select independently by health, RTT, priority, and configuration order.
+Legacy control-plane term for a globally selected upstream. New deployments
+should use route-local defaults and overrides; adaptive routes select
+independently by health, RTT, priority, and configuration order.
 
 ### Proxy
 See *Forwarder*.

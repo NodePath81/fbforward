@@ -161,9 +161,10 @@ type ListenerSpec struct {
 }
 
 type RouteConfig struct {
-	Name      string   `yaml:"name"`
-	Strategy  string   `yaml:"strategy"`
-	Upstreams []string `yaml:"upstreams"`
+	Name            string   `yaml:"name"`
+	Strategy        string   `yaml:"strategy"`
+	Upstreams       []string `yaml:"upstreams"`
+	DefaultUpstream string   `yaml:"default_upstream,omitempty"`
 }
 
 type UpstreamConfig struct {
@@ -706,12 +707,15 @@ func (c *Config) validate() error {
 		seenRoutes[route.Name] = struct{}{}
 		switch route.Strategy {
 		case "static":
-			if len(route.Upstreams) != 1 {
-				return fmt.Errorf("routes[%s].upstreams must contain exactly one upstream for static strategy", route.Name)
+			if len(route.Upstreams) == 0 {
+				return fmt.Errorf("routes[%s].upstreams must contain at least one upstream for static strategy", route.Name)
 			}
 		case "adaptive":
 			if len(route.Upstreams) < 2 {
 				return fmt.Errorf("routes[%s].upstreams must contain at least two upstreams for adaptive strategy", route.Name)
+			}
+			if strings.TrimSpace(route.DefaultUpstream) != "" {
+				return fmt.Errorf("routes[%s].default_upstream is only valid for static strategy", route.Name)
 			}
 		default:
 			return fmt.Errorf("routes[%s].strategy must be static or adaptive", route.Name)
@@ -729,6 +733,17 @@ func (c *Config) validate() error {
 			seenRouteUpstreams[tag] = struct{}{}
 			if _, ok := upstreamTags[tag]; !ok {
 				return fmt.Errorf("routes[%s].upstreams references unknown upstream %s", route.Name, tag)
+			}
+		}
+		if route.Strategy == "static" {
+			route.DefaultUpstream = strings.TrimSpace(route.DefaultUpstream)
+			if route.DefaultUpstream == "" {
+				if len(route.Upstreams) > 1 {
+					return fmt.Errorf("routes[%s] with multiple static upstreams must explicitly set default_upstream", route.Name)
+				}
+				route.DefaultUpstream = route.Upstreams[0]
+			} else if _, ok := seenRouteUpstreams[route.DefaultUpstream]; !ok {
+				return fmt.Errorf("routes[%s].default_upstream %s is not in route upstreams", route.Name, route.DefaultUpstream)
 			}
 		}
 	}

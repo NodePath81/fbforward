@@ -16,6 +16,9 @@ listeners:
     route: web
 
 routes:
+  # static routes may list several upstreams for operator overrides; when
+  # there is more than one, set default_upstream explicitly. Static routes
+  # never fail over automatically.
   - name: web
     strategy: adaptive
     upstreams: [primary, backup]

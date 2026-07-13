@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"net"
 	"testing"
 	"time"
 
@@ -80,6 +81,61 @@ func TestRouteSelectionPrefersHealthyOverLowerRTTStale(t *testing.T) {
 	up, err := m.SelectUpstreamFrom([]string{"healthy", "stale"})
 	if err != nil || up.Tag != "healthy" {
 		t.Fatalf("expected healthy upstream to win over stale RTT, got %v, %v", up, err)
+	}
+}
+
+func TestRouteSelectorStaticOverrideDoesNotFallback(t *testing.T) {
+	a := testUpstream("a", HealthDown, time.Millisecond, 0)
+	b := testUpstream("b", HealthHealthy, time.Millisecond, 0)
+	a.SetActiveIP(net.ParseIP("192.0.2.1"))
+	b.SetActiveIP(net.ParseIP("192.0.2.2"))
+	m := NewUpstreamManager([]*Upstream{a, b}, nil)
+	selector := NewRouteSelector(m, []config.RouteConfig{{Name: "web", Strategy: "static", Upstreams: []string{"a", "b"}, DefaultUpstream: "a"}})
+	if _, _, err := selector.Pick("web"); err != nil {
+		t.Fatalf("static route should ignore health: %v", err)
+	}
+	if err := m.SetManual("a"); err != nil {
+		// SetManual is expected to reject down upstreams; this branch only
+		// verifies static selection does not rely on that global state.
+		_ = err
+	}
+	m.MarkDialFailure("a", time.Minute)
+	if _, _, err := selector.Pick("web"); err == nil {
+		t.Fatal("expected static route to fail without fallback during cooldown")
+	}
+	if err := selector.SetOverride("web", "b"); err != nil {
+		t.Fatal(err)
+	}
+	selected, status, err := selector.Pick("web")
+	if err != nil || selected.Tag != "b" || status.OverrideState != OverrideActive {
+		t.Fatalf("unexpected static override: selected=%v status=%+v err=%v", selected, status, err)
+	}
+}
+
+func TestRouteSelectorAdaptiveOverrideFallsBackAndRecovers(t *testing.T) {
+	a := &Upstream{Tag: "a"}
+	b := &Upstream{Tag: "b"}
+	a.SetActiveIP(net.ParseIP("192.0.2.1"))
+	b.SetActiveIP(net.ParseIP("192.0.2.2"))
+	m := NewUpstreamManager([]*Upstream{a, b}, nil)
+	m.SetHealthConfig(config.HealthConfig{RTTEWMAAlpha: 0.25, FailureThreshold: 3, RecoveryThreshold: 2, StaleThreshold: config.Duration(time.Minute)})
+	m.UpdateMeasurement("b", &MeasurementResult{RTTMs: 10, Timestamp: time.Now()})
+	for i := 0; i < 3; i++ {
+		m.RecordProbeFailure("a", time.Now())
+	}
+	selector := NewRouteSelector(m, []config.RouteConfig{{Name: "proxy", Strategy: "adaptive", Upstreams: []string{"a", "b"}}})
+	if err := selector.SetOverride("proxy", "a"); err != nil {
+		t.Fatal(err)
+	}
+	selected, status, err := selector.Pick("proxy")
+	if err != nil || selected.Tag != "b" || status.OverrideState != OverrideFallback {
+		t.Fatalf("expected adaptive fallback: selected=%v status=%+v err=%v", selected, status, err)
+	}
+	m.UpdateMeasurement("a", &MeasurementResult{RTTMs: 5, Timestamp: time.Now()})
+	m.UpdateMeasurement("a", &MeasurementResult{RTTMs: 5, Timestamp: time.Now()})
+	selected, status, err = selector.Pick("proxy")
+	if err != nil || selected.Tag != "a" || status.OverrideState != OverrideActive {
+		t.Fatalf("expected override recovery: selected=%v status=%+v err=%v", selected, status, err)
 	}
 }
 

@@ -26,6 +26,7 @@ type statusResponse struct {
 	Mode           string                      `json:"mode"`
 	ActiveUpstream string                      `json:"active_upstream"`
 	Upstreams      []upstream.UpstreamSnapshot `json:"upstreams"`
+	Routes         []upstream.RouteStatus      `json:"routes,omitempty"`
 }
 
 func (c *ControlServer) rpcSetUpstream(ctx *rpcContext, raw json.RawMessage) (any, *rpcFault) {
@@ -34,6 +35,25 @@ func (c *ControlServer) rpcSetUpstream(ctx *rpcContext, raw json.RawMessage) (an
 		return rpcError(fault.Status, fault.Message)
 	}
 	mode := strings.ToLower(params.Mode)
+	if c.routes != nil {
+		routes := c.routes.RouteStatus()
+		if len(routes) != 1 {
+			return rpcError(http.StatusBadRequest, "SetUpstream is deprecated; use route-local override")
+		}
+		var err error
+		switch mode {
+		case "auto":
+			err = c.routes.ClearRouteOverride(routes[0].Name)
+		case "manual":
+			err = c.routes.SetRouteOverride(routes[0].Name, params.Tag)
+		default:
+			return rpcError(http.StatusBadRequest, "invalid mode")
+		}
+		if err != nil {
+			return rpcError(http.StatusBadRequest, err.Error())
+		}
+		return rpcOK(nil)
+	}
 	switch mode {
 	case "auto":
 		c.manager.SetAuto()
@@ -59,11 +79,15 @@ func (c *ControlServer) rpcGetStatus(_ *rpcContext, raw json.RawMessage) (any, *
 	if fault := decodeOptionalParams(raw, &struct{}{}); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	return rpcOK(statusResponse{
+	response := statusResponse{
 		Mode:           c.manager.Mode().String(),
 		ActiveUpstream: c.manager.ActiveTag(),
 		Upstreams:      c.manager.Snapshot(),
-	})
+	}
+	if c.routes != nil {
+		response.Routes = c.routes.RouteStatus()
+	}
+	return rpcOK(response)
 }
 
 func (c *ControlServer) rpcListUpstreams(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {

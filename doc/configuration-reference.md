@@ -114,9 +114,19 @@ routes:
     upstreams: [web-local]
 ```
 
-`static` routes require exactly one upstream. `adaptive` routes require at
-least two upstreams and choose only among their listed members. Listener names
-and route names must be unique, and every upstream reference must exist.
+`static` routes require at least one upstream. With one upstream,
+`default_upstream` is filled from that sole member. With multiple upstreams,
+`default_upstream` is required and selects the only configured destination;
+static routes never fail over automatically. `adaptive` routes require at
+least two upstreams, reject `default_upstream`, and choose only among their
+listed members. Listener names and route names must be unique, and every
+upstream reference must exist.
+
+Operator overrides are route-local. `SetRouteOverride` changes the selected
+upstream for new flows only. An adaptive override is a soft preference: if the
+target is down or in dial cooldown, the route falls back to its other adaptive
+candidates and resumes preferring the override when it recovers. A static
+override is strict and does not fall back to another configured upstream.
 
 The old `forwarding.listeners` form is converted explicitly at load time and
 produces a deprecation warning. New-format YAML uses strict unknown-field

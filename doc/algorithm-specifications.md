@@ -32,9 +32,9 @@ observations increment failures. `failure_threshold` moves an upstream to
 
 ## Route-local selection
 
-Static routes contain exactly one upstream and select it directly. Health state
-is not consulted; a recent dial failure may temporarily place the upstream in
-cooldown.
+Static routes select `default_upstream` directly. They may list additional
+configured upstreams for operator overrides, but health state is not consulted
+and an unavailable selected upstream does not trigger automatic fallback.
 
 Adaptive routes select only from their configured upstream list:
 
@@ -44,8 +44,10 @@ Adaptive routes select only from their configured upstream list:
 4. Prefer higher configured priority.
 5. Preserve configuration order as the final tie-breaker.
 
-Manual preferences are accepted only when the preferred tag belongs to the
-current route. A route never selects an upstream outside its own list.
+An adaptive route may have a route-local override. A usable override is chosen
+first; when it is down or cooling, the selector retains the override but falls
+back to the route's adaptive candidates. Recovery restores the override as the
+new-flow preference. A route never selects an upstream outside its own list.
 
 ## Flow pinning
 

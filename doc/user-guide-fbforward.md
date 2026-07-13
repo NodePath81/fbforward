@@ -40,20 +40,22 @@ Once a [flow](glossary.md#flow) (TCP connection or UDP 5-tuple mapping) is assig
 4. Forward packets bidirectionally until idle timeout expires
 5. Remove flow table entry and close sockets
 
-### Operational modes
+### Route-local selection and overrides
 
-fbforward supports two upstream selection modes:
+Selection is configured per route rather than by one global mode. A `static`
+route uses its `default_upstream` and never automatically fails over. An
+`adaptive` route selects among its own upstream list by health, RTT, priority,
+and configuration order.
 
-**Auto mode** (default): adaptive routes select from healthy upstreams, then
-compare RTT, priority, and configuration order for each new Flow. Existing
-Flows remain pinned to their original upstream.
+Operators can call `SetRouteOverride` or `ClearRouteOverride` for a route. The
+override affects new flows only. Adaptive overrides are soft preferences: a
+down or cooling target causes route-local fallback, and the target becomes the
+preference again after recovery. Static overrides are strict and fail new
+flows when the selected upstream is unavailable.
 
-**Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
-
-Mode behavior:
-- Startup mode is always auto
-- Manual mode is entered only when operator calls `SetUpstream` RPC with `mode: "manual"`
-- The removed distributed-selection mode is no longer supported; selection is local to fbforward
+The older `SetUpstream(auto|manual)` RPC remains only as a deprecated
+single-route compatibility adapter. It is rejected when more than one route
+is configured; new integrations should use the route-local RPCs.
 
 ### Upstream failure handling
 

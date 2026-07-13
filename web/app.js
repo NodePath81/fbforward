@@ -5,7 +5,7 @@ const alertBox = document.querySelector('#alert');
 const tokenInput = document.querySelector('#token');
 const pages = new Set(['status', 'flows', 'config', 'audit', 'firewall']);
 const requestedPage = new URLSearchParams(location.search).get('page');
-const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, status: null, identity: null, flows: { tcp: [], udp: [] }, audit: null, auditOffset: 0 };
+const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, status: null, identity: null, routes: [], flows: { tcp: [], udp: [] }, audit: null, auditOffset: 0 };
 
 function showAlert(message) { alertBox.textContent = message; alertBox.hidden = !message; }
 function setAuthenticated(value) { login.hidden = value; app.hidden = !value; if (!value) stopPolling(); }
@@ -30,9 +30,6 @@ function renderStatus(data) {
   state.status = data;
   const summary = document.querySelector('#status-summary'); summary.replaceChildren();
   for (const [label, value] of [['mode', data.mode], ['active', data.active_upstream || 'none']]) { const item = document.createElement('span'); item.textContent = `${label}: ${text(value)}`; summary.append(item); }
-  const mode = document.querySelector('#mode'); mode.value = data.mode === 'manual' ? 'manual' : 'auto';
-  const select = document.querySelector('#manual-upstream'); select.replaceChildren();
-  for (const up of data.upstreams || []) { const option = document.createElement('option'); option.value = up.tag; option.textContent = up.tag; option.selected = up.tag === data.active_upstream; select.append(option); }
   const rows = document.querySelector('#upstream-rows'); rows.replaceChildren();
   for (const up of data.upstreams || []) { const row = document.createElement('tr'); cell(row, up.tag); cell(row, up.health_state); cell(row, up.rtt_ms); cell(row, up.active ? 'yes' : 'no'); rows.append(row); }
 }
@@ -43,6 +40,17 @@ function renderIdentity(data) {
 function renderStatusExtras(schedule, iplog) {
   document.querySelector('#schedule-summary').textContent = schedule.error ? `schedule: unavailable (${schedule.error})` : `schedule: ${schedule.value.queue_length || 0} pending · next ${schedule.value.next_scheduled || 'none'}`;
   document.querySelector('#iplog-summary').textContent = iplog.error ? `ip-log: unavailable (${iplog.error})` : `ip-log: ${iplog.value.total_record_count || 0} records`;
+}
+function currentRoute() { return state.routes.find((route) => route.route === document.querySelector('#route-name').value) || state.routes[0]; }
+function renderRoutes(data) {
+  state.routes = Array.isArray(data) ? data : (data && Array.isArray(data.routes) ? data.routes : []);
+  const routeSelect = document.querySelector('#route-name'); const upstreamSelect = document.querySelector('#route-upstream');
+  const previousRoute = routeSelect.value; routeSelect.replaceChildren();
+  for (const route of state.routes) { const option = document.createElement('option'); option.value = route.route; option.textContent = `${route.route} (${route.strategy})`; option.selected = route.route === previousRoute; routeSelect.append(option); }
+  const route = currentRoute(); upstreamSelect.replaceChildren();
+  for (const tag of (route && route.upstreams) || []) { const option = document.createElement('option'); option.value = tag; option.textContent = tag; option.selected = tag === (route.override_upstream || route.effective_upstream || route.default_upstream); upstreamSelect.append(option); }
+  const rows = document.querySelector('#route-rows'); rows.replaceChildren();
+  for (const item of state.routes) { const row = document.createElement('tr'); cell(row, item.route); cell(row, item.strategy); cell(row, (item.upstreams || []).join(', ')); cell(row, item.default_upstream || ''); cell(row, item.effective_upstream || 'unavailable'); cell(row, item.override_upstream || ''); cell(row, item.strategy === 'adaptive' && item.override_state === 'fallback' ? 'fallback' : (item.strategy === 'static' && item.override_upstream ? 'overridden' : (item.strategy === 'adaptive' ? 'automatic' : 'configured'))); rows.append(row); }
 }
 
 function renderFlows(data) {
@@ -102,7 +110,7 @@ async function refreshPage() {
   state.inFlight = true;
   state.requestPage = state.page;
   try {
-    if (state.page === 'status') { const [status, identity, schedule, iplog] = await Promise.all([rpc('GetStatus'), requestJSON('/identity'), optionalRPC('GetScheduleStatus'), optionalRPC('GetIPLogStatus')]); renderStatus(status); renderIdentity(identity); renderStatusExtras(schedule, iplog); }
+    if (state.page === 'status') { const [status, identity, schedule, iplog, routes] = await Promise.all([rpc('GetStatus'), requestJSON('/identity'), optionalRPC('GetScheduleStatus'), optionalRPC('GetIPLogStatus'), optionalRPC('GetRouteStatus')]); renderStatus(status); renderIdentity(identity); renderStatusExtras(schedule, iplog); renderRoutes(routes.error ? status.routes : routes.value); }
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
     if (state.page === 'config') document.querySelector('#config-json').textContent = JSON.stringify(await rpc('GetRuntimeConfig'), null, 2);
     if (state.page === 'audit') { const params = auditParams(); const result = await rpc('QueryLogEvents', params); const talkers = await rpc('GetTopTalkers', { protocol: params.protocol, tag: params.tag, limit: Math.min(params.limit, 100) }); renderAudit(result, talkers); }
@@ -130,9 +138,11 @@ document.querySelector('#audit-form').addEventListener('submit', (event) => { ev
 document.querySelector('#audit-prev').addEventListener('click', () => { state.auditOffset = Math.max(0, state.auditOffset - (Number(document.querySelector('#audit-limit').value) || 50)); saveAuditURL(); refreshPage(); });
 document.querySelector('#audit-next').addEventListener('click', () => { state.auditOffset += Number(document.querySelector('#audit-limit').value) || 50; saveAuditURL(); refreshPage(); });
 document.querySelector('#audit-export').addEventListener('click', () => { if (!state.audit) return; const blob = new Blob([JSON.stringify(state.audit, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'fbforward-audit.json'; link.click(); URL.revokeObjectURL(link.href); });
+document.querySelector('#route-name').addEventListener('change', () => renderRoutes(state.routes));
+document.querySelector('#route-override-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await rpc('SetRouteOverride', { route: document.querySelector('#route-name').value, upstream: document.querySelector('#route-upstream').value }); await refreshPage(); showAlert(''); } catch (error) { showAlert(error.message); } });
+document.querySelector('#route-override-clear').addEventListener('click', async () => { try { await rpc('ClearRouteOverride', { route: document.querySelector('#route-name').value }); await refreshPage(); showAlert(''); } catch (error) { showAlert(error.message); } });
 document.querySelector('#firewall-reload').addEventListener('click', async () => { if (!confirm('Reload the persistent firewall policy file?')) return; try { await rpc('ReloadFirewallPolicy'); await refreshFirewall(); showAlert(''); } catch (error) { showAlert(error.message); await refreshFirewall(); } });
 document.querySelector('#firewall-validate').addEventListener('click', async () => { try { await rpc('ValidateFirewallPolicy'); showAlert('persistent policy is valid'); } catch (error) { showAlert(`policy validation failed: ${error.message}`); } });
-document.querySelector('#mode-form').addEventListener('submit', async (event) => { event.preventDefault(); const mode = document.querySelector('#mode').value; const tag = document.querySelector('#manual-upstream').value; try { await rpc('SetUpstream', { mode, ...(mode === 'manual' ? { tag } : {}) }); await refreshPage(); } catch (error) { showAlert(error.message); } });
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopPolling(); else startPolling(); });
 loadAuditURL();
 for (const section of document.querySelectorAll('[data-section]')) section.hidden = section.id !== `page-${state.page}`;

@@ -410,8 +410,8 @@ The control plane follows a single-source-of-truth architecture:
 |-----------|--------|-------|
 | Active connections (list) | RPC `GetActiveFlows` | Client-controlled polling |
 | Numeric metrics (health, RTT, probes, traffic rates) | Prometheus `/metrics` | Poll-based, summary metrics only |
-| Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
-| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetFirewallPolicy`, `GetFirewallStatus`, `ValidateFirewallPolicy`, `ReloadFirewallPolicy`, `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents` |
+| Control commands | RPC `/rpc` | `GetRouteStatus`, `SetRouteOverride`, `ClearRouteOverride`, `SetUpstream` (deprecated), `Restart`, `RunMeasurement` |
+| Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetRouteStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetFirewallPolicy`, `GetFirewallStatus`, `ValidateFirewallPolicy`, `ReloadFirewallPolicy`, `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents` |
 | Online rule operations | RPC `/rpc` | `CreateOnlineRule`, `ListOnlineRules`, `DeleteOnlineRule`, `ExpireOnlineRule` |
 | GeoIP/IP-log operations | RPC `/rpc` | `RefreshGeoIP` (trigger re-download) |
 
@@ -484,9 +484,25 @@ RPC requests are rate-limited to prevent abuse:
 
 When rate limit is exceeded, the server returns HTTP 429 (Too Many Requests). Clients should implement exponential backoff when encountering rate limit errors.
 
-#### SetUpstream
+#### GetRouteStatus
 
-Set upstream selection mode.
+Returns the effective selection and override state for every configured route.
+
+**Method:** `GetRouteStatus`
+
+#### SetRouteOverride / ClearRouteOverride
+
+Route-local operator controls for new flows. `SetRouteOverride` takes
+`{"route":"web","upstream":"web-b"}`. `ClearRouteOverride` takes
+`{"route":"web"}`. A route or upstream outside the configured topology is
+rejected. Adaptive routes fall back within the route when an override becomes
+unavailable; static routes do not.
+
+#### SetUpstream (deprecated)
+
+Set the legacy global selection mode. This is supported only as a compatibility
+adapter when exactly one route exists; multi-route configurations must use the
+route-local methods above.
 
 **Method:** `SetUpstream`
 

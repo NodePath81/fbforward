@@ -227,6 +227,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	ctrl.SetFirewallProvider(rt.firewall)
 	ctrl.SetOnlinePolicyProvider(rt.onlinePolicy)
 	ctrl.SetFlowContextService(rt.flowContextService)
+	if picker, ok := rt.picker.(*upstreamPicker); ok {
+		ctrl.SetRouteStateReader(picker)
+	}
 	rt.control = ctrl
 
 	initialized = true

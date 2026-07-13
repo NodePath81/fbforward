@@ -172,7 +172,7 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 	routes := make([]map[string]interface{}, 0, len(cfg.Routes))
 	for _, route := range cfg.Routes {
 		routes = append(routes, map[string]interface{}{
-			"name": route.Name, "strategy": route.Strategy, "upstreams": append([]string(nil), route.Upstreams...),
+			"name": route.Name, "strategy": route.Strategy, "upstreams": append([]string(nil), route.Upstreams...), "default_upstream": route.DefaultUpstream,
 		})
 	}
 

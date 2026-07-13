@@ -37,6 +37,7 @@ type ControlServer struct {
 	measurement config.MeasurementConfig
 	hostname    string
 	manager     upstream.UpstreamStateReader
+	routes      routeStateReader
 	metrics     *metrics.Metrics
 	status      *StatusStore
 	restartFn   func() error
@@ -185,6 +186,10 @@ func (c *ControlServer) onlinePolicyProvider() *policy.OnlineProvider {
 // identity tokens and route/upstream authorization.
 func (c *ControlServer) SetFlowContextService(service *flowcontext.Service) {
 	c.flowContext = service
+}
+
+func (c *ControlServer) SetRouteStateReader(routes routeStateReader) {
+	c.routes = routes
 }
 
 type identityResponse struct {
