@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,6 +23,24 @@ type forwarderProcess struct {
 	baseURL string
 	process *exec.Cmd
 	cancel  context.CancelFunc
+	logs    *processLogs
+}
+
+type processLogs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *processLogs) Write(value []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(value)
+}
+
+func (l *processLogs) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 type rpcEnvelope struct {
@@ -74,8 +92,9 @@ func startForwarder(t *testing.T, config string, controlPort int) *forwarderProc
 	ctx, cancel := context.WithCancel(context.Background())
 	process := exec.CommandContext(ctx, binary, "run", "--config", configPath)
 	process.Dir = root
-	process.Stdout = io.Discard
-	process.Stderr = io.Discard
+	logs := &processLogs{}
+	process.Stdout = logs
+	process.Stderr = logs
 	if err := process.Start(); err != nil {
 		cancel()
 		t.Fatalf("start fbforward: %v", err)
@@ -84,11 +103,15 @@ func startForwarder(t *testing.T, config string, controlPort int) *forwarderProc
 		baseURL: fmt.Sprintf("http://127.0.0.1:%d", controlPort),
 		process: process,
 		cancel:  cancel,
+		logs:    logs,
 	}
 	t.Cleanup(func() {
 		forwarder.cancel()
 		_ = forwarder.process.Process.Signal(os.Interrupt)
 		_ = forwarder.process.Wait()
+		if t.Failed() {
+			t.Logf("fbforward process output:\n%s", forwarder.logs.String())
+		}
 	})
 	return forwarder
 }
