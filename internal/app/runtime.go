@@ -177,6 +177,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 			SourceInstance: cfg.Notify.SourceInstance,
 			Timeout:        cfg.Notify.Timeout.Duration(),
 			Logger:         notifyLogger,
+			Telemetry:      metricSet,
 		})
 		if err != nil {
 			cancel()

@@ -18,6 +18,8 @@ import (
 const (
 	defaultQueueSize = 256
 	defaultTimeout   = 3 * time.Second
+	maxAttempts      = 3
+	retryDelay       = 100 * time.Millisecond
 )
 
 type Severity string
@@ -39,6 +41,11 @@ type Emitter interface {
 	Emit(eventName string, severity Severity, attributes map[string]any) bool
 }
 
+type Telemetry interface {
+	IncWebhookDelivery(result string)
+	IncWebhookDropped()
+}
+
 type Config struct {
 	Endpoint       string
 	BearerToken    string
@@ -48,6 +55,7 @@ type Config struct {
 	Now            func() time.Time
 	HTTPClient     *http.Client
 	Logger         util.Logger
+	Telemetry      Telemetry
 }
 
 type Client struct {
@@ -58,6 +66,7 @@ type Client struct {
 	now            func() time.Time
 	httpClient     *http.Client
 	logger         util.Logger
+	telemetry      Telemetry
 
 	mu     sync.Mutex
 	closed bool
@@ -103,6 +112,7 @@ func NewClient(cfg Config) (*Client, error) {
 		now:            nowFn,
 		httpClient:     client,
 		logger:         cfg.Logger,
+		telemetry:      cfg.Telemetry,
 		queue:          make(chan Event, queueSize),
 	}
 	c.wg.Add(1)
@@ -148,6 +158,9 @@ func (c *Client) Submit(event Event) bool {
 	case c.queue <- event:
 		return true
 	default:
+		if c.telemetry != nil {
+			c.telemetry.IncWebhookDropped()
+		}
 		util.Event(c.logger, slog.LevelWarn, "notify.queue_full", "queue.capacity", cap(c.queue), "result", "dropped")
 		return false
 	}
@@ -191,36 +204,65 @@ func (c *Client) send(event Event) {
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.endpoint, bytes.NewReader(rawBody))
-	if err != nil {
-		util.Event(c.logger, slog.LevelWarn, "notify.request_build_failed", "event.name", event.Event, "error", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
-	req = req.WithContext(ctx)
 	util.Event(c.logger, slog.LevelInfo, "notify.delivery_started",
 		"notify.event", event.Event,
 		"notify.endpoint", c.endpoint,
 	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(rawBody))
+		if err != nil {
+			util.Event(c.logger, slog.LevelWarn, "notify.request_build_failed", "event.name", event.Event, "error", err)
+			if c.telemetry != nil {
+				c.telemetry.IncWebhookDelivery("failed")
+			}
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if c.bearerToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+		}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.Event, "error", err)
-		return
+		resp, err := c.httpClient.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				if c.telemetry != nil {
+					c.telemetry.IncWebhookDelivery("success")
+				}
+				util.Event(c.logger, slog.LevelInfo, "notify.delivered", "notify.event", event.Event, "http.status_code", resp.StatusCode, "attempt", attempt)
+				return
+			}
+			if resp.StatusCode < 500 {
+				if c.telemetry != nil {
+					c.telemetry.IncWebhookDelivery("failed")
+				}
+				util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.Event, "http.status_code", resp.StatusCode, "attempt", attempt)
+				return
+			}
+			util.Event(c.logger, slog.LevelWarn, "notify.delivery_retry", "event.name", event.Event, "http.status_code", resp.StatusCode, "attempt", attempt)
+		} else {
+			util.Event(c.logger, slog.LevelWarn, "notify.delivery_retry", "event.name", event.Event, "error", err, "attempt", attempt)
+		}
+		if attempt < maxAttempts {
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				if c.telemetry != nil {
+					c.telemetry.IncWebhookDelivery("failed")
+				}
+				return
+			}
+		}
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.Event, "http.status_code", resp.StatusCode)
-		return
+	if c.telemetry != nil {
+		c.telemetry.IncWebhookDelivery("failed")
 	}
-	util.Event(c.logger, slog.LevelInfo, "notify.delivered", "notify.event", event.Event, "http.status_code", resp.StatusCode)
+	util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.Event, "attempts", maxAttempts)
 }
 
 func cloneAttributes(attributes map[string]any) map[string]any {

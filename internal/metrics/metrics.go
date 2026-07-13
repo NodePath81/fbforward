@@ -60,6 +60,8 @@ type Metrics struct {
 	rateLimitDropBytes     uint64
 	onlineRulesActive      int
 	onlineRuleExpiryErrors uint64
+	webhookDeliveries      map[string]uint64
+	webhookDropped         uint64
 	firewallDenied         map[string]uint64
 	batchBuckets           []uint64
 	batchCount             uint64
@@ -136,6 +138,7 @@ func NewMetrics(tags []string) *Metrics {
 		lastBytesUDPUp:     lastBytesUDPUp,
 		lastBytesUDPDown:   lastBytesUDPDown,
 		firewallDenied:     make(map[string]uint64),
+		webhookDeliveries:  make(map[string]uint64),
 		batchBuckets:       make([]uint64, len(iplogBatchBounds)),
 		startTime:          time.Now(),
 	}
@@ -387,6 +390,21 @@ func (m *Metrics) IncOnlineRuleExpiryError() {
 	m.onlineRuleExpiryErrors++
 }
 
+func (m *Metrics) IncWebhookDelivery(result string) {
+	if result != "success" && result != "failed" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.webhookDeliveries[result]++
+}
+
+func (m *Metrics) IncWebhookDropped() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.webhookDropped++
+}
+
 func (m *Metrics) ObserveIPLogBatchSize(n int) {
 	if n <= 0 {
 		return
@@ -448,6 +466,8 @@ func (m *Metrics) Render() string {
 	rateLimitDropBytes := m.rateLimitDropBytes
 	onlineRulesActive := m.onlineRulesActive
 	onlineRuleExpiryErrors := m.onlineRuleExpiryErrors
+	webhookDeliveries := copyUint64Map(m.webhookDeliveries)
+	webhookDropped := m.webhookDropped
 	firewallDenied := copyUint64Map(m.firewallDenied)
 	batchBuckets := append([]uint64(nil), m.batchBuckets...)
 	batchCount := m.batchCount
@@ -716,6 +736,18 @@ func (m *Metrics) Render() string {
 	b.WriteString("# TYPE fbforward_online_rule_expiry_errors_total counter\n")
 	b.WriteString("fbforward_online_rule_expiry_errors_total ")
 	b.WriteString(strconv.FormatUint(onlineRuleExpiryErrors, 10))
+	b.WriteString("\n")
+	b.WriteString("# TYPE fbforward_webhook_deliveries_total counter\n")
+	for _, result := range []string{"success", "failed"} {
+		b.WriteString("fbforward_webhook_deliveries_total{result=\"")
+		b.WriteString(result)
+		b.WriteString("\"} ")
+		b.WriteString(strconv.FormatUint(webhookDeliveries[result], 10))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_webhook_dropped_total counter\n")
+	b.WriteString("fbforward_webhook_dropped_total ")
+	b.WriteString(strconv.FormatUint(webhookDropped, 10))
 	b.WriteString("\n")
 	b.WriteString("# TYPE fbforward_firewall_denied_total counter\n")
 	firewallKeys := make([]string, 0, len(firewallDenied))

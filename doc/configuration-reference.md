@@ -2,7 +2,7 @@
 
 The YAML schema is strict. Unknown and removed keys fail startup. The active
 configuration is intentionally small; host-level traffic shaping is configured
-outside fbforward with tc/systemd/Ansible.
+outside fbforward with host-level traffic controls, systemd, or Ansible.
 
 ## Topology
 

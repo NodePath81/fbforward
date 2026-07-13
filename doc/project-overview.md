@@ -125,7 +125,8 @@ See [Diagram D1](diagrams.md#d1-three-plane-architecture) for details.
 The fbforward repository provides two binaries:
 
 **fbforward**: The main forwarder process. Runs on the host where clients
-connect. It does not configure kernel traffic control or require `CAP_NET_ADMIN`.
+connect. It does not configure kernel traffic control or require administrative
+network capabilities.
 
 **fbmeasure**: The measurement server. Runs on each upstream host at a
 configured port (default 9876). Accepts TCP control requests plus TCP/UDP

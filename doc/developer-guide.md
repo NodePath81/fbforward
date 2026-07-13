@@ -8,7 +8,10 @@ is in `internal/app`; health state and route-local selection are in
 Audit, Flow Context, policy, GeoIP, notification, and the dependency-free
 operator page are separate packages. GeoIP databases are deployment artifacts:
 the process reads local MMDB files and `ReloadGeoIP` atomically reopens them.
-Webhook delivery is bounded and asynchronous so it never blocks forwarding.
+Webhook delivery is bounded and asynchronous so it never blocks forwarding. A
+delivery is attempted at most three times for network failures and HTTP 5xx;
+HTTP 4xx responses are not retried. Final delivery and queue-drop counters are
+exported through the control-plane metrics endpoint.
 
 ## Development checks
 

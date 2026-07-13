@@ -115,8 +115,8 @@ func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig()
 			cfg.Notify = NotifyConfig{
 				Enabled:     true,
@@ -124,13 +124,13 @@ func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
 				BearerToken: "node-token-abcdefghijklmnopqrstuvwxyz123456",
 			}
 			cfg.setDefaults()
-			tc.mut(&cfg)
+			testCase.mut(&cfg)
 			err := cfg.validate()
 			if err == nil {
 				t.Fatalf("expected validation error")
 			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected %q in error, got %v", tc.want, err)
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected %q in error, got %v", testCase.want, err)
 			}
 		})
 	}
@@ -368,19 +368,19 @@ func TestIPLogConfigRejectsInvalidTuning(t *testing.T) {
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig()
 			cfg.IPLog.Enabled = true
 			cfg.IPLog.DBPath = "/tmp/iplog.sqlite"
 			cfg.setDefaults()
-			tc.mut(&cfg)
+			testCase.mut(&cfg)
 			err := cfg.validate()
 			if err == nil {
 				t.Fatalf("expected validation error")
 			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected %q in error, got %v", tc.want, err)
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected %q in error, got %v", testCase.want, err)
 			}
 		})
 	}

@@ -348,7 +348,8 @@ curl -s http://127.0.0.1:8080/rpc \
   --data '{"method":"GetActiveFlows"}'
 ```
 
-2. Degrade network quality on the current primary (e.g., add latency with tc or disconnect the link)
+2. Degrade network quality on the current primary (e.g., use a network
+   impairment tool or disconnect the link)
 
 3. After the confirmation duration elapses (default 60s), fbforward switches to the backup upstream
 
