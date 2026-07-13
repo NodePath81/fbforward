@@ -40,6 +40,22 @@ func TestEffectiveHealthStale(t *testing.T) {
 	}
 }
 
+func TestStatsSnapshotRefreshesStaleState(t *testing.T) {
+	m := NewUpstreamManager([]*Upstream{{Tag: "primary"}}, nil)
+	m.SetHealthConfig(config.HealthConfig{
+		RTTEWMAAlpha:      0.25,
+		FailureThreshold:  3,
+		RecoveryThreshold: 2,
+		StaleThreshold:    config.Duration(time.Second),
+	})
+	m.UpdateMeasurement("primary", &MeasurementResult{RTTMs: 5, Timestamp: time.Now().Add(-2 * time.Second)})
+
+	stats := m.StatsSnapshot()
+	if got := stats["primary"].HealthState; got != HealthStale {
+		t.Fatalf("expected stale state in refreshed stats, got %s", got)
+	}
+}
+
 func TestRouteSelectionUsesHealthRTTPriorityAndOrder(t *testing.T) {
 	m := NewUpstreamManager([]*Upstream{
 		testUpstream("slow", HealthHealthy, 100*time.Millisecond, 1),

@@ -56,6 +56,8 @@ func NewCollector(cfg config.MeasurementConfig, manager *upstream.UpstreamManage
 
 func (c *Collector) RunLoop(ctx context.Context) {
 	c.scheduler.Schedule()
+	c.syncUpstreamMetrics()
+	c.runReady(ctx)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -65,26 +67,52 @@ func (c *Collector) RunLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.scheduler.Schedule()
-			if c.metrics != nil {
-				status := c.scheduler.Status()
-				c.metrics.SetScheduleMetrics(metrics.ScheduleMetrics{
-					QueueSize:     status.QueueLength,
-					NextScheduled: status.NextScheduled,
-					LastRun:       status.LastRun,
-				})
-			}
-			next, ok := c.scheduler.NextReady()
-			if !ok {
-				continue
-			}
-			measurement := *next
-			if err := c.RunProtocol(ctx, measurement.upstream, measurement.protocol); err != nil {
-				c.scheduler.Requeue(measurement, retryDelay)
-				continue
-			}
-			c.scheduler.MarkRun(measurement)
+			c.syncUpstreamMetrics()
+			c.runReady(ctx)
 		}
 	}
+}
+
+func (c *Collector) runReady(ctx context.Context) {
+	c.runReadyWith(ctx, c.RunProtocol)
+}
+
+func (c *Collector) runReadyWith(ctx context.Context, run func(context.Context, *upstream.Upstream, string) error) {
+	next, ok := c.scheduler.NextReady()
+	if !ok {
+		return
+	}
+	measurement := *next
+	if err := run(ctx, measurement.upstream, measurement.protocol); err != nil {
+		c.scheduler.Requeue(measurement, retryDelay)
+	} else {
+		c.scheduler.MarkRun(measurement)
+	}
+	c.syncUpstreamMetrics()
+}
+
+func (c *Collector) syncUpstreamMetrics() {
+	if c.metrics == nil {
+		return
+	}
+	if c.manager != nil {
+		for tag, stats := range c.manager.StatsSnapshot() {
+			c.metrics.SetUpstreamMetrics(tag, stats)
+		}
+	}
+	c.syncScheduleMetrics()
+}
+
+func (c *Collector) syncScheduleMetrics() {
+	if c.metrics == nil || c.scheduler == nil {
+		return
+	}
+	status := c.scheduler.Status()
+	c.metrics.SetScheduleMetrics(metrics.ScheduleMetrics{
+		QueueSize:     status.QueueLength,
+		NextScheduled: status.NextScheduled,
+		LastRun:       status.LastRun,
+	})
 }
 
 func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, network string) error {

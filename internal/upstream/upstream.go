@@ -184,6 +184,23 @@ func (m *UpstreamManager) Health(tag string) (HealthSnapshot, bool) {
 	return snapshot, true
 }
 
+// StatsSnapshot refreshes the time-derived health state for every upstream
+// and returns a consistent copy for observers such as metrics. In particular,
+// this makes stale transitions visible even when no new probe has completed.
+func (m *UpstreamManager) StatsSnapshot() map[string]UpstreamStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats := make(map[string]UpstreamStats, len(m.upstreams))
+	for tag, up := range m.upstreams {
+		if up == nil {
+			continue
+		}
+		m.refreshStatsLocked(up)
+		stats[tag] = up.stats
+	}
+	return stats
+}
+
 func (m *UpstreamManager) RankedTags() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
