@@ -294,7 +294,7 @@ func TestUDPMappingBindsUpstreamSocketTuple(t *testing.T) {
 	}
 	listener.sem <- struct{}{}
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 12345}
-	candidate, err := newCandidateMeta(flow.ProtocolUDP, clientAddr.String(), listener.listenAddr())
+	candidate, err := newCandidateMeta(flow.ProtocolUDP, clientAddr.String(), listener.listenAddr(), listener.cfg.Route)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,6 +316,16 @@ func TestUDPMappingBindsUpstreamSocketTuple(t *testing.T) {
 		t.Fatalf("unexpected UDP route metadata: %+v", observer.opens)
 	}
 	observer.mu.Unlock()
+}
+
+func TestCandidateMetaCarriesRoute(t *testing.T) {
+	candidate, err := newCandidateMeta(flow.ProtocolTCP, "127.0.0.1:40000", "127.0.0.1:5201", "iperf3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Route != "iperf3" {
+		t.Fatalf("expected candidate route iperf3, got %q", candidate.Route)
+	}
 }
 
 func TestTCPConnectionLimitEmitsRejection(t *testing.T) {

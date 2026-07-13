@@ -171,7 +171,7 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 		}
 		return
 	}
-	candidate, err := newCandidateMeta(flow.ProtocolUDP, key, l.listenAddr())
+	candidate, err := newCandidateMeta(flow.ProtocolUDP, key, l.listenAddr(), l.cfg.Route)
 	if err != nil {
 		return
 	}

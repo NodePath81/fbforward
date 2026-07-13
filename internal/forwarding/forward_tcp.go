@@ -115,7 +115,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		applyTCPOptions(tcpConn)
 	}
 	clientAddr := client.RemoteAddr().String()
-	candidate, err := newCandidateMeta(flow.ProtocolTCP, clientAddr, l.listenAddr())
+	candidate, err := newCandidateMeta(flow.ProtocolTCP, clientAddr, l.listenAddr(), l.cfg.Route)
 	if err != nil {
 		_ = client.Close()
 		return

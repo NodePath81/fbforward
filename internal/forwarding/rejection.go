@@ -27,7 +27,7 @@ func emitRejection(observer FlowObserver, protocol, listener, clientAddress, rea
 	})
 }
 
-func newCandidateMeta(protocol, clientAddress, listener string) (flow.Meta, error) {
+func newCandidateMeta(protocol, clientAddress, listener, route string) (flow.Meta, error) {
 	addr := parseClientAddr(clientAddress)
 	if !addr.IsValid() {
 		return flow.Meta{}, fmt.Errorf("invalid client address %q", clientAddress)
@@ -36,6 +36,7 @@ func newCandidateMeta(protocol, clientAddress, listener string) (flow.Meta, erro
 		Protocol:   protocol,
 		ClientAddr: addr,
 		Listener:   listener,
+		Route:      route,
 		StartedAt:  time.Now().UTC(),
 	}, nil
 }
