@@ -18,8 +18,8 @@ uses fbmeasure TCP/UDP RTT probes to maintain one unified health state and
 selects new flows locally by route, health, RTT, priority, and configuration
 order. Optional subsystems include GeoIP database management, persisted IP
 connection logging (SQLite), and CIDR/ASN/country firewalling. It exposes a
-token-protected control plane with RPC, Prometheus metrics, and WebSocket
-status streaming.
+token-protected control plane with RPC polling, Prometheus metrics, and an
+embedded API client.
 
 ## Platform requirements
 
@@ -103,7 +103,7 @@ Logic: [bwprobe/internal/engine/samples.go](bwprobe/internal/engine/samples.go)
 fbforward runs as a single process with three main planes:
 
 1. **Data plane**: TCP/UDP listeners forward traffic to selected upstream with per-connection/mapping pinning
-2. **Control plane**: HTTP server providing RPC, metrics, and WebSocket status stream
+2. **Control plane**: HTTP server providing authenticated RPC, metrics, and active-flow snapshots
 3. **Health/selection plane**: fbmeasure measurements and route-local health/RTT selection
 4. **Shaping plane** (optional): Linux tc-based ingress/egress shaping via netlink
 
@@ -173,8 +173,10 @@ upstream. Existing flows remain pinned when health changes.
 - `internal/firewall/engine.go`: CIDR/ASN/country rule evaluation, fail-open on missing GeoIP
 
 **Control plane:**
-- `internal/control/control.go`: RPC (including `GetGeoIPStatus`, `RefreshGeoIP`, `GetIPLogStatus`, `QueryIPLog`), WebSocket subscription protocol, metrics auth
-- `internal/control/status.go`: WebSocket hub, status store, message broadcast
+- `internal/control/server.go`: HTTP lifecycle, identity and metrics endpoints
+- `internal/control/rpc.go`: RPC registry and request dispatch
+- `internal/control/status.go`: active Flow projection used by `GetActiveFlows`
+- `internal/control/*_api.go`: domain-specific RPC handlers and DTOs
 - `internal/metrics/metrics.go`: Prometheus metric aggregation (includes IP-log and firewall metrics)
 
 **Config and docs:**
@@ -254,18 +256,12 @@ nc -zv <upstream-host> 9876
 
 **Authentication:**
 - RPC and metrics require `Authorization: Bearer <token>`
-- WebSocket `/status` uses subprotocol authentication:
-  - `fbforward`
-  - `fbforward-token.<base64url(token)>`
 - The control plane is API-only; clients must provide the bearer token directly.
 
 **Data source responsibilities:**
-- **WebSocket** (`/status`): connection/queue telemetry via subscription (1s/2s/5s intervals), test history events, session events
-  - Client sends `{"type": "subscribe", "interval_ms": 2000}` to start receiving periodic snapshots
-  - Separate message types: `connections_snapshot`, `queue_snapshot`, `test_history_event`, `add`, `update`, `remove`, `error`
-  - All messages include `schema_version: 1`
-- **RPC** (`/rpc`): control commands (`SetUpstream`, `Restart`, `RunMeasurement`, `RefreshGeoIP`), config queries (`GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog`)
+- **RPC** (`/rpc`): control commands (`SetUpstream`, `Restart`, `RunMeasurement`, `RefreshGeoIP`), config queries (`GetStatus`, `GetActiveFlows`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog`)
   - `GetStatus` returns control-plane state and health fields
+  - `GetActiveFlows` returns an authenticated point-in-time TCP/UDP snapshot for polling clients
   - Numeric telemetry is exposed through Prometheus
 - **Prometheus** (`/metrics`): RTT, health, probe counters, queue depth, and active connections
 
@@ -299,7 +295,7 @@ When extending functionality:
 1. **Selection behavior**: Adjust health and route-local selection in
    [internal/upstream/](internal/upstream/), and update the active algorithm documentation.
 
-2. **Control API**: Add new RPC methods in [internal/control/control.go](internal/control/control.go)
+2. **Control API**: Register new RPC methods in [internal/control/rpc.go](internal/control/rpc.go) and implement domain handlers in the corresponding [internal/control/*_api.go](internal/control/) file
 
 3. **Observability**: Extend `Metrics` or `StatusStore` for new telemetry
 

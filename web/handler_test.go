@@ -71,7 +71,7 @@ func TestClientSecurityInvariants(t *testing.T) {
 	if !strings.Contains(script, "sessionStorage") || !strings.Contains(script, "Authorization") {
 		t.Fatalf("app.js does not use session-scoped bearer authentication")
 	}
-	for _, required := range []string{"requestJSON('/identity')", "state.flows", "renderFlowTable()", "page: 'audit'", "history.replaceState"} {
+	for _, required := range []string{"requestJSON('/identity')", "state.flows", "renderFlowTable()", "page: 'audit'", "history.replaceState", "refreshPending", "requestPage"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("app.js is missing behavior %q", required)
 		}

@@ -5,7 +5,7 @@ const alertBox = document.querySelector('#alert');
 const tokenInput = document.querySelector('#token');
 const pages = new Set(['status', 'flows', 'config', 'audit', 'firewall']);
 const requestedPage = new URLSearchParams(location.search).get('page');
-const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, status: null, identity: null, flows: { tcp: [], udp: [] }, audit: null, auditOffset: 0 };
+const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, status: null, identity: null, flows: { tcp: [], udp: [] }, audit: null, auditOffset: 0 };
 
 function showAlert(message) { alertBox.textContent = message; alertBox.hidden = !message; }
 function setAuthenticated(value) { login.hidden = value; app.hidden = !value; if (!value) stopPolling(); }
@@ -94,8 +94,13 @@ async function refreshFirewall() {
 }
 
 async function refreshPage() {
-  if (state.inFlight || !sessionStorage.getItem(tokenKey) || document.hidden) return;
+  if (state.inFlight) {
+    if (state.page !== state.requestPage) state.refreshPending = true;
+    return;
+  }
+  if (!sessionStorage.getItem(tokenKey) || document.hidden) return;
   state.inFlight = true;
+  state.requestPage = state.page;
   try {
     if (state.page === 'status') { const [status, identity, schedule, iplog] = await Promise.all([rpc('GetStatus'), requestJSON('/identity'), optionalRPC('GetScheduleStatus'), optionalRPC('GetIPLogStatus')]); renderStatus(status); renderIdentity(identity); renderStatusExtras(schedule, iplog); }
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
@@ -104,7 +109,14 @@ async function refreshPage() {
     if (state.page === 'firewall') await refreshFirewall();
     showAlert('');
   } catch (error) { if (error.message !== 'unauthorized') showAlert(error.message); }
-  finally { state.inFlight = false; }
+  finally {
+    state.inFlight = false;
+    state.requestPage = '';
+    if (state.refreshPending) {
+      state.refreshPending = false;
+      queueMicrotask(refreshPage);
+    }
+  }
 }
 function stopPolling() { if (state.timer) { clearInterval(state.timer); state.timer = 0; } }
 function startPolling() { stopPolling(); if (!sessionStorage.getItem(tokenKey)) return; const interval = state.page === 'flows' ? 2000 : (state.page === 'audit' ? 0 : 5000); if (interval) state.timer = setInterval(refreshPage, interval); refreshPage(); }
