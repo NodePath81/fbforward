@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,5 +73,29 @@ func TestGetActiveFlowsRPCRequiresAuth(t *testing.T) {
 	}
 	if response.Ok || response.Error != "unauthorized" {
 		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
+func TestGetActiveFlowsSnapshotConcurrentWithUpdates(t *testing.T) {
+	store := NewStatusStore()
+	id, err := flow.NewID()
+	if err != nil {
+		t.Fatalf("NewID error: %v", err)
+	}
+	meta := flow.Meta{ID: id, Protocol: flow.ProtocolUDP, ClientAddr: netip.MustParseAddrPort("192.0.2.2:5000"), StartedAt: time.Now().UTC()}
+	store.Open(meta)
+	var group sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		group.Add(1)
+		go func(i int) {
+			defer group.Done()
+			store.Update(id, flow.Counters{BytesUp: uint64(i), LastActivity: time.Now().UTC()})
+			_, _ = store.Snapshot()
+		}(i)
+	}
+	group.Wait()
+	tcp, udp := store.Snapshot()
+	if len(tcp) != 0 || len(udp) != 1 || udp[0].ID != id.String() {
+		t.Fatalf("unexpected concurrent snapshot: tcp=%v udp=%v", tcp, udp)
 	}
 }

@@ -31,6 +31,10 @@ function renderStatus(data) {
   const rows = document.querySelector('#upstream-rows'); rows.replaceChildren();
   for (const up of data.upstreams || []) { const row = document.createElement('tr'); cell(row, up.tag); cell(row, up.health_state); cell(row, up.rtt_ms); cell(row, up.active ? 'yes' : 'no'); rows.append(row); }
 }
+function renderStatusExtras(schedule, iplog) {
+  document.querySelector('#schedule-summary').textContent = schedule.error ? `schedule: unavailable (${schedule.error})` : `schedule: ${schedule.value.queue_length || 0} pending · next ${schedule.value.next_scheduled || 'none'}`;
+  document.querySelector('#iplog-summary').textContent = iplog.error ? `ip-log: unavailable (${iplog.error})` : `ip-log: ${iplog.value.total_record_count || 0} records`;
+}
 
 function renderFlows(data) {
   const filter = document.querySelector('#flow-filter').value.toLowerCase();
@@ -43,15 +47,16 @@ function renderFlows(data) {
 }
 
 function auditParams() {
-  return { entry_type: document.querySelector('#audit-entry').value, protocol: document.querySelector('#audit-protocol').value, reason: document.querySelector('#audit-reason').value, tag: document.querySelector('#audit-tag').value, limit: Number(document.querySelector('#audit-limit').value) || 50, offset: state.auditOffset, sort_by: 'recorded_at', sort_order: 'desc' };
+  const start = Number(document.querySelector('#audit-start').value); const end = Number(document.querySelector('#audit-end').value);
+  return { entry_type: document.querySelector('#audit-entry').value, protocol: document.querySelector('#audit-protocol').value, cidr: document.querySelector('#audit-cidr').value, start_time: start || undefined, end_time: end || undefined, reason: document.querySelector('#audit-reason').value, tag: document.querySelector('#audit-tag').value, limit: Number(document.querySelector('#audit-limit').value) || 50, offset: state.auditOffset, sort_by: 'recorded_at', sort_order: 'desc' };
 }
 function loadAuditURL() {
   const query = new URLSearchParams(location.search);
-  for (const key of ['entry', 'protocol', 'reason', 'tag', 'limit']) { const node = document.querySelector(`#audit-${key}`); if (node && query.has(key)) node.value = query.get(key); }
+  for (const key of ['entry', 'protocol', 'cidr', 'start', 'end', 'reason', 'tag', 'limit']) { const node = document.querySelector(`#audit-${key}`); if (node && query.has(key)) node.value = query.get(key); }
   state.auditOffset = Number(query.get('offset')) || 0;
 }
 function saveAuditURL() {
-  const p = auditParams(); const query = new URLSearchParams({ entry: p.entry_type, protocol: p.protocol, reason: p.reason, tag: p.tag, limit: String(p.limit), offset: String(p.offset) });
+  const p = auditParams(); const query = new URLSearchParams({ entry: p.entry_type, protocol: p.protocol, cidr: p.cidr, start: String(p.start_time || ''), end: String(p.end_time || ''), reason: p.reason, tag: p.tag, limit: String(p.limit), offset: String(p.offset) });
   history.replaceState(null, '', `${location.pathname}?${query}`);
 }
 function renderAudit(data, talkers) {
@@ -79,7 +84,7 @@ async function refreshPage() {
   if (state.inFlight || !sessionStorage.getItem(tokenKey) || document.hidden) return;
   state.inFlight = true;
   try {
-    if (state.page === 'status') renderStatus(await rpc('GetStatus'));
+    if (state.page === 'status') { const status = await rpc('GetStatus'); const [schedule, iplog] = await Promise.all([optionalRPC('GetScheduleStatus'), optionalRPC('GetIPLogStatus')]); renderStatus(status); renderStatusExtras(schedule, iplog); }
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
     if (state.page === 'config') document.querySelector('#config-json').textContent = JSON.stringify(await rpc('GetRuntimeConfig'), null, 2);
     if (state.page === 'audit') { const params = auditParams(); const result = await rpc('QueryLogEvents', params); const talkers = await rpc('GetTopTalkers', { protocol: params.protocol, tag: params.tag, limit: Math.min(params.limit, 100) }); renderAudit(result, talkers); }
