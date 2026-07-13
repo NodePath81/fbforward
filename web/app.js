@@ -5,7 +5,7 @@ const alertBox = document.querySelector('#alert');
 const tokenInput = document.querySelector('#token');
 const pages = new Set(['status', 'flows', 'config', 'audit', 'firewall']);
 const requestedPage = new URLSearchParams(location.search).get('page');
-const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, status: null, identity: null, routes: [], flows: { tcp: [], udp: [] }, audit: null, auditOffset: 0 };
+const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, status: null, identity: null, routes: [], flows: { tcp: [], udp: [] }, audit: null };
 
 function showAlert(message) { alertBox.textContent = message; alertBox.hidden = !message; }
 function setAuthenticated(value) { login.hidden = value; app.hidden = !value; if (!value) stopPolling(); }
@@ -67,26 +67,28 @@ function renderFlowTable() {
   }
 }
 
-function auditParams() {
-  const start = Number(document.querySelector('#audit-start').value); const end = Number(document.querySelector('#audit-end').value);
-  return { entry_type: document.querySelector('#audit-entry').value, protocol: document.querySelector('#audit-protocol').value, cidr: document.querySelector('#audit-cidr').value, start_time: start || undefined, end_time: end || undefined, reason: document.querySelector('#audit-reason').value, tag: document.querySelector('#audit-tag').value, limit: Number(document.querySelector('#audit-limit').value) || 50, offset: state.auditOffset, sort_by: 'recorded_at', sort_order: 'desc' };
-}
 function loadAuditURL() {
   const query = new URLSearchParams(location.search);
-  for (const key of ['entry', 'protocol', 'cidr', 'start', 'end', 'reason', 'tag', 'limit']) { const node = document.querySelector(`#audit-${key}`); if (node && query.has(key)) node.value = query.get(key); }
-  state.auditOffset = Number(query.get('offset')) || 0;
+  const input = document.querySelector('#audit-query');
+  if (input && query.has('query')) input.value = query.get('query');
 }
 function saveAuditURL() {
-  const p = auditParams(); const query = new URLSearchParams({ page: 'audit', entry: p.entry_type, protocol: p.protocol, cidr: p.cidr, start: String(p.start_time || ''), end: String(p.end_time || ''), reason: p.reason, tag: p.tag, limit: String(p.limit), offset: String(p.offset) });
-  history.replaceState(null, '', `${location.pathname}?${query}`);
+  const query = new URLSearchParams({ page: 'audit' });
+  const value = document.querySelector('#audit-query').value.trim();
+  if (value) query.set('query', value);
+  history.replaceState(null, '', `${location.pathname}?${query.toString()}`);
 }
-function renderAudit(data, talkers) {
+function renderAudit(data) {
   state.audit = data;
-  document.querySelector('#audit-count').textContent = `${data.total || 0} records; offset ${state.auditOffset}`;
-  const rows = document.querySelector('#audit-rows'); rows.replaceChildren();
-  for (const record of data.records || []) { const row = document.createElement('tr'); cell(row, record.entry_type); cell(row, record.ip); cell(row, record.protocol); cell(row, record.port); cell(row, record.recorded_at); cell(row, record.upstream || ''); cell(row, record.reason || record.close_reason || ''); cell(row, record.bytes_up == null ? '' : `${record.bytes_up} / ${record.bytes_down}`); rows.append(row); }
-  const talkerRows = document.querySelector('#talker-rows'); talkerRows.replaceChildren();
-  for (const talker of talkers || []) { const row = document.createElement('tr'); cell(row, talker.client_ip); cell(row, talker.bytes_up); cell(row, talker.bytes_down); cell(row, talker.bytes_total); cell(row, talker.flow_count); talkerRows.append(row); }
+  const count = data && data.result && !Array.isArray(data.result) ? data.result.total : (data && Array.isArray(data.result) ? data.result.length : 0);
+  document.querySelector('#audit-count').textContent = data ? `${count} rows · ${data.source}` : 'enter a query and press RUN';
+  const head = document.querySelector('#audit-head'); const rows = document.querySelector('#audit-rows'); head.replaceChildren(); rows.replaceChildren();
+  if (!data) return;
+  const result = data.result; const records = Array.isArray(result) ? result : (result.records || []);
+  const columns = Array.isArray(result) ? (data.source === 'top asns' ? ['asn', 'as_org', 'country', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count'] : ['client_ip', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count']) : ['entry_type', 'ip', 'protocol', 'port', 'recorded_at', 'upstream', 'reason', 'close_reason', 'bytes_up', 'bytes_down', 'flow_id'];
+  const header = document.createElement('tr'); for (const column of columns) cell(header, column); head.append(header);
+  for (const record of records) { const row = document.createElement('tr'); for (const column of columns) cell(row, record[column]); rows.append(row); }
+  document.querySelector('#audit-raw').textContent = JSON.stringify(data, null, 2);
 }
 async function optionalRPC(method, params) { try { return { value: await rpc(method, params) }; } catch (error) { return { error: error.message }; } }
 function actionButton(label, message, action) { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.addEventListener('click', async () => { if (!confirm(message)) return; try { await action(); await refreshFirewall(); showAlert(''); } catch (error) { showAlert(error.message); } }); return button; }
@@ -113,7 +115,7 @@ async function refreshPage() {
     if (state.page === 'status') { const [status, identity, schedule, iplog, routes] = await Promise.all([rpc('GetStatus'), requestJSON('/identity'), optionalRPC('GetScheduleStatus'), optionalRPC('GetIPLogStatus'), optionalRPC('GetRouteStatus')]); renderStatus(status); renderIdentity(identity); renderStatusExtras(schedule, iplog); renderRoutes(routes.error ? status.routes : routes.value); }
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
     if (state.page === 'config') document.querySelector('#config-json').textContent = JSON.stringify(await rpc('GetRuntimeConfig'), null, 2);
-    if (state.page === 'audit') { const params = auditParams(); const result = await rpc('QueryLogEvents', params); const talkers = await rpc('GetTopTalkers', { protocol: params.protocol, tag: params.tag, limit: Math.min(params.limit, 100) }); renderAudit(result, talkers); }
+    if (state.page === 'audit') { const query = document.querySelector('#audit-query').value.trim(); if (query) renderAudit(await rpc('QueryAudit', { query })); else renderAudit(null); }
     if (state.page === 'firewall') await refreshFirewall();
     showAlert('');
   } catch (error) { if (error.message !== 'unauthorized') showAlert(error.message); }
@@ -134,9 +136,11 @@ document.querySelector('#login-form').addEventListener('submit', (event) => { ev
 document.querySelector('#logout').addEventListener('click', logout);
 for (const button of document.querySelectorAll('[data-page]')) button.addEventListener('click', () => selectPage(button.dataset.page));
 document.querySelector('#flow-filter').addEventListener('input', () => { if (state.page === 'flows') renderFlowTable(); });
-document.querySelector('#audit-form').addEventListener('submit', (event) => { event.preventDefault(); state.auditOffset = 0; saveAuditURL(); refreshPage(); });
-document.querySelector('#audit-prev').addEventListener('click', () => { state.auditOffset = Math.max(0, state.auditOffset - (Number(document.querySelector('#audit-limit').value) || 50)); saveAuditURL(); refreshPage(); });
-document.querySelector('#audit-next').addEventListener('click', () => { state.auditOffset += Number(document.querySelector('#audit-limit').value) || 50; saveAuditURL(); refreshPage(); });
+document.querySelector('#audit-form').addEventListener('submit', (event) => { event.preventDefault(); saveAuditURL(); refreshPage(); });
+document.querySelector('#audit-clear').addEventListener('click', () => { document.querySelector('#audit-query').value = ''; state.audit = null; saveAuditURL(); renderAudit(null); });
+document.querySelector('#audit-help-toggle').addEventListener('click', () => { const help = document.querySelector('#audit-help'); help.hidden = !help.hidden; });
+document.querySelector('#audit-raw-toggle').addEventListener('click', () => { const raw = document.querySelector('#audit-raw'); raw.hidden = !raw.hidden; });
+document.querySelector('#audit-query').addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); saveAuditURL(); refreshPage(); } });
 document.querySelector('#audit-export').addEventListener('click', () => { if (!state.audit) return; const blob = new Blob([JSON.stringify(state.audit, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'fbforward-audit.json'; link.click(); URL.revokeObjectURL(link.href); });
 document.querySelector('#route-name').addEventListener('change', () => renderRoutes(state.routes));
 document.querySelector('#route-override-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await rpc('SetRouteOverride', { route: document.querySelector('#route-name').value, upstream: document.querySelector('#route-upstream').value }); await refreshPage(); showAlert(''); } catch (error) { showAlert(error.message); } });
