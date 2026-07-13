@@ -3,9 +3,11 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -13,6 +15,7 @@ import (
 func TestStaticUDPForwardsToLoopbackUpstream(t *testing.T) {
 	echo := startUDPEcho(t)
 	controlPort := freeTCPPort(t)
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
 	config := fmt.Sprintf(`hostname: e2e-udp
 
 listeners:
@@ -34,7 +37,13 @@ upstreams:
 forwarding:
   idle_timeout:
     tcp: 5s
-    udp: 5s
+    udp: 100ms
+
+ip_log:
+  enabled: true
+  db_path: %s
+  batch_size: 1
+  flush_interval: 10ms
 
 control:
   bind_addr: 127.0.0.1
@@ -43,7 +52,7 @@ control:
 
 firewall:
   enabled: false
-`, echo.port, controlPort)
+`, echo.port, dbPath, controlPort)
 	forwarder := startForwarder(t, config, controlPort)
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	waitFor(t, 5*time.Second, func() bool {
@@ -80,6 +89,14 @@ firewall:
 	if string(response[:n]) != string(payload) {
 		t.Fatalf("unexpected response %q", response[:n])
 	}
+	_ = connection.Close()
+	var audit struct {
+		Total int `json:"total"`
+	}
+	waitForInterval(t, 3*time.Second, 300*time.Millisecond, func() bool {
+		raw := forwarder.rpc(t, "e2e-control-token", "QueryIPLog", map[string]any{"limit": 10})
+		return json.Unmarshal(raw, &audit) == nil && audit.Total == 1
+	})
 }
 
 type udpEcho struct {
