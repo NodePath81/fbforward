@@ -76,7 +76,12 @@ func (s *Scheduler) Schedule() {
 			if last, ok := s.lastRun[key]; ok && now.Sub(last) < s.cfg.MinInterval {
 				continue
 			}
-			dueAt := now.Add(s.nextInterval())
+			// Probe each adaptive upstream immediately on startup. Subsequent
+			// observations use the configured interval and jitter.
+			dueAt := now
+			if len(s.lastRun) > 0 {
+				dueAt = now.Add(s.nextInterval())
+			}
 			s.queue = append(s.queue, scheduledMeasurement{
 				upstream: up,
 				protocol: proto,

@@ -18,7 +18,7 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 
 - Accepts client connections on configured TCP and UDP listeners
 - Forwards traffic to one of multiple configured upstreams
-- Measures upstream quality using fbmeasure targeted probes and ICMP reachability probes
+- Measures adaptive-route upstream health and RTT using fbmeasure TCP/UDP probes
 - Selects the best upstream automatically based on health, RTT, and priority
 - Can optionally participate in an external fbcoord service to coordinate upstream selection across multiple fbforward nodes in one shared global state
 - Pins each flow to its assigned upstream until completion, ensuring in-flight connections are not disrupted
@@ -83,7 +83,7 @@ The architecture separates concerns into several planes:
 
 **Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, status queries, GeoIP management (`GetGeoIPStatus`, `RefreshGeoIP`), IP-log queries (`GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents`), and operational status. The server also exposes Prometheus metrics at `/metrics` (including IP-log and firewall counters), a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access (including dashboard GeoIP/IP-log status rows and a dedicated `#/iplog` page for unified flow/rejection history). All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. This node-local control plane is separate from the optional fbcoord coordination service, which coordinates picks across multiple fbforward nodes but does not replace local APIs or the local Web UI. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
 
-**Measurement plane**: Assesses upstream quality. ICMP probes test reachability
+**Measurement plane**: Assesses upstream health and RTT with fbmeasure probes
 continuously. fbmeasure probe cycles run periodic TCP and UDP targeted tests
 against each upstream's measurement endpoint. The [scoring engine](glossary.md#scoring-engine)
 combines metrics into a quality score using exponential normalization and

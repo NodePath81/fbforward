@@ -8,7 +8,7 @@ This guide covers fbforward operation, configuration, and troubleshooting.
 
 ### What fbforward does
 
-fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on health, RTT, and priority. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures adaptive-route upstreams using fbmeasure RTT probes and ICMP reachability probes.
+fbforward is a TCP/UDP port [forwarder](glossary.md#forwarder) that selects the best [upstream](glossary.md#upstream) based on health, RTT, and priority. The forwarder accepts client connections on configured [listeners](glossary.md#listener), proxies traffic to a selected upstream, and continuously measures adaptive-route upstreams using fbmeasure TCP/UDP RTT probes.
 
 ### NAT-style forwarding model
 
@@ -45,9 +45,8 @@ Once a [flow](glossary.md#flow) (TCP connection or UDP 5-tuple mapping) is assig
 fbforward supports three upstream selection modes:
 
 **Auto mode** (default): adaptive routes select from healthy upstreams, then
-compare RTT and priority. A latency improvement must remain for the configured
-confirmation duration and hold time before an existing route preference is
-changed.
+compare RTT, priority, and configuration order for each new Flow. Existing
+Flows remain pinned to their original upstream.
 
 **Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
 
@@ -79,21 +78,16 @@ per-node fbcoord token; the operator token is not valid for node connections.
 
 For deploying and operating the coordination service itself, see [fbcoord user guide](fbcoord/user-guide.md). For the node-to-coordinator wire contract and selector details, see [fbcoord protocol reference](fbcoord/protocol.md).
 
-### Fast failover
+### Upstream failure handling
 
-fbforward triggers immediate upstream switching on severe quality degradation:
-
-- **Health failure**: When consecutive probe cycles fail, the upstream enters `down` and adaptive routes fail over
-- **Dial failures**: When consecutive TCP dial attempts to an upstream fail
-
-Fast failover bypasses normal confirmation duration requirements.
+After the configured number of failed fbmeasure probe observations an adaptive
+upstream enters `down` and is excluded from new Flow selection. Dial failures
+add a short independent cooldown. Existing Flows remain pinned.
 
 ### Unusable upstream recovery
 
-An upstream becomes unusable when:
-- 100% packet loss detected over probe window
-- Consecutive TCP dial failures exceed threshold
-- Measurement server connection fails repeatedly
+An upstream becomes unusable when its unified health state is `down`, or while
+its dial-failure cooldown is active.
 
 Unusable upstreams are excluded from selection. When probes succeed again, the upstream automatically returns to usable state and becomes eligible for selection.
 
@@ -141,7 +135,7 @@ Use `check` before deploying configuration changes to catch syntax and schema er
 
 ## 3.1.2 Configuration
 
-fbforward loads configuration from a YAML file specified via `--config` flag. The configuration defines listeners, routes, upstreams, health/measurement parameters, switching policy, and control plane settings.
+fbforward loads configuration from a YAML file specified via `--config` flag. The configuration defines listeners, routes, upstreams, health/measurement parameters, and control plane settings.
 
 ### Configuration file format
 
@@ -178,29 +172,17 @@ dns:
   servers: [...]                    # Custom DNS resolvers
   strategy: "ipv4_only"             # DNS resolution strategy
 
-reachability:
-  probe_interval: 1s                # ICMP probe frequency
-  window_size: 5                    # Probe window for reachability
-
 measurement:
-  startup_delay: 10s                # Delay before first measurement
-  fallback_to_icmp_on_stale: true   # Log warning when measurements stale
+  startup_delay: 0s                 # First adaptive probe runs immediately
   schedule: {...}                   # Measurement scheduling
-  fast_start: {...}                 # Fast-start mode config
   security: {...}                   # fbmeasure TCP transport security
   protocols: {...}                  # TCP/UDP test parameters
 
 health:
   rtt_ewma_alpha: 0.25              # RTT EWMA factor
-  failure_threshold: 3              # Failed cycles before down
-  recovery_threshold: 2             # Successful cycles before recovery
+  failure_threshold: 3              # Failed probe observations before down
+  recovery_threshold: 2             # Successful observations before recovery
   stale_threshold: 60s              # Health staleness window
-
-switching:
-  confirm_duration: 15s             # Candidate confirmation window
-  min_hold_time: 30s                # Minimum time between switches
-  latency_improvement: 10ms         # Required RTT improvement
-  close_flows_on_failover: false    # Whether to close existing flows
 
 control:
   bind_addr: "127.0.0.1"            # Control plane listen address
@@ -241,9 +223,7 @@ Configuration validation enforces:
 - At least one upstream defined
 - At least one listener defined
 - Valid duration and bandwidth formats
-- `reachability.probe_interval >= 100ms`
 - Positive protocol timeouts and other time-based limits
-- Weight values sum to 1.0 per protocol
 - Unique upstream tags
 - Unique listener bind address/port/protocol combinations
 - Referenced hostnames resolve via DNS (at startup)
@@ -668,15 +648,11 @@ Verify:
 
 If traffic shaping is enabled, verify `shaping.aggregate_limit` and per-upstream limits are appropriate.
 
-**Frequent switching**:
+**Frequent upstream changes**:
 
-Check RTT and health history in web UI. Frequent switches indicate unstable
-network conditions or an overly small latency improvement threshold.
-
-Adjust:
-- Increase `switching.confirm_duration` (default 15s)
-- Increase `switching.min_hold_time` (default 30s)
-- Increase `switching.latency_improvement` (default 10ms)
+Check route-local health and RTT history. New Flows are selected independently;
+existing Flows remain pinned. Increase health thresholds or the measurement
+interval only when the observed probe state is genuinely unstable.
 
 **Upstream marked unusable**:
 
@@ -685,8 +661,8 @@ Check reachability and measurement logs. Unusable status indicates severe qualit
 Verify:
 - Upstream host is online
 - fbmeasure is running on upstream
-- No firewall blocks ICMP or measurement port
-- No extreme packet loss or latency on link
+- No firewall blocks the fbmeasure measurement port
+- The upstream is returning valid TCP/UDP probe responses
 
 **Flows rejected due to limits**:
 

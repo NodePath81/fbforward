@@ -31,7 +31,6 @@ type Metrics struct {
 	mu                     sync.Mutex
 	upstreams              map[string]*UpstreamMetrics
 	routeSelected          map[string]string
-	routeSwitches          map[string]uint64
 	mode                   upstream.Mode
 	activeTag              string
 	coordConnected         bool
@@ -125,7 +124,6 @@ func NewMetrics(tags []string) *Metrics {
 	return &Metrics{
 		upstreams:          upstreams,
 		routeSelected:      make(map[string]string),
-		routeSwitches:      make(map[string]uint64),
 		bytesUpTotal:       bytesUpTotal,
 		bytesDownTotal:     bytesDownTotal,
 		bytesTCP:           bytesTCP,
@@ -241,10 +239,7 @@ func (m *Metrics) SetRouteSelected(route, tag string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if previous := m.routeSelected[route]; previous != tag {
-		m.routeSelected[route] = tag
-		m.routeSwitches[route]++
-	}
+	m.routeSelected[route] = tag
 }
 
 func (m *Metrics) GetUpstreamMetrics(tag string) (UpstreamMetrics, bool) {
@@ -468,7 +463,6 @@ func (m *Metrics) Render() string {
 	for route, tag := range m.routeSelected {
 		routeSelected[route] = tag
 	}
-	routeSwitches := copyUint64Map(m.routeSwitches)
 	tcpActive := m.tcpActive
 	udpActive := m.udpActive
 	upstreams := make(map[string]UpstreamMetrics, len(m.upstreams))
@@ -514,14 +508,6 @@ func (m *Metrics) Render() string {
 		b.WriteString("\",upstream=\"")
 		b.WriteString(selected)
 		b.WriteString("\"} 1\n")
-	}
-	b.WriteString("# TYPE fbforward_route_switches_total counter\n")
-	for route, count := range routeSwitches {
-		b.WriteString("fbforward_route_switches_total{route=\"")
-		b.WriteString(route)
-		b.WriteString("\"} ")
-		b.WriteString(strconv.FormatUint(count, 10))
-		b.WriteString("\n")
 	}
 	b.WriteString("# TYPE fbforward_upstream_rtt_ms gauge\n")
 	for _, tag := range tags {

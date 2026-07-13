@@ -39,7 +39,6 @@ func TestUpstreamPickerAdapterMapsActiveIPAndDialFeedback(t *testing.T) {
 	selected := &upstream.Upstream{Tag: "primary"}
 	selected.SetActiveIP(net.ParseIP("203.0.113.10"))
 	manager := upstream.NewUpstreamManager([]*upstream.Upstream{selected}, rand.New(rand.NewSource(1)), nil)
-	manager.UpdateReachability("primary", true)
 	if err := manager.SetManual("primary"); err != nil {
 		t.Fatalf("SetManual error: %v", err)
 	}
@@ -75,11 +74,11 @@ func TestUpstreamPickerScopesAdaptiveRoutesAndKeepsStaticFixed(t *testing.T) {
 		makeUpstream("route-b", "203.0.113.12"),
 		makeUpstream("static", "203.0.113.13"),
 	}, rand.New(rand.NewSource(1)), nil)
-	for _, tag := range []string{"outside", "route-a", "route-b", "static"} {
-		manager.UpdateReachability(tag, true)
-	}
 	if err := manager.SetManual("outside"); err != nil {
 		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		manager.RecordProbeFailure("static", "tcp", time.Now())
 	}
 	picker := newUpstreamPicker(manager, []config.RouteConfig{
 		{Name: "adaptive", Strategy: "adaptive", Upstreams: []string{"route-a", "route-b"}},

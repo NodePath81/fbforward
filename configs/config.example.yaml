@@ -63,17 +63,9 @@ dns:
   # If omitted, both A and AAAA results are used.
   # strategy: ipv4_only
 
-reachability:
-  # ICMP reachability probe interval/window.
-  probe_interval: 1s
-  window_size: 5
-  # Delay before starting ICMP probes.
-  startup_delay: 5s
-
 measurement:
-  # fbmeasure startup and probe scheduling.
-  startup_delay: 10s
-  fallback_to_icmp_on_stale: true
+  # fbmeasure probe scheduling. The first adaptive probe runs immediately.
+  startup_delay: 0s
 
   # Scheduling.
   schedule:
@@ -81,11 +73,6 @@ measurement:
       min: 15s
       max: 45s
     upstream_gap: 5s
-
-  # Fast start + warmup.
-  fast_start:
-    enabled: true
-    timeout: 500ms
 
   # Optional transport security for fbmeasure.
   security:
@@ -115,12 +102,6 @@ health:
   failure_threshold: 3
   recovery_threshold: 2
   stale_threshold: 60s
-
-switching:
-  confirm_duration: 15s
-  min_hold_time: 30s
-  latency_improvement: 10ms
-  close_flows_on_failover: false
 
 control:
   # Control plane bind + auth token.

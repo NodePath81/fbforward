@@ -188,8 +188,6 @@ func (s *Server) handleUDPPacket(udpConn *net.UDPConn, addr *net.UDPAddr, data [
 	switch data[0] {
 	case udpPacketKindPing:
 		s.handleUDPPingPacket(udpConn, addr, data)
-	case udpPacketKindLoss:
-		s.handleUDPLossPacket(data)
 	}
 }
 

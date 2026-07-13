@@ -14,16 +14,10 @@ import (
 )
 
 const (
-	defaultReachabilityInterval   = 1 * time.Second
-	defaultReachabilityWindowSize = 5
-
-	defaultMeasurementStartupDelay          = 10 * time.Second
-	defaultMeasurementFallbackToICMPOnStale = true
-	defaultMeasurementScheduleMinInterval   = 15 * time.Minute
-	defaultMeasurementScheduleMaxInterval   = 45 * time.Minute
-	defaultMeasurementScheduleUpstreamGap   = 5 * time.Second
-	defaultFastStartEnabled                 = true
-	defaultFastStartTimeout                 = 500 * time.Millisecond
+	defaultMeasurementStartupDelay        = 0
+	defaultMeasurementScheduleMinInterval = 15 * time.Minute
+	defaultMeasurementScheduleMaxInterval = 45 * time.Minute
+	defaultMeasurementScheduleUpstreamGap = 5 * time.Second
 
 	defaultMeasurementPingCount    = 5
 	defaultMeasurementPerSample    = 10 * time.Second
@@ -32,13 +26,10 @@ const (
 	defaultMeasurementUDPEnabled   = true
 	defaultMeasurementSecurityMode = "off"
 
-	defaultSwitchConfirmDuration = 15 * time.Second
-	defaultSwitchMinHold         = 30 * time.Second
-	defaultLatencyImprovement    = 10 * time.Millisecond
-	defaultHealthAlpha           = 0.25
-	defaultHealthFailure         = 3
-	defaultHealthRecovery        = 2
-	defaultHealthStale           = 60 * time.Second
+	defaultHealthAlpha    = 0.25
+	defaultHealthFailure  = 3
+	defaultHealthRecovery = 2
+	defaultHealthStale    = 60 * time.Second
 
 	defaultForwardingMaxTCPConnections = 50
 	defaultForwardingMaxUDPMappings    = 500
@@ -115,10 +106,8 @@ type Config struct {
 	Forwarding         ForwardingConfig   `yaml:"forwarding"`
 	Upstreams          []UpstreamConfig   `yaml:"upstreams"`
 	DNS                DNSConfig          `yaml:"dns"`
-	Reachability       ReachabilityConfig `yaml:"reachability"`
 	Measurement        MeasurementConfig  `yaml:"measurement"`
 	Health             HealthConfig       `yaml:"health"`
-	Switching          SwitchingConfig    `yaml:"switching"`
 	Control            ControlConfig      `yaml:"control"`
 	Notify             NotifyConfig       `yaml:"notify"`
 	Coordination       CoordinationConfig `yaml:"coordination"`
@@ -203,19 +192,11 @@ type DNSConfig struct {
 	Strategy string   `yaml:"strategy"`
 }
 
-type ReachabilityConfig struct {
-	ProbeInterval Duration `yaml:"probe_interval"`
-	WindowSize    int      `yaml:"window_size"`
-	StartupDelay  Duration `yaml:"startup_delay"`
-}
-
 type MeasurementConfig struct {
-	StartupDelay          Duration                   `yaml:"startup_delay"`
-	FallbackToICMPOnStale *bool                      `yaml:"fallback_to_icmp_on_stale"`
-	Schedule              MeasurementScheduleConfig  `yaml:"schedule"`
-	FastStart             MeasurementFastStartConfig `yaml:"fast_start"`
-	Protocols             MeasurementProtocolsConfig `yaml:"protocols"`
-	Security              MeasurementSecurityConfig  `yaml:"security"`
+	StartupDelay Duration                   `yaml:"startup_delay"`
+	Schedule     MeasurementScheduleConfig  `yaml:"schedule"`
+	Protocols    MeasurementProtocolsConfig `yaml:"protocols"`
+	Security     MeasurementSecurityConfig  `yaml:"security"`
 }
 
 type MeasurementSecurityConfig struct {
@@ -234,11 +215,6 @@ type MeasurementScheduleConfig struct {
 type MeasurementIntervalConfig struct {
 	Min Duration `yaml:"min"`
 	Max Duration `yaml:"max"`
-}
-
-type MeasurementFastStartConfig struct {
-	Enabled *bool    `yaml:"enabled"`
-	Timeout Duration `yaml:"timeout"`
 }
 
 type MeasurementProtocolsConfig struct {
@@ -262,13 +238,6 @@ type HealthConfig struct {
 	FailureThreshold  int      `yaml:"failure_threshold"`
 	RecoveryThreshold int      `yaml:"recovery_threshold"`
 	StaleThreshold    Duration `yaml:"stale_threshold"`
-}
-
-type SwitchingConfig struct {
-	ConfirmDuration      Duration `yaml:"confirm_duration"`
-	MinHoldTime          Duration `yaml:"min_hold_time"`
-	LatencyImprovement   Duration `yaml:"latency_improvement"`
-	CloseFlowsOnFailover bool     `yaml:"close_flows_on_failover"`
 }
 
 type ControlConfig struct {
@@ -538,22 +507,8 @@ func (c *Config) setDefaults() {
 		c.Forwarding.IdleTimeout.UDP = Duration(defaultForwardingUDPIdle)
 	}
 
-	if c.Reachability.ProbeInterval == 0 {
-		c.Reachability.ProbeInterval = Duration(defaultReachabilityInterval)
-	}
-	if c.Reachability.WindowSize == 0 {
-		c.Reachability.WindowSize = defaultReachabilityWindowSize
-	}
-	if c.Reachability.StartupDelay == 0 {
-		c.Reachability.StartupDelay = Duration(time.Duration(c.Reachability.WindowSize) * c.Reachability.ProbeInterval.Duration())
-	}
-
 	if c.Measurement.StartupDelay == 0 {
 		c.Measurement.StartupDelay = Duration(defaultMeasurementStartupDelay)
-	}
-	if c.Measurement.FallbackToICMPOnStale == nil {
-		val := defaultMeasurementFallbackToICMPOnStale
-		c.Measurement.FallbackToICMPOnStale = &val
 	}
 
 	if c.Measurement.Schedule.Interval.Min == 0 {
@@ -566,13 +521,6 @@ func (c *Config) setDefaults() {
 		c.Measurement.Schedule.UpstreamGap = Duration(defaultMeasurementScheduleUpstreamGap)
 	}
 
-	if c.Measurement.FastStart.Enabled == nil {
-		val := defaultFastStartEnabled
-		c.Measurement.FastStart.Enabled = &val
-	}
-	if c.Measurement.FastStart.Timeout == 0 {
-		c.Measurement.FastStart.Timeout = Duration(defaultFastStartTimeout)
-	}
 	if strings.TrimSpace(c.Measurement.Security.Mode) == "" {
 		c.Measurement.Security.Mode = defaultMeasurementSecurityMode
 	}
@@ -591,15 +539,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Health.StaleThreshold == 0 {
 		c.Health.StaleThreshold = Duration(defaultHealthStale)
-	}
-	if c.Switching.ConfirmDuration == 0 {
-		c.Switching.ConfirmDuration = Duration(defaultSwitchConfirmDuration)
-	}
-	if c.Switching.MinHoldTime == 0 {
-		c.Switching.MinHoldTime = Duration(defaultSwitchMinHold)
-	}
-	if c.Switching.LatencyImprovement == 0 {
-		c.Switching.LatencyImprovement = Duration(defaultLatencyImprovement)
 	}
 
 	if c.Control.BindAddr == "" {
@@ -944,24 +883,8 @@ func (c *Config) validate() error {
 		return errors.New("logging.format must be text or json")
 	}
 
-	if c.Reachability.ProbeInterval.Duration() <= 0 {
-		return errors.New("reachability.probe_interval must be > 0")
-	}
-	if c.Reachability.ProbeInterval.Duration() < 100*time.Millisecond {
-		return errors.New("reachability.probe_interval must be >= 100ms")
-	}
-	if c.Reachability.WindowSize <= 0 {
-		return errors.New("reachability.window_size must be > 0")
-	}
-	if c.Reachability.StartupDelay.Duration() < 0 {
-		return errors.New("reachability.startup_delay must be >= 0")
-	}
-
 	if c.Measurement.StartupDelay.Duration() < 0 {
 		return errors.New("measurement.startup_delay must be >= 0")
-	}
-	if c.Measurement.FastStart.Timeout.Duration() <= 0 {
-		return errors.New("measurement.fast_start.timeout must be > 0")
 	}
 
 	if c.Measurement.Schedule.Interval.Min.Duration() <= 0 {
@@ -1003,15 +926,6 @@ func (c *Config) validate() error {
 	}
 	if c.Health.StaleThreshold.Duration() <= 0 {
 		return errors.New("health.stale_threshold must be > 0")
-	}
-	if c.Switching.ConfirmDuration.Duration() < 0 {
-		return errors.New("switching.confirm_duration must be >= 0")
-	}
-	if c.Switching.MinHoldTime.Duration() < 0 {
-		return errors.New("switching.min_hold_time must be >= 0")
-	}
-	if c.Switching.LatencyImprovement.Duration() < 0 {
-		return errors.New("switching.latency_improvement must be >= 0")
 	}
 
 	c.DNS.Strategy = strings.ToLower(strings.TrimSpace(c.DNS.Strategy))
@@ -1300,13 +1214,4 @@ func validateShapingLimits(cfg *ShapingLimitConfig, path string) error {
 		}
 	}
 	return nil
-}
-
-func DefaultSwitchingConfig() SwitchingConfig {
-	return SwitchingConfig{
-		ConfirmDuration:      Duration(defaultSwitchConfirmDuration),
-		MinHoldTime:          Duration(defaultSwitchMinHold),
-		LatencyImprovement:   Duration(defaultLatencyImprovement),
-		CloseFlowsOnFailover: false,
-	}
 }

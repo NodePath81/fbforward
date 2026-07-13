@@ -28,7 +28,8 @@ A component that accepts client connections and proxies traffic to upstreams. fb
 A bind address and port where fbforward accepts client connections. Each listener has a protocol (tcp or udp) and optional per-listener shaping. See [Section 4.2](outline.md#42-forwarding-section).
 
 ### Measurement plane
-The subsystem that probes upstream quality using bwprobe tests and ICMP reachability checks. Results feed into the scoring algorithm. See [Section 1.2](outline.md#12-architecture-overview), [Section 4.6](outline.md#46-measurement-section).
+The subsystem that probes adaptive-route upstreams with fbmeasure TCP/UDP RTT
+probes and maintains a unified health state. It does not calculate a score.
 
 ### Primary upstream
 The only upstream that receives new flow assignments. Selected by the scoring algorithm in auto mode or operator choice in manual mode. See [Section 6.1.1](outline.md#611-overview).

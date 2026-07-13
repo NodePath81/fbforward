@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const frozenConfigExampleSHA256 = "542894e1a26da7de4566731795ba3c0dc942e70b2ee4f919c45d2ce2f53cf9e2"
+const frozenConfigExampleSHA256 = "75ae36a25f4de7902ef2bbd59094f92338866aeda3551c77525c5c865c9f2fb8"
 
 func TestFrozenConfigExampleFixture(t *testing.T) {
 	const path = "testdata/config.example.yaml"

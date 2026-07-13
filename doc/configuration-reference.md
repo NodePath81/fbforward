@@ -17,10 +17,8 @@ routes: [...]                    # Route strategy and upstream membership
 forwarding: {...}                 # Flow management and legacy listeners
 upstreams: [...]                  # Upstream list
 dns: {...}                        # DNS resolution
-reachability: {...}               # ICMP probing
 measurement: {...}                # fbmeasure probe settings
 health: {...}                     # Unified health and RTT state
-switching: {...}                  # Route-local upstream switching behavior
 control: {...}                    # Control plane (HTTP API, web UI)
 notify: {...}                     # fbnotify event delivery
 coordination: {...}               # Optional fbcoord participation
@@ -314,7 +312,9 @@ Typically `measurement.host` matches `destination.host`. Separate measurement ho
 **Validation:**
 - `port` must be in range 1-65535
 
-**Deployment requirement:** fbmeasure must be running on `measurement.host:port`. Without fbmeasure, fbforward operates in degraded mode using ICMP-only reachability. See [Section 3.3](user-guide-fbmeasure.md).
+**Deployment requirement:** fbmeasure must be running on `measurement.host:port`
+for adaptive routes. Without fbmeasure, adaptive upstreams eventually become
+down; static routes continue to use their configured upstream and dial cooldown.
 
 ### priority
 
@@ -713,35 +713,28 @@ and `sample_count` are rejected during configuration load.
 ## 4.7 health section
 
 The `health` section controls the unified state machine used by adaptive
-routes. A measurement cycle succeeds when any enabled TCP/UDP probe succeeds;
-all failed probes count as one failure.
+routes. Each completed TCP or UDP probe updates the same health snapshot;
+thresholds count consecutive probe observations.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `rtt_ewma_alpha` | float64 | `0.25` | RTT EWMA smoothing factor |
-| `failure_threshold` | integer | `3` | Failed cycles before `down` |
-| `recovery_threshold` | integer | `2` | Successful cycles before recovery |
+| `failure_threshold` | integer | `3` | Failed probe observations before `down` |
+| `recovery_threshold` | integer | `2` | Successful observations before recovery |
 | `stale_threshold` | duration | `60s` | Age after which a successful state is `stale` |
 
 States are `unknown`, `healthy`, `stale`, and `down`. Adaptive route
 selection filters `down`, prefers healthy candidates, then compares RTT and
 priority. Static routes do not start a measurement scheduler.
 
-## 4.8 switching section
+## 4.8 switching section (removed)
 
-Switching hysteresis applies only to adaptive routes when two healthy
-candidates differ in latency.
+There is no switching configuration. New adaptive Flows select from the
+route-local health/RTT ordering; manual and coordination preferences remain
+available through the control API and are constrained to the route.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `confirm_duration` | duration | `15s` | Candidate advantage must persist this long |
-| `min_hold_time` | duration | `30s` | Minimum time between latency-driven switches |
-| `latency_improvement` | duration | `10ms` | Minimum RTT improvement required |
-| `close_flows_on_failover` | bool | `false` | Close existing flows on immediate failover |
-
-The old `scoring` section and nested switching score/loss thresholds are no
-longer accepted. Existing configurations must be migrated to `health` and the
-flat `switching` fields.
+The old `scoring`, hysteresis, failover, and switching sections are no longer
+accepted. The material below is retained only as historical migration context.
 
 <!-- Historical scoring documentation below is retained only as migration
 reference and is not part of the active configuration contract. -->
@@ -845,7 +838,7 @@ The following keys are no longer supported and fail config loading with explicit
 
 ---
 
-## Appendix: historical switching section
+## Appendix: historical switching section (not active configuration)
 
 The `switching` section configures upstream switching behavior in auto mode and fast failover triggers.
 

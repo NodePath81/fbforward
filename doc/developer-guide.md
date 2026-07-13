@@ -19,7 +19,8 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `internal/forwarding/` - TCP/UDP listeners and proxy logic
 - `internal/control/` - HTTP server, RPC handlers, WebSocket status stream
 - `internal/metrics/` - Prometheus metrics aggregation
-- `internal/probe/` - ICMP echo probing for reachability
+- Health probing is implemented by the fbmeasure TCP/UDP collector; the old
+  `internal/probe/` ICMP package has been removed.
 - `internal/measure/` - fbmeasure measurement orchestration, fast-start, scheduling
 - `internal/fbmeasure/` - fbmeasure client/server protocol and test implementations
 - `internal/resolver/` - DNS resolution with configurable strategy

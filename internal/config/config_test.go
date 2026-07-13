@@ -551,10 +551,6 @@ func testConfig() Config {
 				},
 			},
 		},
-		Reachability: ReachabilityConfig{
-			ProbeInterval: Duration(time.Second),
-			WindowSize:    5,
-		},
 		Control: ControlConfig{
 			AuthToken: "0123456789abcdef",
 		},

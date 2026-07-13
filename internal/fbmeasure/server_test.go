@@ -51,25 +51,4 @@ func TestServerClientRoundTrip(t *testing.T) {
 		t.Fatalf("PingUDP samples=%d", udpRTT.Samples)
 	}
 
-	retrans, err := client.TCPRetrans(opCtx, 64*1024)
-	if err != nil {
-		t.Fatalf("TCPRetrans: %v", err)
-	}
-	if retrans.BytesSent != 64*1024 {
-		t.Fatalf("TCPRetrans bytes=%d", retrans.BytesSent)
-	}
-	if retrans.SegmentsSent == 0 {
-		t.Fatalf("TCPRetrans segments=%d", retrans.SegmentsSent)
-	}
-
-	loss, err := client.UDPLoss(opCtx, 8, 256)
-	if err != nil {
-		t.Fatalf("UDPLoss: %v", err)
-	}
-	if loss.PacketsSent != 8 {
-		t.Fatalf("UDPLoss packets_sent=%d", loss.PacketsSent)
-	}
-	if loss.PacketsRecv == 0 {
-		t.Fatalf("UDPLoss packets_recv=%d", loss.PacketsRecv)
-	}
 }

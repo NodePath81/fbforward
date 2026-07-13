@@ -14,24 +14,17 @@ import (
 )
 
 const (
-	opPingTCP    = "ping_tcp"
-	opPingUDP    = "ping_udp"
-	opTCPRetrans = "tcp_retrans"
-	opUDPLoss    = "udp_loss"
+	opPingTCP = "ping_tcp"
+	opPingUDP = "ping_udp"
 
 	udpPacketKindPing = 1
 	udpPacketKindPong = 2
-	udpPacketKindLoss = 3
-
-	tcpDataMarker = "\xffFMT"
-	testIDSize    = 16
+	testIDSize        = 16
 
 	udpAuthKeySize    = 32
 	udpAuthTagSize    = 16
 	udpPingHeaderSize = 1 + testIDSize + 8 + 8
-	udpLossHeaderSize = 1 + testIDSize + 8
 	udpPingPacketSize = udpPingHeaderSize + udpAuthTagSize
-	udpLossMinSize    = udpLossHeaderSize + udpAuthTagSize
 
 	defaultAuxStartDelay = 10 * time.Millisecond
 )
@@ -98,38 +91,6 @@ type pingUDPRequest struct {
 type pingUDPResponse struct {
 	TestID   string `json:"test_id"`
 	Received int    `json:"received"`
-}
-
-type tcpRetransRequest struct {
-	TestID    string `json:"test_id"`
-	Bytes     uint64 `json:"bytes"`
-	TimeoutMs int    `json:"timeout_ms"`
-}
-
-type tcpRetransResponse struct {
-	TestID       string `json:"test_id"`
-	BytesSent    uint64 `json:"bytes_sent"`
-	Retransmits  uint64 `json:"retransmits"`
-	SegmentsSent uint64 `json:"segments_sent"`
-	RTTNs        int64  `json:"rtt_ns"`
-	RTTVarNs     int64  `json:"rtt_var_ns"`
-}
-
-type udpLossRequest struct {
-	TestID     string `json:"test_id"`
-	AuthKey    string `json:"auth_key"`
-	Packets    int    `json:"packets"`
-	PacketSize int    `json:"packet_size"`
-	TimeoutMs  int    `json:"timeout_ms"`
-}
-
-type udpLossResponse struct {
-	TestID      string  `json:"test_id"`
-	PacketsSent uint64  `json:"packets_sent"`
-	PacketsRecv uint64  `json:"packets_recv"`
-	PacketsLost uint64  `json:"packets_lost"`
-	OutOfOrder  uint64  `json:"out_of_order"`
-	LossRate    float64 `json:"loss_rate"`
 }
 
 func marshalPayload(v any) (json.RawMessage, error) {

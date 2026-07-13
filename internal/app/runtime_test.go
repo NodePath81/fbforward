@@ -37,10 +37,6 @@ func TestNewRuntimeWithIPLogAndFirewallCleansUp(t *testing.T) {
 				Port: 9876,
 			},
 		}},
-		Reachability: config.ReachabilityConfig{
-			ProbeInterval: config.Duration(time.Second),
-			WindowSize:    5,
-		},
 		Control: config.ControlConfig{
 			BindAddr:  "127.0.0.1",
 			BindPort:  0,

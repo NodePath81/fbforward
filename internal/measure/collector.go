@@ -18,10 +18,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
-const (
-	maxConsecutiveFailures = 3
-	retryDelay             = 30 * time.Second
-)
+const retryDelay = 30 * time.Second
 
 type Collector struct {
 	cfg            config.MeasurementConfig
@@ -32,16 +29,9 @@ type Collector struct {
 	scheduler      *Scheduler
 	OnTestComplete func(upstream, protocol string, startTime time.Time, duration time.Duration, success bool, result *TestResultMetrics, errMsg string)
 
-	failuresMu  sync.Mutex
-	failures    map[string]*failureState
 	runningMu   sync.RWMutex
 	running     map[string]*RunningTest
 	nextCycleID uint64
-}
-
-type failureState struct {
-	consecutiveFailures int
-	inFallbackMode      bool
 }
 
 type RunningTest struct {
@@ -62,7 +52,6 @@ func NewCollector(cfg config.MeasurementConfig, health config.HealthConfig, mana
 		metrics:   metrics,
 		scheduler: scheduler,
 		logger:    logger,
-		failures:  make(map[string]*failureState),
 		running:   make(map[string]*RunningTest),
 	}
 }
@@ -126,31 +115,11 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 
 func (c *Collector) handleMeasurementFailure(tag string, err error) error {
 	c.manager.RecordProbeFailure(tag, "", time.Now())
-	c.failuresMu.Lock()
-	state := c.failureLocked(tag)
-	state.consecutiveFailures++
-	if util.BoolValue(c.cfg.FallbackToICMPOnStale, true) && state.consecutiveFailures >= maxConsecutiveFailures {
-		if !state.inFallbackMode {
-			util.Event(c.logger, slog.LevelWarn, "measure.fallback_entered",
-				"upstream", tag,
-				"consecutive_failures", state.consecutiveFailures,
-			)
-		}
-		state.inFallbackMode = true
-	}
-	c.failuresMu.Unlock()
+	util.Event(c.logger, slog.LevelWarn, "measure.probe_failed", "upstream", tag, "error", err)
 	return err
 }
 
 func (c *Collector) handleMeasurementSuccess(tag string, result *upstream.MeasurementResult) {
-	c.failuresMu.Lock()
-	state := c.failureLocked(tag)
-	state.consecutiveFailures = 0
-	if state.inFallbackMode {
-		util.Event(c.logger, slog.LevelInfo, "measure.fallback_recovered", "upstream", tag)
-		state.inFallbackMode = false
-	}
-	c.failuresMu.Unlock()
 	stats := c.manager.UpdateMeasurement(tag, result, c.health)
 	if c.metrics != nil {
 		c.metrics.SetUpstreamMetrics(tag, stats)
@@ -285,13 +254,6 @@ func (c *Collector) RunningTests() []RunningTest {
 		result = append(result, *test)
 	}
 	return result
-}
-
-func (c *Collector) failureLocked(tag string) *failureState {
-	if c.failures[tag] == nil {
-		c.failures[tag] = &failureState{}
-	}
-	return c.failures[tag]
 }
 
 func (c *Collector) newCycleID() string {

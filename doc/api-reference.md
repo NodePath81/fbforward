@@ -627,14 +627,14 @@ Retrieve current runtime status.
 **Field descriptions:**
 
 - `mode`: Current runtime mode
-- `active_upstream`: Current primary upstream for new flows
+- `active_upstream`: Manual/coordination preference, if configured; auto mode is route-local
 - `tag`: Upstream identifier
 - `host`: Configured hostname or IP
 - `ips`: All resolved IP addresses
 - `active_ip`: Currently selected IP for forwarding
-- `active`: Whether this is the primary upstream (receives new flows)
-- `usable`: Whether upstream is eligible for selection (not failed/unreachable)
-- `reachable`: ICMP probe reachability status
+- `active`: Whether this is the manual/coordination preference
+- `usable`: Whether upstream is eligible for adaptive selection
+- `health_state`: Unified `unknown`, `healthy`, `stale`, or `down` state
 - `coordination.available`: Whether coordination mode is configured locally
 - `coordination.connected`: Whether the node currently has a live transport session to `fbcoord`
 - `coordination.authoritative`: Whether coordination is currently healthy enough to drive picks authoritatively
@@ -642,7 +642,9 @@ Retrieve current runtime status.
 - `coordination.version`: Latest applied coordination version
 - `coordination.fallback_active`: Whether coordination mode is currently using local auto-selection fallback
 
-**Note:** Numeric metrics (RTT, jitter, loss/retransmit, scores, traffic rates) are available via Prometheus `/metrics`. Active connection counts are available via WebSocket `connections_snapshot` or Prometheus metrics.
+**Note:** RTT, health, probe, and traffic metrics are available via Prometheus
+`/metrics`. Active connection counts are available via WebSocket
+`connections_snapshot` or Prometheus metrics.
 
 **Example:**
 
@@ -675,30 +677,20 @@ Retrieve current measurement configuration.
 
 ```json
 {
-  "startup_delay": "10s",
-  "stale_threshold": "1h0m0s",
-  "fallback_to_icmp_on_stale": true,
+  "startup_delay": "0s",
   "schedule": {
     "interval": {"min": "15m0s", "max": "45m0s"},
     "upstream_gap": "5s"
-  },
-  "fast_start": {
-    "enabled": true,
-    "timeout": "500ms",
-    "warmup_duration": "15s"
   },
   "protocols": {
     "tcp": {
       "enabled": true,
       "ping_count": 5,
-      "retransmit_bytes": "500kb",
       "timeout": {"per_sample": "10s", "per_cycle": "30s"}
     },
     "udp": {
       "enabled": true,
       "ping_count": 5,
-      "loss_packets": 64,
-      "packet_size": "1200",
       "timeout": {"per_sample": "10s", "per_cycle": "30s"}
     }
   }
@@ -713,7 +705,9 @@ Retrieve complete runtime configuration (all sections).
 
 **Parameters:** Empty object `{}`
 
-**Result:** Full configuration object with all sections (`forwarding`, `listeners`, `routes`, `upstreams`, `dns`, `reachability`, `measurement`, `health`, `switching`, `control`, `coordination`, `logging`, `shaping`, `geoip`, `ip_log`, `firewall`).
+**Result:** Full configuration object with the normalized forwarding topology,
+`upstreams`, `dns`, `measurement`, `health`, `control`, `coordination`,
+`logging`, `shaping`, `geoip`, `ip_log`, and `firewall` sections.
 
 **Note:** The `coordination` block includes non-secret effective fields such as
 `endpoint` and `heartbeat_interval`. The coordination token is not returned.

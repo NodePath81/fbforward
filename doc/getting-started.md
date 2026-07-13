@@ -31,7 +31,8 @@ If Go is not installed or the version is older than 1.25.5, download from [golan
 
 fbforward requires the following capabilities:
 
-**CAP_NET_RAW** (required): Allows sending raw ICMP packets for reachability probing. Without this capability, fbforward cannot start.
+fbforward does not require `CAP_NET_RAW`; health probing uses the authenticated
+TCP/UDP fbmeasure sidecar.
 
 **CAP_NET_ADMIN** (optional): Allows configuring traffic control qdiscs for bandwidth shaping. Only required if `shaping.enabled: true` in configuration.
 

@@ -2,10 +2,7 @@ package app
 
 import (
 	"context"
-	crand "crypto/rand"
-	"encoding/binary"
 	"log/slog"
-	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -23,7 +20,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/policy"
-	"github.com/NodePath81/fbforward/internal/probe"
 	"github.com/NodePath81/fbforward/internal/resolver"
 	"github.com/NodePath81/fbforward/internal/shaping"
 	"github.com/NodePath81/fbforward/internal/upstream"
@@ -101,14 +97,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 	}()
 	flowObservers := flow.MultiObserver{status, metrics.NewFlowObserver(metricSet), flowContextRegistry}
-	seed := time.Now().UnixNano()
-	var seedBuf [8]byte
-	if _, err := crand.Read(seedBuf[:]); err == nil {
-		seed = int64(binary.LittleEndian.Uint64(seedBuf[:]))
-	}
-	rng := rand.New(rand.NewSource(seed))
-	manager := upstream.NewUpstreamManager(upstreams, rng, util.ComponentLogger(logger, util.CompUpstream))
-	manager.SetSwitching(cfg.Switching)
+	manager := upstream.NewUpstreamManager(upstreams, nil, util.ComponentLogger(logger, util.CompUpstream))
 	manager.SetHealthConfig(cfg.Health)
 
 	rt := &Runtime{
@@ -220,9 +209,6 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 			metricSet.SetActive(change.NewTag)
 		}
 	}, func(change upstream.UsabilityChange) {
-		if !change.Usable && cfg.Switching.CloseFlowsOnFailover {
-			flowRegistry.CloseByUpstream(change.Tag)
-		}
 		if rt.notifyPolicy != nil {
 			rt.notifyPolicy.HandleUsabilityChange(change.Tag, change.Usable, change.Reason)
 		}
@@ -280,8 +266,6 @@ func (r *Runtime) Start() error {
 		r.onlinePolicy.Start(r.ctx.Done())
 	}
 
-	r.runFastStart()
-	r.startProbes()
 	r.startMeasurement()
 	r.startDNSRefresh()
 
@@ -348,16 +332,6 @@ func (r *Runtime) Stop() {
 	r.wait()
 }
 
-func (r *Runtime) startProbes() {
-	for _, up := range r.measurementUpstreams() {
-		r.wg.Add(1)
-		go func(u *upstream.Upstream) {
-			defer r.wg.Done()
-			probe.ProbeLoop(r.ctx, u, r.cfg.Reachability, r.manager, r.metrics, util.ComponentLogger(r.logger, util.CompProbe))
-		}(up)
-	}
-}
-
 func (r *Runtime) startMeasurement() {
 	measurementUpstreams := r.measurementUpstreams()
 	if len(measurementUpstreams) == 0 {
@@ -417,52 +391,6 @@ func (r *Runtime) startMeasurement() {
 		defer r.wg.Done()
 		r.collector.RunLoop(r.ctx)
 	}()
-}
-
-func (r *Runtime) runFastStart() {
-	if !util.BoolValue(r.cfg.Measurement.FastStart.Enabled, true) || len(r.measurementUpstreams()) == 0 {
-		return
-	}
-	timeout := r.cfg.Measurement.FastStart.Timeout.Duration()
-	ctx, cancel := context.WithTimeout(r.ctx, timeout*time.Duration(len(r.upstreams)+1))
-	defer cancel()
-
-	var wg sync.WaitGroup
-	rtts := make(map[string]float64)
-	var mu sync.Mutex
-
-	for _, up := range r.measurementUpstreams() {
-		wg.Add(1)
-		go func(u *upstream.Upstream) {
-			defer wg.Done()
-			host := u.MeasureHost
-			if host == "" {
-				host = u.Host
-			}
-			port := u.MeasurePort
-			if port == 0 {
-				port = 9876
-			}
-			rtt, reachable := measure.FastStartProbe(ctx, host, port, timeout)
-			mu.Lock()
-			rtts[u.Tag] = rtt
-			mu.Unlock()
-			if reachable {
-				r.manager.UpdateMeasurement(u.Tag, &upstream.MeasurementResult{RTTMs: rtt, Timestamp: time.Now(), Network: "tcp"}, r.cfg.Health)
-			} else {
-				r.manager.RecordProbeFailure(u.Tag, "tcp", time.Now())
-			}
-		}(up)
-	}
-	wg.Wait()
-
-	active := r.manager.ActiveTag()
-	if active != "" {
-		util.Event(util.ComponentLogger(r.logger, util.CompUpstream), slog.LevelInfo, "upstream.fast_start_selected",
-			"upstream", active,
-			"measure.rtt_ms", rtts[active],
-		)
-	}
 }
 
 func (r *Runtime) measurementUpstreams() []*upstream.Upstream {

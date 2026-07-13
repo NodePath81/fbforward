@@ -110,18 +110,13 @@ func (c *ControlServer) rpcRefreshGeoIP(ctx *rpcContext, raw json.RawMessage) (a
 func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 	cfg := c.measurement
 	return map[string]interface{}{
-		"startup_delay":             cfg.StartupDelay.Duration().String(),
-		"fallback_to_icmp_on_stale": util.BoolValue(cfg.FallbackToICMPOnStale, true),
+		"startup_delay": cfg.StartupDelay.Duration().String(),
 		"schedule": map[string]interface{}{
 			"interval": map[string]interface{}{
 				"min": cfg.Schedule.Interval.Min.Duration().String(),
 				"max": cfg.Schedule.Interval.Max.Duration().String(),
 			},
 			"upstream_gap": cfg.Schedule.UpstreamGap.Duration().String(),
-		},
-		"fast_start": map[string]interface{}{
-			"enabled": util.BoolValue(cfg.FastStart.Enabled, true),
-			"timeout": cfg.FastStart.Timeout.Duration().String(),
 		},
 		"security": map[string]interface{}{
 			"mode":        cfg.Security.Mode,
@@ -224,23 +219,12 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"servers":  cfg.DNS.Servers,
 			"strategy": cfg.DNS.Strategy,
 		},
-		"reachability": map[string]interface{}{
-			"probe_interval": cfg.Reachability.ProbeInterval.Duration().String(),
-			"window_size":    cfg.Reachability.WindowSize,
-			"startup_delay":  cfg.Reachability.StartupDelay.Duration().String(),
-		},
 		"measurement": c.getMeasurementConfig(),
 		"health": map[string]interface{}{
 			"rtt_ewma_alpha":     cfg.Health.RTTEWMAAlpha,
 			"failure_threshold":  cfg.Health.FailureThreshold,
 			"recovery_threshold": cfg.Health.RecoveryThreshold,
 			"stale_threshold":    cfg.Health.StaleThreshold.Duration().String(),
-		},
-		"switching": map[string]interface{}{
-			"confirm_duration":        cfg.Switching.ConfirmDuration.Duration().String(),
-			"min_hold_time":           cfg.Switching.MinHoldTime.Duration().String(),
-			"latency_improvement":     cfg.Switching.LatencyImprovement.Duration().String(),
-			"close_flows_on_failover": cfg.Switching.CloseFlowsOnFailover,
 		},
 		"control": map[string]interface{}{
 			"bind_addr": cfg.Control.BindAddr,

@@ -18,29 +18,6 @@ type RTTStats struct {
 	Samples int
 }
 
-type RetransResult struct {
-	BytesSent    uint64
-	Retransmits  uint64
-	SegmentsSent uint64
-	RTT          time.Duration
-	RTTVar       time.Duration
-}
-
-func (r RetransResult) Rate() float64 {
-	if r.SegmentsSent == 0 {
-		return 0
-	}
-	return float64(r.Retransmits) / float64(r.SegmentsSent)
-}
-
-type LossResult struct {
-	PacketsSent uint64
-	PacketsRecv uint64
-	PacketsLost uint64
-	OutOfOrder  uint64
-	LossRate    float64
-}
-
 type Client struct {
 	conn      net.Conn
 	dialAddr  string

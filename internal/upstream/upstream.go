@@ -25,8 +25,6 @@ const (
 	ModeCoordination
 )
 
-const dialFailSwitchCount = 2
-
 func (m Mode) String() string {
 	switch m {
 	case ModeManual:
@@ -73,24 +71,12 @@ type Upstream struct {
 	dialFailCount int
 }
 
-type WindowMetrics struct {
-	Loss     float64
-	AvgRTTMs float64
-	JitterMs float64
-	HasRTT   bool
-}
-
 // MeasurementResult is retained as the fbmeasure adapter boundary. Only
 // RTT, timestamp and success are consumed by the health model.
 type MeasurementResult struct {
-	BandwidthUpBps   float64
-	BandwidthDownBps float64
-	RTTMs            float64
-	JitterMs         float64
-	LossRate         float64
-	RetransRate      float64
-	Timestamp        time.Time
-	Network          string
+	RTTMs     float64
+	Timestamp time.Time
+	Network   string
 }
 
 type UpstreamManager struct {
@@ -104,29 +90,18 @@ type UpstreamManager struct {
 	coordTag       string
 	coordVersion   int64
 	coordFallback  bool
-	rng            *rand.Rand
 	onSelect       func(change ActiveChange)
 	onStateChange  func(change UsabilityChange)
 	onCoordState   func(state CoordinationState)
-	switching      config.SwitchingConfig
 	healthConfig   config.HealthConfig
 	logger         util.Logger
-
-	pendingSwitch string
-	pendingSince  time.Time
-	lastSwitch    time.Time
 }
 
-func NewUpstreamManager(upstreams []*Upstream, rng *rand.Rand, logger util.Logger) *UpstreamManager {
-	if rng == nil {
-		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
+func NewUpstreamManager(upstreams []*Upstream, _ *rand.Rand, logger util.Logger) *UpstreamManager {
 	m := &UpstreamManager{
 		upstreams:    make(map[string]*Upstream, len(upstreams)),
 		order:        make([]string, 0, len(upstreams)),
 		mode:         ModeAuto,
-		rng:          rng,
-		switching:    config.DefaultSwitchingConfig(),
 		healthConfig: config.HealthConfig{RTTEWMAAlpha: 0.25, FailureThreshold: 3, RecoveryThreshold: 2, StaleThreshold: config.Duration(time.Minute)},
 		logger:       logger,
 	}
@@ -172,23 +147,6 @@ func (m *UpstreamManager) SetHealthConfig(cfg config.HealthConfig) {
 	for _, up := range m.upstreams {
 		m.refreshStatsLocked(up)
 	}
-}
-
-func (m *UpstreamManager) SetSwitching(cfg config.SwitchingConfig) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	defaults := config.DefaultSwitchingConfig()
-	if cfg.ConfirmDuration.Duration() < 0 {
-		cfg.ConfirmDuration = defaults.ConfirmDuration
-	}
-	if cfg.MinHoldTime.Duration() < 0 {
-		cfg.MinHoldTime = defaults.MinHoldTime
-	}
-	if cfg.LatencyImprovement.Duration() < 0 {
-		cfg.LatencyImprovement = defaults.LatencyImprovement
-	}
-	m.switching = cfg
-	m.resetPendingLocked()
 }
 
 // SetMeasurementConfig is kept as a source-compatible no-op for integrations
@@ -251,7 +209,7 @@ func (m *UpstreamManager) RankedTags() []string {
 	}
 	tags := append([]string(nil), m.order...)
 	sort.SliceStable(tags, func(i, j int) bool {
-		return m.betterLocked(m.upstreams[tags[i]], m.upstreams[tags[j]], tags[i] == m.activeTag)
+		return m.betterLocked(m.upstreams[tags[i]], m.upstreams[tags[j]])
 	})
 	result := make([]string, 0, len(tags))
 	for _, tag := range tags {
@@ -268,10 +226,7 @@ func (m *UpstreamManager) SetAuto() {
 	defer m.mu.Unlock()
 	m.mode, m.manualTag = ModeAuto, ""
 	m.clearCoordinationLocked()
-	m.resetPendingLocked()
-	if best, _ := m.selectBestLocked(nil); best != "" {
-		m.setActiveLocked(best, "auto")
-	}
+	m.setActiveLocked("", "auto")
 	m.emitCoordinationStateLocked()
 }
 
@@ -287,7 +242,6 @@ func (m *UpstreamManager) SetManual(tag string) error {
 	}
 	m.mode, m.manualTag = ModeManual, up.Tag
 	m.clearCoordinationLocked()
-	m.resetPendingLocked()
 	m.setActiveLocked(up.Tag, "manual")
 	m.emitCoordinationStateLocked()
 	return nil
@@ -299,7 +253,6 @@ func (m *UpstreamManager) SetCoordination() {
 	m.mode, m.manualTag = ModeCoordination, ""
 	m.clearCoordinationLocked()
 	m.coordFallback = true
-	m.resetPendingLocked()
 	if best, _ := m.selectBestLocked(nil); best != "" {
 		m.setActiveLocked(best, "coordination_fallback")
 	}
@@ -348,6 +301,22 @@ func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool
 
 func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
 	return m.SelectUpstreamFrom(nil)
+}
+
+// SelectStatic returns the configured upstream without consulting health. A
+// static route is fixed by configuration; only a recent dial cooldown can
+// temporarily make it unavailable.
+func (m *UpstreamManager) SelectStatic(tag string) (*Upstream, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	up := m.upstreams[strings.TrimSpace(tag)]
+	if up == nil {
+		return nil, fmt.Errorf("upstream %q is unavailable", tag)
+	}
+	if up.dialFailUntil.After(time.Now()) {
+		return nil, fmt.Errorf("upstream %q is in dial cooldown", tag)
+	}
+	return up, nil
 }
 
 // SelectUpstreamFrom enforces route membership and ranks candidates by
@@ -403,10 +372,6 @@ func hasTag(tags map[string]struct{}, tag string) bool {
 	return ok
 }
 
-func (m *UpstreamManager) UpdateReachability(tag string, reachable bool) UpstreamStats {
-	return m.applyObservation(tag, ProbeObservation{Success: reachable, Protocol: "icmp", ObservedAt: time.Now()})
-}
-
 func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult, health ...config.HealthConfig) UpstreamStats {
 	if result == nil || !sanitizeMeasurementResult(result) {
 		return UpstreamStats{}
@@ -446,7 +411,6 @@ func (m *UpstreamManager) applyObservation(tag string, observation ProbeObservat
 			m.activateCoordinationFallbackLocked("health_down")
 		}
 	}
-	m.evaluateSwitchingLocked(tag)
 	return up.stats
 }
 
@@ -459,38 +423,6 @@ func (m *UpstreamManager) refreshStatsLocked(up *Upstream) {
 	up.stats.RTTMs = up.health.RTTMs()
 	up.stats.ConsecutiveSuccesses = up.health.ConsecutiveSuccesses
 	up.stats.ConsecutiveFailures = up.health.ConsecutiveFailures
-}
-
-func (m *UpstreamManager) evaluateSwitchingLocked(updated string) {
-	if m.mode == ModeManual || (m.mode == ModeCoordination && !m.coordFallback) {
-		return
-	}
-	active := m.upstreams[m.activeTag]
-	if active == nil || !m.selectableLocked(active, time.Now()) {
-		if best, _ := m.selectBestLocked(nil); best != "" {
-			m.setActiveLocked(best, "health_failover")
-		}
-		return
-	}
-	best, _ := m.selectBestLocked(nil)
-	if best == "" || best == m.activeTag {
-		m.resetPendingLocked()
-		return
-	}
-	candidate := m.upstreams[best]
-	if candidate.stats.HealthState != HealthHealthy || active.stats.HealthState != HealthHealthy || candidate.stats.RTTMs <= 0 || active.stats.RTTMs-candidate.stats.RTTMs < float64(m.switching.LatencyImprovement.Duration()/time.Millisecond) {
-		m.resetPendingLocked()
-		return
-	}
-	if m.pendingSwitch != best {
-		m.pendingSwitch, m.pendingSince = best, time.Now()
-		return
-	}
-	if time.Since(m.pendingSince) < m.switching.ConfirmDuration.Duration() || (!m.lastSwitch.IsZero() && time.Since(m.lastSwitch) < m.switching.MinHoldTime.Duration()) {
-		return
-	}
-	m.setActiveLocked(best, "latency_improvement")
-	_ = updated
 }
 
 func (m *UpstreamManager) MarkDialFailure(tag string, cooldown time.Duration) {
@@ -506,11 +438,6 @@ func (m *UpstreamManager) MarkDialFailure(tag string, cooldown time.Duration) {
 	up.dialFailUntil = time.Now().Add(cooldown)
 	up.dialFailCount++
 	util.Event(m.logger, slog.LevelWarn, "upstream.dial_failure_marked", "upstream", tag, "dial_fail_count", up.dialFailCount)
-	if up.dialFailCount >= dialFailSwitchCount && tag == m.activeTag {
-		if best, _ := m.selectBestLocked(nil); best != "" {
-			m.setActiveLocked(best, "dial_failover")
-		}
-	}
 }
 
 func (m *UpstreamManager) ClearDialFailure(tag string) {
@@ -583,7 +510,7 @@ func (m *UpstreamManager) selectBestLocked(tags []string) (string, float64) {
 		if !m.selectableLocked(up, now) {
 			continue
 		}
-		if best == nil || m.betterLocked(up, best, tag == m.activeTag) {
+		if best == nil || m.betterLocked(up, best) {
 			best, bestTag = up, tag
 		}
 	}
@@ -610,7 +537,7 @@ func healthRank(state HealthState) int {
 	}
 }
 
-func (m *UpstreamManager) betterLocked(a, b *Upstream, aCurrent bool) bool {
+func (m *UpstreamManager) betterLocked(a, b *Upstream) bool {
 	ra, rb := healthRank(a.stats.HealthState), healthRank(b.stats.HealthState)
 	if ra != rb {
 		return ra < rb
@@ -627,9 +554,6 @@ func (m *UpstreamManager) betterLocked(a, b *Upstream, aCurrent bool) bool {
 	if a.Priority != b.Priority {
 		return a.Priority > b.Priority
 	}
-	if aCurrent != (b.Tag == m.activeTag) {
-		return aCurrent
-	}
 	return false
 }
 
@@ -639,8 +563,6 @@ func (m *UpstreamManager) setActiveLocked(tag, reason string) {
 	}
 	old := m.activeTag
 	m.activeTag = tag
-	m.lastSwitch = time.Now()
-	m.resetPendingLocked()
 	util.Event(m.logger, slog.LevelInfo, "upstream.active_changed", "switch.from", old, "switch.to", tag, "switch.reason", reason)
 	if m.onSelect != nil {
 		m.onSelect(ActiveChange{OldTag: old, NewTag: tag, Reason: reason})
@@ -655,11 +577,6 @@ func (m *UpstreamManager) emitCoordinationStateLocked() {
 	if m.onCoordState != nil {
 		m.onCoordState(m.coordinationStateLocked())
 	}
-}
-
-func (m *UpstreamManager) resetPendingLocked() {
-	m.pendingSwitch = ""
-	m.pendingSince = time.Time{}
 }
 
 func (m *UpstreamManager) clearCoordinationLocked() {

@@ -29,14 +29,22 @@ func (p *upstreamPicker) Pick(meta flow.Meta) (forwarding.Upstream, error) {
 		return forwarding.Upstream{}, fmt.Errorf("upstream picker is unavailable")
 	}
 	var tags []string
+	strategy := "adaptive"
 	if len(p.routes) > 0 {
 		route, ok := p.routes[meta.Route]
 		if !ok {
 			return forwarding.Upstream{}, fmt.Errorf("route %q not found", meta.Route)
 		}
 		tags = route.upstreams
+		strategy = route.strategy
 	}
-	selected, err := p.manager.SelectUpstreamFrom(tags)
+	var selected *upstream.Upstream
+	var err error
+	if strategy == "static" && len(tags) == 1 {
+		selected, err = p.manager.SelectStatic(tags[0])
+	} else {
+		selected, err = p.manager.SelectUpstreamFrom(tags)
+	}
 	if err != nil {
 		return forwarding.Upstream{}, err
 	}

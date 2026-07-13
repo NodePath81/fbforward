@@ -32,9 +32,9 @@ type HealthSnapshot struct {
 	ConsecutiveFailures  int
 }
 
-// ApplyObservation applies one completed measurement cycle. A cycle is
-// successful when at least one enabled probe succeeded; protocol-specific
-// details are intentionally not part of selection.
+// ApplyObservation applies one completed TCP or UDP probe observation.
+// Protocol-specific details are intentionally not part of selection; both
+// protocols update the same health and RTT snapshot.
 func ApplyObservation(previous HealthSnapshot, observation ProbeObservation, cfg config.HealthConfig) HealthSnapshot {
 	if observation.ObservedAt.IsZero() {
 		observation.ObservedAt = time.Now()

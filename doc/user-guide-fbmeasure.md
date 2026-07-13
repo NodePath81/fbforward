@@ -16,7 +16,8 @@ fbforward connects to it to collect:
 - TCP retransmission rate
 - UDP loss rate
 
-Without fbmeasure, fbforward operates in degraded mode using ICMP reachability
+Without fbmeasure, adaptive fbforward routes eventually become down; static
+routes can still use their fixed upstream with dial cooldown.
 probes only.
 
 ### Protocol model
@@ -33,8 +34,6 @@ The server supports four operations:
 
 - `ping_tcp`
 - `ping_udp`
-- `tcp_retrans`
-- `udp_loss`
 
 The protocol is stateless apart from short-lived pending tests keyed by
 `test_id`.

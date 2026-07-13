@@ -36,11 +36,9 @@ type Server struct {
 	udpConn *net.UDPConn
 	port    int
 
-	udpPingTests    map[string]*udpPingTest
-	udpLossTests    map[string]*udpLossTest
-	tcpRetransTests map[string]*tcpRetransTest
-	connSem         chan struct{}
-	connCounts      map[string]int
+	udpPingTests map[string]*udpPingTest
+	connSem      chan struct{}
+	connCounts   map[string]int
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -60,13 +58,11 @@ func NewServer(cfg Config, logger util.Logger) *Server {
 		cfg.MaxConnsPerIP = maxConnsPerIP
 	}
 	return &Server{
-		cfg:             cfg,
-		logger:          logger,
-		udpPingTests:    make(map[string]*udpPingTest),
-		udpLossTests:    make(map[string]*udpLossTest),
-		tcpRetransTests: make(map[string]*tcpRetransTest),
-		connSem:         make(chan struct{}, cfg.MaxConnections),
-		connCounts:      make(map[string]int),
+		cfg:          cfg,
+		logger:       logger,
+		udpPingTests: make(map[string]*udpPingTest),
+		connSem:      make(chan struct{}, cfg.MaxConnections),
+		connCounts:   make(map[string]int),
 	}
 }
 
@@ -199,10 +195,6 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
-	if bytes.Equal(prefix[:], []byte(tcpDataMarker)) {
-		s.handleTCPDataConn(ctx, conn)
-		return
-	}
 	defer conn.Close()
 
 	reader := io.MultiReader(bytes.NewReader(prefix[:]), conn)
@@ -251,18 +243,6 @@ func (s *Server) handleControlRequest(ctx context.Context, _ net.Conn, req contr
 			return nil, err
 		}
 		return s.handlePingUDP(ctx, payload)
-	case opTCPRetrans:
-		var payload tcpRetransRequest
-		if err := unmarshalPayload(req.Payload, &payload); err != nil {
-			return nil, err
-		}
-		return s.handleTCPRetrans(ctx, payload)
-	case opUDPLoss:
-		var payload udpLossRequest
-		if err := unmarshalPayload(req.Payload, &payload); err != nil {
-			return nil, err
-		}
-		return s.handleUDPLoss(ctx, payload)
 	default:
 		return nil, fmt.Errorf("unsupported operation %q", req.Op)
 	}
