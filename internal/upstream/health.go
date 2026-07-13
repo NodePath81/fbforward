@@ -19,7 +19,6 @@ const (
 type ProbeObservation struct {
 	Success    bool
 	RTT        time.Duration
-	Protocol   string
 	ObservedAt time.Time
 }
 

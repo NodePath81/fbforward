@@ -97,7 +97,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 	}()
 	flowObservers := flow.MultiObserver{status, metrics.NewFlowObserver(metricSet), flowContextRegistry}
-	manager := upstream.NewUpstreamManager(upstreams, nil, util.ComponentLogger(logger, util.CompUpstream))
+	manager := upstream.NewUpstreamManager(upstreams, util.ComponentLogger(logger, util.CompUpstream))
 	manager.SetHealthConfig(cfg.Health)
 
 	rt := &Runtime{
@@ -362,7 +362,7 @@ func (r *Runtime) startMeasurement() {
 		r.control.SetScheduler(scheduler)
 	}
 
-	r.collector = measure.NewCollector(r.cfg.Measurement, r.cfg.Health, r.manager, r.metrics, scheduler, measureLogger)
+	r.collector = measure.NewCollector(r.cfg.Measurement, r.manager, r.metrics, scheduler, measureLogger)
 	r.collector.OnTestComplete = func(upstream, protocol string, startTime time.Time, duration time.Duration, success bool, result *measure.TestResultMetrics, errMsg string) {
 		if r.status == nil {
 			return

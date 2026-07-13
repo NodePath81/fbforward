@@ -110,7 +110,6 @@ func (c *ControlServer) rpcRefreshGeoIP(ctx *rpcContext, raw json.RawMessage) (a
 func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 	cfg := c.measurement
 	return map[string]interface{}{
-		"startup_delay": cfg.StartupDelay.Duration().String(),
 		"schedule": map[string]interface{}{
 			"interval": map[string]interface{}{
 				"min": cfg.Schedule.Interval.Min.Duration().String(),

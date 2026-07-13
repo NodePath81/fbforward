@@ -11,14 +11,11 @@ This guide covers fbmeasure deployment, configuration, and operation.
 fbmeasure is the measurement server binary that runs on upstream hosts.
 fbforward connects to it to collect:
 
-- TCP RTT and jitter
-- UDP RTT and jitter
-- TCP retransmission rate
-- UDP loss rate
+- TCP RTT
+- UDP RTT
 
 Without fbmeasure, adaptive fbforward routes eventually become down; static
 routes can still use their fixed upstream with dial cooldown.
-probes only.
 
 ### Protocol model
 
@@ -27,10 +24,7 @@ configured port (default `9876`).
 
 - TCP control requests use a 4-byte length-prefixed JSON protocol.
 - UDP probes use compact binary packets tagged with a one-shot `test_id`.
-- TCP retransmission tests use a client-initiated data connection carrying a
-  binary preface plus the same `test_id`.
-
-The server supports four operations:
+- The server supports two operations:
 
 - `ping_tcp`
 - `ping_udp`
@@ -41,15 +35,12 @@ The protocol is stateless apart from short-lived pending tests keyed by
 ### Relationship to fbforward
 
 fbforward uses `upstreams[].measurement.host` and
-`upstreams[].measurement.port` to reach fbmeasure. Each measurement cycle runs
-one TCP probe job and one UDP probe job per upstream when those protocols are
-enabled.
+`upstreams[].measurement.port` to reach fbmeasure. Each scheduled observation
+runs one TCP or UDP RTT probe per enabled protocol.
 
 ### Platform requirements
 
-fbmeasure requires Linux. TCP retransmission measurement depends on
-`TCP_INFO`, and the server uses Linux socket behavior throughout the probing
-path.
+fbmeasure requires Linux for its socket implementation.
 
 No special capabilities are required. fbmeasure can run as an unprivileged
 user.
@@ -70,7 +61,6 @@ fbmeasure uses CLI flags only. It does not read a configuration file.
 | `--port` | int | `9876` | TCP and UDP listen port |
 | `--log-level` | string | `info` | `debug`, `info`, `warn`, or `error` |
 | `--log-format` | string | `text` | `text` or `json` |
-| `--recv-wait` | duration | `100ms` | UDP receive window after loss-test send phase |
 | `--tls-cert-file` | string | empty | Enable TLS with this server certificate |
 | `--tls-key-file` | string | empty | Private key for `--tls-cert-file` |
 | `--tls-client-ca-file` | string | empty | CA bundle for validating client certificates |
@@ -90,16 +80,16 @@ fbmeasure requires inbound TCP and UDP access on the configured port from the
 fbforward host.
 
 ```bash
-# TCP control + TCP retransmission data connection
+# TCP control
 sudo ufw allow from <fbforward-host-ip> to any port 9876 proto tcp
 
-# UDP ping/loss probes
+# UDP ping probes
 sudo ufw allow from <fbforward-host-ip> to any port 9876 proto udp
 ```
 
 ### Secure deployment notes
 
-- TLS protects the TCP control channel and TCP retransmission data connection.
+- TLS protects the TCP control channel.
 - fbforward must be configured to trust the server certificate before enabling
   secure transport.
 - If `--tls-client-ca-file` and `--tls-require-client-cert` are used, fbforward
@@ -160,15 +150,14 @@ Docker can use the same `Containerfile` with equivalent commands.
 
 ### Verification
 
-Basic reachability:
+Basic TCP endpoint check:
 
 ```bash
 nc -zv <upstream-host> 9876
 ```
 
 End-to-end verification from the fbforward host is usually easiest by checking
-that fbforward measurements begin succeeding and stale-measurement warnings
-stop appearing.
+that fbforward measurements begin succeeding and health state becomes healthy.
 
 ---
 
@@ -192,19 +181,10 @@ Check:
 1. fbmeasure is running.
 2. TCP and UDP firewall rules allow the fbforward host.
 3. `measurement.host` and `measurement.port` match the deployed service.
-4. The upstream is Linux if TCP retransmission tests are enabled.
+4. The deployed service accepts the fbmeasure ping protocol.
 
 If running in a container, inspect:
 
 ```bash
 podman logs -f fbmeasure
-```
-
-### UDP loss tests need a longer receive window
-
-Increase `--recv-wait` if late UDP packets are being truncated on very high
-latency paths:
-
-```bash
-./fbmeasure --port 9876 --recv-wait 250ms
 ```

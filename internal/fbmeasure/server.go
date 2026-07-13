@@ -16,12 +16,9 @@ import (
 	"github.com/NodePath81/fbforward/internal/util"
 )
 
-const defaultUDPReceiveWait = 100 * time.Millisecond
-
 type Config struct {
 	BindAddr       string
 	Port           int
-	UDPReceiveWait time.Duration
 	MaxConnections int
 	MaxConnsPerIP  int
 	Security       ServerSecurityConfig
@@ -45,9 +42,6 @@ type Server struct {
 }
 
 func NewServer(cfg Config, logger util.Logger) *Server {
-	if cfg.UDPReceiveWait <= 0 {
-		cfg.UDPReceiveWait = defaultUDPReceiveWait
-	}
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = "0.0.0.0"
 	}

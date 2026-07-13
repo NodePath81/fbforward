@@ -22,7 +22,6 @@ const retryDelay = 30 * time.Second
 
 type Collector struct {
 	cfg            config.MeasurementConfig
-	health         config.HealthConfig
 	manager        *upstream.UpstreamManager
 	metrics        *metrics.Metrics
 	logger         util.Logger
@@ -44,10 +43,9 @@ type TestResultMetrics struct {
 	RTTMs float64
 }
 
-func NewCollector(cfg config.MeasurementConfig, health config.HealthConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, scheduler *Scheduler, logger util.Logger) *Collector {
+func NewCollector(cfg config.MeasurementConfig, manager *upstream.UpstreamManager, metrics *metrics.Metrics, scheduler *Scheduler, logger util.Logger) *Collector {
 	return &Collector{
 		cfg:       cfg,
-		health:    health,
 		manager:   manager,
 		metrics:   metrics,
 		scheduler: scheduler,
@@ -57,14 +55,7 @@ func NewCollector(cfg config.MeasurementConfig, health config.HealthConfig, mana
 }
 
 func (c *Collector) RunLoop(ctx context.Context) {
-	delay := c.cfg.StartupDelay.Duration()
-	if delay > 0 {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(delay):
-		}
-	}
+	c.scheduler.Schedule()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -114,14 +105,19 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 }
 
 func (c *Collector) handleMeasurementFailure(tag string, err error) error {
-	c.manager.RecordProbeFailure(tag, "", time.Now())
+	stats := c.manager.RecordProbeFailure(tag, time.Now())
+	if c.metrics != nil {
+		c.metrics.RecordProbe(tag, false)
+		c.metrics.SetUpstreamMetrics(tag, stats)
+	}
 	util.Event(c.logger, slog.LevelWarn, "measure.probe_failed", "upstream", tag, "error", err)
 	return err
 }
 
 func (c *Collector) handleMeasurementSuccess(tag string, result *upstream.MeasurementResult) {
-	stats := c.manager.UpdateMeasurement(tag, result, c.health)
+	stats := c.manager.UpdateMeasurement(tag, result)
 	if c.metrics != nil {
+		c.metrics.RecordProbe(tag, true)
 		c.metrics.SetUpstreamMetrics(tag, stats)
 	}
 }
@@ -201,7 +197,6 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 
 	result := &upstream.MeasurementResult{
 		Timestamp: time.Now(),
-		Network:   network,
 		RTTMs:     float64(rttStats.Mean) / float64(time.Millisecond),
 	}
 	resultMetrics.RTTMs = result.RTTMs

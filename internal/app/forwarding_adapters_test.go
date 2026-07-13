@@ -1,7 +1,6 @@
 package app
 
 import (
-	"math/rand"
 	"net"
 	"net/netip"
 	"testing"
@@ -38,7 +37,7 @@ func TestFirewallPolicyAdapterMapsDecision(t *testing.T) {
 func TestUpstreamPickerAdapterMapsActiveIPAndDialFeedback(t *testing.T) {
 	selected := &upstream.Upstream{Tag: "primary"}
 	selected.SetActiveIP(net.ParseIP("203.0.113.10"))
-	manager := upstream.NewUpstreamManager([]*upstream.Upstream{selected}, rand.New(rand.NewSource(1)), nil)
+	manager := upstream.NewUpstreamManager([]*upstream.Upstream{selected}, nil)
 	if err := manager.SetManual("primary"); err != nil {
 		t.Fatalf("SetManual error: %v", err)
 	}
@@ -73,12 +72,12 @@ func TestUpstreamPickerScopesAdaptiveRoutesAndKeepsStaticFixed(t *testing.T) {
 		makeUpstream("route-a", "203.0.113.11"),
 		makeUpstream("route-b", "203.0.113.12"),
 		makeUpstream("static", "203.0.113.13"),
-	}, rand.New(rand.NewSource(1)), nil)
+	}, nil)
 	if err := manager.SetManual("outside"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		manager.RecordProbeFailure("static", "tcp", time.Now())
+		manager.RecordProbeFailure("static", time.Now())
 	}
 	picker := newUpstreamPicker(manager, []config.RouteConfig{
 		{Name: "adaptive", Strategy: "adaptive", Upstreams: []string{"route-a", "route-b"}},
@@ -101,7 +100,7 @@ func TestUpstreamPickerScopesAdaptiveRoutesAndKeepsStaticFixed(t *testing.T) {
 }
 
 func TestUpstreamPickerRejectsUnknownRoute(t *testing.T) {
-	manager := upstream.NewUpstreamManager(nil, rand.New(rand.NewSource(1)), nil)
+	manager := upstream.NewUpstreamManager(nil, nil)
 	picker := newUpstreamPicker(manager, []config.RouteConfig{{Name: "known", Strategy: "static", Upstreams: []string{"missing"}}})
 	if _, err := picker.Pick(flow.Meta{Route: "unknown"}); err == nil {
 		t.Fatal("expected unknown route error")

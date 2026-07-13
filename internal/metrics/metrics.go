@@ -30,6 +30,8 @@ type protocolBytes struct {
 type Metrics struct {
 	mu                     sync.Mutex
 	upstreams              map[string]*UpstreamMetrics
+	probeTotal             map[string]uint64
+	probeFailures          map[string]uint64
 	routeSelected          map[string]string
 	mode                   upstream.Mode
 	activeTag              string
@@ -123,6 +125,8 @@ func NewMetrics(tags []string) *Metrics {
 	}
 	return &Metrics{
 		upstreams:          upstreams,
+		probeTotal:         make(map[string]uint64, len(tags)),
+		probeFailures:      make(map[string]uint64, len(tags)),
 		routeSelected:      make(map[string]string),
 		bytesUpTotal:       bytesUpTotal,
 		bytesDownTotal:     bytesDownTotal,
@@ -231,6 +235,18 @@ func (m *Metrics) SetUpstreamMetrics(tag string, stats upstream.UpstreamStats) {
 	up.Unusable = !stats.Usable
 	up.LastSuccess = stats.LastReachable
 	up.ConsecutiveFailures = stats.ConsecutiveFailures
+}
+
+func (m *Metrics) RecordProbe(tag string, success bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.upstreams[tag]; !ok {
+		return
+	}
+	m.probeTotal[tag]++
+	if !success {
+		m.probeFailures[tag]++
+	}
 }
 
 func (m *Metrics) SetRouteSelected(route, tag string) {
@@ -469,6 +485,8 @@ func (m *Metrics) Render() string {
 	for tag, stat := range m.upstreams {
 		upstreams[tag] = *stat
 	}
+	probeTotal := copyUint64Map(m.probeTotal)
+	probeFailures := copyUint64Map(m.probeFailures)
 	bytesUpPerSec := copyUint64Map(m.bytesUpPerSec)
 	bytesDownPerSec := copyUint64Map(m.bytesDownPerSec)
 	bytesTCPUpPerSec := copyUint64Map(m.bytesTCPUpPerSec)
@@ -515,6 +533,22 @@ func (m *Metrics) Render() string {
 		b.WriteString(tag)
 		b.WriteString("\"} ")
 		b.WriteString(formatFloat(upstreams[tag].RTTMs))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_probe_total counter\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_probe_total{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(strconv.FormatUint(probeTotal[tag], 10))
+		b.WriteString("\n")
+	}
+	b.WriteString("# TYPE fbforward_upstream_probe_failures_total counter\n")
+	for _, tag := range tags {
+		b.WriteString("fbforward_upstream_probe_failures_total{upstream=\"")
+		b.WriteString(tag)
+		b.WriteString("\"} ")
+		b.WriteString(strconv.FormatUint(probeFailures[tag], 10))
 		b.WriteString("\n")
 	}
 	b.WriteString("# TYPE fbforward_upstream_health_state gauge\n")

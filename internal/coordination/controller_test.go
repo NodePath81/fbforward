@@ -3,7 +3,6 @@ package coordination
 import (
 	"context"
 	"encoding/json"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -173,7 +172,7 @@ func newTestController(t *testing.T, endpoint string) *Controller {
 func newTestControllerWithInterval(t *testing.T, endpoint string, heartbeatInterval time.Duration) *Controller {
 	t.Helper()
 
-	manager := upstream.NewUpstreamManager(nil, rand.New(rand.NewSource(1)), nil)
+	manager := upstream.NewUpstreamManager(nil, nil)
 	manager.SetCoordination()
 
 	return NewController(

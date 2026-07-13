@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
-	"time"
 
 	"github.com/NodePath81/fbforward/internal/fbmeasure"
 	"github.com/NodePath81/fbforward/internal/util"
@@ -31,7 +30,6 @@ func main() {
 	port := flag.Int("port", 9876, "Listen port")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	logFormat := flag.String("log-format", "text", "Log format (text or json)")
-	recvWait := flag.Duration("recv-wait", 100*time.Millisecond, "UDP receive idle window")
 	tlsCertFile := flag.String("tls-cert-file", "", "TLS server certificate file")
 	tlsKeyFile := flag.String("tls-key-file", "", "TLS server key file")
 	tlsClientCAFile := flag.String("tls-client-ca-file", "", "CA bundle for validating client certificates")
@@ -54,8 +52,7 @@ func main() {
 	defer cancel()
 
 	srv := fbmeasure.NewServer(fbmeasure.Config{
-		Port:           *port,
-		UDPReceiveWait: *recvWait,
+		Port: *port,
 		Security: fbmeasure.ServerSecurityConfig{
 			CertFile:          *tlsCertFile,
 			KeyFile:           *tlsKeyFile,

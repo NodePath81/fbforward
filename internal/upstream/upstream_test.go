@@ -1,7 +1,6 @@
 package upstream
 
 import (
-	"math/rand"
 	"testing"
 	"time"
 
@@ -46,7 +45,7 @@ func TestRouteSelectionUsesHealthRTTPriorityAndOrder(t *testing.T) {
 		testUpstream("slow", HealthHealthy, 100*time.Millisecond, 1),
 		testUpstream("fast", HealthHealthy, 20*time.Millisecond, 0),
 		testUpstream("down", HealthDown, 1*time.Millisecond, 100),
-	}, rand.New(rand.NewSource(1)), nil)
+	}, nil)
 	up, err := m.SelectUpstreamFrom([]string{"slow", "fast", "down"})
 	if err != nil || up.Tag != "fast" {
 		t.Fatalf("expected fast healthy upstream, got %v, %v", up, err)
@@ -61,7 +60,7 @@ func TestRouteSelectionPrefersHealthyOverLowerRTTStale(t *testing.T) {
 	m := NewUpstreamManager([]*Upstream{
 		testUpstream("healthy", HealthHealthy, 100*time.Millisecond, 0),
 		testUpstream("stale", HealthStale, 1*time.Millisecond, 100),
-	}, rand.New(rand.NewSource(1)), nil)
+	}, nil)
 	up, err := m.SelectUpstreamFrom([]string{"healthy", "stale"})
 	if err != nil || up.Tag != "healthy" {
 		t.Fatalf("expected healthy upstream to win over stale RTT, got %v, %v", up, err)
@@ -72,7 +71,7 @@ func TestCoordinationPickAndFallback(t *testing.T) {
 	m := NewUpstreamManager([]*Upstream{
 		testUpstream("alpha", HealthHealthy, 20*time.Millisecond, 1),
 		testUpstream("beta", HealthHealthy, 30*time.Millisecond, 0),
-	}, rand.New(rand.NewSource(1)), nil)
+	}, nil)
 	m.SetCoordination()
 	m.SetCoordinationConnected(true)
 	if _, err := m.ApplyCoordinationPick(1, "beta"); err != nil {
@@ -81,9 +80,9 @@ func TestCoordinationPickAndFallback(t *testing.T) {
 	if m.ActiveTag() != "beta" || !m.CoordinationState().Authoritative {
 		t.Fatalf("coordination pick not applied: %+v", m.CoordinationState())
 	}
-	m.RecordProbeFailure("beta", "tcp", time.Now())
-	m.RecordProbeFailure("beta", "tcp", time.Now())
-	m.RecordProbeFailure("beta", "tcp", time.Now())
+	m.RecordProbeFailure("beta", time.Now())
+	m.RecordProbeFailure("beta", time.Now())
+	m.RecordProbeFailure("beta", time.Now())
 	if !m.CoordinationState().FallbackActive {
 		t.Fatalf("expected fallback after coordinated upstream down")
 	}

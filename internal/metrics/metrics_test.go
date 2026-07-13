@@ -42,3 +42,18 @@ func TestRenderIncludesIPLogAndFirewallMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeMetricsCountSuccessAndFailure(t *testing.T) {
+	m := NewMetrics([]string{"primary"})
+	m.RecordProbe("primary", true)
+	m.RecordProbe("primary", false)
+	rendered := m.Render()
+	for _, needle := range []string{
+		`fbforward_upstream_probe_total{upstream="primary"} 2`,
+		`fbforward_upstream_probe_failures_total{upstream="primary"} 1`,
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected metrics output to contain %q\n%s", needle, rendered)
+		}
+	}
+}

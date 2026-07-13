@@ -15,13 +15,13 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `cmd/fbforward/` - Main entry point, CLI flag parsing, signal handling
 - `internal/app/` - Application lifecycle (Supervisor, Runtime)
 - `internal/config/` - Configuration loading, validation, custom unmarshaling
-- `internal/upstream/` - Upstream state, health, route selection, and switching logic
+- `internal/upstream/` - Upstream state, health, and route-local selection
 - `internal/forwarding/` - TCP/UDP listeners and proxy logic
 - `internal/control/` - HTTP server, RPC handlers, WebSocket status stream
 - `internal/metrics/` - Prometheus metrics aggregation
 - Health probing is implemented by the fbmeasure TCP/UDP collector; the old
   `internal/probe/` ICMP package has been removed.
-- `internal/measure/` - fbmeasure measurement orchestration, fast-start, scheduling
+- `internal/measure/` - fbmeasure RTT probe orchestration and scheduling
 - `internal/fbmeasure/` - fbmeasure client/server protocol and test implementations
 - `internal/resolver/` - DNS resolution with configurable strategy
 - `internal/shaping/` - Linux tc traffic shaping (HTB qdisc, IFB device)
@@ -85,7 +85,6 @@ fbforward runs a single process with multiple goroutines for parallel I/O and ba
 
 | Location | Purpose | Count | Lifecycle |
 |----------|---------|-------|-----------|
-| `Runtime.startProbes()` | ICMP probe loop per upstream | 1 per upstream | Terminated by context cancel |
 | `Runtime.startMeasurement()` | measurement scheduler | 1 | Terminated by context cancel |
 | `Runtime.startDNSRefresh()` | DNS re-resolution for non-IP upstreams | 1 per upstream | Terminated by context cancel |
 | `Runtime.startListeners()` | Accept loop for TCP/UDP listeners | 1 per listener | Terminated by listener close |
@@ -127,7 +126,7 @@ Shutdown sequence:
 
 **Synchronization primitives:**
 
-- `sync.Mutex` in `UpstreamManager` protects mode, activeTag, switching state
+- `sync.Mutex` in `UpstreamManager` protects mode, coordination state, and health snapshots
 - `sync.RWMutex` in `StatusStore` protects TCP/UDP flow maps
 - `sync.WaitGroup` in `Runtime` tracks all background goroutines
 - `sync.Pool` in `forwarding` reuses buffers for TCP proxy
@@ -140,8 +139,7 @@ Shutdown sequence:
 Each `Upstream` instance maintains:
 - Resolved IPs (updated by DNS refresh goroutine)
 - Active IP selection (round-robin on consecutive failures)
-- EMA-smoothed metrics (bandwidth, RTT, jitter, loss/retrans rates)
-- Reachability status (updated by probe loop)
+- Unified health state and RTT EWMA (updated by fbmeasure TCP/UDP probes)
 - Measurement timestamps (last successful measurement)
 - Dial failure tracking (consecutive failures, cooldown expiry)
 
@@ -172,18 +170,9 @@ Flow lifecycle:
 
 **Primary upstream selection:**
 
-`UpstreamManager` tracks:
-- Current mode (`ModeAuto` or `ModeManual`)
-- Active upstream tag (primary for new flows)
-- Pending switch state (candidate tag, confirmation start time)
-- Warmup mode (relaxed switching for first 15 seconds)
-
-Switching decision flow (auto mode):
-1. Periodic scoring computes final scores for all usable upstreams
-2. If candidate score exceeds active + delta threshold, start confirmation timer
-3. If candidate sustains advantage for `confirm_duration`, switch
-4. If advantage lost, clear pending switch
-5. Fast failover bypasses confirmation on high loss/retrans or consecutive dial failures
+`UpstreamManager` tracks the control mode and coordination preference. Adaptive
+routes select locally by health, RTT, priority, and configuration order for each
+new Flow; static routes use their fixed upstream. Existing Flows never migrate.
 
 **GeoIP state:**
 
@@ -280,9 +269,8 @@ fbforward follows Go conventions:
 
 **Graceful degradation:**
 
-- **Missing measurement server**: Falls back to ICMP-only reachability if fbmeasure measurements fail
+- **Missing measurement server**: Adaptive upstreams eventually become `down`; static routes continue with dial cooldown
 - **DNS failure**: Continues using last-resolved IPs, logs warning
-- **ICMP probe failure**: Marks upstream unreachable but retries indefinitely
 - **Measurement timeout**: Skips sample, schedules next measurement normally
 - **Dial failure**: Marks upstream unusable after consecutive failures, auto-recovers on success
 - **Configuration validation**: Returns error on load, does not apply partial config
@@ -302,7 +290,6 @@ fbforward exits (via `log.Fatal` or returned error) on:
 
 Logged but operation continues:
 - Measurement test failure
-- ICMP probe timeout
 - DNS resolution timeout
 - TCP dial failure
 - Traffic shaping update failure (uses previous rules)
@@ -413,78 +400,12 @@ type StatusStore struct {
 }
 ```
 
-### Extending the scoring algorithm
+### Extending the health selector
 
-Scoring logic lives in `UpstreamManager.computeScores()` in [internal/upstream/upstream.go](../internal/upstream/upstream.go).
-
-**Adding a new sub-score:**
-
-Example: Add jitter variance as sub-score.
-
-**Step 1: Add metric to Upstream**
-
-```go
-type UpstreamStats struct {
-    RTTMs         float64
-    JitterMs      float64
-    JitterVarMs   float64  // Add this
-    // ... other fields
-}
-```
-
-**Step 2: Collect metric in measurement**
-
-Update `Collector.processResults()` in [internal/measure/collector.go](../internal/measure/collector.go):
-
-```go
-up.JitterVarMs = computeJitterVariance(result.RTT.Samples)
-```
-
-**Step 3: Add reference value and weight**
-
-Update `ScoringConfig` in [internal/config/config.go](../internal/config/config.go):
-
-```go
-type ScoringReferenceConfig struct {
-    JitterVar string `yaml:"jitter_var"` // e.g., "10ms"
-}
-
-type ScoringWeightsConfig struct {
-    JitterVar float64 `yaml:"jitter_var"` // e.g., 0.1
-}
-```
-
-**Step 4: Compute sub-score**
-
-In `computeScores()`:
-
-```go
-jitterVarRef := parseReference(cfg.Reference.JitterVar, 10.0) // ms
-sJitterVar := max(1 - exp(-up.JitterVarMs / jitterVarRef), epsilon)
-```
-
-**Step 5: Include in quality score**
-
-```go
-quality := pow(sBandwidthUp * sBandwidthDown * sRTT * sJitter * sJitterVar * ..., 1.0 / numSubScores)
-```
-
-**Modifying utilization penalty:**
-
-The penalty curve is in `applyUtilizationPenalty()`:
-
-```go
-func applyUtilizationPenalty(baseScore float64, utilization float64, cfg config.UtilizationPenaltyConfig) float64 {
-    if utilization < cfg.Threshold {
-        return baseScore
-    }
-    overage := utilization - cfg.Threshold
-    penalty := cfg.Multiplier * pow(overage, cfg.Exponent)
-    return baseScore * (1 - penalty)
-}
-```
-
-Modify curve shape by changing `Multiplier` or `Exponent` in config.
+The selection contract is intentionally small. New health inputs must first be
+represented as a `ProbeObservation`, update the unified `HealthSnapshot`, and
+then be covered by route-local selector tests. Do not add protocol-specific
+scores, weights, reference values, or global switching state.
 
 ### Adding new RPC methods
 
@@ -673,13 +594,8 @@ cd web
 npm run build  # Outputs to web/dist/
 ```
 
-**Set capabilities for testing:**
-
-```bash
-sudo setcap cap_net_raw+ep build/bin/fbforward
-```
-
-This allows ICMP probing without root.
+No raw-socket capability is required for health probing; fbforward uses the
+authenticated TCP/UDP fbmeasure sidecar.
 
 **Run fbforward locally:**
 

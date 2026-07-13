@@ -428,81 +428,10 @@ When `strategy` is omitted, both A and AAAA results are used. fbforward selects 
 
 ---
 
-## 4.5 reachability section
+## 4.5 reachability section (removed)
 
-The `reachability` section configures ICMP echo (ping) probing for adaptive
-route health. ICMP observations update the same unified health state as
-fbmeasure RTT probes.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `probe_interval` | duration | `1s` | Time between ICMP probes |
-| `window_size` | int | `5` | Number of recent probes tracked |
-| `startup_delay` | duration | `probe_interval × window_size` | Delay before starting probes |
-
-### probe_interval
-
-Time between ICMP echo requests to each upstream.
-
-**Type:** duration
-
-**Default:** `1s`
-
-**Example:**
-
-```yaml
-reachability:
-  probe_interval: 2s
-```
-
-fbforward sends one ICMP echo request to each upstream every `probe_interval`. Shorter intervals provide faster failure detection but increase network overhead.
-
-**Validation:**
-- Must be greater than or equal to `100ms`
-
-### window_size
-
-Number of recent probe results tracked per upstream. Reachability is computed as success rate over the window.
-
-**Type:** int
-
-**Default:** `5`
-
-**Example:**
-
-```yaml
-reachability:
-  window_size: 10
-```
-
-An upstream is considered unreachable if all probes in the window fail (100% loss). Larger windows smooth out transient packet loss but slow down failure detection.
-
-**Validation:**
-- Must be greater than zero
-
-### startup_delay
-
-Delay before starting ICMP probes. Allows upstreams time to initialize.
-
-**Type:** duration
-
-**Default:** `probe_interval × window_size`
-
-**Example:**
-
-```yaml
-reachability:
-  probe_interval: 1s
-  window_size: 5
-  startup_delay: 10s  # Override computed default of 5s
-```
-
-Default value ensures at least one full window of probes before reachability affects upstream selection.
-
-**Validation:**
-- Must be greater than or equal to zero
-
-**Requirement:** fbforward requires `CAP_NET_RAW` capability for ICMP sockets. See [Section 2.2](getting-started.md#22-installation).
+ICMP reachability probing is no longer part of fbforward. Adaptive routes use
+the authenticated TCP/UDP probes provided by fbmeasure.
 
 ---
 
@@ -513,25 +442,11 @@ Probe results are reduced to a unified upstream health state and RTT.
 
 ### Startup and staleness
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `startup_delay` | duration | `10s` | Delay before first measurement loop scheduling |
-| `fallback_to_icmp_on_stale` | bool | `true` | Controls stale-warning logging only |
-
-**Example:**
-
-```yaml
-measurement:
-  startup_delay: 30s
-  fallback_to_icmp_on_stale: false
-```
-
-Staleness is evaluated by the `health.stale_threshold` setting. ICMP and
-fbmeasure observations update the same health state; protocol-specific scores
-are not calculated.
+The first adaptive probe is scheduled immediately. Staleness is evaluated by
+`health.stale_threshold`; TCP and UDP observations update one shared health
+state and no protocol-specific score is calculated.
 
 **Validation:**
-- `startup_delay` must be ≥ 0
 - `stale_threshold` must be > 0
 
 ### schedule
@@ -586,37 +501,11 @@ measurement:
 **Validation:**
 - Must be ≥ 0
 
-### fast_start
-
-Fast-start uses TCP connect RTT probes to seed the unified health state before
-the regular scheduler begins. It does not calculate a separate score or warmup
-model.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable fast-start preselection |
-| `timeout` | duration | `500ms` | Per-probe TCP connect timeout |
-
-**Example:**
-
-```yaml
-measurement:
-  fast_start:
-    enabled: true
-    timeout: 1s
-```
-
-When `enabled` is `false`, startup skips preselection and proceeds directly with normal runtime startup (listeners still start; no blocking on first full measurement).
-
-**Validation:**
-- `timeout` must be > 0
-
 ### security
 
 Transport security settings for fbforward's TCP connections to fbmeasure. This
-applies to the TCP control channel and TCP retransmission data connection. UDP
-probe traffic remains datagram-based and is authenticated per test by the
-fbmeasure protocol.
+applies to the TCP control channel. UDP probe traffic remains datagram-based
+and is authenticated per test by the fbmeasure protocol.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -735,187 +624,6 @@ available through the control API and are constrained to the route.
 
 The old `scoring`, hysteresis, failover, and switching sections are no longer
 accepted. The material below is retained only as historical migration context.
-
-<!-- Historical scoring documentation below is retained only as migration
-reference and is not part of the active configuration contract. -->
-
-## Appendix: removed scoring section
-
-The `scoring` section configures upstream quality scoring. Steady-state scoring uses RTT, jitter, and protocol-specific quality-loss signals (TCP retransmit rate, UDP loss rate), plus protocol blend and bias transform.
-
-### smoothing
-
-Exponential moving average (EMA) smoothing for metric updates.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `alpha` | float64 | `0.2` | EMA smoothing factor |
-
-**Validation:**
-- Must be in range (0, 1]
-
-### reference
-
-Reference values for score normalization.
-
-#### tcp
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `latency.rtt` | float64 | `50` | Reference RTT (milliseconds) |
-| `latency.jitter` | float64 | `10` | Reference jitter (milliseconds) |
-| `retransmit_rate` | float64 | `0.01` | Reference TCP retransmit rate |
-
-#### udp
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `latency.rtt` | float64 | `50` | Reference RTT (milliseconds) |
-| `latency.jitter` | float64 | `10` | Reference jitter (milliseconds) |
-| `loss_rate` | float64 | `0.01` | Reference UDP packet loss rate |
-
-**Validation:**
-- Latency values must be > 0
-- `retransmit_rate` (TCP) must be in range (0, 1]
-- `loss_rate` (UDP) must be in range (0, 1]
-
-### weights
-
-Weights are normalized automatically.
-
-#### tcp
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `rtt` | float64 | `0.25` | RTT weight |
-| `jitter` | float64 | `0.10` | Jitter weight |
-| `retransmit_rate` | float64 | `0.25` | Retransmit rate weight |
-
-#### udp
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `rtt` | float64 | `0.15` | RTT weight |
-| `jitter` | float64 | `0.30` | Jitter weight |
-| `loss_rate` | float64 | `0.15` | Loss rate weight |
-
-#### protocol_blend
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `tcp_weight` | float64 | `0.5` | TCP score contribution |
-| `udp_weight` | float64 | `0.5` | UDP score contribution |
-
-**Validation:**
-- All weights must be ≥ 0
-- Each weight group must have sum > 0 (then normalized)
-
-### bias_transform
-
-Bias transformation scales `upstreams[].bias`.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `kappa` | float64 | `0.693147` | Exponential scaling constant |
-
-**Validation:**
-- Must be > 0
-
-### Removed measurement/scoring keys
-
-The following keys are no longer supported and fail config loading with explicit path errors:
-
-- `measurement.schedule.headroom.*`
-- `measurement.protocols.tcp.target_bandwidth.*`
-- `measurement.protocols.udp.target_bandwidth.*`
-- `scoring.reference.tcp.bandwidth.*`
-- `scoring.reference.udp.bandwidth.*`
-- `scoring.weights.tcp.bandwidth_upload`
-- `scoring.weights.tcp.bandwidth_download`
-- `scoring.weights.udp.bandwidth_upload`
-- `scoring.weights.udp.bandwidth_download`
-- `scoring.utilization_penalty.*`
-
----
-
-## Appendix: historical switching section (not active configuration)
-
-The `switching` section configures upstream switching behavior in auto mode and fast failover triggers.
-
-### auto
-
-Auto mode switching parameters. Applies when upstream selection is automatic (not manually pinned).
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `confirm_duration` | duration | `15s` | Time new leader must sustain advantage |
-| `score_delta_threshold` | float64 | `5.0` | Minimum score advantage to switch |
-| `min_hold_time` | duration | `30s` | Minimum time on primary before switching |
-
-**Example:**
-
-```yaml
-switching:
-  auto:
-    confirm_duration: 30s
-    score_delta_threshold: 10.0
-    min_hold_time: 1m
-```
-
-To switch from current primary to a new upstream:
-1. New upstream must have score advantage ≥ `score_delta_threshold`
-2. Advantage must be sustained for `confirm_duration`
-3. Current primary must have been active for ≥ `min_hold_time`
-
-This prevents flapping when upstreams have similar scores.
-
-**Validation:**
-- `confirm_duration` must be ≥ 0
-- `min_hold_time` must be ≥ 0
-
-### failover
-
-Fast failover thresholds trigger immediate switching when current primary degrades.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `loss_rate_threshold` | float64 | `0.2` | UDP loss rate threshold (20%) |
-| `retransmit_rate_threshold` | float64 | `0.2` | TCP retransmit rate threshold (20%) |
-
-**Example:**
-
-```yaml
-switching:
-  failover:
-    loss_rate_threshold: 0.3
-    retransmit_rate_threshold: 0.3
-```
-
-If recent measurements show loss or retransmit rates exceeding thresholds, fbforward immediately switches to next-best upstream without waiting for `confirm_duration`.
-
-**Validation:**
-- Both thresholds must be in range (0, 1]
-
-### close_flows_on_failover
-
-Close existing flows when fast failover occurs.
-
-**Type:** bool
-
-**Default:** `false`
-
-**Example:**
-
-```yaml
-switching:
-  close_flows_on_failover: true
-```
-
-When `false` (default), existing flows remain pinned to their current upstream even during failover. Only new flows go to the new primary.
-
-When `true`, fbforward closes all flows to the failed upstream during fast failover. TCP connections receive RST, UDP mappings expire immediately. This forces clients to reconnect to the new primary.
-
----
 
 ## 4.9 control section
 
@@ -1369,10 +1077,7 @@ if SQLite is disabled, these RPCs return `503`.
 | `forwarding` | - | [3.1.1](user-guide-fbforward.md#311-overview) |
 | `upstreams` | [6.1.1](algorithm-specifications.md#611-overview) | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `dns` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
-| `reachability` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `measurement` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
-| `scoring` | [6.1.2](algorithm-specifications.md#612-formal-description) | [3.1.2](user-guide-fbforward.md#312-configuration) |
-| `switching` | [6.1.4](algorithm-specifications.md#614-edge-cases) | [3.1.1](user-guide-fbforward.md#311-overview) |
 | `control` | - | [3.1.3](user-guide-fbforward.md#313-operation), [5.2](api-reference.md#52-control-plane-api) |
 | `coordination` | - | [3.1.1](user-guide-fbforward.md#311-overview), [5.2](api-reference.md#52-control-plane-api) |
 | `shaping` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |

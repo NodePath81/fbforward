@@ -73,19 +73,10 @@ func (s *Scheduler) Schedule() {
 			if _, ok := queued[key]; ok {
 				continue
 			}
-			if last, ok := s.lastRun[key]; ok && now.Sub(last) < s.cfg.MinInterval {
-				continue
-			}
-			// Probe each adaptive upstream immediately on startup. Subsequent
-			// observations use the configured interval and jitter.
-			dueAt := now
-			if len(s.lastRun) > 0 {
-				dueAt = now.Add(s.nextInterval())
-			}
 			s.queue = append(s.queue, scheduledMeasurement{
 				upstream: up,
 				protocol: proto,
-				dueAt:    dueAt,
+				dueAt:    now,
 			})
 			queued[key] = struct{}{}
 		}
@@ -122,7 +113,15 @@ func (s *Scheduler) NextReady() (*scheduledMeasurement, bool) {
 func (s *Scheduler) MarkRun(measurement scheduledMeasurement) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastRun[s.key(measurement.upstream.Tag, measurement.protocol)] = time.Now()
+	now := time.Now()
+	key := s.key(measurement.upstream.Tag, measurement.protocol)
+	s.lastRun[key] = now
+	s.queue = append(s.queue, scheduledMeasurement{
+		upstream: measurement.upstream,
+		protocol: measurement.protocol,
+		dueAt:    now.Add(s.nextInterval()),
+	})
+	s.sortQueueLocked()
 }
 
 func (s *Scheduler) Requeue(measurement scheduledMeasurement, delay time.Duration) {
@@ -130,9 +129,7 @@ func (s *Scheduler) Requeue(measurement scheduledMeasurement, delay time.Duratio
 	defer s.mu.Unlock()
 	measurement.dueAt = time.Now().Add(delay)
 	s.queue = append(s.queue, measurement)
-	sort.Slice(s.queue, func(i, j int) bool {
-		return s.queue[i].dueAt.Before(s.queue[j].dueAt)
-	})
+	s.sortQueueLocked()
 }
 
 func (s *Scheduler) Status() SchedulerStatus {
@@ -168,6 +165,12 @@ func (s *Scheduler) nextInterval() time.Duration {
 	delta := s.cfg.MaxInterval - s.cfg.MinInterval
 	jitter := time.Duration(s.rng.Int63n(int64(delta)))
 	return s.cfg.MinInterval + jitter
+}
+
+func (s *Scheduler) sortQueueLocked() {
+	sort.Slice(s.queue, func(i, j int) bool {
+		return s.queue[i].dueAt.Before(s.queue[j].dueAt)
+	})
 }
 
 func (s *Scheduler) key(tag, protocol string) string {

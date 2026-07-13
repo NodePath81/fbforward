@@ -82,7 +82,6 @@ Complete test results struct.
 type Results struct {
     Throughput       Throughput    // Bandwidth measurements
     RTT              RTTStats      // Round-trip time stats
-    Loss             LossStats     // Retransmit or packet-loss stats
     TestDuration     time.Duration // Wall-clock duration
     BytesSent        int64         // Payload bytes sent (upload)
     BytesReceived    int64         // Payload bytes received (download)
@@ -143,30 +142,6 @@ type RTTStats struct {
 **RTT sampling:** Continuous during tests at configured `RTTRate` (default 10 samples/sec).
 
 **Jitter:** Standard deviation measures latency stability. Lower jitter indicates more stable latency.
-
-#### LossStats
-
-Loss or retransmit statistics.
-
-```go
-type LossStats struct {
-    Protocol     string  // "tcp" or "udp"
-    LossRate     float64 // retransmits/segments (TCP) or packets_lost/packets_sent (UDP)
-
-    // TCP fields (sender side)
-    Retransmits  uint64  // Number of TCP retransmits
-    SegmentsSent uint64  // Total TCP segments sent
-
-    // UDP fields (server side)
-    PacketsLost  uint64  // Number of UDP packets lost
-    PacketsRecv  uint64  // Number of UDP packets received
-    PacketsSent  uint64  // Number of UDP packets sent
-}
-```
-
-**TCP loss rate:** Derived from `TCP_INFO` socket statistics on sender side.
-
-**UDP loss rate:** Computed from sequence number gaps on receiver side.
 
 ### 5.1.3 Functions
 
@@ -441,7 +416,7 @@ The control plane follows a single-source-of-truth architecture:
 |-----------|--------|-------|
 | Active connections (list) | WebSocket `connections_snapshot` | Periodic, subscription-controlled |
 | Queue status (list) | WebSocket `queue_snapshot` | Periodic, subscription-controlled |
-| Numeric metrics (RTT, loss/retransmit, scores, traffic rates) | Prometheus `/metrics` | Poll-based, summary metrics only |
+| Numeric metrics (health, RTT, probes, traffic rates) | Prometheus `/metrics` | Poll-based, summary metrics only |
 | Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
 | Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
@@ -452,7 +427,7 @@ The control plane follows a single-source-of-truth architecture:
 **Key principles:**
 - WebSocket delivers connection/queue telemetry via subscription (no polling)
 - RPC methods provide only control actions and non-metric status queries
-- Prometheus provides all numeric metrics (RTT, jitter, loss/retransmit, scores, traffic rates)
+- Prometheus provides all numeric metrics (health, RTT, probes, and traffic rates)
 - No data duplication across endpoints
 
 **Endpoints:**
@@ -677,7 +652,6 @@ Retrieve current measurement configuration.
 
 ```json
 {
-  "startup_delay": "0s",
   "schedule": {
     "interval": {"min": "15m0s", "max": "45m0s"},
     "upstream_gap": "5s"
@@ -1347,9 +1321,6 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
   "duration_ms": 2534,
   "success": true,
   "rtt_ms": 25.4,
-  "jitter_ms": 2.1,
-  "loss_rate": 0.0,
-  "retrans_rate": 0.0012,
   "error": ""
 }
 ```
@@ -1394,8 +1365,7 @@ The WebSocket stream sends JSON messages for flow (TCP connection/UDP mapping), 
 - `timestamp`: Unix milliseconds when test started
 - `duration_ms`: Test duration
 - `success`: Whether test completed successfully
-- `rtt_ms`, `jitter_ms`: RTT statistics
-- `loss_rate`, `retrans_rate`: Loss/retransmit rates (protocol-dependent)
+- `rtt_ms`: RTT measurement
 - `error`: Error message if `success: false` (empty string on success)
 
 #### Connection lifecycle
@@ -1496,13 +1466,11 @@ curl -H "Authorization: Bearer token" http://localhost:8080/metrics
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `fbforward_upstream_rtt_ms` | gauge | `upstream` | Mean RTT (milliseconds) |
-| `fbforward_upstream_jitter_ms` | gauge | `upstream` | RTT jitter (standard deviation) |
-| `fbforward_upstream_retrans_rate` | gauge | `upstream` | TCP retransmit rate [0, 1] |
-| `fbforward_upstream_loss_rate` | gauge | `upstream` | UDP loss rate [0, 1] |
-| `fbforward_upstream_loss` | gauge | `upstream` | Generic loss metric |
 | `fbforward_upstream_health_state` | gauge | `upstream,state` | One-hot upstream health state |
 | `fbforward_upstream_consecutive_failures` | gauge | `upstream` | Consecutive failed probe cycles |
 | `fbforward_upstream_last_success_timestamp_seconds` | gauge | `upstream` | Last successful probe time |
+| `fbforward_upstream_probe_total` | counter | `upstream` | Completed TCP/UDP probes |
+| `fbforward_upstream_probe_failures_total` | counter | `upstream` | Failed TCP/UDP probes |
 | `fbforward_upstream_reachable` | gauge | `upstream` | Reachable (1) or not (0) |
 | `fbforward_upstream_unusable` | gauge | `upstream` | Unusable (1) or usable (0) |
 
@@ -1592,9 +1560,6 @@ fbforward_measurement_queue_size
 **Dashboard example:**
 
 ```promql
-# Panel: Upstream scores
-fbforward_upstream_score
-
 # Panel: Active upstream indicator
 fbforward_active_upstream
 
@@ -1604,18 +1569,15 @@ sum by (upstream) (rate(fbforward_bytes_up_total[1m]) * 8)
 # Panel: RTT comparison
 fbforward_upstream_rtt_ms
 
-# Panel: Loss rates
-fbforward_upstream_retrans_rate{} or fbforward_upstream_loss_rate{}
+# Panel: Probe failures
+rate(fbforward_upstream_probe_failures_total[5m])
 ```
 
 #### Metric interpretation
 
-**Score metrics:** Higher is better. Steady-state scores are in range [0, 100].
-
-**Reachable vs unusable:**
-- `reachable=1`: ICMP probes succeed
-- `unusable=1`: Upstream cannot be selected (100% loss, consecutive dial failures)
-- An upstream can be reachable but unusable (e.g., high loss rate)
+**Health states:** `healthy`, `stale`, `unknown`, and `down` are emitted as a
+one-hot metric. `down` is excluded from adaptive route selection; static routes
+remain fixed and only honor dial cooldown.
 
 **Rate metrics:** `bytes_up_per_second` and `bytes_down_per_second` use 1-second window. Protocol-specific rates (`tcp_up_rate_bps`, etc.) also use 1-second window.
 

@@ -64,8 +64,7 @@ dns:
   # strategy: ipv4_only
 
 measurement:
-  # fbmeasure probe scheduling. The first adaptive probe runs immediately.
-  startup_delay: 0s
+  # The first adaptive probe runs immediately.
 
   # Scheduling.
   schedule:

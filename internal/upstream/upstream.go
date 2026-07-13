@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"math/rand"
 	"net"
 	"sort"
 	"strings"
@@ -76,7 +75,6 @@ type Upstream struct {
 type MeasurementResult struct {
 	RTTMs     float64
 	Timestamp time.Time
-	Network   string
 }
 
 type UpstreamManager struct {
@@ -97,7 +95,7 @@ type UpstreamManager struct {
 	logger         util.Logger
 }
 
-func NewUpstreamManager(upstreams []*Upstream, _ *rand.Rand, logger util.Logger) *UpstreamManager {
+func NewUpstreamManager(upstreams []*Upstream, logger util.Logger) *UpstreamManager {
 	m := &UpstreamManager{
 		upstreams:    make(map[string]*Upstream, len(upstreams)),
 		order:        make([]string, 0, len(upstreams)),
@@ -146,21 +144,6 @@ func (m *UpstreamManager) SetHealthConfig(cfg config.HealthConfig) {
 	m.healthConfig = cfg
 	for _, up := range m.upstreams {
 		m.refreshStatsLocked(up)
-	}
-}
-
-// SetMeasurementConfig is kept as a source-compatible no-op for integrations
-// that used the old manager API. Health configuration is now explicit.
-func (m *UpstreamManager) SetMeasurementConfig(_ config.MeasurementConfig) {}
-
-func (m *UpstreamManager) PickInitial() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.activeTag != "" {
-		return
-	}
-	if tag, _ := m.selectBestLocked(nil); tag != "" {
-		m.setActiveLocked(tag, "initial")
 	}
 }
 
@@ -299,10 +282,6 @@ func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool
 	return true, nil
 }
 
-func (m *UpstreamManager) SelectUpstream() (*Upstream, error) {
-	return m.SelectUpstreamFrom(nil)
-}
-
 // SelectStatic returns the configured upstream without consulting health. A
 // static route is fixed by configuration; only a recent dial cooldown can
 // temporarily make it unavailable.
@@ -372,31 +351,27 @@ func hasTag(tags map[string]struct{}, tag string) bool {
 	return ok
 }
 
-func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult, health ...config.HealthConfig) UpstreamStats {
+func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult) UpstreamStats {
 	if result == nil || !sanitizeMeasurementResult(result) {
 		return UpstreamStats{}
 	}
 	return m.applyObservation(tag, ProbeObservation{
 		Success:    result.RTTMs > 0,
 		RTT:        time.Duration(result.RTTMs * float64(time.Millisecond)),
-		Protocol:   result.Network,
 		ObservedAt: result.Timestamp,
-	}, health...)
+	})
 }
 
-func (m *UpstreamManager) RecordProbeFailure(tag, protocol string, observedAt time.Time) UpstreamStats {
-	return m.applyObservation(tag, ProbeObservation{Protocol: protocol, ObservedAt: observedAt})
+func (m *UpstreamManager) RecordProbeFailure(tag string, observedAt time.Time) UpstreamStats {
+	return m.applyObservation(tag, ProbeObservation{ObservedAt: observedAt})
 }
 
-func (m *UpstreamManager) applyObservation(tag string, observation ProbeObservation, cfg ...config.HealthConfig) UpstreamStats {
+func (m *UpstreamManager) applyObservation(tag string, observation ProbeObservation) UpstreamStats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	up := m.upstreams[tag]
 	if up == nil {
 		return UpstreamStats{}
-	}
-	if len(cfg) > 0 {
-		m.healthConfig = cfg[0]
 	}
 	previous := up.stats
 	up.health = ApplyObservation(up.health, observation, m.healthConfig)

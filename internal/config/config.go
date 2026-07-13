@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	defaultMeasurementStartupDelay        = 0
 	defaultMeasurementScheduleMinInterval = 15 * time.Minute
 	defaultMeasurementScheduleMaxInterval = 45 * time.Minute
 	defaultMeasurementScheduleUpstreamGap = 5 * time.Second
@@ -193,10 +192,9 @@ type DNSConfig struct {
 }
 
 type MeasurementConfig struct {
-	StartupDelay Duration                   `yaml:"startup_delay"`
-	Schedule     MeasurementScheduleConfig  `yaml:"schedule"`
-	Protocols    MeasurementProtocolsConfig `yaml:"protocols"`
-	Security     MeasurementSecurityConfig  `yaml:"security"`
+	Schedule  MeasurementScheduleConfig  `yaml:"schedule"`
+	Protocols MeasurementProtocolsConfig `yaml:"protocols"`
+	Security  MeasurementSecurityConfig  `yaml:"security"`
 }
 
 type MeasurementSecurityConfig struct {
@@ -505,10 +503,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Forwarding.IdleTimeout.UDP == 0 {
 		c.Forwarding.IdleTimeout.UDP = Duration(defaultForwardingUDPIdle)
-	}
-
-	if c.Measurement.StartupDelay == 0 {
-		c.Measurement.StartupDelay = Duration(defaultMeasurementStartupDelay)
 	}
 
 	if c.Measurement.Schedule.Interval.Min == 0 {
@@ -881,10 +875,6 @@ func (c *Config) validate() error {
 	case "text", "json":
 	default:
 		return errors.New("logging.format must be text or json")
-	}
-
-	if c.Measurement.StartupDelay.Duration() < 0 {
-		return errors.New("measurement.startup_delay must be >= 0")
 	}
 
 	if c.Measurement.Schedule.Interval.Min.Duration() <= 0 {

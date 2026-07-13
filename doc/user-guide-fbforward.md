@@ -173,7 +173,6 @@ dns:
   strategy: "ipv4_only"             # DNS resolution strategy
 
 measurement:
-  startup_delay: 0s                 # First adaptive probe runs immediately
   schedule: {...}                   # Measurement scheduling
   security: {...}                   # fbmeasure TCP transport security
   protocols: {...}                  # TCP/UDP test parameters
@@ -586,7 +585,7 @@ getcap ./fbforward
 # Test TCP connection to measurement endpoint
 nc -zv <upstream-host> 9876
 
-# Check UDP reachability separately if needed
+# Check the fbmeasure UDP endpoint separately if needed
 nc -zvu <upstream-host> 9876
 ```
 
@@ -609,9 +608,9 @@ ss -ulnp | grep fbforward
 curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/metrics
 ```
 
-**6. ICMP reachability**:
+**6. fbmeasure health probing**:
 ```bash
-# Verify ICMP echo from fbforward host to upstreams
+# Verify the fbmeasure TCP/UDP endpoint from the fbforward host
 ping -c 3 <upstream-host>
 ```
 
@@ -656,7 +655,8 @@ interval only when the observed probe state is genuinely unstable.
 
 **Upstream marked unusable**:
 
-Check reachability and measurement logs. Unusable status indicates severe quality issues.
+Check health and measurement logs. A `down` state indicates repeated failed
+fbmeasure observations or a dial cooldown.
 
 Verify:
 - Upstream host is online
@@ -678,7 +678,7 @@ forwarding:
 
 ### Log analysis patterns
 
-**Identify switching events**:
+**Identify route selections**:
 ```bash
 grep "primary selected" fbforward.log
 ```

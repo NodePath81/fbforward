@@ -45,7 +45,7 @@ selection; it uses fbmeasure targeted probes instead.
 
 fbmeasure is the measurement server binary that runs on upstream hosts. The
 server accepts targeted TCP and UDP probe traffic from fbforward and reports
-RTT, jitter, retransmission, and loss metrics back to the client.
+RTT results used to update one unified health state.
 
 ### Target use cases
 
@@ -83,13 +83,10 @@ The architecture separates concerns into several planes:
 
 **Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, status queries, GeoIP management (`GetGeoIPStatus`, `RefreshGeoIP`), IP-log queries (`GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents`), and operational status. The server also exposes Prometheus metrics at `/metrics` (including IP-log and firewall counters), a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access (including dashboard GeoIP/IP-log status rows and a dedicated `#/iplog` page for unified flow/rejection history). All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. This node-local control plane is separate from the optional fbcoord coordination service, which coordinates picks across multiple fbforward nodes but does not replace local APIs or the local Web UI. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
 
-**Measurement plane**: Assesses upstream health and RTT with fbmeasure probes
-continuously. fbmeasure probe cycles run periodic TCP and UDP targeted tests
-against each upstream's measurement endpoint. The [scoring engine](glossary.md#scoring-engine)
-combines metrics into a quality score using exponential normalization and
-configurable weights. The [upstream manager](glossary.md#upstream-manager)
-selects the [primary upstream](glossary.md#primary-upstream) based on scores
-and switching policy.
+**Measurement plane**: Runs fbmeasure TCP/UDP RTT probes for upstreams used by
+adaptive routes. Results update one `HealthSnapshot`; route-local selection
+then filters down/cooldown candidates and compares health, RTT, priority, and
+configuration order.
 
 **Shaping plane** (optional): Enforces bandwidth limits. When enabled, fbforward configures Linux traffic control (tc) qdiscs via netlink to rate-limit traffic to and from upstreams. Ingress shaping uses an IFB device to redirect incoming traffic through a qdisc.
 
@@ -113,9 +110,8 @@ graph TB
     end
 
     subgraph Measurement Plane
-        ICMP[ICMP Prober]
-        BW[fbmeasure Client]
-        Score[Scoring Engine]
+        Probe[fbmeasure TCP/UDP Probes]
+        Health[Unified Health State]
     end
 
     subgraph Upstreams
@@ -128,13 +124,11 @@ graph TB
     FT --> U1
     FT --> U2
 
-    ICMP --> U1
-    ICMP --> U2
-    BW --> U1
-    BW --> U2
-
-    Score --> FT
-    API --> Score
+    Probe --> U1
+    Probe --> U2
+    Probe --> Health
+    Health --> FT
+    API --> Health
 ```
 
 See [Diagram D1](diagrams.md#d1-three-plane-architecture) for details.
@@ -143,7 +137,8 @@ See [Diagram D1](diagrams.md#d1-three-plane-architecture) for details.
 
 The fbforward repository provides three binaries:
 
-**fbforward**: The main forwarder process. Runs on the host where clients connect. Requires `CAP_NET_RAW` for ICMP probing and optionally `CAP_NET_ADMIN` for traffic shaping.
+**fbforward**: The main forwarder process. Runs on the host where clients
+connect. It optionally requires `CAP_NET_ADMIN` for traffic shaping.
 
 **fbmeasure**: The measurement server. Runs on each upstream host at a
 configured port (default 9876). Accepts TCP control requests plus TCP/UDP
@@ -195,14 +190,12 @@ fbforward initializes components in a specific order to ensure dependencies are 
 2. **Supervisor**: Loads YAML configuration, validates schema, constructs Runtime
 3. **Runtime**:
    - Resolves upstream hostnames via DNS
-   - Creates UpstreamManager with health and switching configuration
+   - Creates UpstreamManager with health configuration
    - Initializes Metrics aggregator and StatusStore
    - Creates GeoIP manager (if `geoip.enabled`): loads MMDB databases from disk or downloads from URLs, starts background refresh goroutine
    - Creates IP-log store and pipeline (if `ip_log.enabled`): opens SQLite database, starts enrichment/writer goroutines and retention prune loop
    - Creates firewall policy provider: loads and compiles the external policy file (or deprecated inline fallback), wires GeoIP lookups for ASN/country rules, and supports atomic reload
-   - Runs fast-start mode: Performs lightweight TCP dial probes and seeds health/RTT state
-   - Starts ICMP and fbmeasure probes only for upstreams used by adaptive routes
-   - Starts measurement collector for full TCP/UDP probe cycles
+   - Starts the measurement collector only for upstreams used by adaptive routes
    - Creates and starts TCP/UDP listeners for each configured bind address
    - Starts ControlServer with RPC, metrics, WebSocket, and UI endpoints
 4. **Running state**: All goroutines operational, system ready to accept flows
@@ -221,8 +214,7 @@ sequenceDiagram
     Supervisor->>Runtime: Load config, create
     Runtime->>Upstream: Create UpstreamManager
     Runtime->>Listeners: Start TCP/UDP listeners
-    Runtime->>Probes: Start ICMP probes
-    Runtime->>Probes: Start fbmeasure probe cycles
+    Runtime->>Probes: Start fbmeasure TCP/UDP probes
     Runtime-->>Supervisor: Running
 ```
 
@@ -230,17 +222,17 @@ See [Diagram D4](diagrams.md#d4-startup-sequence) for details.
 
 ### Data flow between planes
 
-**Flow creation**: When a client connects to a TCP listener or sends a UDP packet to a UDP listener, the forwarder checks the [flow table](glossary.md#flow-table). If no entry exists, the forwarder creates a new entry pinned to the current primary upstream. The forwarder then establishes a connection to that upstream (TCP) or creates a dedicated socket pair (UDP).
+**Flow creation**: When a client connects to a TCP listener or sends a UDP packet to a UDP listener, the forwarder checks the [flow table](glossary.md#flow-table). If no entry exists, the route-local selector chooses an upstream and the forwarder pins the new Flow to it. The forwarder then establishes a connection to that upstream (TCP) or creates a dedicated socket pair (UDP).
 
 **Traffic forwarding**: The data plane proxies packets bidirectionally between client and upstream without inspecting contents. TCP uses `io.Copy` in both directions. UDP uses dedicated socket pairs to preserve 5-tuple identity.
 
-**Quality measurement**: The measurement plane runs fbmeasure probe cycles on a
-configurable schedule. Each cycle collects RTT, jitter, and a
-protocol-specific loss signal. The scoring engine updates upstream scores using
-exponential moving average (EMA) smoothing. When scores change, the upstream
-manager evaluates switching conditions.
+**Quality measurement**: The measurement plane runs fbmeasure TCP/UDP RTT
+observations on a configurable schedule and updates the shared health snapshot.
 
-**Upstream selection**: In auto mode, the manager compares the candidate upstream's score against the current primary's score. If the delta exceeds the threshold for the configured confirmation duration, the manager switches the primary. In manual mode, the operator selects an upstream via RPC, and the manager validates usability before accepting.
+**Upstream selection**: Adaptive routes select locally by health, RTT, priority,
+and configuration order. Static routes use their configured upstream. Manual
+and coordination preferences are constrained to the route, and existing Flows
+remain pinned.
 
 **Status propagation**: The measurement plane updates the StatusStore on every measurement cycle. The control plane serves current status via HTTP GET, streams updates via WebSocket, and aggregates metrics for Prometheus scraping.
 
@@ -256,7 +248,6 @@ fbforward uses goroutines for concurrency:
 
 - One goroutine per TCP connection for bidirectional copying
 - One goroutine per UDP listener for packet dispatching
-- One goroutine for ICMP probe loop
 - One goroutine for fbmeasure probe scheduling
 - One goroutine per control plane endpoint (RPC, WebSocket, metrics)
 - One goroutine for GeoIP refresh loop (if `geoip.enabled`)

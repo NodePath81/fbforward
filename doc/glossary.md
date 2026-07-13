@@ -32,7 +32,8 @@ The subsystem that probes adaptive-route upstreams with fbmeasure TCP/UDP RTT
 probes and maintains a unified health state. It does not calculate a score.
 
 ### Primary upstream
-The only upstream that receives new flow assignments. Selected by the scoring algorithm in auto mode or operator choice in manual mode. See [Section 6.1.1](outline.md#611-overview).
+Legacy control-plane term for a manual or coordination preference. In auto mode,
+adaptive routes select independently and there is no single global primary.
 
 ### Proxy
 See *Forwarder*.
@@ -57,7 +58,8 @@ The target sending rate for bwprobe tests. Configured via `measurement.protocols
 The size of individual data frames sent during bwprobe tests. Affects pacing granularity. Default: 1200 bytes. See [Section 6.2.3](outline.md#623-parameters).
 
 ### EMA (exponential moving average)
-Smoothing technique applied to measurement metrics. New value = alpha * measurement + (1 - alpha) * old value. Configured via `scoring.smoothing.alpha`. See [Section 6.1.2](outline.md#612-formal-description).
+Smoothing applied to successful RTT observations. New value = alpha * RTT +
+(1 - alpha) * previous RTT. Configured via `health.rtt_ewma_alpha`.
 
 ### Interval
 A 100ms time bucket used for aggregating bwprobe sample data. Metrics are computed per-interval then combined. See [Section 6.2.2](outline.md#622-formal-description).
@@ -91,52 +93,26 @@ Average throughput after dropping the top and bottom 10% of interval rates. More
 
 ---
 
-## Scoring terms
+## Health and selection terms
 
-### Base quality score
-The weighted combination of sub-scores before applying utilization penalty and bias. See [Section 6.1.2](outline.md#612-formal-description).
+### Health state
+The current state of an upstream: `unknown`, `healthy`, `stale`, or `down`.
+Adaptive selection excludes `down` candidates.
 
-### Bias
-Static adjustment to an upstream's score. Positive bias increases preference; negative decreases. Configured per-upstream. See [Section 4.3](outline.md#43-upstreams-section), [Section 6.1.2](outline.md#612-formal-description).
-
-### Bias transform
-Function that converts raw bias value to a score multiplier. Uses exponential form with configurable kappa. See [Section 6.1.2](outline.md#612-formal-description).
-
-### Fast failover
-Immediate switch to another upstream when the current primary experiences high loss/retransmit rates or consecutive dial failures. See [Section 6.1.4](outline.md#614-edge-cases).
-
-### Fast-start mode
-Initial operation mode using lightweight RTT probes for immediate primary selection. Transitions to full scoring after warmup period. See [Section 6.1.4](outline.md#614-edge-cases).
-
-### Final score
-The upstream's computed quality score after all adjustments: base score * utilization multiplier * bias multiplier + priority. See [Section 6.1.2](outline.md#612-formal-description).
-
-### Hold time
-Minimum duration before switching away from current primary. Prevents oscillation. Configured via `switching.auto.min_hold_time`. See [Section 4.8](outline.md#48-switching-section).
+### HealthSnapshot
+The in-memory state containing health state, RTT EWMA, last attempt/success
+timestamps, and consecutive success/failure counters.
 
 ### Priority
-Static integer bonus added to an upstream's final score. Higher priority increases preference. Configured per-upstream. See [Section 4.3](outline.md#43-upstreams-section).
+Static ordering value used after health and RTT for adaptive route selection.
 
-### Protocol blend
-Weighted combination of TCP and UDP sub-scores. Configured via `scoring.weights.protocol_blend`. See [Section 6.1.2](outline.md#612-formal-description).
-
-### Reference value
-Target/ideal value for a metric. Used to normalize sub-scores. Configured in `scoring.reference`. See [Section 6.1.3](outline.md#613-parameters).
-
-### Score delta threshold
-Minimum score difference required to trigger a switch. Prevents switching on noise. Configured via `switching.auto.score_delta_threshold`. See [Section 4.8](outline.md#48-switching-section).
-
-### Sub-score
-Normalized score (0-1) for a single metric (bandwidth, RTT, jitter, loss, retransmit). See [Section 6.1.2](outline.md#612-formal-description).
+### Route-local selection
+Selection restricted to the upstream list of one route. A static route uses its
+single configured upstream; an adaptive route ranks only its own candidates.
 
 ### Unusable upstream
-An upstream marked as not available for selection due to 100% loss, consecutive dial failures, or other fatal conditions. Automatically recovers when probes succeed. See [Section 6.1.4](outline.md#614-edge-cases).
-
-### Utilization penalty
-Score reduction applied when actual traffic exceeds configured link capacity. Prevents overloading busy upstreams. See [Section 6.1.2](outline.md#612-formal-description).
-
-### Weight
-Relative importance of a metric in the scoring formula. All weights for a protocol should sum to 1.0. See [Section 6.1.3](outline.md#613-parameters).
+An upstream excluded from adaptive selection because it is `down` or in dial
+cooldown. Static routes remain fixed and only honor dial cooldown.
 
 ---
 
