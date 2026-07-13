@@ -12,7 +12,7 @@ type flowContextKey struct{}
 // ResolveConn converts a backend-side socket into fbforward's socket
 // perspective. The backend peer is fbforward's local endpoint.
 func (c *Client) ResolveConn(ctx context.Context, conn net.Conn) (Flow, error) {
-	if conn == nil || conn.LocalAddr() == nil || conn.RemoteAddr() == nil {
+	if c == nil || conn == nil || conn.LocalAddr() == nil || conn.RemoteAddr() == nil {
 		return Flow{}, ErrInvalidRequest
 	}
 	local, err := netAddrPort(conn.RemoteAddr())

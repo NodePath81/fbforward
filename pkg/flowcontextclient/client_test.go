@@ -276,6 +276,28 @@ func TestSetTags(t *testing.T) {
 	}
 }
 
+func TestTagErrorMapping(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   error
+	}{
+		{"forbidden", http.StatusForbidden, ErrForbidden},
+		{"unavailable", http.StatusServiceUnavailable, ErrUnavailable},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(testCase.status)
+				_, _ = w.Write([]byte(`{"ok":false,"error":"tag failed"}`))
+			})
+			if err := client.SetFlowTag(context.Background(), "flow-1", Tag{Namespace: "app", Key: "user", Value: "user-1"}); !errors.Is(err, testCase.want) {
+				t.Fatalf("error=%v, want %v", err, testCase.want)
+			}
+		})
+	}
+}
+
 func TestClientCanBeShared(t *testing.T) {
 	var calls atomic.Int32
 	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {

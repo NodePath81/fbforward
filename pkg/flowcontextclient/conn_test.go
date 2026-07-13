@@ -70,3 +70,14 @@ func TestConnContextDoesNotStoreFailedResolution(t *testing.T) {
 		t.Fatalf("unknown instance error=%v", err)
 	}
 }
+
+func TestNilClientResolveConnReturnsInvalidRequest(t *testing.T) {
+	var client *Client
+	if _, err := client.ResolveConn(context.Background(), testConn("127.0.0.2:52000", "192.0.2.10:9000")); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil client error=%v, want invalid request", err)
+	}
+	valid := &Client{}
+	if _, err := valid.ResolveConn(context.Background(), nil); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil connection error=%v, want invalid request", err)
+	}
+}
