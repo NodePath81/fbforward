@@ -3,10 +3,13 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +23,39 @@ type forwarderProcess struct {
 	baseURL string
 	process *exec.Cmd
 	cancel  context.CancelFunc
+}
+
+type rpcEnvelope struct {
+	OK     bool            `json:"ok"`
+	Error  string          `json:"error,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+func (f *forwarderProcess) rpc(t *testing.T, token, method string, params any) json.RawMessage {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"method": method, "params": params})
+	if err != nil {
+		t.Fatalf("marshal %s request: %v", method, err)
+	}
+	request, err := http.NewRequest(http.MethodPost, f.baseURL+"/rpc", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create %s request: %v", method, err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("call %s: %v", method, err)
+	}
+	defer response.Body.Close()
+	var envelope rpcEnvelope
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode %s response: %v", method, err)
+	}
+	if response.StatusCode != http.StatusOK || !envelope.OK {
+		t.Fatalf("call %s failed: status=%d error=%q", method, response.StatusCode, envelope.Error)
+	}
+	return envelope.Result
 }
 
 func startForwarder(t *testing.T, config string, controlPort int) *forwarderProcess {
