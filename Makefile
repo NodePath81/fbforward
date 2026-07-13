@@ -3,7 +3,7 @@ FBMEASURE_BIN ?= build/bin/fbmeasure
 VERSION ?= dev
 LDFLAGS ?= -X github.com/NodePath81/fbforward/internal/version.Version=$(VERSION)
 
-.PHONY: all build build-fbforward build-fbmeasure clean test test-e2e
+.PHONY: all build build-fbforward build-fbmeasure clean test test-e2e test-race test-manual
 
 all: build
 
@@ -22,6 +22,12 @@ test:
 
 test-e2e:
 	GOCACHE=/tmp/fbforward-gocache go test -tags=e2e ./test/e2e
+
+test-race:
+	GOCACHE=/tmp/fbforward-gocache go test -race ./internal/flow ./internal/audit ./internal/policy ./internal/upstream ./internal/forwarding ./internal/control
+
+test-manual:
+	@echo "manual system tests are reserved for phase 15"
 
 clean:
 	rm -rf build/bin
