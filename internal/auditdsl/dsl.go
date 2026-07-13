@@ -134,6 +134,7 @@ func Parse(input string) (Query, error) {
 		return Query{}, fmt.Errorf("query is empty")
 	}
 	q := Query{Filters: make(map[string]string), Limit: DefaultLimit, SortOrder: "desc"}
+	sortSet, limitSet, offsetSet := false, false, false
 	i := 0
 	switch tokens[i].value {
 	case string(SourceFlows):
@@ -192,10 +193,11 @@ func Parse(input string) (Query, error) {
 			if order != "asc" && order != "desc" {
 				return Query{}, fmt.Errorf("sort order must be asc or desc")
 			}
-			if q.SortBy != "" && q.SortBy != "recorded_at" {
+			if sortSet {
 				return Query{}, fmt.Errorf("sort may be specified once")
 			}
 			q.SortBy, q.SortOrder = tokens[i+1].value, order
+			sortSet = true
 			i += 3
 		case "limit", "offset":
 			if i+1 >= len(tokens) || tokens[i+1].value == "|" {
@@ -209,15 +211,17 @@ func Parse(input string) (Query, error) {
 				if n == 0 || n > MaxLimit {
 					return Query{}, fmt.Errorf("limit must be between 1 and %d", MaxLimit)
 				}
-				if q.Limit != DefaultLimit {
+				if limitSet {
 					return Query{}, fmt.Errorf("limit may be specified once")
 				}
 				q.Limit = n
+				limitSet = true
 			} else {
-				if q.Offset != 0 {
+				if offsetSet {
 					return Query{}, fmt.Errorf("offset may be specified once")
 				}
 				q.Offset = n
+				offsetSet = true
 			}
 			i += 2
 		default:

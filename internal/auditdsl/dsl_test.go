@@ -42,6 +42,8 @@ func TestParseSourcesAndValidation(t *testing.T) {
 		"flows | limit 1001",
 		"flows | offset -1",
 		"flows | sort bytes_total desc | sort ip asc",
+		"flows | sort recorded_at desc | sort ip asc",
+		"flows | limit 200 | limit 200",
 		"top",
 		"flows tag=x | raw_sql=bad",
 	} {
