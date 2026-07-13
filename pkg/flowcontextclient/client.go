@@ -41,10 +41,12 @@ type HTTPDoer interface {
 }
 
 type Options struct {
-	Endpoint    string
-	Token       string
-	BackendKey  string
-	Timeout     time.Duration
+	Endpoint   string
+	Token      string
+	BackendKey string
+	Timeout    time.Duration
+	// ResolveWait is the server-side wait for a tuple that has not been bound
+	// yet. Zero uses the default of 100ms.
 	ResolveWait time.Duration
 	HTTPClient  HTTPDoer
 }
@@ -130,6 +132,9 @@ func New(options Options) (*Client, error) {
 	}
 	if options.Timeout <= 0 {
 		options.Timeout = 500 * time.Millisecond
+	}
+	if options.ResolveWait == 0 {
+		options.ResolveWait = 100 * time.Millisecond
 	}
 	if options.ResolveWait < 0 || options.ResolveWait > 5*time.Second {
 		return nil, fmt.Errorf("%w: resolve wait must be between 0 and 5s", ErrInvalidRequest)

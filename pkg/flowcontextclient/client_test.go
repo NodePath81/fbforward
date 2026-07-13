@@ -64,7 +64,7 @@ func TestResolveTuple(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(testFlowEnvelope()))
-	}, func(options *Options) { options.ResolveWait = 100 * time.Millisecond })
+	})
 	flow, err := client.ResolveTuple(context.Background(), testTuple())
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestResolveConnUsesBackendSocketPerspective(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _ = w.Write([]byte(testFlowEnvelope()))
-	}, func(options *Options) { options.ResolveWait = 100 * time.Millisecond })
+	})
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

@@ -3,15 +3,18 @@
 package e2e
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/NodePath81/fbforward/pkg/flowcontextclient"
 )
 
 func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
@@ -46,46 +49,47 @@ func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
 		t.Fatalf("read flow payload: %v", err)
 	}
 	backendConnection := <-echo.accepted
-	localAddr := backendConnection.RemoteAddr().String()
-	remoteAddr := backendConnection.LocalAddr().String()
-
-	var resolved struct {
-		OK   bool `json:"ok"`
-		Flow struct {
-			FlowID string `json:"flow_id"`
-			State  string `json:"state"`
-		} `json:"flow"`
+	backendKey := "local@" + backendConnection.LocalAddr().String()
+	localAddr, err := netip.ParseAddrPort(backendConnection.RemoteAddr().String())
+	if err != nil {
+		t.Fatalf("parse backend local tuple address: %v", err)
 	}
-	resolve := map[string]any{
-		"protocol": "tcp", "backend_key": "local@" + remoteAddr,
-		"local_addr": localAddr, "remote_addr": remoteAddr,
+	remoteAddr, err := netip.ParseAddrPort(backendConnection.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("parse backend remote tuple address: %v", err)
 	}
-	postFlowContext(t, forwarder.baseURL+"/flow-context/resolve", "e2e-backend-token", resolve, &resolved)
-	if !resolved.OK || resolved.Flow.FlowID == "" || resolved.Flow.State != "active" {
+	client, err := flowcontextclient.New(flowcontextclient.Options{
+		Endpoint:   forwarder.baseURL,
+		Token:      "e2e-backend-token",
+		BackendKey: backendKey,
+	})
+	if err != nil {
+		t.Fatalf("create flow context client: %v", err)
+	}
+	resolved, err := client.ResolveConn(context.Background(), backendConnection)
+	if err != nil {
+		t.Fatalf("resolve flow context: %v", err)
+	}
+	if resolved.ID == "" || resolved.State != "active" {
 		t.Fatalf("unexpected flow context: %+v", resolved)
 	}
-
-	var tagged struct {
-		OK bool `json:"ok"`
-	}
-	postFlowContext(t, forwarder.baseURL+"/flow-context/rpc", "e2e-backend-token", map[string]any{
-		"method": "SetFlowTag",
-		"params": map[string]any{"flow_id": resolved.Flow.FlowID, "namespace": "app", "key": "case", "value": "e2e"},
-	}, &tagged)
-	if !tagged.OK {
-		t.Fatal("SetFlowTag was not accepted")
+	if err := client.SetFlowTag(context.Background(), resolved.ID, flowcontextclient.Tag{
+		Namespace: "app", Key: "case", Value: "e2e",
+	}); err != nil {
+		t.Fatalf("set flow tag: %v", err)
 	}
 	_ = connection.Close()
 	_ = backendConnection.Close()
-	var closed struct {
-		OK   bool `json:"ok"`
-		Flow struct {
-			FlowID string `json:"flow_id"`
-			State  string `json:"state"`
-		} `json:"flow"`
+	closed, err := client.ResolveTuple(context.Background(), flowcontextclient.Tuple{
+		Protocol:   "tcp",
+		BackendKey: backendKey,
+		LocalAddr:  localAddr,
+		RemoteAddr: remoteAddr,
+	})
+	if err != nil {
+		t.Fatalf("resolve closed flow context: %v", err)
 	}
-	postFlowContext(t, forwarder.baseURL+"/flow-context/resolve", "e2e-backend-token", resolve, &closed)
-	if !closed.OK || closed.Flow.FlowID != resolved.Flow.FlowID || closed.Flow.State != "closed" {
+	if closed.ID != resolved.ID || closed.State != "closed" {
 		t.Fatalf("unexpected closed grace context: %+v", closed)
 	}
 
@@ -114,29 +118,4 @@ func waitForIdentity(t *testing.T, forwarder *forwarderProcess) {
 		_ = response.Body.Close()
 		return response.StatusCode == http.StatusOK
 	})
-}
-
-func postFlowContext(t *testing.T, endpoint, token string, payload any, result any) {
-	t.Helper()
-	body, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal flow context request: %v", err)
-	}
-	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("create flow context request: %v", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: time.Second}).Do(request)
-	if err != nil {
-		t.Fatalf("flow context request: %v", err)
-	}
-	defer response.Body.Close()
-	if err := json.NewDecoder(response.Body).Decode(result); err != nil {
-		t.Fatalf("decode flow context response: %v", err)
-	}
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("flow context status: %d", response.StatusCode)
-	}
 }
