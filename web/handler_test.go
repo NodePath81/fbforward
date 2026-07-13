@@ -46,6 +46,11 @@ func TestHTMLHasNoInlineOrExternalResources(t *testing.T) {
 	if !strings.Contains(body, `script type="module" src="/app.js"`) || !strings.Contains(body, `href="/app.css"`) {
 		t.Fatalf("HTML does not use same-origin external assets")
 	}
+	for _, id := range []string{"identity-summary", "status-summary", "flow-rows", "audit-form", "firewall-status"} {
+		if !strings.Contains(body, `id="`+id+`"`) {
+			t.Fatalf("HTML is missing UI region %q", id)
+		}
+	}
 	csp := rec.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "connect-src 'self'") {
 		t.Fatalf("unexpected CSP: %q", csp)
@@ -65,5 +70,13 @@ func TestClientSecurityInvariants(t *testing.T) {
 	}
 	if !strings.Contains(script, "sessionStorage") || !strings.Contains(script, "Authorization") {
 		t.Fatalf("app.js does not use session-scoped bearer authentication")
+	}
+	for _, required := range []string{"requestJSON('/identity')", "state.flows", "renderFlowTable()", "page: 'audit'", "history.replaceState"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("app.js is missing behavior %q", required)
+		}
+	}
+	if strings.Contains(script, "flow-filter').addEventListener('input', () => { if (state.page === 'flows') refreshPage()") {
+		t.Fatalf("flow filtering still performs a network refresh")
 	}
 }
