@@ -21,7 +21,6 @@ var (
 	ErrFlowNotFound    = errors.New("flow was not found on the selected fbforward")
 	ErrUnauthorized    = errors.New("flow context authentication failed")
 	ErrForbidden       = errors.New("flow context access denied")
-	ErrExpired         = errors.New("flow context expired")
 	ErrRateLimited     = errors.New("flow context rate limited")
 	ErrUnavailable     = errors.New("flow context service unavailable")
 	ErrInvalidRequest  = errors.New("invalid flow context request")
@@ -322,7 +321,7 @@ func responseError(status int, message string) error {
 	case http.StatusForbidden:
 		base = ErrForbidden
 	case http.StatusGone:
-		base = ErrExpired
+		base = ErrFlowNotFound
 	case http.StatusTooManyRequests:
 		base = ErrRateLimited
 	case http.StatusBadRequest:

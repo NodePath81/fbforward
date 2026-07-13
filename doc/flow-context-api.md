@@ -37,7 +37,9 @@ The control-plane token is not accepted by these endpoints.
 ```
 
 The response keeps the existing `{ "ok": true, "flow": { ... } }` shape.
-Closed Flows remain resolvable only during the Registry grace period.
+Closed Flows remain resolvable only during the Registry grace period. After
+that window, the client reports `ErrFlowNotFound`, the same as any tuple that
+was never registered.
 
 ## Tags
 

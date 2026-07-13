@@ -25,6 +25,9 @@ match on that IP; source ports are ignored. The set never broadcasts a
 request, and an unknown source returns `ErrUnknownInstance` so direct or
 unconfigured traffic can be handled separately.
 
+After a Flow's grace period ends, its tuple is indistinguishable from an
+unknown tuple and returns `ErrFlowNotFound`.
+
 `ResolvedFlow` records the selected instance. Its tag methods always write to
 the same instance that resolved the flow, avoiding a second lookup. The
 backend may use `Flow.ClientAddr` for logging or application policy, but the

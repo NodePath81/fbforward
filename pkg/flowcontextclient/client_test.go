@@ -119,7 +119,7 @@ func TestResolveErrorMapping(t *testing.T) {
 		{"not found", http.StatusNotFound, ErrFlowNotFound},
 		{"unauthorized", http.StatusUnauthorized, ErrUnauthorized},
 		{"forbidden", http.StatusForbidden, ErrForbidden},
-		{"expired", http.StatusGone, ErrExpired},
+		{"gone is not found", http.StatusGone, ErrFlowNotFound},
 		{"rate limited", http.StatusTooManyRequests, ErrRateLimited},
 		{"server error", http.StatusServiceUnavailable, ErrUnavailable},
 	}
