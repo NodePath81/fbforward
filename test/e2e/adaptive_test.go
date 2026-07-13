@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -68,7 +69,17 @@ firewall:
 		t.Fatalf("dial failed-primary flow: %v", err)
 	}
 	_ = second.Close()
-	time.Sleep(200 * time.Millisecond)
+	var routes []struct {
+		Effective string `json:"effective_upstream"`
+	}
+	waitForInterval(t, 3*time.Second, 300*time.Millisecond, func() bool {
+		raw := forwarder.rpc(t, "e2e-control-token", "GetRouteStatus", nil)
+		routes = nil
+		if err := json.Unmarshal(raw, &routes); err != nil {
+			return false
+		}
+		return len(routes) == 1 && routes[0].Effective == "backup"
+	})
 	third, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(primary.port)), time.Second)
 	if err != nil {
 		t.Fatalf("dial fallback flow: %v", err)
