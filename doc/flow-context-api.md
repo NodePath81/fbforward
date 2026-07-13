@@ -65,3 +65,60 @@ Every write appends a `flow_tag_events` audit row and updates the current
 SQLite tag state in one transaction. The active Flow identity is stored in
 `flow_entities`; `flows` is written only once the complete lifecycle closes.
 Expired tags are excluded from queries and removed by retention cleanup.
+
+## Backend Go client
+
+Backend code can use the small `pkg/flowcontextclient` package instead of
+building tuple JSON by hand. For one fbforward instance:
+
+```go
+client, err := flowcontextclient.New(flowcontextclient.Options{
+    Endpoint:   "http://127.0.0.1:8080",
+    Token:      os.Getenv("FLOW_CONTEXT_TOKEN"),
+    BackendKey: "primary@192.0.2.10:443",
+})
+flow, err := client.ResolveConn(ctx, backendConn)
+```
+
+`ResolveConn` reverses the backend socket direction automatically. The
+returned `Flow.ClientAddr` is the original client address; it is informational
+and does not require the backend to handle that address. Tag writes can use
+`SetFlowTag`, `SetClientTag`, `UnsetFlowTag`, and `UnsetClientTag`.
+
+When a backend accepts connections from more than one fbforward instance, use
+`ClientSet`. Each instance must have a unique source address visible in
+`backendConn.RemoteAddr()`:
+
+```go
+clients, err := flowcontextclient.NewClientSet([]flowcontextclient.InstanceOptions{
+    {
+        Name:       "edge-a",
+        SourceAddr: netip.MustParseAddr("10.10.1.12"),
+        Client: flowcontextclient.Options{
+            Endpoint: "http://10.10.1.12:8080", Token: edgeAToken,
+            BackendKey: "primary@192.0.2.10:443",
+        },
+    },
+    {
+        Name:       "edge-b",
+        SourceAddr: netip.MustParseAddr("10.10.2.12"),
+        Client: flowcontextclient.Options{
+            Endpoint: "http://10.10.2.12:8080", Token: edgeBToken,
+            BackendKey: "primary@192.0.2.10:443",
+        },
+    },
+})
+resolved, err := clients.ResolveConn(ctx, backendConn)
+if err == nil {
+    _ = resolved.SetFlowTag(ctx, flowcontextclient.Tag{
+        Namespace: "app", Key: "user", Value: "user-123",
+    })
+}
+```
+
+An unknown source address returns `ErrUnknownInstance` without querying any
+endpoint. The client does not retry another instance after a selected
+instance returns an error. The optional `ClientSet.ConnContext` helper can
+attach a resolved Flow to a standard `net/http.Server` connection context;
+applications that need to distinguish failure causes should call
+`ResolveConn` directly.

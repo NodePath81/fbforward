@@ -41,6 +41,10 @@ When enabled, the same HTTP listener exposes:
 - `POST /flow-context/resolve`
 - `POST /flow-context/rpc`
 
+Backend integrations may use the small synchronous Go client described in
+[`flow-context-client.md`](flow-context-client.md) to resolve accepted socket
+connections without constructing tuple JSON manually.
+
 Flow Context identities use dedicated bearer tokens and route/upstream scopes.
 
 ## Metrics and identity
