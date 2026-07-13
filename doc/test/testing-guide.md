@@ -17,7 +17,9 @@ capabilities.
 The E2E harness starts only real local fbforward processes and loopback echo
 servers. It covers startup/control, static TCP and UDP, firewall reload and
 rejection, online-rule expiry, Flow Context tagging, and adaptive fallback with
-route boundaries. Online-rule create/expire events are checked directly in the
+route boundaries. Adaptive override failure is checked through route status and
+new-flow fallback while the existing Flow remains pinned. Online-rule
+create/expire events are checked directly in the
 temporary SQLite database; Flow Context checks the closed-flow grace window but
 does not wait for the 30-second expiry. Each wait has a deadline; no dashboard,
 browser, container, root access, or long fixed sleep is part of ordinary CI.
