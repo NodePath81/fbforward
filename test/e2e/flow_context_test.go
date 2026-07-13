@@ -50,42 +50,37 @@ func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
 	}
 	backendConnection := <-echo.accepted
 	backendKey := "local@" + backendConnection.LocalAddr().String()
-	localAddr, err := netip.ParseAddrPort(backendConnection.RemoteAddr().String())
+	backendSource, err := netip.ParseAddrPort(backendConnection.RemoteAddr().String())
 	if err != nil {
-		t.Fatalf("parse backend local tuple address: %v", err)
+		t.Fatalf("parse backend source address: %v", err)
 	}
-	remoteAddr, err := netip.ParseAddrPort(backendConnection.LocalAddr().String())
+	clients, err := flowcontextclient.NewClientSet([]flowcontextclient.InstanceOptions{{
+		Name:       "edge-e2e",
+		SourceAddr: backendSource.Addr(),
+		Client: flowcontextclient.Options{
+			Endpoint:   forwarder.baseURL,
+			Token:      "e2e-backend-token",
+			BackendKey: backendKey,
+		},
+	}})
 	if err != nil {
-		t.Fatalf("parse backend remote tuple address: %v", err)
+		t.Fatalf("create flow context client set: %v", err)
 	}
-	client, err := flowcontextclient.New(flowcontextclient.Options{
-		Endpoint:   forwarder.baseURL,
-		Token:      "e2e-backend-token",
-		BackendKey: backendKey,
-	})
-	if err != nil {
-		t.Fatalf("create flow context client: %v", err)
-	}
-	resolved, err := client.ResolveConn(context.Background(), backendConnection)
+	resolved, err := clients.ResolveConn(context.Background(), backendConnection)
 	if err != nil {
 		t.Fatalf("resolve flow context: %v", err)
 	}
-	if resolved.ID == "" || resolved.State != "active" {
+	if resolved.Instance != "edge-e2e" || resolved.ID == "" || resolved.State != "active" {
 		t.Fatalf("unexpected flow context: %+v", resolved)
 	}
-	if err := client.SetFlowTag(context.Background(), resolved.ID, flowcontextclient.Tag{
+	if err := resolved.SetFlowTag(context.Background(), flowcontextclient.Tag{
 		Namespace: "app", Key: "case", Value: "e2e",
 	}); err != nil {
 		t.Fatalf("set flow tag: %v", err)
 	}
 	_ = connection.Close()
 	_ = backendConnection.Close()
-	closed, err := client.ResolveTuple(context.Background(), flowcontextclient.Tuple{
-		Protocol:   "tcp",
-		BackendKey: backendKey,
-		LocalAddr:  localAddr,
-		RemoteAddr: remoteAddr,
-	})
+	closed, err := clients.ResolveConn(context.Background(), backendConnection)
 	if err != nil {
 		t.Fatalf("resolve closed flow context: %v", err)
 	}
