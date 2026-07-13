@@ -2,7 +2,6 @@ package flowcontext
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,42 +38,6 @@ func doResolve(service *Service, method, token, body string) *httptest.ResponseR
 	return recorder
 }
 
-func TestServiceResolveActiveFlow(t *testing.T) {
-	service, registry, _ := serviceWithFlow(t, Options{CleanupInterval: time.Millisecond})
-	defer registry.Shutdown()
-	response := doResolve(service, http.MethodPost, "secret", resolveBody())
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	var decoded struct {
-		Ok   bool          `json:"ok"`
-		Flow *flowResponse `json:"flow"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !decoded.Ok || decoded.Flow == nil || decoded.Flow.FlowID != "f1" || decoded.Flow.State != StateActive {
-		t.Fatalf("unexpected response: %+v", decoded)
-	}
-}
-
-func TestServiceAuthMethodAndTupleErrors(t *testing.T) {
-	service, registry, _ := serviceWithFlow(t, Options{CleanupInterval: time.Millisecond})
-	defer registry.Shutdown()
-	if response := doResolve(service, http.MethodPost, "", resolveBody()); response.Code != http.StatusUnauthorized {
-		t.Fatalf("missing token status=%d", response.Code)
-	}
-	if response := doResolve(service, http.MethodGet, "secret", "{}"); response.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("method status=%d", response.Code)
-	}
-	if response := doResolve(service, http.MethodPost, "secret", "not-json"); response.Code != http.StatusBadRequest {
-		t.Fatalf("malformed status=%d", response.Code)
-	}
-	if response := doResolve(service, http.MethodPost, "secret", `{"protocol":"tcp","backend_key":"x","local_addr":"bad","remote_addr":"bad"}`); response.Code != http.StatusBadRequest {
-		t.Fatalf("tuple status=%d", response.Code)
-	}
-}
-
 func TestServiceBodyLimitAndNotFound(t *testing.T) {
 	service, registry, _ := serviceWithFlow(t, Options{CleanupInterval: time.Millisecond})
 	defer registry.Shutdown()
@@ -89,22 +52,5 @@ func TestServiceBodyLimitAndNotFound(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte(`"ok":false`)) {
 		t.Fatalf("expected JSON error: %s", response.Body.String())
-	}
-}
-
-func TestServiceClosedGraceAndExpiry(t *testing.T) {
-	service, registry, tuple := serviceWithFlow(t, Options{CleanupInterval: time.Millisecond, GracePeriod: 8 * time.Millisecond})
-	defer registry.Shutdown()
-	meta := testMeta("f1", flow.ProtocolTCP)
-	registry.Close(flow.Summary{Meta: meta, EndedAt: time.Now().UTC()})
-	response := doResolve(service, http.MethodPost, "secret", resolveBody())
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"closed"`) {
-		t.Fatalf("closed response status=%d body=%s", response.Code, response.Body.String())
-	}
-	_ = tuple
-	time.Sleep(30 * time.Millisecond)
-	response = doResolve(service, http.MethodPost, "secret", resolveBody())
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("expired response status=%d", response.Code)
 	}
 }

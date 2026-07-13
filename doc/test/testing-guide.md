@@ -4,7 +4,7 @@ Use the small, repeatable test targets during development:
 
 ```bash
 make test       # unit and contract tests
-make test-e2e   # seven loopback product paths, no external network
+make test-e2e   # seven loopback product tests, no external network
 make test-race  # concurrency-sensitive domains
 ```
 
@@ -15,11 +15,13 @@ SQLite, external network, host-level traffic controls, or privileged
 capabilities.
 
 The E2E harness starts only real local fbforward processes and loopback echo
-servers. It covers startup/control, static TCP and UDP, firewall rejection,
-online-rule expiry, Flow Context tagging, and adaptive fallback. Each wait has
-a deadline; no dashboard, browser, container, root access, or long fixed sleep
-is part of ordinary CI. `make test-manual` is reserved for phase 15 system
-integration experiments.
+servers. It covers startup/control, static TCP and UDP, firewall reload and
+rejection, online-rule expiry, Flow Context tagging, and adaptive fallback with
+route boundaries. Online-rule create/expire events are checked directly in the
+temporary SQLite database; Flow Context checks the closed-flow grace window but
+does not wait for the 30-second expiry. Each wait has a deadline; no dashboard,
+browser, container, root access, or long fixed sleep is part of ordinary CI.
+`make test-manual` is reserved for phase 15 system integration experiments.
 
 Host traffic shaping and GeoIP downloads are deployment concerns. Test the
 GeoIP update script separately with a local HTTP fixture and verify that

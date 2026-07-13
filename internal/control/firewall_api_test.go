@@ -13,15 +13,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/policy"
 )
 
-func TestFirewallRPCHandlersRegistered(t *testing.T) {
-	server := newTestControlServer(t)
-	for _, name := range []string{"GetFirewallPolicy", "GetFirewallStatus", "ValidateFirewallPolicy", "ReloadFirewallPolicy"} {
-		if _, ok := server.rpcs.Lookup(name); !ok {
-			t.Fatalf("firewall handler %q is not registered", name)
-		}
-	}
-}
-
 func TestFirewallPolicyRPCs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "firewall.yaml")

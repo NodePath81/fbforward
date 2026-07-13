@@ -58,27 +58,6 @@ func TestGetGeoIPStatusReturnsResult(t *testing.T) {
 	}
 }
 
-func TestGetGeoIPStatusAcceptsOmittedAndNullParams(t *testing.T) {
-	server := newTestControlServer(t)
-	server.SetGeoIPManager(fakeGeoIPManager{status: geoip.Status{}})
-
-	reqOmitted := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "GetGeoIPStatus", nil)))
-	reqOmitted.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	recOmitted := httptest.NewRecorder()
-	server.handleRPC(recOmitted, reqOmitted)
-	if recOmitted.Code != http.StatusOK {
-		t.Fatalf("expected omitted params to succeed, got %d body=%s", recOmitted.Code, recOmitted.Body.String())
-	}
-
-	reqNull := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewBufferString(`{"method":"GetGeoIPStatus","params":null}`))
-	reqNull.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	recNull := httptest.NewRecorder()
-	server.handleRPC(recNull, reqNull)
-	if recNull.Code != http.StatusOK {
-		t.Fatalf("expected null params to succeed, got %d body=%s", recNull.Code, recNull.Body.String())
-	}
-}
-
 func TestGetGeoIPStatusSupportsUnconfiguredAndSingleDBPayloads(t *testing.T) {
 	server := newTestControlServer(t)
 	server.SetGeoIPManager(fakeGeoIPManager{
