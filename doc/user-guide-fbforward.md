@@ -72,9 +72,9 @@ Unusable upstreams are excluded from selection. When probes succeed again, the u
 
 ### Notification integration
 
-fbforward can optionally emit outbound notification events to `fbnotify` when
-the `notify` section is configured. The current emitted event set is documented
-in the [notification event reference](notification-events.md).
+fbforward can optionally emit generic outbound webhook events when the
+`webhook` section is configured. Events contain `event`, `occurred_at`,
+`instance`, and `attributes` fields.
 
 ### Command-line interface
 

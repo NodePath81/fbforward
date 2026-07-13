@@ -28,14 +28,8 @@ fbforward relies on the `fbmeasure` server binary running on each upstream host
 to provide targeted TCP/UDP measurement endpoints. Cross-node selection is
 intentionally out of scope; use route-local configuration for each node.
 
-Docs: `doc/` (start with `doc/project-overview.md`, `doc/user-guide-fbforward.md`, `doc/configuration-reference.md`, and `doc/notification-events.md`).
-
-## bwprobe
-
-Network quality measurement tool that runs repeatable, sample-based transfers at
-a target bandwidth cap.
-
-Docs: `doc/user-guide-bwprobe.md`.
+Docs: `doc/` (start with `doc/project-overview.md`, `doc/user-guide-fbforward.md`,
+`doc/configuration-reference.md`, and `doc/api-reference.md`).
 
 ## Requirements
 

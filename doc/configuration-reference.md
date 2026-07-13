@@ -592,7 +592,7 @@ measurement:
 - `timeout.per_sample` must be > 0
 - `timeout.per_cycle` must be > 0
 
-The legacy bwprobe-oriented fields `alternate`, `chunk_size`, `sample_size`,
+The legacy measurement fields `alternate`, `chunk_size`, `sample_size`,
 and `sample_count` are rejected during configuration load.
 
 ---

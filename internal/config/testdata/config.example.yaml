@@ -6,10 +6,6 @@ forwarding:
     - bind_addr: 0.0.0.0
       bind_port: 9000
       protocol: tcp
-      # Optional per-listener shaping (requires shaping.enabled).
-      shaping:
-        upload_limit: 50m
-        download_limit: 200m
     - bind_addr: 0.0.0.0
       bind_port: 9000
       protocol: udp
@@ -34,18 +30,9 @@ upstreams:
       port: 9876
     # Optional tuning.
     priority: 0
-    # Optional per-upstream shaping (requires shaping.enabled).
-    # Limits bandwidth to/from this upstream's IP address.
-    shaping:
-      upload_limit: 100m     # fbforward sends to upstream
-      download_limit: 500m   # fbforward receives from upstream
   - tag: backup
     destination:
       host: example.net
-    # Shaping also works with hostname upstreams (resolved IPs are shaped).
-    shaping:
-      upload_limit: 50m
-      download_limit: 200m
 
 dns:
   # Optional custom DNS servers (ip or ip:port). Empty = system DNS.
@@ -102,28 +89,18 @@ control:
   metrics:
     enabled: true
 
-# Optional notification delivery to fbnotify.
-# When enabled, fbforward uses the endpoint, key_id, token, and
-# source_instance fields below.
-notify:
+# Optional generic webhook delivery.
+webhook:
   enabled: false
-  endpoint: http://10.99.0.30:8787/v1/events
-  key_id: "replace-with-fbnotify-key-id"
-  token: "replace-with-fbnotify-token"
+  endpoint: https://events.example/internal/fbforward
+  bearer_token: "replace-with-webhook-token"
   source_instance: node-1
-  # Timing controls for unusable-state alerts.
-  startup_grace_period: 5m
-  unusable_interval: 30s
-  notify_interval: 30m
+  timeout: 5s
 
 geoip:
   enabled: false
-  # Local MMDB files plus refresh URLs from Loyalsoldier/geoip.
-  asn_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/GeoLite2-ASN.mmdb"
   asn_db_path: "/var/lib/fbforward/GeoLite2-ASN.mmdb"
-  country_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/Country-without-asn.mmdb"
   country_db_path: "/var/lib/fbforward/Country-without-asn.mmdb"
-  refresh_interval: 24h
 
 ip_log:
   enabled: false
@@ -146,13 +123,3 @@ firewall:
       asn: 4134
     - action: allow
       country: US
-
-shaping:
-  # Linux tc shaping via netlink (requires CAP_NET_ADMIN).
-  enabled: false
-  # Network device to shape (required when enabled).
-  interface: eth0
-  # IFB device used for ingress shaping.
-  ifb_device: ifb0
-  # Aggregate cap for each direction (bits/sec, SI units).
-  aggregate_limit: 1g

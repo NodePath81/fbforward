@@ -10,7 +10,6 @@ This document guides you through installing fbforward and running your first dep
 
 fbforward requires Linux. The forwarder uses platform-specific kernel features that are not available on other operating systems:
 
-- `SO_MAX_PACING_RATE`: Socket option used by the standalone bwprobe tool
 - `TCP_INFO`: Socket option for reading TCP connection statistics
 
 Tested distributions include Ubuntu 22.04+, Debian 12+, and Fedora 38+. Kernel version 5.10 or newer is recommended.
@@ -67,16 +66,12 @@ Build all binaries:
 make build
 ```
 
-This command:
-1. Builds fbforward binary to `build/bin/fbforward`
-2. Builds bwprobe binary to `build/bin/bwprobe`
-3. Builds fbmeasure binary to `build/bin/fbmeasure`
+This command builds the fbforward and fbmeasure binaries.
 
 To build individual binaries:
 
 ```bash
 make build-fbforward  # fbforward only
-make build-bwprobe    # bwprobe only
 make build-fbmeasure  # fbmeasure only
 ```
 
@@ -85,9 +80,6 @@ To build without make:
 ```bash
 # Build fbforward
 go build -o build/bin/fbforward ./cmd/fbforward
-
-# Build bwprobe
-go build -o build/bin/bwprobe ./bwprobe/cmd
 
 # Build fbmeasure
 go build -o build/bin/fbmeasure ./cmd/fbmeasure

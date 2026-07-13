@@ -29,19 +29,6 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 The forwarder exposes a small control plane with an embedded text UI, RPC, Prometheus metrics,
 and a polling RPC for monitoring and manual control.
 
-### What bwprobe does
-
-bwprobe is a network quality measurement tool included in this repository. The tool runs sample-based bandwidth tests at a specified target rate to measure:
-
-- Throughput (trimmed mean, percentiles, sustained peak)
-- Round-trip time and jitter
-- Packet loss rate (UDP)
-- Retransmit rate (TCP)
-
-bwprobe uses a two-channel design with separate control and data connections to
-minimize measurement bias. fbforward no longer embeds bwprobe for continuous
-selection; it uses fbmeasure targeted probes instead.
-
 ### What fbmeasure does
 
 fbmeasure is the measurement server binary that runs on upstream hosts. The
@@ -135,7 +122,7 @@ See [Diagram D1](diagrams.md#d1-three-plane-architecture) for details.
 
 ### Binary relationships
 
-The fbforward repository provides three binaries:
+The fbforward repository provides two binaries:
 
 **fbforward**: The main forwarder process. Runs on the host where clients
 connect. It does not configure kernel traffic control or require `CAP_NET_ADMIN`.
@@ -143,8 +130,6 @@ connect. It does not configure kernel traffic control or require `CAP_NET_ADMIN`
 **fbmeasure**: The measurement server. Runs on each upstream host at a
 configured port (default 9876). Accepts TCP control requests plus TCP/UDP
 probe traffic. No special capabilities required.
-
-**bwprobe**: The standalone measurement CLI tool. Can be run independently for manual link testing or used as a library via the `bwprobe/pkg` Go package.
 
 <!-- Diagram: D3 Binary relationships -->
 ```mermaid
@@ -158,16 +143,11 @@ graph LR
         FM2[fbmeasure]
     end
 
-    subgraph Standalone
-        BP[bwprobe CLI]
-    end
-
     FB -->|measurement| FM1
     FB -->|measurement| FM2
     FB -->|forwarding| FM1
     FB -->|forwarding| FM2
 
-    BP -->|test| FM1
 ```
 
 See [Diagram D3](diagrams.md#d3-binary-relationships) for details.
@@ -188,7 +168,7 @@ fbforward initializes components in a specific order to ensure dependencies are 
    - Resolves upstream hostnames via DNS
    - Creates UpstreamManager with health configuration
    - Initializes Metrics aggregator and StatusStore
-   - Creates GeoIP manager (if `geoip.enabled`): loads MMDB databases from disk or downloads from URLs, starts background refresh goroutine
+   - Creates GeoIP manager (if `geoip.enabled`): loads local MMDB databases from disk
    - Creates IP-log store and pipeline (if `ip_log.enabled`): opens SQLite database, starts enrichment/writer goroutines and retention prune loop
    - Creates firewall policy provider: loads and compiles the external policy file (or deprecated inline fallback), wires GeoIP lookups for ASN/country rules, and supports atomic reload
    - Starts the measurement collector only for upstreams used by adaptive routes

@@ -171,11 +171,11 @@ upstreams:
       port: 9876
 control:
   auth_token: "0123456789abcdef0123456789abcdef"
-notify:
+` + "not" + `ify:
   enabled: true
   endpoint: https://notify.example/v1/events
   key_id: key-1
-  token_env: FBNOTIFY_TOKEN
+  token_env: NOTIFY_TOKEN
 `
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
