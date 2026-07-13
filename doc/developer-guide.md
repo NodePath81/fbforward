@@ -18,6 +18,7 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `internal/upstream/` - Upstream state, health, and route-local selection
 - `internal/forwarding/` - TCP/UDP listeners and proxy logic
 - `internal/control/` - HTTP server, RPC handlers, and status snapshot projection
+- `web/` - four embedded, dependency-free HTML/CSS/ES-module assets for the text UI
 - `internal/metrics/` - Prometheus metrics aggregation
 - Health probing is implemented by the fbmeasure TCP/UDP collector.
 - `internal/measure/` - fbmeasure RTT probe orchestration and scheduling
@@ -117,6 +118,7 @@ Shutdown sequence:
 - **Fan-out probing**: Each upstream gets independent probe/measurement goroutine
 - **Per-flow isolation**: TCP connections and UDP mappings run in separate goroutines with pinned upstream
 - **Status snapshots**: `StatusStore` keeps active Flow projections for `GetActiveFlows` polling
+- **UI polling**: the embedded page polls Flows every 2 seconds and other status pages every 5 seconds; timers stop when the page is hidden.
 - **Lock-free reads**: Metrics use atomic operations or mutex-protected snapshots
 
 **Synchronization primitives:**

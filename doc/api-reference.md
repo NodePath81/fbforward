@@ -425,7 +425,7 @@ The control plane follows a single-source-of-truth architecture:
 
 | Path | Method | Auth Required | Description |
 |------|--------|---------------|-------------|
-| `/` | GET | No | API-only root; returns 404 |
+| `/` | GET | No | Embedded operator page |
 | `/rpc` | POST | Yes | Control RPC methods |
 | `/identity` | GET | Yes | Instance identity (hostname, IPs, version) |
 | `/metrics` | GET | Yes | Prometheus metrics |

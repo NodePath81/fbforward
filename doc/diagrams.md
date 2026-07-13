@@ -16,7 +16,7 @@ This document catalogs all diagrams required for the fbforward documentation. Ea
 graph TB
     subgraph Control Plane
         API[HTTP API]
-        WS[WebSocket]
+        UI[Embedded text UI]
         Metrics[Prometheus]
     end
 
@@ -380,7 +380,7 @@ flowchart TB
 
 ```text
 /
-├── GET  /          → API-only 404
+├── GET  /          → Embedded text UI
 ├── POST /rpc       → JSON-RPC methods
 ├── GET  /metrics   → Prometheus metrics
 └── POST /rpc       → GetActiveFlows and control methods
@@ -461,7 +461,7 @@ sequenceDiagram
 
 | Endpoint | Method | Purpose | Auth |
 |----------|--------|---------|------|
-| `/` | GET | API-only root (404) | None |
+| `/` | GET | Embedded text UI | None |
 | `/rpc` | POST | JSON-RPC operations | Bearer token |
 | `/metrics` | GET | Prometheus scraping | Bearer token |
 | `GetActiveFlows` | POST `/rpc` | Active-flow snapshot | Bearer token |

@@ -268,7 +268,7 @@ control:
 This configuration:
 - Listens for TCP and UDP traffic on port 9000
 - Forwards to two upstreams: `upstream1.example.com` (tag: `primary`) and `upstream2.example.com` (tag: `backup`)
-- Enables Prometheus metrics on `127.0.0.1:8080`; the root path is API-only
+- Enables Prometheus metrics on `127.0.0.1:8080`; the root path serves the embedded text UI
 - Requires Bearer token `change-me-to-random-string` for API access
 
 Replace `upstream1.example.com` and `upstream2.example.com` with your actual upstream hostnames or IP addresses. Replace `change-me-to-random-string` with a randomly generated token.
@@ -310,7 +310,8 @@ selection view.
 
 ### Step 5: Verify operation
 
-The control plane is API-only. Query status or metrics with a bearer token:
+The control plane serves a minimal text UI and the same authenticated API.
+Query status or metrics with a bearer token:
 
 ```
 curl -H "Authorization: Bearer change-me-to-random-string" \

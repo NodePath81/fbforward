@@ -294,7 +294,8 @@ configuration and audit queries, and `GetActiveFlows` for active-flow snapshots;
 queue stream, and `/metrics` for Prometheus health, RTT, flow, and probe data.
 
 Use the bearer token directly in the `Authorization` header. The root path is
-API-only and returns 404.
+serves the embedded text operator page; API clients can use the same RPC
+endpoints directly.
 
 ### Monitoring via Prometheus metrics
 

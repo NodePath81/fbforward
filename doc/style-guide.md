@@ -340,7 +340,7 @@ fbforward logs to stderr by default. Verify startup by checking for the
 ### Monitoring
 
 Use authenticated `/rpc` and `/metrics` requests. The control
-plane is API-only and exposes health, RTT, and active flow telemetry.
+plane exposes a text UI and APIs for health, RTT, and active flow telemetry.
 ```
 
 ### 8.2 Configuration reference section

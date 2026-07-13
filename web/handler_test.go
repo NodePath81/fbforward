@@ -35,3 +35,35 @@ func TestHandlerRejectsUnknownAndUnsafeAssets(t *testing.T) {
 		t.Fatalf("expected POST 405, got %d", rec.Code)
 	}
 }
+
+func TestHTMLHasNoInlineOrExternalResources(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "<style") || strings.Contains(body, "<script>") || strings.Contains(body, "http://") || strings.Contains(body, "https://") {
+		t.Fatalf("HTML contains inline or external resources")
+	}
+	if !strings.Contains(body, `script type="module" src="/app.js"`) || !strings.Contains(body, `href="/app.css"`) {
+		t.Fatalf("HTML does not use same-origin external assets")
+	}
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "connect-src 'self'") {
+		t.Fatalf("unexpected CSP: %q", csp)
+	}
+}
+
+func TestClientSecurityInvariants(t *testing.T) {
+	data, err := assets.ReadFile("app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	script := string(data)
+	for _, forbidden := range []string{"innerHTML", "localStorage", "document.cookie"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("app.js contains forbidden client state or HTML sink %q", forbidden)
+		}
+	}
+	if !strings.Contains(script, "sessionStorage") || !strings.Contains(script, "Authorization") {
+		t.Fatalf("app.js does not use session-scoped bearer authentication")
+	}
+}

@@ -11,6 +11,10 @@ IP flow and rejection logging, and CIDR/ASN/country firewalling. It exposes
 Prometheus metrics and a token-protected RPC API. Active flows are exposed by
 the authenticated `GetActiveFlows` RPC for lightweight polling clients.
 
+The root endpoint serves a dependency-free embedded operator page. It uses the
+control token from session storage and polls the same RPC API; no Node.js or
+frontend build is required.
+
 Behavior highlights:
 
 - NAT-style forwarding: clients connect to fbforward; upstream sees fbforward as source.

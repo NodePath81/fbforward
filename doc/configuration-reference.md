@@ -660,7 +660,7 @@ The control plane exposes the following HTTP endpoints:
 
 | Path | Method | Description |
 |------|--------|-------------|
-| `/` | GET | API-only root; returns 404 |
+| `/` | GET | Embedded operator page |
 | `/rpc` | POST | JSON-RPC methods |
 | `/metrics` | GET | Prometheus metrics |
 | `/identity` | GET | Instance identity document |
@@ -674,6 +674,11 @@ curl -H "Authorization: Bearer replace-with-a-long-random-token" http://localhos
 Active flows are queried with the authenticated `GetActiveFlows` RPC. Clients
 choose the polling interval; the minimal UI polls every two seconds only while
 its Flow view is visible.
+
+The embedded control page is served at `/` without a frontend build step. It
+asks for `control.auth_token` at runtime, keeps that token only in browser
+`sessionStorage`, and sends it as a Bearer header. Static assets are same-origin
+and use `Cache-Control: no-store`; no external resources are loaded.
 
 See [Section 5.2](api-reference.md#52-control-plane-api) for API details.
 

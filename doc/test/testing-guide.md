@@ -40,9 +40,9 @@ Linux integration scenarios should cover:
 Normal integration tests must not require root unless a kernel namespace or
 traffic-shaping scenario explicitly needs it.
 
-## API-only control plane
+## Control plane and embedded UI
 
-The control plane has no embedded frontend. Verify the API-only root and the
+The control plane includes a small embedded frontend. Verify the root page and the
 remaining endpoints with an HTTP client:
 
 - `/` returns 404;
