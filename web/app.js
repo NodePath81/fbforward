@@ -5,7 +5,7 @@ const alertBox = document.querySelector('#alert');
 const tokenInput = document.querySelector('#token');
 const pages = new Set(['status', 'flows', 'config', 'audit', 'firewall']);
 const requestedPage = new URLSearchParams(location.search).get('page');
-const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, status: null, identity: null, routes: [], flows: { tcp: [], udp: [] }, audit: null };
+const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, auditPending: false, auditPendingQuery: '', auditGeneration: 0, auditView: 'table', status: null, identity: null, routes: [], flows: { tcp: [], udp: [] }, audit: null };
 
 function showAlert(message) { alertBox.textContent = message; alertBox.hidden = !message; }
 function setAuthenticated(value) { login.hidden = value; app.hidden = !value; if (!value) stopPolling(); }
@@ -81,14 +81,19 @@ function saveAuditURL() {
 function renderAudit(data) {
   state.audit = data;
   const count = data && data.result && !Array.isArray(data.result) ? data.result.total : (data && Array.isArray(data.result) ? data.result.length : 0);
-  document.querySelector('#audit-count').textContent = data ? `${count} rows · ${data.source}` : 'enter a query and press RUN';
+  document.querySelector('#audit-count').textContent = data ? `${count} rows · ${data.source}${state.auditDuration == null ? '' : ` · ${state.auditDuration.toFixed(0)} ms`}` : 'enter a query and press RUN';
   const head = document.querySelector('#audit-head'); const rows = document.querySelector('#audit-rows'); head.replaceChildren(); rows.replaceChildren();
+  const raw = document.querySelector('#audit-raw'); raw.textContent = data ? JSON.stringify(data, null, 2) : ''; raw.hidden = state.auditView !== 'raw'; document.querySelector('#audit-table-view').hidden = state.auditView !== 'table';
   if (!data) return;
   const result = data.result; const records = Array.isArray(result) ? result : (result.records || []);
   const columns = Array.isArray(result) ? (data.source === 'top asns' ? ['asn', 'as_org', 'country', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count'] : ['client_ip', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count']) : ['entry_type', 'ip', 'protocol', 'port', 'recorded_at', 'upstream', 'reason', 'close_reason', 'bytes_up', 'bytes_down', 'flow_id'];
   const header = document.createElement('tr'); for (const column of columns) cell(header, column); head.append(header);
   for (const record of records) { const row = document.createElement('tr'); for (const column of columns) cell(row, record[column]); rows.append(row); }
-  document.querySelector('#audit-raw').textContent = JSON.stringify(data, null, 2);
+}
+function renderAuditError(message) {
+  state.audit = null; state.auditDuration = null;
+  document.querySelector('#audit-count').textContent = `error: ${message}`;
+  document.querySelector('#audit-head').replaceChildren(); document.querySelector('#audit-rows').replaceChildren(); document.querySelector('#audit-raw').textContent = '';
 }
 async function optionalRPC(method, params) { try { return { value: await rpc(method, params) }; } catch (error) { return { error: error.message }; } }
 function actionButton(label, message, action) { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.addEventListener('click', async () => { if (!confirm(message)) return; try { await action(); await refreshFirewall(); showAlert(''); } catch (error) { showAlert(error.message); } }); return button; }
@@ -105,7 +110,8 @@ async function refreshFirewall() {
 
 async function refreshPage() {
   if (state.inFlight) {
-    if (state.page !== state.requestPage) state.refreshPending = true;
+    if (state.page === 'audit') { state.auditPending = true; state.auditPendingQuery = document.querySelector('#audit-query').value.trim(); }
+    else if (state.page !== state.requestPage) state.refreshPending = true;
     return;
   }
   if (!sessionStorage.getItem(tokenKey) || document.hidden) return;
@@ -115,14 +121,21 @@ async function refreshPage() {
     if (state.page === 'status') { const [status, identity, schedule, iplog, routes] = await Promise.all([rpc('GetStatus'), requestJSON('/identity'), optionalRPC('GetScheduleStatus'), optionalRPC('GetIPLogStatus'), optionalRPC('GetRouteStatus')]); renderStatus(status); renderIdentity(identity); renderStatusExtras(schedule, iplog); renderRoutes(routes.error ? status.routes : routes.value); }
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
     if (state.page === 'config') document.querySelector('#config-json').textContent = JSON.stringify(await rpc('GetRuntimeConfig'), null, 2);
-    if (state.page === 'audit') { const query = document.querySelector('#audit-query').value.trim(); if (query) renderAudit(await rpc('QueryAudit', { query })); else renderAudit(null); }
+    if (state.page === 'audit') {
+      const query = state.auditPendingQuery || document.querySelector('#audit-query').value.trim();
+      const generation = state.auditGeneration;
+      if (query) { const started = performance.now(); const data = await rpc('QueryAudit', { query }); state.auditDuration = performance.now() - started; if (generation === state.auditGeneration && state.page === 'audit' && query === document.querySelector('#audit-query').value.trim()) renderAudit(data); }
+      else if (generation === state.auditGeneration) renderAudit(null);
+    }
     if (state.page === 'firewall') await refreshFirewall();
     showAlert('');
-  } catch (error) { if (error.message !== 'unauthorized') showAlert(error.message); }
+  } catch (error) { if (state.requestPage === 'audit' && state.page === 'audit' && !state.auditPending) renderAuditError(error.message); if (error.message !== 'unauthorized') showAlert(error.message); }
   finally {
     state.inFlight = false;
     state.requestPage = '';
-    if (state.refreshPending) {
+    if (state.auditPending || state.refreshPending) {
+      state.auditPending = false;
+      state.auditPendingQuery = '';
       state.refreshPending = false;
       queueMicrotask(refreshPage);
     }
@@ -136,11 +149,12 @@ document.querySelector('#login-form').addEventListener('submit', (event) => { ev
 document.querySelector('#logout').addEventListener('click', logout);
 for (const button of document.querySelectorAll('[data-page]')) button.addEventListener('click', () => selectPage(button.dataset.page));
 document.querySelector('#flow-filter').addEventListener('input', () => { if (state.page === 'flows') renderFlowTable(); });
-document.querySelector('#audit-form').addEventListener('submit', (event) => { event.preventDefault(); saveAuditURL(); refreshPage(); });
-document.querySelector('#audit-clear').addEventListener('click', () => { document.querySelector('#audit-query').value = ''; state.audit = null; saveAuditURL(); renderAudit(null); });
+document.querySelector('#audit-form').addEventListener('submit', (event) => { event.preventDefault(); state.auditGeneration++; saveAuditURL(); refreshPage(); });
+document.querySelector('#audit-clear').addEventListener('click', () => { state.auditGeneration++; state.auditPendingQuery = ''; document.querySelector('#audit-query').value = ''; state.audit = null; saveAuditURL(); renderAudit(null); });
 document.querySelector('#audit-help-toggle').addEventListener('click', () => { const help = document.querySelector('#audit-help'); help.hidden = !help.hidden; });
-document.querySelector('#audit-raw-toggle').addEventListener('click', () => { const raw = document.querySelector('#audit-raw'); raw.hidden = !raw.hidden; });
-document.querySelector('#audit-query').addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); saveAuditURL(); refreshPage(); } });
+document.querySelector('#audit-table-toggle').addEventListener('click', () => { state.auditView = 'table'; renderAudit(state.audit); });
+document.querySelector('#audit-raw-toggle').addEventListener('click', () => { state.auditView = 'raw'; renderAudit(state.audit); });
+document.querySelector('#audit-query').addEventListener('keydown', (event) => { if (event.key === 'Escape') { document.querySelector('#audit-help').hidden = true; event.currentTarget.focus(); } if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); state.auditGeneration++; saveAuditURL(); refreshPage(); } });
 document.querySelector('#audit-export').addEventListener('click', () => { if (!state.audit) return; const blob = new Blob([JSON.stringify(state.audit, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'fbforward-audit.json'; link.click(); URL.revokeObjectURL(link.href); });
 document.querySelector('#route-name').addEventListener('change', () => renderRoutes(state.routes));
 document.querySelector('#route-override-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await rpc('SetRouteOverride', { route: document.querySelector('#route-name').value, upstream: document.querySelector('#route-upstream').value }); await refreshPage(); showAlert(''); } catch (error) { showAlert(error.message); } });
