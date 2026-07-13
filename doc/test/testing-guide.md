@@ -1,54 +1,11 @@
 # Testing guide
 
-The current test surface is intentionally local and package-oriented. There is
-no distributed coordinator, browser build, or repository-owned manual lab.
+Run `go test ./...`, `go test -race ./...`, `go vet ./...`, and
+`node --check web/app.js` before a release. Data-plane tests use loopback and
+fake policies, selectors, observers, and local GeoIP readers; they do not
+require a control server, SQLite, external network, tc, or privileged
+capabilities.
 
-## Automated tests
-
-Run the complete Go suite:
-
-```bash
-GOCACHE=/tmp/fbforward-gocache go test ./...
-GOCACHE=/tmp/fbforward-gocache go vet ./...
-```
-
-Useful focused checks include:
-
-```bash
-GOCACHE=/tmp/fbforward-gocache go test -race \
-  ./internal/config ./internal/upstream ./internal/control \
-  ./internal/app ./internal/metrics ./internal/forwarding
-```
-
-Tests cover configuration validation, route-local upstream selection, health
-and RTT state, control RPCs, audit storage, Flow Context, firewall behavior,
-forwarding, and Prometheus output.
-
-## Integration tests
-
-Linux integration scenarios should cover:
-
-- simple TCP forwarding;
-- simple UDP forwarding;
-- firewall rejection and audit records;
-- Flow Context resolve and tagging;
-- persistent policy reload;
-- online-rule TTL and expiry;
-- adaptive fallback;
-- manual route-boundary selection.
-
-Normal integration tests must not require root unless a kernel namespace or
-traffic-shaping scenario explicitly needs it.
-
-## Control plane and embedded UI
-
-The control plane includes a small embedded frontend. Verify the root page and the
-remaining endpoints with an HTTP client:
-
-- `/` returns 404;
-- `/rpc`, `/identity`, and `/metrics` require Bearer authentication;
-- `GetActiveFlows` continues to provide authenticated active-flow snapshots;
-- `/flow-context/*` remains available when configured.
-
-The repository no longer runs npm frontend builds or removed external-control
-tests.
+Host traffic shaping and GeoIP downloads are deployment concerns. Test the
+GeoIP update script separately with a local HTTP fixture and verify that
+`ReloadGeoIP` reopens the atomically replaced files.
