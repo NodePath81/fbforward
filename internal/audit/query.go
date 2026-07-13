@@ -103,6 +103,8 @@ func eventWhere(params LogEventQueryParams, rejection bool) (string, []any, erro
 			where = append(where, "matched_rule_value = ?")
 			args = append(args, params.MatchedRuleValue)
 		}
+	} else if params.Reason != "" || params.MatchedRuleType != "" || params.MatchedRuleValue != "" {
+		where = append(where, "1 = 0")
 	}
 	if len(where) == 0 {
 		return "", args, nil
@@ -524,6 +526,10 @@ func normalizeQuery(params QueryParams) (QueryParams, error) {
 		return QueryParams{}, errors.New("start_time must be <= end_time")
 	}
 	out.Country = strings.ToUpper(strings.TrimSpace(out.Country))
+	out.Protocol = strings.ToLower(strings.TrimSpace(out.Protocol))
+	if out.Protocol != "" && out.Protocol != "tcp" && out.Protocol != "udp" {
+		return QueryParams{}, errors.New("protocol must be tcp or udp")
+	}
 	out.Tag = strings.TrimSpace(out.Tag)
 	if out.SortBy == "" {
 		out.SortBy = "recorded_at"
@@ -653,6 +659,18 @@ func flowWhere(params QueryParams) (string, []any, error) {
 	if params.Country != "" {
 		where = append(where, "country = ?")
 		args = append(args, params.Country)
+	}
+	if params.Protocol != "" {
+		where = append(where, "protocol = ?")
+		args = append(args, params.Protocol)
+	}
+	if params.Upstream != "" {
+		where = append(where, "upstream = ?")
+		args = append(args, params.Upstream)
+	}
+	if params.IP != "" {
+		where = append(where, "client_ip = ?")
+		args = append(args, params.IP)
 	}
 	if params.CIDR != "" {
 		family, start, end, err := cidrRange(params.CIDR)

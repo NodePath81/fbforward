@@ -12,9 +12,12 @@ type queryIPLogParams struct {
 	StartTime *int64 `json:"start_time,omitempty"`
 	EndTime   *int64 `json:"end_time,omitempty"`
 	CIDR      string `json:"cidr,omitempty"`
+	IP        string `json:"ip,omitempty"`
 	ASN       *int   `json:"asn,omitempty"`
 	Country   string `json:"country,omitempty"`
 	Tag       string `json:"tag,omitempty"`
+	Protocol  string `json:"protocol,omitempty"`
+	Upstream  string `json:"upstream,omitempty"`
 	SortBy    string `json:"sort_by,omitempty"`
 	SortOrder string `json:"sort_order,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
@@ -25,6 +28,7 @@ type queryRejectionLogParams struct {
 	StartTime        *int64 `json:"start_time,omitempty"`
 	EndTime          *int64 `json:"end_time,omitempty"`
 	CIDR             string `json:"cidr,omitempty"`
+	IP               string `json:"ip,omitempty"`
 	ASN              *int   `json:"asn,omitempty"`
 	Country          string `json:"country,omitempty"`
 	Tag              string `json:"tag,omitempty"`
@@ -43,10 +47,12 @@ type queryLogEventsParams struct {
 	StartTime        *int64 `json:"start_time,omitempty"`
 	EndTime          *int64 `json:"end_time,omitempty"`
 	CIDR             string `json:"cidr,omitempty"`
+	IP               string `json:"ip,omitempty"`
 	ASN              *int   `json:"asn,omitempty"`
 	Country          string `json:"country,omitempty"`
 	Tag              string `json:"tag,omitempty"`
 	Protocol         string `json:"protocol,omitempty"`
+	Upstream         string `json:"upstream,omitempty"`
 	Port             *int   `json:"port,omitempty"`
 	Reason           string `json:"reason,omitempty"`
 	MatchedRuleType  string `json:"matched_rule_type,omitempty"`
@@ -102,8 +108,8 @@ func (c *ControlServer) rpcQueryIPLog(_ *rpcContext, raw json.RawMessage) (any, 
 		return rpcError(fault.Status, fault.Message)
 	}
 	result, err := store.Query(iplog.QueryParams{
-		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, ASN: params.ASN,
-		Country: params.Country, Tag: params.Tag, SortBy: params.SortBy, SortOrder: params.SortOrder,
+		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, IP: params.IP, ASN: params.ASN,
+		Country: params.Country, Tag: params.Tag, Protocol: params.Protocol, Upstream: params.Upstream, SortBy: params.SortBy, SortOrder: params.SortOrder,
 		Limit: params.Limit, Offset: params.Offset,
 	})
 	if err != nil {
@@ -122,7 +128,7 @@ func (c *ControlServer) rpcQueryRejectionLog(_ *rpcContext, raw json.RawMessage)
 		return rpcError(fault.Status, fault.Message)
 	}
 	result, err := store.QueryRejections(iplog.RejectionQueryParams{
-		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, ASN: params.ASN,
+		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, IP: params.IP, ASN: params.ASN,
 		Country: params.Country, Reason: params.Reason, Protocol: params.Protocol, Port: params.Port,
 		MatchedRuleType: params.MatchedRuleType, MatchedRuleValue: params.MatchedRuleValue,
 		SortBy: params.SortBy, SortOrder: params.SortOrder, Limit: params.Limit, Offset: params.Offset,
@@ -143,8 +149,8 @@ func (c *ControlServer) rpcQueryLogEvents(_ *rpcContext, raw json.RawMessage) (a
 		return rpcError(fault.Status, fault.Message)
 	}
 	result, err := store.QueryLogEvents(iplog.LogEventQueryParams{
-		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, ASN: params.ASN,
-		Country: params.Country, Tag: params.Tag, Protocol: params.Protocol, Port: params.Port, Reason: params.Reason,
+		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, IP: params.IP, ASN: params.ASN,
+		Country: params.Country, Tag: params.Tag, Protocol: params.Protocol, Upstream: params.Upstream, Port: params.Port, Reason: params.Reason,
 		MatchedRuleType: params.MatchedRuleType, MatchedRuleValue: params.MatchedRuleValue,
 		EntryType: params.EntryType, SortBy: params.SortBy, SortOrder: params.SortOrder,
 		Limit: params.Limit, Offset: params.Offset,
