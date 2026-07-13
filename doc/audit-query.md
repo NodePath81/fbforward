@@ -25,6 +25,9 @@ are filtered, aggregated, sorted, and paginated by SQLite.
 
 `QueryAudit` returns `{query, source, result}`. Flow, rejection, and event
 results use the existing `{total, records}` shape. `top clients` and `top asns`
-return aggregation rows; ASN rows contain `asn`, `as_org`, `country`, byte
-totals, and flow count. The browser may store the query text in the Audit URL,
-but never stores or appends the bearer token.
+return aggregation rows. ASN results contain one row per ASN, with
+`asn`, `as_org`, `country`, byte totals, and flow count; when an ASN spans
+multiple countries, `country` is empty because the row is intentionally not
+split. Syntax and value errors include a one-based byte position. The browser
+may store the query text in the Audit URL, but never stores or appends the
+bearer token.

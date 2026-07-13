@@ -354,7 +354,8 @@ See [the query reference](audit-query.md).
 
 - `flows`, `rejections`, and `events` return lifecycle or rejection rows.
 - `top clients` groups traffic by client IP.
-- `top asns` groups traffic by ASN, organization, and country.
+- `top asns` groups traffic by ASN. If one ASN spans multiple countries, the
+  country column is left empty rather than splitting the aggregate.
 - `tag=app:test`, protocol, upstream, CIDR, IP, ASN, country, reason, and
   relative/absolute time filters are pushed to SQLite.
 - `sort`, `limit`, and `offset` are server-side pipeline stages.
