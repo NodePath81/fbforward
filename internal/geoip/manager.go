@@ -39,24 +39,7 @@ type DBStatus struct {
 type Status struct {
 	ASNDB           DBStatus `json:"asn_db"`
 	CountryDB       DBStatus `json:"country_db"`
-	RefreshInterval string   `json:"refresh_interval"`
 }
-
-type RefreshDBResult struct {
-	Configured      bool   `json:"configured"`
-	Attempted       bool   `json:"attempted"`
-	Refreshed       bool   `json:"refreshed"`
-	PreviousModTime int64  `json:"previous_mod_time"`
-	CurrentModTime  int64  `json:"current_mod_time"`
-	Error           string `json:"error"`
-}
-
-type RefreshResult struct {
-	ASNDB     RefreshDBResult `json:"asn_db"`
-	CountryDB RefreshDBResult `json:"country_db"`
-}
-
-var ErrNoConfiguredDatabases = errors.New("no geoip databases configured")
 
 type LookupProvider interface {
 	Lookup(ip net.IP) LookupResult
@@ -201,15 +184,7 @@ func (m *Manager) Status() Status {
 	return Status{
 		ASNDB:           buildDBStatus(m.cfg.ASNDBURL, m.cfg.ASNDBPath, snapshot.asn != nil),
 		CountryDB:       buildDBStatus(m.cfg.CountryDBURL, m.cfg.CountryDBPath, snapshot.country != nil),
-		RefreshInterval: m.cfg.RefreshInterval.Duration().String(),
 	}
-}
-
-func (m *Manager) RefreshNow(ctx context.Context) (RefreshResult, error) {
-	if err := m.Reload(ctx); err != nil {
-		return RefreshResult{}, err
-	}
-	return RefreshResult{}, nil
 }
 
 func (m *Manager) Close() error {

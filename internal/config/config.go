@@ -43,7 +43,6 @@ const (
 	defaultNotifyInterval        = 30 * time.Minute
 	defaultLoggingLevel          = "info"
 	defaultLoggingFormat         = "text"
-	defaultGeoIPRefreshInterval  = 24 * time.Hour
 	defaultIPLogGeoQueueSize     = 4096
 	defaultIPLogWriteQueueSize   = 4096
 	defaultIPLogBatchSize        = 100
@@ -258,7 +257,6 @@ type GeoIPConfig struct {
 	ASNDBPath       string   `yaml:"asn_db_path"`
 	CountryDBURL    string   `yaml:"-"`
 	CountryDBPath   string   `yaml:"country_db_path"`
-	RefreshInterval Duration `yaml:"-"`
 }
 
 type IPLogConfig struct {
@@ -504,9 +502,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Logging.Format == "" {
 		c.Logging.Format = defaultLoggingFormat
-	}
-	if c.GeoIP.RefreshInterval == 0 {
-		c.GeoIP.RefreshInterval = Duration(defaultGeoIPRefreshInterval)
 	}
 	if c.IPLog.GeoQueueSize == 0 {
 		c.IPLog.GeoQueueSize = defaultIPLogGeoQueueSize

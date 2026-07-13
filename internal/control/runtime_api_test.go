@@ -35,8 +35,7 @@ func TestGetGeoIPStatusReturnsResult(t *testing.T) {
 				FileModTime: 1712505600,
 				FileSize:    1234,
 			},
-			CountryDB:       geoip.DBStatus{},
-			RefreshInterval: "24h0m0s",
+			CountryDB: geoip.DBStatus{},
 		},
 	})
 
@@ -61,7 +60,7 @@ func TestGetGeoIPStatusReturnsResult(t *testing.T) {
 
 func TestGetGeoIPStatusAcceptsOmittedAndNullParams(t *testing.T) {
 	server := newTestControlServer(t)
-	server.SetGeoIPManager(fakeGeoIPManager{status: geoip.Status{RefreshInterval: "24h0m0s"}})
+	server.SetGeoIPManager(fakeGeoIPManager{status: geoip.Status{}})
 
 	reqOmitted := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "GetGeoIPStatus", nil)))
 	reqOmitted.Header.Set("Authorization", "Bearer 0123456789abcdef")
@@ -117,9 +116,9 @@ func TestGetGeoIPStatusSupportsUnconfiguredAndSingleDBPayloads(t *testing.T) {
 	}
 }
 
-func TestRefreshGeoIPUnavailableWithoutManager(t *testing.T) {
+func TestReloadGeoIPUnavailableWithoutManager(t *testing.T) {
 	server := newTestControlServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "RefreshGeoIP", nil)))
+	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "ReloadGeoIP", nil)))
 	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
 	rec := httptest.NewRecorder()
 
@@ -129,43 +128,11 @@ func TestRefreshGeoIPUnavailableWithoutManager(t *testing.T) {
 	}
 }
 
-func TestRefreshGeoIPNoConfiguredDatabases(t *testing.T) {
+func TestReloadGeoIPReturnsStatus(t *testing.T) {
 	server := newTestControlServer(t)
-	server.SetGeoIPManager(fakeGeoIPManager{refreshErr: geoip.ErrNoConfiguredDatabases})
+	server.SetGeoIPManager(fakeGeoIPManager{status: geoip.Status{ASNDB: geoip.DBStatus{Configured: true, Path: "/tmp/asn.mmdb"}}})
 
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "RefreshGeoIP", nil)))
-	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	rec := httptest.NewRecorder()
-
-	server.handleRPC(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRefreshGeoIPReturnsResult(t *testing.T) {
-	server := newTestControlServer(t)
-	server.SetGeoIPManager(fakeGeoIPManager{
-		refreshResult: geoip.RefreshResult{
-			ASNDB: geoip.RefreshDBResult{
-				Configured:      true,
-				Attempted:       true,
-				Refreshed:       true,
-				PreviousModTime: 10,
-				CurrentModTime:  20,
-			},
-			CountryDB: geoip.RefreshDBResult{
-				Configured:      true,
-				Attempted:       true,
-				Refreshed:       false,
-				PreviousModTime: 10,
-				CurrentModTime:  10,
-				Error:           "download failed",
-			},
-		},
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "RefreshGeoIP", nil)))
+	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "ReloadGeoIP", nil)))
 	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
 	rec := httptest.NewRecorder()
 
@@ -222,27 +189,6 @@ func TestSendTestNotificationReturnsErrorWhenQueueRejects(t *testing.T) {
 	server.handleRPC(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRefreshGeoIPAcceptsOmittedAndNullParams(t *testing.T) {
-	server := newTestControlServer(t)
-	server.SetGeoIPManager(fakeGeoIPManager{refreshResult: geoip.RefreshResult{}})
-
-	reqOmitted := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "RefreshGeoIP", nil)))
-	reqOmitted.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	recOmitted := httptest.NewRecorder()
-	server.handleRPC(recOmitted, reqOmitted)
-	if recOmitted.Code != http.StatusOK {
-		t.Fatalf("expected omitted params to succeed, got %d body=%s", recOmitted.Code, recOmitted.Body.String())
-	}
-
-	reqNull := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewBufferString(`{"method":"RefreshGeoIP","params":null}`))
-	reqNull.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	recNull := httptest.NewRecorder()
-	server.handleRPC(recNull, reqNull)
-	if recNull.Code != http.StatusOK {
-		t.Fatalf("expected null params to succeed, got %d body=%s", recNull.Code, recNull.Body.String())
 	}
 }
 

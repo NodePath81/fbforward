@@ -43,10 +43,8 @@ func TestNewRuntimeWithIPLogAndFirewallCleansUp(t *testing.T) {
 			AuthToken: "0123456789abcdef",
 		},
 		GeoIP: config.GeoIPConfig{
-			Enabled:         true,
-			ASNDBURL:        "https://example.test/GeoLite2-ASN.mmdb",
-			ASNDBPath:       filepath.Join(t.TempDir(), "GeoLite2-ASN.mmdb"),
-			RefreshInterval: config.Duration(24 * time.Hour),
+			Enabled:   true,
+			ASNDBPath: filepath.Join(t.TempDir(), "GeoLite2-ASN.mmdb"),
 		},
 		IPLog: config.IPLogConfig{
 			Enabled:        true,

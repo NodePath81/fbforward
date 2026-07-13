@@ -65,7 +65,6 @@ type ControlServer struct {
 
 type geoipManager interface {
 	Status() geoip.Status
-	RefreshNow(context.Context) (geoip.RefreshResult, error)
 }
 
 type geoipReloader interface {

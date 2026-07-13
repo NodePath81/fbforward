@@ -224,9 +224,6 @@ func TestGeoIPConfigAcceptsSingleCompletePair(t *testing.T) {
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("expected geoip config to validate: %v", err)
 	}
-	if got := cfg.GeoIP.RefreshInterval.Duration(); got != defaultGeoIPRefreshInterval {
-		t.Fatalf("expected default geoip refresh interval %s, got %s", defaultGeoIPRefreshInterval, got)
-	}
 }
 
 func TestIPLogConfigRequiresDBPathWhenEnabled(t *testing.T) {

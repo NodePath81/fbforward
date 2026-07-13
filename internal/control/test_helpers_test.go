@@ -15,9 +15,8 @@ type fakeManager struct {
 }
 
 type fakeGeoIPManager struct {
-	status        geoip.Status
-	refreshResult geoip.RefreshResult
-	refreshErr    error
+	status    geoip.Status
+	reloadErr error
 }
 
 type fakeNotifier struct {
@@ -37,8 +36,8 @@ func (f fakeGeoIPManager) Status() geoip.Status {
 	return f.status
 }
 
-func (f fakeGeoIPManager) RefreshNow(context.Context) (geoip.RefreshResult, error) {
-	return f.refreshResult, f.refreshErr
+func (f fakeGeoIPManager) Reload(context.Context) error {
+	return f.reloadErr
 }
 
 func (f *fakeNotifier) Emit(eventName string, severity notify.Severity, attributes map[string]any) bool {

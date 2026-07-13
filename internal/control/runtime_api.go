@@ -2,12 +2,10 @@ package control
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/util"
 )
@@ -85,27 +83,6 @@ func (c *ControlServer) rpcGetGeoIPStatus(_ *rpcContext, raw json.RawMessage) (a
 		return rpcError(http.StatusServiceUnavailable, "geoip manager not available")
 	}
 	return rpcOK(manager.Status())
-}
-
-func (c *ControlServer) rpcRefreshGeoIP(ctx *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	if fault := decodeOptionalParams(raw, &struct{}{}); fault != nil {
-		return rpcError(fault.Status, fault.Message)
-	}
-	c.geoipMu.RLock()
-	manager := c.geoipMgr
-	c.geoipMu.RUnlock()
-	if manager == nil {
-		return rpcError(http.StatusServiceUnavailable, "geoip manager not available")
-	}
-	result, err := manager.RefreshNow(ctx.Request.Context())
-	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, geoip.ErrNoConfiguredDatabases) {
-			status = http.StatusServiceUnavailable
-		}
-		return rpcError(status, err.Error())
-	}
-	return rpcOK(result)
 }
 
 func (c *ControlServer) rpcReloadGeoIP(ctx *rpcContext, raw json.RawMessage) (any, *rpcFault) {
