@@ -77,14 +77,7 @@ firewall:
   fail_on_initial_load: true
 `, forwardPort, controlPort, dbPath, policyPath)
 	forwarder := startForwarder(t, config, controlPort)
-	waitFor(t, 5*time.Second, func() bool {
-		request, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", forwardPort), 100*time.Millisecond)
-		if err != nil {
-			return false
-		}
-		_ = request.Close()
-		return true
-	})
+	waitForIdentity(t, forwarder)
 
 	// The firewall rejects before the upstream is selected or dialed.
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", forwardPort), time.Second)
