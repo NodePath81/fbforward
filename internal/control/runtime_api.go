@@ -154,12 +154,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"protocol":  ln.Protocol,
 			"route":     ln.Route,
 		}
-		if ln.Shaping != nil {
-			entry["shaping"] = map[string]interface{}{
-				"upload_limit":   ln.Shaping.UploadLimit,
-				"download_limit": ln.Shaping.DownloadLimit,
-			}
-		}
 		listeners = append(listeners, entry)
 	}
 
@@ -188,12 +182,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 				"port": up.Measurement.Port,
 			},
 			"priority": up.Priority,
-		}
-		if up.Shaping != nil {
-			entry["shaping"] = map[string]interface{}{
-				"upload_limit":   up.Shaping.UploadLimit,
-				"download_limit": up.Shaping.DownloadLimit,
-			}
 		}
 		upstreams = append(upstreams, entry)
 	}
@@ -269,12 +257,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"enabled":              cfg.Firewall.Enabled,
 			"policy_file":          cfg.Firewall.PolicyFile,
 			"fail_on_initial_load": cfg.Firewall.ShouldFailOnInitialLoad(),
-		},
-		"shaping": map[string]interface{}{
-			"enabled":         cfg.Shaping.Enabled,
-			"interface":       cfg.Shaping.Interface,
-			"ifb_device":      cfg.Shaping.IFBDevice,
-			"aggregate_limit": cfg.Shaping.AggregateLimit,
 		},
 	}
 }

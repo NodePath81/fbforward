@@ -22,7 +22,6 @@ health: {...}                     # Unified health and RTT state
 control: {...}                    # Control plane (HTTP API)
 notify: {...}                     # fbnotify event delivery
 logging: {...}                    # Log level
-shaping: {...}                    # Linux tc traffic shaping
 geoip: {...}                      # Optional GeoIP database management
 ip_log: {...}                     # Optional SQLite-backed IP logging
 firewall: {...}                   # Optional CIDR / ASN / country firewall
@@ -153,7 +152,6 @@ List of listener definitions. Each listener binds to an address and accepts clie
 | `bind_addr` | string | `0.0.0.0` | Address to bind |
 | `bind_port` | int | *required* | Port to bind (1-65535) |
 | `protocol` | string | `tcp` | Protocol: `tcp` or `udp` |
-| `shaping` | object | *none* | Per-listener shaping (requires `shaping.enabled`) |
 
 **Example:**
 
@@ -172,7 +170,6 @@ forwarding:
 - `bind_port` must be in range 1-65535
 - `protocol` must be `tcp` or `udp` (case-insensitive, normalized to lowercase)
 - Duplicate `(bind_addr, bind_port, protocol)` tuples are rejected
-- If `shaping` is set, `shaping.enabled` must be `true`
 
 ### limits
 
@@ -219,10 +216,6 @@ TCP idle timeout measures time since last data transfer in either direction. UDP
 
 **Validation:**
 - Both fields must be greater than zero
-
-### Per-listener shaping
-
-Optional bandwidth limits per listener. Requires `shaping.enabled: true`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -349,10 +342,6 @@ upstreams:
       host: 203.0.113.20
     priority: 50   # Lower priority
 ```
-
-### Per-upstream shaping
-
-Optional bandwidth limits per upstream. Requires `shaping.enabled: true`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

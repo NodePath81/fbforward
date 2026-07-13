@@ -145,7 +145,6 @@ upstreams:                          # List of upstream definitions
     destination: {...}
     measurement: {...}
     priority: 0
-    shaping: {...}
 
 dns:
   servers: [...]                    # Custom DNS resolvers
@@ -178,11 +177,6 @@ ip_log:
 firewall:
   enabled: false                    # Optional CIDR / ASN / country firewall
 
-shaping:
-  enabled: false                    # Enable Linux tc traffic shaping
-  interface: "eth0"                 # Physical interface
-  ifb_device: "ifb0"                # IFB device for ingress
-  aggregate_limit: "1g"             # Total bandwidth cap
 ```
 
 fbforward currently links the CGO-backed `github.com/mattn/go-sqlite3` driver for IP-log support. Building `fbforward` therefore requires a working C toolchain on the target build host, even if `ip_log.enabled` is `false` at runtime.
@@ -455,16 +449,6 @@ Cause: Another process is listening on the configured port.
 
 Resolution: Stop the conflicting process or change `bind_port` in configuration.
 
-**"startup failed: operation not permitted"**
-
-Cause: fbforward lacks the capability required by the enabled feature (for example CAP_NET_ADMIN for shaping).
-
-Resolution: Assign capabilities with `setcap` or run via systemd with `AmbientCapabilities`.
-
-```bash
-sudo setcap cap_net_admin+ep ./fbforward
-```
-
 **"measurement failed: connection refused"**
 
 Cause: fbmeasure is not running on upstream host or firewall blocks connection.
@@ -499,7 +483,7 @@ When fbforward is not operating correctly, verify:
 **1. Capabilities**:
 ```bash
 getcap ./fbforward
-# Expected: cap_net_admin=ep when shaping is enabled
+# No extra capability is required unless binding a privileged port.
 ```
 
 **2. fbmeasure connectivity**:
@@ -561,13 +545,12 @@ Verify:
 
 **Low throughput**:
 
-Check traffic-rate metrics in Prometheus. Low throughput indicates path saturation, throttling, or shaping limits.
+Check traffic-rate metrics in Prometheus. Low throughput indicates path saturation or network congestion.
 
 Verify:
 - No QoS policies throttling traffic
 - Upstream has sufficient capacity
 
-If traffic shaping is enabled, verify `shaping.aggregate_limit` and per-upstream limits are appropriate.
 
 **Frequent upstream changes**:
 

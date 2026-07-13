@@ -31,6 +31,17 @@ func TestRemovedDistributedConfigKeyRejected(t *testing.T) {
 	}
 }
 
+func TestRemovedShapingConfigKeyRejected(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	raw := []byte("shaping:\n  enabled: true\n  interface: eth0\n")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected removed shaping configuration key to be rejected")
+	}
+}
+
 func TestNotifyConfigRequiresTokenWhenEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.Notify = NotifyConfig{

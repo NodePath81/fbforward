@@ -49,27 +49,22 @@ Docs: `doc/fbnotify/index.md` and `doc/notification-events.md`.
 
 - Linux only.
 - Go toolchain: 1.25.5+ (per `go.mod`).
-- fbforward:
-  - Traffic shaping (optional) requires `CAP_NET_ADMIN`.
-  - fbforward currently links `github.com/mattn/go-sqlite3` for IP-log support, so building `fbforward` requires a working C toolchain (gcc) on the build host.
+- fbforward currently links `github.com/mattn/go-sqlite3` for IP-log support, so building `fbforward` requires a working C toolchain (gcc) on the build host.
 
 ## Build
 
 ```
 make build            # build all binaries
 make build-fbforward  # build fbforward only
-make build-bwprobe    # build bwprobe only
 make build-fbmeasure  # build fbmeasure only
 
 # Or build directly:
 go build ./cmd/fbforward
-go build ./bwprobe/cmd
 go build ./cmd/fbmeasure
 ```
 
 Outputs:
 - `build/bin/fbforward`
-- `build/bin/bwprobe`
 - `build/bin/fbmeasure`
 
 ## fbforward config (YAML)
@@ -105,7 +100,7 @@ Use a random token with at least 16 characters. The placeholder value
 `change-me` is rejected at startup.
 
 See `doc/configuration-reference.md` for the full schema (`listeners`, `routes`,
-`upstreams`, `dns`, `measurement`, `health`, `control`, `logging`, `shaping`,
+`upstreams`, `dns`, `measurement`, `health`, `control`, `logging`,
 `geoip`, `ip_log`, `flow_context`, `firewall`).
 
 ## Run (fbforward)

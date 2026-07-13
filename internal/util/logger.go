@@ -22,7 +22,6 @@ const (
 	CompProbe      = "probe"
 	CompControl    = "control"
 	CompDNS        = "dns"
-	CompShaping    = "shaping"
 	CompUpstream   = "upstream"
 	CompGeoIP      = "geoip"
 	CompIPLog      = "iplog"

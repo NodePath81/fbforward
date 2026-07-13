@@ -33,8 +33,6 @@ fbforward requires the following capabilities:
 fbforward does not require `CAP_NET_RAW`; health probing uses the authenticated
 TCP/UDP fbmeasure sidecar.
 
-**CAP_NET_ADMIN** (optional): Allows configuring traffic control qdiscs for bandwidth shaping. Only required if `shaping.enabled: true` in configuration.
-
 Capabilities can be assigned to the binary or granted via systemd's `AmbientCapabilities` directive.
 
 ### fbmeasure on upstream hosts
@@ -122,15 +120,15 @@ The package creates a `fbforward` user and group. The systemd service runs as th
 If not using systemd or the Debian package, assign capabilities to the binary:
 
 ```bash
-# Optional: Add CAP_NET_ADMIN for traffic shaping
-sudo setcap cap_net_admin+ep ./build/bin/fbforward
+# Optional: Add CAP_NET_BIND_SERVICE when binding below port 1024
+sudo setcap cap_net_bind_service+ep ./build/bin/fbforward
 ```
 
 Verify capabilities:
 
 ```bash
 getcap ./build/bin/fbforward
-# Expected output: ./build/bin/fbforward cap_net_admin=ep
+# Expected output: ./build/bin/fbforward cap_net_bind_service=ep
 ```
 
 ### systemd service setup
@@ -142,7 +140,7 @@ sudo cp deploy/systemd/fbforward.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
-The service file grants `CAP_NET_RAW`, `CAP_NET_BIND_SERVICE`, and `CAP_NET_ADMIN` via `AmbientCapabilities`. The service runs as user `fbforward`.
+The service file grants only the capabilities required by the deployment, such as `CAP_NET_BIND_SERVICE`, via `AmbientCapabilities`. The service runs as user `fbforward`.
 
 Create the user if not using the Debian package:
 

@@ -51,10 +51,8 @@ const (
 	defaultIPLogPruneInterval    = 1 * time.Hour
 	defaultFlowContextMaxTTL     = 24 * time.Hour
 
-	defaultMeasurePort    = 9876
-	DefaultShapingIFB     = "ifb0"
-	DefaultAggregateLimit = "1g"
-	maxListeners          = 45
+	defaultMeasurePort = 9876
+	maxListeners       = 45
 
 	DNSStrategyIPv4Only = "ipv4_only"
 	DNSStrategyPreferV6 = "prefer_ipv6"
@@ -108,7 +106,6 @@ type Config struct {
 	Control            ControlConfig     `yaml:"control"`
 	Notify             NotifyConfig      `yaml:"notify"`
 	Logging            LoggingConfig     `yaml:"logging"`
-	Shaping            ShapingConfig     `yaml:"shaping"`
 	GeoIP              GeoIPConfig       `yaml:"geoip"`
 	IPLog              IPLogConfig       `yaml:"ip_log"`
 	FlowContext        FlowContextConfig `yaml:"flow_context"`
@@ -141,23 +138,21 @@ type IdleTimeoutConfig struct {
 }
 
 type ListenerConfig struct {
-	Name     string              `yaml:"name,omitempty"`
-	BindAddr string              `yaml:"bind_addr"`
-	BindPort int                 `yaml:"bind_port"`
-	Protocol string              `yaml:"protocol"`
-	Route    string              `yaml:"route,omitempty"`
-	Shaping  *ShapingLimitConfig `yaml:"shaping"`
+	Name     string `yaml:"name,omitempty"`
+	BindAddr string `yaml:"bind_addr"`
+	BindPort int    `yaml:"bind_port"`
+	Protocol string `yaml:"protocol"`
+	Route    string `yaml:"route,omitempty"`
 }
 
 // ListenerSpec is the explicit listener form used by the current topology
 // configuration. It is converted to ListenerConfig after parsing so the
 // forwarding data plane continues to use a normalized address and port.
 type ListenerSpec struct {
-	Name     string              `yaml:"name"`
-	Bind     string              `yaml:"bind"`
-	Protocol string              `yaml:"protocol"`
-	Route    string              `yaml:"route"`
-	Shaping  *ShapingLimitConfig `yaml:"shaping"`
+	Name     string `yaml:"name"`
+	Bind     string `yaml:"bind"`
+	Protocol string `yaml:"protocol"`
+	Route    string `yaml:"route"`
 }
 
 type RouteConfig struct {
@@ -172,7 +167,6 @@ type UpstreamConfig struct {
 	Destination DestinationConfig         `yaml:"destination"`
 	Measurement UpstreamMeasurementConfig `yaml:"measurement"`
 	Priority    float64                   `yaml:"priority"`
-	Shaping     *ShapingLimitConfig       `yaml:"shaping"`
 }
 
 type DestinationConfig struct {
@@ -315,20 +309,6 @@ type FirewallRule struct {
 	CIDR    string `yaml:"cidr,omitempty"`
 	ASN     int    `yaml:"asn,omitempty"`
 	Country string `yaml:"country,omitempty"`
-}
-
-type ShapingConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	Interface      string `yaml:"interface"`
-	IFBDevice      string `yaml:"ifb_device"`
-	AggregateLimit string `yaml:"aggregate_limit"`
-
-	AggregateLimitBits uint64 `yaml:"-"`
-}
-
-type ShapingLimitConfig struct {
-	UploadLimit   string `yaml:"upload_limit"`
-	DownloadLimit string `yaml:"download_limit"`
 }
 
 func (m ControlMetricsConfig) IsEnabled() bool {
@@ -564,14 +544,6 @@ func (c *Config) setDefaults() {
 		}
 	}
 
-	if c.Shaping.Enabled {
-		if c.Shaping.IFBDevice == "" {
-			c.Shaping.IFBDevice = DefaultShapingIFB
-		}
-		if c.Shaping.AggregateLimit == "" {
-			c.Shaping.AggregateLimit = DefaultAggregateLimit
-		}
-	}
 }
 
 func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
@@ -636,14 +608,6 @@ func (c *Config) validate() error {
 		if up.Priority < 0 {
 			return fmt.Errorf("upstreams[%s].priority must be >= 0", up.Tag)
 		}
-		if up.Shaping != nil && !c.Shaping.Enabled {
-			return fmt.Errorf("upstreams[%s].shaping requires shaping.enabled", up.Tag)
-		}
-		if up.Shaping != nil {
-			if err := validateShapingLimits(up.Shaping, fmt.Sprintf("upstreams[%s].shaping", up.Tag)); err != nil {
-				return err
-			}
-		}
 	}
 
 	seenListeners := make(map[string]struct{}, len(c.Forwarding.Listeners))
@@ -678,14 +642,6 @@ func (c *Config) validate() error {
 		}
 		if ln.Protocol != "tcp" && ln.Protocol != "udp" {
 			return fmt.Errorf("listener %s:%d protocol must be tcp or udp", ln.BindAddr, ln.BindPort)
-		}
-		if ln.Shaping != nil && !c.Shaping.Enabled {
-			return fmt.Errorf("listener %s:%d shaping requires shaping.enabled", ln.BindAddr, ln.BindPort)
-		}
-		if ln.Shaping != nil {
-			if err := validateShapingLimits(ln.Shaping, fmt.Sprintf("forwarding.listeners[%d].shaping", i)); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -874,23 +830,6 @@ func (c *Config) validate() error {
 		case DNSStrategyIPv4Only, DNSStrategyPreferV6:
 		default:
 			return errors.New("dns.strategy must be ipv4_only or prefer_ipv6")
-		}
-	}
-
-	if c.Shaping.Enabled {
-		c.Shaping.Interface = strings.TrimSpace(c.Shaping.Interface)
-		c.Shaping.IFBDevice = strings.TrimSpace(c.Shaping.IFBDevice)
-		c.Shaping.AggregateLimit = strings.TrimSpace(c.Shaping.AggregateLimit)
-		if c.Shaping.Interface == "" {
-			return errors.New("shaping.interface is required")
-		}
-		if c.Shaping.IFBDevice == "" {
-			return errors.New("shaping.ifb_device is required")
-		}
-		if c.Shaping.AggregateLimit != "" {
-			if _, err := ParseBandwidth(c.Shaping.AggregateLimit); err != nil {
-				return fmt.Errorf("shaping.aggregate_limit: %w", err)
-			}
 		}
 	}
 
@@ -1127,31 +1066,6 @@ func validateProtocolConfig(proto string, cfg MeasurementProtocolConfig, enabled
 	}
 	if cfg.Timeout.PerCycle.Duration() <= 0 {
 		return fmt.Errorf("measurement.protocols.%s.timeout.per_cycle must be > 0", proto)
-	}
-	return nil
-}
-
-func validateShapingLimits(cfg *ShapingLimitConfig, path string) error {
-	if cfg.UploadLimit == "" && cfg.DownloadLimit == "" {
-		return fmt.Errorf("%s must specify upload_limit or download_limit", path)
-	}
-	if cfg.UploadLimit != "" {
-		bits, err := ParseBandwidth(cfg.UploadLimit)
-		if err != nil {
-			return fmt.Errorf("%s.upload_limit: %w", path, err)
-		}
-		if bits == 0 {
-			return fmt.Errorf("%s.upload_limit must be > 0", path)
-		}
-	}
-	if cfg.DownloadLimit != "" {
-		bits, err := ParseBandwidth(cfg.DownloadLimit)
-		if err != nil {
-			return fmt.Errorf("%s.download_limit: %w", path, err)
-		}
-		if bits == 0 {
-			return fmt.Errorf("%s.download_limit must be > 0", path)
-		}
 	}
 	return nil
 }

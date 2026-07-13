@@ -20,7 +20,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/policy"
 	"github.com/NodePath81/fbforward/internal/resolver"
-	"github.com/NodePath81/fbforward/internal/shaping"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 )
@@ -43,7 +42,6 @@ type Runtime struct {
 	picker             forwarding.UpstreamPicker
 	policy             forwarding.AdmissionPolicy
 	control            *control.ControlServer
-	shaper             *shaping.TrafficShaper
 	geoipMgr           *geoip.Manager
 	iplogStore         *iplog.Store
 	iplogPipeline      *audit.Pipeline
@@ -171,12 +169,6 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	}
 	rt.flowObserver = flowObservers
 	rt.policy = &firewallPolicy{provider: rt.firewall, onlineProvider: rt.onlinePolicy}
-	if cfg.Shaping.Enabled {
-		// Build upstream shaping entries with resolved IPs
-		upstreamShaping := buildUpstreamShapingEntries(cfg.Upstreams, upstreams)
-		rt.shaper = shaping.NewTrafficShaper(cfg.Shaping, cfg.Forwarding.Listeners, upstreamShaping, logger)
-	}
-
 	if cfg.Notify.Enabled {
 		notifyLogger := util.ComponentLogger(logger, util.CompNotify)
 		notifier, err := notify.NewClient(notify.Config{
@@ -240,12 +232,6 @@ func (r *Runtime) Start() error {
 	if err := r.control.Start(r.ctx); err != nil {
 		return err
 	}
-	if r.shaper != nil {
-		if err := r.shaper.Apply(); err != nil {
-			r.Stop()
-			return err
-		}
-	}
 	if r.geoipMgr != nil {
 		r.geoipMgr.Start(r.ctx)
 	}
@@ -299,11 +285,6 @@ func (r *Runtime) Stop() {
 	if r.iplogStore != nil {
 		if err := r.iplogStore.Close(); err != nil {
 			util.Event(r.logger, slog.LevelWarn, "iplog.store_close_failed", "error", err)
-		}
-	}
-	if r.shaper != nil {
-		if err := r.shaper.Cleanup(); err != nil {
-			util.Event(r.logger, slog.LevelError, "shaping.cleanup_failed", "error", err)
 		}
 	}
 	if r.notifyPolicy != nil {
@@ -411,7 +392,6 @@ func (r *Runtime) wait() {
 
 func (r *Runtime) startDNSRefresh() {
 	dnsLogger := util.ComponentLogger(r.logger, util.CompDNS)
-	shapingLogger := util.ComponentLogger(r.logger, util.CompShaping)
 	for _, upstream := range r.upstreams {
 		if net.ParseIP(upstream.Host) != nil {
 			continue
@@ -453,15 +433,6 @@ func (r *Runtime) startDNSRefresh() {
 							"upstream.ip", activeStr,
 							"dns.resolved_ips", resolved,
 						)
-						if r.shaper != nil && upstreamHasShaping(r.cfg.Upstreams, up.Tag) {
-							upstreamShaping := buildUpstreamShapingEntries(r.cfg.Upstreams, r.upstreams)
-							if err := r.shaper.UpdateUpstreams(upstreamShaping); err != nil {
-								util.Event(shapingLogger, slog.LevelError, "shaping.reapply_failed",
-									"upstream", up.Tag,
-									"error", err,
-								)
-							}
-						}
 					}
 				}
 			}
@@ -488,46 +459,4 @@ func resolveUpstreams(ctx context.Context, cfg config.Config, res *resolver.Reso
 		upstreams = append(upstreams, up)
 	}
 	return upstreams, nil
-}
-
-// buildUpstreamShapingEntries creates shaping entries from config and resolved upstreams.
-func buildUpstreamShapingEntries(cfgUpstreams []config.UpstreamConfig, resolvedUpstreams []*upstream.Upstream) []shaping.UpstreamShapingEntry {
-	// Create a map of tag -> resolved IPs for quick lookup
-	tagToIPs := make(map[string][]string, len(resolvedUpstreams))
-	for _, up := range resolvedUpstreams {
-		ips := make([]string, 0, len(up.IPs))
-		for _, ip := range up.IPs {
-			ips = append(ips, ip.String())
-		}
-		tagToIPs[up.Tag] = ips
-	}
-
-	entries := make([]shaping.UpstreamShapingEntry, 0)
-	for _, cfgUp := range cfgUpstreams {
-		// Only include upstreams that have shaping config
-		if cfgUp.Shaping == nil {
-			continue
-		}
-		ips, ok := tagToIPs[cfgUp.Tag]
-		if !ok || len(ips) == 0 {
-			continue
-		}
-		entries = append(entries, shaping.UpstreamShapingEntry{
-			Tag:           cfgUp.Tag,
-			IPs:           ips,
-			UploadLimit:   cfgUp.Shaping.UploadLimit,
-			DownloadLimit: cfgUp.Shaping.DownloadLimit,
-		})
-	}
-	return entries
-}
-
-func upstreamHasShaping(cfgUpstreams []config.UpstreamConfig, tag string) bool {
-	for _, up := range cfgUpstreams {
-		if up.Tag != tag {
-			continue
-		}
-		return up.Shaping != nil
-	}
-	return false
 }

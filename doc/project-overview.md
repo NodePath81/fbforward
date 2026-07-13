@@ -89,9 +89,8 @@ adaptive routes. Results update one `HealthSnapshot`; route-local selection
 then filters down/cooldown candidates and compares health, RTT, priority, and
 configuration order.
 
-**Shaping plane** (optional): Enforces bandwidth limits. When enabled, fbforward configures Linux traffic control (tc) qdiscs via netlink to rate-limit traffic to and from upstreams. Ingress shaping uses an IFB device to redirect incoming traffic through a qdisc.
 
-**GeoIP / IP-log / Firewall plane** (optional): Provides connection-level intelligence and enforcement. When enabled, fbforward manages GeoIP MMDB databases for ASN and country lookups, persists accepted flow-close records plus optional rejection history to SQLite with GeoIP enrichment, and evaluates CIDR/ASN/country firewall rules before upstream selection. Denied flows are rejected immediately and never forwarded; when rejection logging is enabled they are stored in rejection history instead of normal flow-close records.
+**GeoIP / IP-log / Firewall plane** (optional): Provides connection-level intelligence and enforcement. When enabled, fbforward reads GeoIP MMDB databases for ASN and country lookups, persists accepted flow-close records plus optional rejection history to SQLite with GeoIP enrichment, and evaluates CIDR/ASN/country firewall rules before upstream selection. Denied flows are rejected immediately and never forwarded; when rejection logging is enabled they are stored in rejection history instead of normal flow-close records.
 
 ### Component diagram
 
@@ -139,7 +138,7 @@ See [Diagram D1](diagrams.md#d1-three-plane-architecture) for details.
 The fbforward repository provides three binaries:
 
 **fbforward**: The main forwarder process. Runs on the host where clients
-connect. It optionally requires `CAP_NET_ADMIN` for traffic shaping.
+connect. It does not configure kernel traffic control or require `CAP_NET_ADMIN`.
 
 **fbmeasure**: The measurement server. Runs on each upstream host at a
 configured port (default 9876). Accepts TCP control requests plus TCP/UDP

@@ -6,9 +6,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.28
 	github.com/oschwald/maxminddb-golang v1.13.1
-	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/sys v0.37.0
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-require github.com/vishvananda/netns v0.0.5 // indirect

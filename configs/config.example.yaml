@@ -6,10 +6,6 @@ listeners:
     bind: 0.0.0.0:9000
     protocol: tcp
     route: web
-    # Optional per-listener shaping (requires shaping.enabled):
-    # shaping:
-    #   upload_limit: 50m
-    #   download_limit: 200m
   - name: web-udp
     bind: 0.0.0.0:9000
     protocol: udp
@@ -45,18 +41,9 @@ upstreams:
       port: 9876
     # Optional tuning.
     priority: 0
-    # Optional per-upstream shaping (requires shaping.enabled).
-    # Limits bandwidth to/from this upstream's IP address.
-    # shaping:
-    #   upload_limit: 100m     # fbforward sends to upstream
-    #   download_limit: 500m   # fbforward receives from upstream
   - tag: backup
     destination:
       host: example.net
-    # Shaping also works with hostname upstreams (resolved IPs are shaped).
-    # shaping:
-    #   upload_limit: 50m
-    #   download_limit: 200m
 
 dns:
   # Optional custom DNS servers (ip or ip:port). Empty = system DNS.
@@ -164,13 +151,3 @@ firewall:
   enabled: false
   policy_file: /etc/fbforward/firewall.yaml
   fail_on_initial_load: true
-
-shaping:
-  # Linux tc shaping via netlink (requires CAP_NET_ADMIN).
-  enabled: false
-  # Network device to shape (required when enabled).
-  interface: eth0
-  # IFB device used for ingress shaping.
-  ifb_device: ifb0
-  # Aggregate cap for each direction (bits/sec, SI units).
-  aggregate_limit: 1g

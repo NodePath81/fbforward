@@ -61,7 +61,7 @@ func (c *Config) normalizeTopology() error {
 			}
 			c.Listeners[i] = ListenerSpec{
 				Name: listener.Name, Bind: net.JoinHostPort(listener.BindAddr, strconv.Itoa(listener.BindPort)),
-				Protocol: listener.Protocol, Route: listener.Route, Shaping: listener.Shaping,
+				Protocol: listener.Protocol, Route: listener.Route,
 			}
 			listeners = append(listeners, listener)
 		}
@@ -88,7 +88,7 @@ func (c *Config) normalizeTopology() error {
 			c.Forwarding.Listeners[len(c.Listeners)] = listener
 			c.Listeners = append(c.Listeners, ListenerSpec{
 				Name: name, Bind: net.JoinHostPort(listener.BindAddr, strconv.Itoa(listener.BindPort)),
-				Protocol: listener.Protocol, Route: route, Shaping: listener.Shaping,
+				Protocol: listener.Protocol, Route: route,
 			})
 		}
 		if len(c.Routes) == 0 {
@@ -141,6 +141,6 @@ func normalizeListenerSpec(spec ListenerSpec, index int) (ListenerConfig, error)
 	return ListenerConfig{
 		Name: name, BindAddr: host, BindPort: port,
 		Protocol: strings.ToLower(strings.TrimSpace(spec.Protocol)),
-		Route:    strings.TrimSpace(spec.Route), Shaping: spec.Shaping,
+		Route:    strings.TrimSpace(spec.Route),
 	}, nil
 }
