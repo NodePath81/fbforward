@@ -58,8 +58,7 @@ var sortFields = map[Source]map[string]bool{
 }
 
 type token struct {
-	value  string
-	quoted bool
+	value string
 }
 
 func tokenize(input string) ([]token, error) {
@@ -77,7 +76,6 @@ func tokenize(input string) ([]token, error) {
 			continue
 		}
 		var value strings.Builder
-		quoted := false
 		closedQuote := false
 		for i < len(input) {
 			if input[i] == ' ' || input[i] == '\t' || input[i] == '\r' || input[i] == '\n' || input[i] == '|' {
@@ -101,7 +99,7 @@ func tokenize(input string) ([]token, error) {
 						}
 						value.WriteString(raw)
 						i++
-						quoted, closedQuote = true, true
+						closedQuote = true
 						break
 					}
 					i++
@@ -117,7 +115,7 @@ func tokenize(input string) ([]token, error) {
 		if value.Len() == 0 {
 			return nil, fmt.Errorf("invalid token")
 		}
-		out = append(out, token{value: value.String(), quoted: quoted})
+		out = append(out, token{value: value.String()})
 	}
 	return out, nil
 }
