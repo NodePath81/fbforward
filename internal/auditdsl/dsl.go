@@ -225,7 +225,11 @@ func Parse(input string) (Query, error) {
 		}
 	}
 	if q.SortBy == "" {
-		q.SortBy = "recorded_at"
+		if q.Source == SourceTopClients || q.Source == SourceTopASNs {
+			q.SortBy = "bytes_total"
+		} else {
+			q.SortBy = "recorded_at"
+		}
 	}
 	for key, value := range q.Filters {
 		switch key {

@@ -89,6 +89,8 @@ func (c *ControlServer) registerRPCHandlers() {
 		"QueryRejectionLog":      c.rpcQueryRejectionLog,
 		"QueryLogEvents":         c.rpcQueryLogEvents,
 		"GetTopTalkers":          c.rpcGetTopTalkers,
+		"GetTopASNs":             c.rpcGetTopASNs,
+		"QueryAudit":             c.rpcQueryAudit,
 		"GetFirewallPolicy":      c.rpcGetFirewallPolicy,
 		"GetFirewallStatus":      c.rpcGetFirewallStatus,
 		"ValidateFirewallPolicy": c.rpcValidateFirewallPolicy,

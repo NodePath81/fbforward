@@ -74,6 +74,18 @@ func eventWhere(params LogEventQueryParams, rejection bool) (string, []any, erro
 		where = append(where, "protocol = ?")
 		args = append(args, params.Protocol)
 	}
+	if params.IP != "" {
+		where = append(where, "client_ip = ?")
+		args = append(args, params.IP)
+	}
+	if params.Upstream != "" {
+		if rejection {
+			where = append(where, "1 = 0")
+		} else {
+			where = append(where, "upstream = ?")
+			args = append(args, params.Upstream)
+		}
+	}
 	if params.Port != nil {
 		where = append(where, "port = ?")
 		args = append(args, *params.Port)
@@ -336,6 +348,13 @@ func (s *Store) GetTopTalkers(params TopTalkerParams) ([]TopTalker, error) {
 	if params.Limit > MaxQueryLimit {
 		params.Limit = MaxQueryLimit
 	}
+	if params.Offset < 0 {
+		return nil, errors.New("offset must be >= 0")
+	}
+	sortColumn, sortOrder, err := topSort(params.SortBy, params.SortOrder, "client_ip")
+	if err != nil {
+		return nil, err
+	}
 	where := make([]string, 0, 3)
 	args := make([]any, 0, 3)
 	if params.StartTime != nil {
@@ -364,8 +383,8 @@ func (s *Store) GetTopTalkers(params TopTalkerParams) ([]TopTalker, error) {
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " GROUP BY client_ip ORDER BY (SUM(bytes_up) + SUM(bytes_down)) DESC, client_ip ASC LIMIT ?"
-	args = append(args, params.Limit)
+	query += " GROUP BY client_ip ORDER BY " + sortColumn + " " + sortOrder + ", client_ip ASC LIMIT ? OFFSET ?"
+	args = append(args, params.Limit, params.Offset)
 	rows, err := s.readDB.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -380,6 +399,99 @@ func (s *Store) GetTopTalkers(params TopTalkerParams) ([]TopTalker, error) {
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+// GetTopASNs performs the aggregation in SQLite and returns only the bounded
+// result set needed by the control API.
+func (s *Store) GetTopASNs(params TopASNParams) ([]TopASN, error) {
+	if params.Limit <= 0 {
+		params.Limit = 10
+	}
+	if params.Limit > MaxQueryLimit {
+		params.Limit = MaxQueryLimit
+	}
+	if params.Offset < 0 {
+		return nil, errors.New("offset must be >= 0")
+	}
+	sortColumn, sortOrder, err := topSort(params.SortBy, params.SortOrder, "asn")
+	if err != nil {
+		return nil, err
+	}
+	where := make([]string, 0, 5)
+	args := make([]any, 0, 8)
+	if params.StartTime != nil {
+		where = append(where, "ended_at >= ?")
+		args = append(args, *params.StartTime*1000)
+	}
+	if params.EndTime != nil {
+		where = append(where, "ended_at <= ?")
+		args = append(args, *params.EndTime*1000)
+	}
+	if protocol := strings.ToLower(strings.TrimSpace(params.Protocol)); protocol != "" {
+		where = append(where, "protocol = ?")
+		args = append(args, protocol)
+	}
+	if upstream := strings.TrimSpace(params.Upstream); upstream != "" {
+		where = append(where, "upstream = ?")
+		args = append(args, upstream)
+	}
+	if tag := strings.TrimSpace(params.Tag); tag != "" {
+		where = append(where, `(EXISTS (SELECT 1 FROM flow_tags ft WHERE ft.flow_id = flows.flow_id AND ft.tag = ? AND (ft.expires_at IS NULL OR ft.expires_at > ?)) OR EXISTS (SELECT 1 FROM client_tags ct WHERE ct.client_ip = flows.client_ip AND ct.tag = ? AND (ct.expires_at IS NULL OR ct.expires_at > ?)))`)
+		now := time.Now().UTC().UnixMilli()
+		args = append(args, tag, now, tag, now)
+	}
+	query := `SELECT COALESCE(asn, 0), COALESCE(as_org, ''), COALESCE(country, ''), COALESCE(SUM(bytes_up), 0), COALESCE(SUM(bytes_down), 0), COALESCE(SUM(bytes_up + bytes_down), 0), COUNT(*) FROM flows`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " GROUP BY asn, as_org, country ORDER BY " + sortColumn + " " + sortOrder + ", asn ASC, as_org ASC LIMIT ? OFFSET ?"
+	args = append(args, params.Limit, params.Offset)
+	rows, err := s.readDB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]TopASN, 0)
+	for rows.Next() {
+		var item TopASN
+		var asn sql.NullInt64
+		if err := rows.Scan(&asn, &item.ASOrg, &item.Country, &item.BytesUp, &item.BytesDown, &item.BytesTotal, &item.FlowCount); err != nil {
+			return nil, err
+		}
+		item.ASN = int(asn.Int64)
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func topSort(sortBy, sortOrder, tieColumn string) (string, string, error) {
+	sortBy = strings.ToLower(strings.TrimSpace(sortBy))
+	if sortBy == "" {
+		sortBy = "bytes_total"
+	}
+	columns := map[string]string{
+		"bytes_total": "(SUM(bytes_up) + SUM(bytes_down))",
+		"bytes_up":    "SUM(bytes_up)",
+		"bytes_down":  "SUM(bytes_down)",
+		"flow_count":  "COUNT(*)",
+	}
+	if tieColumn == "client_ip" {
+		columns["client_ip"] = "client_ip"
+	} else {
+		columns["asn"] = "asn"
+	}
+	column, ok := columns[sortBy]
+	if !ok {
+		return "", "", errors.New("invalid top sort_by")
+	}
+	sortOrder = strings.ToLower(strings.TrimSpace(sortOrder))
+	if sortOrder == "" {
+		sortOrder = "desc"
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		return "", "", errors.New("invalid sort_order: must be asc or desc")
+	}
+	return column, sortOrder, nil
 }
 
 func NormalizeQueryParams(params QueryParams) (QueryParams, error) {
@@ -590,6 +702,10 @@ func rejectionWhere(params RejectionQueryParams) (string, []any, error) {
 	}
 	if params.Tag != "" {
 		where = append(where, "1 = 0")
+	}
+	if params.IP != "" {
+		where = append(where, "client_ip = ?")
+		args = append(args, params.IP)
 	}
 	if params.Reason != "" {
 		where = append(where, "reason = ?")

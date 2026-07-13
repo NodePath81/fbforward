@@ -266,9 +266,12 @@ type QueryParams struct {
 	StartTime *int64
 	EndTime   *int64
 	CIDR      string
+	IP        string
 	ASN       *int
 	Country   string
 	Tag       string
+	Protocol  string
+	Upstream  string
 	SortBy    string
 	SortOrder string
 	Limit     int
@@ -279,6 +282,7 @@ type RejectionQueryParams struct {
 	StartTime        *int64
 	EndTime          *int64
 	CIDR             string
+	IP               string
 	ASN              *int
 	Country          string
 	Tag              string
@@ -307,10 +311,12 @@ type LogEventQueryParams struct {
 	StartTime        *int64
 	EndTime          *int64
 	CIDR             string
+	IP               string
 	ASN              *int
 	Country          string
 	Tag              string
 	Protocol         string
+	Upstream         string
 	Port             *int
 	Reason           string
 	MatchedRuleType  string
@@ -373,5 +379,30 @@ type TopTalkerParams struct {
 	Protocol  string
 	Upstream  string
 	Tag       string
+	SortBy    string
+	SortOrder string
 	Limit     int
+	Offset    int
+}
+
+type TopASN struct {
+	ASN        int    `json:"asn"`
+	ASOrg      string `json:"as_org"`
+	Country    string `json:"country"`
+	BytesUp    uint64 `json:"bytes_up"`
+	BytesDown  uint64 `json:"bytes_down"`
+	BytesTotal uint64 `json:"bytes_total"`
+	FlowCount  int    `json:"flow_count"`
+}
+
+type TopASNParams struct {
+	StartTime *int64
+	EndTime   *int64
+	Protocol  string
+	Upstream  string
+	Tag       string
+	SortBy    string
+	SortOrder string
+	Limit     int
+	Offset    int
 }

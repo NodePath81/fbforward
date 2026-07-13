@@ -26,3 +26,5 @@ type LogEventQueryResult = audit.LogEventQueryResult
 type StoreStats = audit.StoreStats
 type TopTalker = audit.TopTalker
 type TopTalkerParams = audit.TopTalkerParams
+type TopASN = audit.TopASN
+type TopASNParams = audit.TopASNParams

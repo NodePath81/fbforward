@@ -344,6 +344,25 @@ func TestFlowRejectionTagsAndTopTalkers(t *testing.T) {
 	}
 }
 
+func TestTopASNsAggregatesFlowBytes(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.InsertBatch([]EnrichedRecord{
+		{CloseEvent: CloseEvent{IP: "192.0.2.1", Protocol: "tcp", BytesUp: 10, BytesDown: 20, RecordedAt: now}, ASN: 64500, ASOrg: "Example A", Country: "US"},
+		{CloseEvent: CloseEvent{IP: "192.0.2.2", Protocol: "udp", BytesUp: 40, BytesDown: 0, RecordedAt: now}, ASN: 64500, ASOrg: "Example A", Country: "US"},
+		{CloseEvent: CloseEvent{IP: "192.0.2.3", Protocol: "tcp", BytesUp: 1, BytesDown: 2, RecordedAt: now}, ASN: 64501, ASOrg: "Example B", Country: "GB"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.GetTopASNs(TopASNParams{Protocol: "tcp", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ASN != 64500 || rows[0].BytesTotal != 30 || rows[0].FlowCount != 1 {
+		t.Fatalf("unexpected top ASNs: %#v", rows)
+	}
+}
+
 func TestBackupRestore(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.sqlite")
