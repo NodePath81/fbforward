@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -195,5 +197,37 @@ func TestSetTags(t *testing.T) {
 	first := requests[0].Params.(map[string]any)
 	if first["flow_id"] != "flow-1" || first["ttl_seconds"] != float64(3600) {
 		t.Fatalf("unexpected tag params: %+v", first)
+	}
+}
+
+func TestClientCanBeShared(t *testing.T) {
+	var calls atomic.Int32
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(testFlowEnvelope()))
+	})
+	const count = 20
+	errorsCh := make(chan error, count)
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(count)
+	for i := 0; i < count; i++ {
+		go func() {
+			defer waitGroup.Done()
+			flow, err := client.ResolveTuple(context.Background(), testTuple())
+			if err == nil && flow.ID != "flow-1" {
+				err = fmt.Errorf("flow id=%q", flow.ID)
+			}
+			errorsCh <- err
+		}()
+	}
+	waitGroup.Wait()
+	close(errorsCh)
+	for err := range errorsCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != count {
+		t.Fatalf("request count=%d, want %d", got, count)
 	}
 }
