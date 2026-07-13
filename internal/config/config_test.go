@@ -7,54 +7,16 @@ import (
 	"time"
 )
 
-func TestCoordinationConfigOptional(t *testing.T) {
-	cfg := testConfig()
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected config without coordination to be valid: %v", err)
+func TestRemovedConfigKeysRejected(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	webKey := "web" + "ui"
+	removedKey := "coord" + "ination"
+	raw := []byte("control:\n  " + webKey + ":\n    enabled: true\n" + removedKey + ":\n  endpoint: https://removed.example\n  token: token\n")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestCoordinationConfigRequiresFieldsTogether(t *testing.T) {
-	cfg := testConfig()
-	cfg.Coordination.Endpoint = "https://fbcoord.example.workers.dev"
-	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil {
-		t.Fatalf("expected partial coordination config to be rejected")
-	}
-	if !strings.Contains(err.Error(), "coordination.endpoint and token must be set together") {
-		t.Fatalf("unexpected validation error: %v", err)
-	}
-}
-
-func TestCoordinationConfigAcceptsCompleteBlock(t *testing.T) {
-	cfg := testConfig()
-	cfg.Coordination = CoordinationConfig{
-		Endpoint: "https://fbcoord.example.workers.dev",
-		Token:    "0123456789abcdef",
-	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected complete coordination config to validate: %v", err)
-	}
-	if got := cfg.Coordination.HeartbeatInterval.Duration(); got != defaultCoordinationHeartbeat {
-		t.Fatalf("expected default coordination heartbeat %s, got %s", defaultCoordinationHeartbeat, got)
-	}
-}
-
-func TestCoordinationConfigIgnoresLegacyPoolAndNodeIDWithWarnings(t *testing.T) {
-	cfg := testConfig()
-	cfg.Coordination = CoordinationConfig{
-		Pool:   "default",
-		NodeID: "fbforward-01",
-	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected legacy-only coordination fields to be ignored, got %v", err)
-	}
-	if len(cfg.Warnings) != 2 {
-		t.Fatalf("expected warnings for ignored pool/node_id, got %#v", cfg.Warnings)
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected removed configuration keys to be rejected")
 	}
 }
 

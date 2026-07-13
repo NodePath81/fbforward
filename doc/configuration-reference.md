@@ -19,9 +19,8 @@ upstreams: [...]                  # Upstream list
 dns: {...}                        # DNS resolution
 measurement: {...}                # fbmeasure probe settings
 health: {...}                     # Unified health and RTT state
-control: {...}                    # Control plane (HTTP API, web UI)
+control: {...}                    # Control plane (HTTP API)
 notify: {...}                     # fbnotify event delivery
-coordination: {...}               # Optional fbcoord participation
 logging: {...}                    # Log level
 shaping: {...}                    # Linux tc traffic shaping
 geoip: {...}                      # Optional GeoIP database management
@@ -619,22 +618,22 @@ priority. Static routes do not start a measurement scheduler.
 ## 4.8 switching section (removed)
 
 There is no switching configuration. New adaptive Flows select from the
-route-local health/RTT ordering; manual and coordination preferences remain
-available through the control API and are constrained to the route.
+route-local health/RTT ordering; manual preferences remain available through
+the control API and are constrained to the route.
 
 The old `scoring`, hysteresis, failover, and switching sections are no longer
 accepted. The material below is retained only as historical migration context.
 
 ## 4.9 control section
 
-The `control` section configures the HTTP control plane: RPC API, web UI, WebSocket status stream, and Prometheus metrics.
+The `control` section configures the HTTP control plane: RPC API, WebSocket
+status stream, and Prometheus metrics.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bind_addr` | string | `127.0.0.1` | HTTP server bind address |
 | `bind_port` | int | `8080` | HTTP server port |
 | `auth_token` | string | *required* | Bearer token for authentication |
-| `webui` | object | *see below* | Web UI configuration |
 | `metrics` | object | *see below* | Prometheus metrics configuration |
 
 **Example:**
@@ -644,8 +643,6 @@ control:
   bind_addr: 0.0.0.0
   bind_port: 8080
   auth_token: "replace-with-a-long-random-token"
-  webui:
-    enabled: true
   metrics:
     enabled: true
 ```
@@ -662,14 +659,13 @@ The control plane exposes the following HTTP endpoints:
 
 | Path | Method | Description |
 |------|--------|-------------|
-| `/` | GET | Web UI (embedded SPA) |
-| `/auth` | GET | Token authentication page |
+| `/` | GET | API-only root; returns 404 |
 | `/rpc` | POST | JSON-RPC methods |
 | `/metrics` | GET | Prometheus metrics |
 | `/status` | GET | WebSocket status stream |
 | `/identity` | GET | Instance identity document |
 
-All endpoints except `/` and `/auth` require Bearer token authentication:
+All management endpoints require Bearer token authentication:
 
 ```bash
 curl -H "Authorization: Bearer replace-with-a-long-random-token" http://localhost:8080/metrics
@@ -691,28 +687,6 @@ Browser WebSocket requests must be same-origin. fbforward rejects upgrades whose
 `Origin` host does not match the request host.
 
 See [Section 5.2](api-reference.md#52-control-plane-api) for API details.
-
-When coordination is configured, the local Web UI can also switch the runtime
-into `coordination` mode and display live coordination status using the same
-local control plane.
-
-### webui
-
-Web UI enable/disable.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `true` | Enable web UI |
-
-**Example:**
-
-```yaml
-control:
-  webui:
-    enabled: false
-```
-
-When `false`, `GET /` returns 404. RPC and metrics remain accessible.
 
 ### metrics
 
@@ -777,47 +751,7 @@ When `notify.enabled` is `true`:
 
 `notify.token` is intentionally omitted from sanitized runtime-config and control output.
 
-## 4.11 coordination section
-
-The `coordination` section enables optional participation in an external
-`fbcoord` service. When configured, operators can switch the runtime into
-`coordination` mode using the existing local control plane.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `endpoint` | string | *required when section is used* | Base URL for the `fbcoord` service |
-| `token` | string | *required when section is used* | Bearer token used to authenticate with `fbcoord` |
-| `heartbeat_interval` | duration | `10s` | Heartbeat and full preference submission interval |
-| `pool` | string | ignored | Legacy field retained for backward-compatible parsing; produces a warning |
-| `node_id` | string | ignored | Legacy field retained for backward-compatible parsing; produces a warning |
-
-**Example:**
-
-```yaml
-coordination:
-  endpoint: https://fbcoord.example.workers.dev
-  token: "replace-with-a-per-node-fbcoord-token"
-  heartbeat_interval: 10s
-```
-
-**Behavior:**
-- The section is optional.
-- Effective configuration requires `endpoint` and `token` together.
-- fbforward connects to `fbcoord` only while runtime mode is `coordination`, using the node participation endpoint `/ws/node`.
-- The local node submits its sorted upstream preference list in best-first order.
-- fbcoord derives node identity from the node token; fbforward does not send an authoritative `node_id`.
-- Legacy `coordination.pool` and `coordination.node_id` are ignored with warnings.
-- If `fbcoord` returns no upstream, disconnects, or returns a locally unusable upstream, fbforward stays in coordination mode and falls back to local auto-selection behavior.
-
-**Validation:**
-- `heartbeat_interval` must be > 0 when the section is used
-- `token` must not be empty
-- `token` must not use the placeholder value `change-me`
-- `token` must be at least 16 characters long
-
----
-
-## 4.12 shaping section
+## 4.11 shaping section
 
 The `shaping` section configures Linux tc (traffic control) bandwidth shaping via netlink. Shaping is optional and requires `CAP_NET_ADMIN` capability.
 
@@ -1079,7 +1013,6 @@ if SQLite is disabled, these RPCs return `503`.
 | `dns` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `measurement` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `control` | - | [3.1.3](user-guide-fbforward.md#313-operation), [5.2](api-reference.md#52-control-plane-api) |
-| `coordination` | - | [3.1.1](user-guide-fbforward.md#311-overview), [5.2](api-reference.md#52-control-plane-api) |
 | `shaping` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `geoip` | - | [3.1.2](user-guide-fbforward.md#312-configuration) |
 | `ip_log` | - | [3.1.2](user-guide-fbforward.md#312-configuration), [5.2](api-reference.md#52-control-plane-api) |

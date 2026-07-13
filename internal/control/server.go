@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/flowcontext"
 	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/iplog"
@@ -22,7 +21,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 	"github.com/NodePath81/fbforward/internal/version"
-	"github.com/NodePath81/fbforward/web"
 )
 
 const (
@@ -45,7 +43,6 @@ type ControlServer struct {
 	manager     upstream.UpstreamStateReader
 	metrics     *metrics.Metrics
 	status      *StatusStore
-	coord       *coordination.Controller
 	restartFn   func() error
 	logger      util.Logger
 	server      *http.Server
@@ -75,7 +72,7 @@ type geoipManager interface {
 	RefreshNow(context.Context) (geoip.RefreshResult, error)
 }
 
-func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, metrics *metrics.Metrics, status *StatusStore, coord *coordination.Controller, restartFn func() error, logger util.Logger) *ControlServer {
+func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
 	c := &ControlServer{
 		fullCfg:     cfg,
 		cfg:         cfg.Control,
@@ -84,7 +81,6 @@ func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, m
 		manager:     manager,
 		metrics:     metrics,
 		status:      status,
-		coord:       coord,
 		restartFn:   restartFn,
 		logger:      util.ComponentLogger(logger, util.CompControl),
 		limiter:     newRateLimiter(rpcRatePerSecond, rpcRateBurst, rpcRateTTL),
@@ -106,7 +102,7 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/status", c.handleStatus)
 	mux.HandleFunc("/identity", c.handleIdentity)
-	mux.Handle("/", web.WebUIHandler(c.cfg.WebUI.IsEnabled()))
+	mux.HandleFunc("/", c.handleAPIOnlyRoot)
 
 	addr := util.NetJoin(c.cfg.BindAddr, c.cfg.BindPort)
 	c.server = &http.Server{
@@ -127,6 +123,10 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	}()
 	util.Event(c.logger, slog.LevelInfo, "control.server_started", "listen.addr", addr)
 	return nil
+}
+
+func (c *ControlServer) handleAPIOnlyRoot(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "fbforward control API", http.StatusNotFound)
 }
 
 func (c *ControlServer) Shutdown(ctx context.Context) error {

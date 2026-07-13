@@ -20,13 +20,14 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 - Forwards traffic to one of multiple configured upstreams
 - Measures adaptive-route upstream health and RTT using fbmeasure TCP/UDP probes
 - Selects the best upstream automatically based on health, RTT, and priority
-- Can optionally participate in an external fbcoord service to coordinate upstream selection across multiple fbforward nodes in one shared global state
+- Selects upstreams locally within each configured route; cross-node selection is intentionally out of scope
 - Pins each flow to its assigned upstream until completion, ensuring in-flight connections are not disrupted
 - Can optionally manage GeoIP databases for ASN and country lookups
 - Can optionally log IP connections to SQLite with GeoIP enrichment
 - Can optionally enforce CIDR/ASN/country firewall rules before upstream selection
 
-The forwarder exposes a control plane with HTTP API, Prometheus metrics, WebSocket status stream, and an embedded web UI for monitoring and manual control.
+The forwarder exposes an API-only control plane with RPC, Prometheus metrics,
+and a WebSocket status stream for monitoring and manual control.
 
 ### What bwprobe does
 
@@ -81,7 +82,7 @@ The architecture separates concerns into several planes:
 
 **Data plane**: Handles actual traffic forwarding. TCP listeners accept client connections and proxy bidirectionally to the assigned upstream. UDP listeners create per-5-tuple mappings and forward packets to the assigned upstream. Each [flow](glossary.md#flow) (TCP connection or UDP mapping) is [pinned](glossary.md#flow-pinning) to an upstream at creation time and remains pinned until termination or expiry.
 
-**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, status queries, GeoIP management (`GetGeoIPStatus`, `RefreshGeoIP`), IP-log queries (`GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents`), and operational status. The server also exposes Prometheus metrics at `/metrics` (including IP-log and firewall counters), a WebSocket endpoint at `/status` for real-time status streaming, and an embedded single-page application at `/` for web UI access (including dashboard GeoIP/IP-log status rows and a dedicated `#/iplog` page for unified flow/rejection history). All endpoints except `/` (UI root) and `/auth` (token input) require Bearer token authentication. This node-local control plane is separate from the optional fbcoord coordination service, which coordinates picks across multiple fbforward nodes but does not replace local APIs or the local Web UI. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
+**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, status queries, GeoIP management (`GetGeoIPStatus`, `RefreshGeoIP`), IP-log queries (`GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents`), and operational status. The server also exposes Prometheus metrics at `/metrics` and a WebSocket endpoint at `/status` for real-time status streaming. The root path is API-only and does not serve a web application. All management endpoints require Bearer token authentication. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
 
 **Measurement plane**: Runs fbmeasure TCP/UDP RTT probes for upstreams used by
 adaptive routes. Results update one `HealthSnapshot`; route-local selection
@@ -145,10 +146,6 @@ configured port (default 9876). Accepts TCP control requests plus TCP/UDP
 probe traffic. No special capabilities required.
 
 **bwprobe**: The standalone measurement CLI tool. Can be run independently for manual link testing or used as a library via the `bwprobe/pkg` Go package.
-
-The repository also contains `fbcoord`, a Cloudflare Workers service backed by
-Durable Objects. It is a companion service for multi-node coordination with a
-separate operator token plus per-node tokens, not a Go binary.
 
 <!-- Diagram: D3 Binary relationships -->
 ```mermaid
@@ -231,8 +228,8 @@ observations on a configurable schedule and updates the shared health snapshot.
 
 **Upstream selection**: Adaptive routes select locally by health, RTT, priority,
 and configuration order. Static routes use their configured upstream. Manual
-and coordination preferences are constrained to the route, and existing Flows
-remain pinned.
+and manual preferences are constrained to the route, and existing Flows remain
+pinned.
 
 **Status propagation**: The measurement plane updates the StatusStore on every measurement cycle. The control plane serves current status via HTTP GET, streams updates via WebSocket, and aggregates metrics for Prometheus scraping.
 

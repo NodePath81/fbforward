@@ -99,8 +99,6 @@ control:
   bind_addr: 127.0.0.1
   bind_port: 8080
   auth_token: "replace-with-a-long-random-token"
-  webui:
-    enabled: true
   metrics:
     enabled: true
 
@@ -117,16 +115,6 @@ notify:
   startup_grace_period: 5m
   unusable_interval: 30s
   notify_interval: 30m
-
-# Optional coordination mode.
-# Generate the fbcoord operator bootstrap token with: openssl rand -hex 32
-# Use that value only for the deployed fbcoord Worker secret FBCOORD_TOKEN.
-# After fbcoord is deployed, mint one node token per fbforward node from the fbcoord UI/API.
-# When enabled, runtime mode can be switched to "coordination" from the Web UI or RPC.
-# coordination:
-#   endpoint: https://fbcoord.example.workers.dev
-#   token: "replace-with-the-per-node-fbcoord-token"
-#   heartbeat_interval: 10s
 
 geoip:
   enabled: false

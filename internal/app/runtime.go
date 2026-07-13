@@ -10,7 +10,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/control"
-	"github.com/NodePath81/fbforward/internal/coordination"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/flowcontext"
 	"github.com/NodePath81/fbforward/internal/forwarding"
@@ -44,7 +43,6 @@ type Runtime struct {
 	picker             forwarding.UpstreamPicker
 	policy             forwarding.AdmissionPolicy
 	control            *control.ControlServer
-	coord              *coordination.Controller
 	shaper             *shaping.TrafficShaper
 	geoipMgr           *geoip.Manager
 	iplogStore         *iplog.Store
@@ -196,11 +194,10 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		}
 		rt.notifier = notifier
 		rt.notifyPolicy = notify.NewPolicy(notifier, notify.PolicyConfig{
-			StartTime:            time.Now(),
-			CoordinationEndpoint: cfg.Coordination.Endpoint,
-			StartupGracePeriod:   cfg.Notify.StartupGracePeriod.Duration(),
-			UnusableInterval:     cfg.Notify.UnusableInterval.Duration(),
-			NotifyInterval:       cfg.Notify.NotifyInterval.Duration(),
+			StartTime:          time.Now(),
+			StartupGracePeriod: cfg.Notify.StartupGracePeriod.Duration(),
+			UnusableInterval:   cfg.Notify.UnusableInterval.Duration(),
+			NotifyInterval:     cfg.Notify.NotifyInterval.Duration(),
 		})
 	}
 
@@ -215,18 +212,10 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	})
 
 	metricSet.SetMode(upstream.ModeAuto)
-	metricSet.SetCoordinationState(manager.CoordinationState())
 	manager.SetAuto()
 	metricSet.Start(ctx.Done())
 
-	var coordCtrl *coordination.Controller
-	if cfg.Coordination.IsConfigured() {
-		coordCtrl = coordination.NewController(ctx, cfg.Coordination, manager, metricSet, util.ComponentLogger(logger, util.CompCoord))
-		if rt.notifyPolicy != nil {
-			coordCtrl.SetConnectionCallback(rt.notifyPolicy.HandleCoordinationConnection)
-		}
-	}
-	ctrl := control.NewControlServer(cfg, manager, metricSet, status, coordCtrl, restartFn, logger)
+	ctrl := control.NewControlServer(cfg, manager, metricSet, status, restartFn, logger)
 	if rt.notifier != nil {
 		ctrl.SetNotifier(rt.notifier)
 	}
@@ -240,7 +229,6 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	ctrl.SetOnlinePolicyProvider(rt.onlinePolicy)
 	ctrl.SetFlowContextService(rt.flowContextService)
 	rt.control = ctrl
-	rt.coord = coordCtrl
 
 	initialized = true
 	return rt, nil
@@ -318,9 +306,6 @@ func (r *Runtime) Stop() {
 	}
 	if r.notifyPolicy != nil {
 		r.notifyPolicy.Close()
-	}
-	if r.coord != nil {
-		r.coord.Close()
 	}
 	if r.notifier != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

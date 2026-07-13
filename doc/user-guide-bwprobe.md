@@ -25,7 +25,7 @@ bwprobe is a network quality measurement tool that tests bandwidth at a specifie
 
 bwprobe uses separate [control channel](glossary.md#control-channel) and [data channel](glossary.md#data-channel) connections:
 
-**Control channel**: TCP connection carrying JSON-RPC 2.0 messages for session management and sample coordination. The client sends commands (`session.hello`, `sample.start`, `sample.stop`, `session.goodbye`) and receives reports with per-sample metrics.
+**Control channel**: TCP connection carrying JSON-RPC 2.0 messages for session management and sample control. The client sends commands (`session.hello`, `sample.start`, `sample.stop`, `session.goodbye`) and receives reports with per-sample metrics.
 
 **Data channel**: TCP or UDP stream for actual bandwidth measurement data. The channel transfers fixed-size payload bytes per sample at the target rate using kernel pacing (`SO_MAX_PACING_RATE`). Data frames include headers with sequence numbers for loss detection.
 

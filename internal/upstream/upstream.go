@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math"
 	"net"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,26 +20,15 @@ type Mode int
 const (
 	ModeAuto Mode = iota
 	ModeManual
-	ModeCoordination
 )
 
 func (m Mode) String() string {
 	switch m {
 	case ModeManual:
 		return "manual"
-	case ModeCoordination:
-		return "coordination"
 	default:
 		return "auto"
 	}
-}
-
-type CoordinationState struct {
-	Connected        bool   `json:"connected"`
-	Authoritative    bool   `json:"authoritative"`
-	SelectedUpstream string `json:"selected_upstream"`
-	Version          int64  `json:"version"`
-	FallbackActive   bool   `json:"fallback_active"`
 }
 
 // UpstreamStats is a compact, selection-facing health snapshot. Probe
@@ -78,21 +66,16 @@ type MeasurementResult struct {
 }
 
 type UpstreamManager struct {
-	mu             sync.RWMutex
-	upstreams      map[string]*Upstream
-	order          []string
-	mode           Mode
-	manualTag      string
-	activeTag      string
-	coordConnected bool
-	coordTag       string
-	coordVersion   int64
-	coordFallback  bool
-	onSelect       func(change ActiveChange)
-	onStateChange  func(change UsabilityChange)
-	onCoordState   func(state CoordinationState)
-	healthConfig   config.HealthConfig
-	logger         util.Logger
+	mu            sync.RWMutex
+	upstreams     map[string]*Upstream
+	order         []string
+	mode          Mode
+	manualTag     string
+	activeTag     string
+	onSelect      func(change ActiveChange)
+	onStateChange func(change UsabilityChange)
+	healthConfig  config.HealthConfig
+	logger        util.Logger
 }
 
 func NewUpstreamManager(upstreams []*Upstream, logger util.Logger) *UpstreamManager {
@@ -118,12 +101,6 @@ func (m *UpstreamManager) SetCallbacks(onSelect func(change ActiveChange), onSta
 	defer m.mu.Unlock()
 	m.onSelect = onSelect
 	m.onStateChange = onStateChange
-}
-
-func (m *UpstreamManager) SetCoordinationStateCallback(callback func(state CoordinationState)) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onCoordState = callback
 }
 
 func (m *UpstreamManager) SetHealthConfig(cfg config.HealthConfig) {
@@ -157,12 +134,6 @@ func (m *UpstreamManager) ActiveTag() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.activeTag
-}
-
-func (m *UpstreamManager) CoordinationState() CoordinationState {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.coordinationStateLocked()
 }
 
 func (m *UpstreamManager) Get(tag string) *Upstream {
@@ -201,33 +172,11 @@ func (m *UpstreamManager) StatsSnapshot() map[string]UpstreamStats {
 	return stats
 }
 
-func (m *UpstreamManager) RankedTags() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, up := range m.upstreams {
-		m.refreshStatsLocked(up)
-	}
-	tags := append([]string(nil), m.order...)
-	sort.SliceStable(tags, func(i, j int) bool {
-		return m.betterLocked(m.upstreams[tags[i]], m.upstreams[tags[j]])
-	})
-	result := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		up := m.upstreams[tag]
-		if up != nil && m.selectableLocked(up, time.Now()) {
-			result = append(result, tag)
-		}
-	}
-	return result
-}
-
 func (m *UpstreamManager) SetAuto() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mode, m.manualTag = ModeAuto, ""
-	m.clearCoordinationLocked()
 	m.setActiveLocked("", "auto")
-	m.emitCoordinationStateLocked()
 }
 
 func (m *UpstreamManager) SetManual(tag string) error {
@@ -241,62 +190,8 @@ func (m *UpstreamManager) SetManual(tag string) error {
 		return errors.New("selected upstream is unusable")
 	}
 	m.mode, m.manualTag = ModeManual, up.Tag
-	m.clearCoordinationLocked()
 	m.setActiveLocked(up.Tag, "manual")
-	m.emitCoordinationStateLocked()
 	return nil
-}
-
-func (m *UpstreamManager) SetCoordination() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.mode, m.manualTag = ModeCoordination, ""
-	m.clearCoordinationLocked()
-	m.coordFallback = true
-	if best, _ := m.selectBestLocked(nil); best != "" {
-		m.setActiveLocked(best, "coordination_fallback")
-	}
-	m.emitCoordinationStateLocked()
-}
-
-func (m *UpstreamManager) SetCoordinationConnected(connected bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.coordConnected = connected
-	if !connected {
-		m.activateCoordinationFallbackLocked("coordination_fallback")
-	} else {
-		m.emitCoordinationStateLocked()
-	}
-}
-
-func (m *UpstreamManager) ApplyCoordinationPick(version int64, tag string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if version < m.coordVersion || (version == m.coordVersion && !m.coordFallback && strings.TrimSpace(tag) != m.coordTag) {
-		return false, errors.New("stale coordination version")
-	}
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		m.coordVersion = version
-		m.activateCoordinationFallbackLocked("coordination_fallback")
-		return true, nil
-	}
-	up, ok := m.upstreams[tag]
-	if !ok {
-		m.activateCoordinationFallbackLocked("coordination_fallback")
-		return false, errors.New("coordinated upstream not found")
-	}
-	if !m.selectableLocked(up, time.Now()) {
-		m.activateCoordinationFallbackLocked("coordination_fallback")
-		return false, errors.New("coordinated upstream is unusable")
-	}
-	m.coordVersion, m.coordTag, m.coordFallback = version, tag, false
-	if m.mode == ModeCoordination {
-		m.setActiveLocked(tag, "coordination")
-	}
-	m.emitCoordinationStateLocked()
-	return true, nil
 }
 
 // SelectStatic returns the configured upstream without consulting health. A
@@ -351,11 +246,6 @@ func (m *UpstreamManager) SelectUpstreamFrom(tags []string) (*Upstream, error) {
 			return up, nil
 		}
 	}
-	if m.mode == ModeCoordination && !m.coordFallback && contains(m.coordTag) {
-		if up := m.upstreams[m.coordTag]; up != nil && m.selectableLocked(up, now) {
-			return up, nil
-		}
-	}
 	best, _ := m.selectBestLocked(ordered)
 	if best == "" {
 		return nil, errors.New("no usable upstream in route")
@@ -398,9 +288,6 @@ func (m *UpstreamManager) applyObservation(tag string, observation ProbeObservat
 		util.Event(m.logger, slog.LevelInfo, "upstream.health_changed", "upstream", tag, "health.state", reason)
 		if m.onStateChange != nil {
 			m.onStateChange(UsabilityChange{Tag: tag, Usable: up.stats.Usable, Reason: reason})
-		}
-		if tag == m.coordTag && !up.stats.Usable {
-			m.activateCoordinationFallbackLocked("health_down")
 		}
 	}
 	return up.stats
@@ -559,31 +446,6 @@ func (m *UpstreamManager) setActiveLocked(tag, reason string) {
 	if m.onSelect != nil {
 		m.onSelect(ActiveChange{OldTag: old, NewTag: tag, Reason: reason})
 	}
-}
-
-func (m *UpstreamManager) coordinationStateLocked() CoordinationState {
-	return CoordinationState{Connected: m.coordConnected, Authoritative: m.coordConnected && !m.coordFallback && m.coordTag != "", SelectedUpstream: m.coordTag, Version: m.coordVersion, FallbackActive: m.coordFallback}
-}
-
-func (m *UpstreamManager) emitCoordinationStateLocked() {
-	if m.onCoordState != nil {
-		m.onCoordState(m.coordinationStateLocked())
-	}
-}
-
-func (m *UpstreamManager) clearCoordinationLocked() {
-	m.coordConnected, m.coordTag, m.coordVersion, m.coordFallback = false, "", 0, false
-}
-
-func (m *UpstreamManager) activateCoordinationFallbackLocked(reason string) {
-	m.coordTag = ""
-	m.coordFallback = m.mode == ModeCoordination
-	if m.coordFallback {
-		if best, _ := m.selectBestLocked(nil); best != "" {
-			m.setActiveLocked(best, reason)
-		}
-	}
-	m.emitCoordinationStateLocked()
 }
 
 func (u *Upstream) SetActiveIP(ip net.IP) {

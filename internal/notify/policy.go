@@ -6,20 +6,18 @@ import (
 )
 
 const (
-	defaultStartupGracePeriod        = 5 * time.Minute
-	defaultUnusableInterval          = 30 * time.Second
-	defaultNotifyInterval            = 30 * time.Minute
-	coordinationDisconnectAlertDelay = 30 * time.Second
+	defaultStartupGracePeriod = 5 * time.Minute
+	defaultUnusableInterval   = 30 * time.Second
+	defaultNotifyInterval     = 30 * time.Minute
 )
 
 type PolicyConfig struct {
-	StartTime            time.Time
-	CoordinationEndpoint string
-	StartupGracePeriod   time.Duration
-	UnusableInterval     time.Duration
-	NotifyInterval       time.Duration
-	Now                  func() time.Time
-	AfterFunc            func(time.Duration, func()) timer
+	StartTime          time.Time
+	StartupGracePeriod time.Duration
+	UnusableInterval   time.Duration
+	NotifyInterval     time.Duration
+	Now                func() time.Time
+	AfterFunc          func(time.Duration, func()) timer
 }
 
 type timer interface {
@@ -46,15 +44,10 @@ type Policy struct {
 	unusableInterval   time.Duration
 	notifyInterval     time.Duration
 
-	mu                   sync.Mutex
-	closed               bool
-	startTime            time.Time
-	coordinationEndpoint string
-	unusable             map[string]*unusableAlertState
-	coordEverConnected   bool
-	coordConnected       bool
-	coordAlerted         bool
-	coordTimer           timer
+	mu        sync.Mutex
+	closed    bool
+	startTime time.Time
+	unusable  map[string]*unusableAlertState
 }
 
 type unusableAlertState struct {
@@ -90,15 +83,14 @@ func NewPolicy(emitter Emitter, cfg PolicyConfig) *Policy {
 		notifyInterval = defaultNotifyInterval
 	}
 	return &Policy{
-		emitter:              emitter,
-		now:                  nowFn,
-		after:                afterFn,
-		startupGracePeriod:   startupGracePeriod,
-		unusableInterval:     unusableInterval,
-		notifyInterval:       notifyInterval,
-		startTime:            startTime,
-		coordinationEndpoint: cfg.CoordinationEndpoint,
-		unusable:             make(map[string]*unusableAlertState),
+		emitter:            emitter,
+		now:                nowFn,
+		after:              afterFn,
+		startupGracePeriod: startupGracePeriod,
+		unusableInterval:   unusableInterval,
+		notifyInterval:     notifyInterval,
+		startTime:          startTime,
+		unusable:           make(map[string]*unusableAlertState),
 	}
 }
 
@@ -112,7 +104,6 @@ func (p *Policy) Close() {
 			state.timer = nil
 		}
 	}
-	p.stopCoordTimerLocked()
 }
 
 func (p *Policy) HandleUsabilityChange(tag string, usable bool, reason string) {
@@ -139,31 +130,6 @@ func (p *Policy) HandleUsabilityChange(tag string, usable bool, reason string) {
 	delay := p.initialUnusableDelayLocked()
 	state.timer = p.after(delay, func() {
 		p.fireUnusableAlert(tag)
-	})
-}
-
-func (p *Policy) HandleCoordinationConnection(connected bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		return
-	}
-
-	if connected {
-		p.coordEverConnected = true
-		p.coordConnected = true
-		p.coordAlerted = false
-		p.stopCoordTimerLocked()
-		return
-	}
-
-	p.coordConnected = false
-	p.stopCoordTimerLocked()
-	if !p.coordEverConnected || p.coordAlerted {
-		return
-	}
-	p.coordTimer = p.after(coordinationDisconnectAlertDelay, func() {
-		p.fireCoordinationAlert()
 	})
 }
 
@@ -195,22 +161,6 @@ func (p *Policy) fireUnusableAlert(tag string) {
 	})
 }
 
-func (p *Policy) fireCoordinationAlert() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		return
-	}
-	p.coordTimer = nil
-	if p.coordConnected || !p.coordEverConnected || p.coordAlerted {
-		return
-	}
-	p.emitLocked("coordination.session_ended", SeverityWarn, map[string]any{
-		"coordination.endpoint": p.coordinationEndpoint,
-	})
-	p.coordAlerted = true
-}
-
 func (p *Policy) initialUnusableDelayLocked() time.Duration {
 	delay := p.unusableInterval
 	uptime := p.now().Sub(p.startTime)
@@ -233,13 +183,6 @@ func (p *Policy) clearUnusableLocked(tag string) {
 		state.timer = nil
 	}
 	delete(p.unusable, tag)
-}
-
-func (p *Policy) stopCoordTimerLocked() {
-	if p.coordTimer != nil {
-		p.coordTimer.Stop()
-		p.coordTimer = nil
-	}
 }
 
 func (p *Policy) emitLocked(eventName string, severity Severity, attributes map[string]any) {

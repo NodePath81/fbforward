@@ -1,1 +1,0 @@
-"""coordlab web control UI."""

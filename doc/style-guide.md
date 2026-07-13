@@ -168,8 +168,8 @@ assignments.
 **Subsequent uses:**
 
 ```markdown
-When the primary upstream becomes unusable, the scoring engine selects a new
-primary.
+When the primary upstream becomes unusable, the route-local health selector
+selects a new upstream.
 ```
 
 ### 3.2 Forbidden synonyms
@@ -251,7 +251,7 @@ sequenceDiagram
 - Include section numbers: "See Section 4.2.3"
 
 ```markdown
-See [Section 4.2](outline.md#42-forwarding-section) for listener configuration.
+See [Section 4.2](configuration-reference.md) for listener configuration.
 ```
 
 ### 5.2 Code references
@@ -322,10 +322,11 @@ Before submitting documentation changes, verify:
 ### Starting fbforward
 
 Start fbforward with the `--config` flag pointing to your configuration file.
-The process requires CAP_NET_RAW for ICMP probing.
+The process only requires extra capabilities when optional traffic shaping is
+enabled.
 
 ```bash
-sudo setcap cap_net_raw+ep ./build/bin/fbforward
+sudo setcap cap_net_admin+ep ./build/bin/fbforward
 ./build/bin/fbforward --config /etc/fbforward/config.yaml
 ```
 
@@ -338,12 +339,8 @@ fbforward logs to stderr by default. Verify startup by checking for the
 
 ### Monitoring
 
-Access the web UI at `http://localhost:8080/` (or your configured
-`control.bind_addr:control.bind_port`). The dashboard shows:
-
-- Current primary upstream
-- Per-upstream scores and metrics
-- Active flow counts
+Use authenticated `/rpc`, `/status`, and `/metrics` requests. The control
+plane is API-only and exposes health, RTT, and active flow telemetry.
 ```
 
 ### 8.2 Configuration reference section
@@ -375,7 +372,7 @@ forwarding:
       protocol: tcp
 ```
 
-See [Section 4.10](outline.md#410-shaping-section) for shaping configuration.
+See [Section 4.10](configuration-reference.md) for shaping configuration.
 ```
 
 ### 8.3 Algorithm specification section
@@ -383,23 +380,9 @@ See [Section 4.10](outline.md#410-shaping-section) for shaping configuration.
 ```markdown
 ## 6.1.2 Formal description
 
-### Sub-scores
+### Health observations
 
-Each metric is normalized to [ε, 1] where ε = 0.001.
-
-**Bandwidth (higher is better):**
-
-$$s_{B} = \max\left(1 - \exp\left(-B / B^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-The exponential form ensures diminishing returns: doubling bandwidth does not
-double the score. This prevents high-bandwidth links from dominating when all
-upstreams exceed the reference value.
-
-**RTT (lower is better):**
-
-$$s_{R} = \max\left(\exp\left(-R / R^{\mathrm{ref}}\right), \varepsilon\right)$$
-
-Lower RTT yields higher scores. The reference value $R^{\mathrm{ref}}$
-(default: 50ms) represents the target latency. See
-[Section 6.1.3](outline.md#613-parameters) for parameter configuration.
+Probe observations update one unified health state and RTT EWMA. Selection
+filters down/cooldown upstreams, prefers healthy candidates, and then orders
+by RTT, priority, current selection, and configuration order.
 ```

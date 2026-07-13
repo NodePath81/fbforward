@@ -26,10 +26,9 @@ graph TB
         FT[Flow Table]
     end
 
-    subgraph Measurement Plane
-        ICMP[ICMP Prober]
-        BW[bwprobe Client]
-        Score[Scoring Engine]
+    subgraph Health Plane
+        Measure[fbmeasure TCP/UDP Probes]
+        Health[Unified Health + RTT]
     end
 
     subgraph Upstreams
@@ -42,13 +41,11 @@ graph TB
     FT --> U1
     FT --> U2
 
-    ICMP --> U1
-    ICMP --> U2
-    BW --> U1
-    BW --> U2
-
-    Score --> FT
-    API --> Score
+    Measure --> U1
+    Measure --> U2
+    Measure --> Health
+    Health --> FT
+    API --> Health
 ```
 
 ### D2: Component dependency graph
@@ -64,7 +61,6 @@ graph LR
     app --> forwarding
     app --> measure
     app --> metrics
-    app --> probe
     app --> upstream
     app --> shaping
 
@@ -132,8 +128,7 @@ sequenceDiagram
     Supervisor->>Runtime: Load config, create
     Runtime->>Upstream: Create UpstreamManager
     Runtime->>Listeners: Start TCP/UDP listeners
-    Runtime->>Probes: Start ICMP probes
-    Runtime->>Probes: Start bwprobe measurements
+    Runtime->>Probes: Start adaptive fbmeasure probes
     Runtime-->>Supervisor: Running
 ```
 
@@ -257,10 +252,10 @@ sequenceDiagram
     Client->>Server: session.goodbye
 ```
 
-### D10: Scoring algorithm flow
+### D10: Retired scoring algorithm flow
 
 **Section:** 6.1.2 Formal description
-**Purpose:** Show score calculation from metrics to final score
+**Purpose:** Historical diagram retained for migration context; it is not part of the active model.
 **Type:** Flowchart
 
 ```mermaid
@@ -352,16 +347,11 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TB
-    Start[Score update] --> Delta{Score delta > threshold?}
-    Delta -->|No| Stay[Keep current]
-    Delta -->|Yes| Hold{Hold time elapsed?}
-    Hold -->|No| Wait[Wait for hold time]
-    Wait --> Start
-    Hold -->|Yes| Confirm{Confirm duration met?}
-    Confirm -->|No| Track[Track candidate]
-    Track --> Start
-    Confirm -->|Yes| Switch[Switch primary]
-    Switch --> Reset[Reset timers]
+    Start[Health snapshot] --> Healthy{Healthy candidate?}
+    Healthy -->|No| Fallback[Filter down/cooldown]
+    Healthy -->|Yes| RTT[Compare RTT]
+    RTT --> Priority[Compare priority and order]
+    Priority --> Select[Select route-local upstream]
 ```
 
 ---
@@ -390,7 +380,7 @@ flowchart TB
 
 ```text
 /
-├── GET  /          → Web UI (SPA)
+├── GET  /          → API-only 404
 ├── POST /rpc       → JSON-RPC methods
 ├── GET  /metrics   → Prometheus metrics
 └── GET  /status    → WebSocket stream
@@ -434,37 +424,34 @@ graph LR
 
 ```mermaid
 sequenceDiagram
-    participant UI as Web UI
-    participant Auth as /auth
+    participant Client as API client
     participant RPC as /rpc
     participant Metrics as /metrics
     participant WS as /status (WebSocket)
     participant Store as StatusStore
 
-    Note over UI,Store: Initial Authentication
-    UI->>Auth: GET /auth (enter token)
-    UI->>RPC: POST GetStatus (validate)
-    RPC-->>UI: Token valid
-    UI->>UI: Store token in localStorage
+    Note over Client,Store: Bearer token authentication
+    Client->>RPC: POST GetStatus (validate)
+    RPC-->>Client: Token valid
 
-    Note over UI,Store: Metrics Polling
+    Note over Client,Store: Metrics Polling
     loop Every N seconds
-        UI->>Metrics: GET /metrics (Bearer token)
+        Client->>Metrics: GET /metrics (Bearer token)
         Metrics->>Store: Read metrics
         Store-->>Metrics: Current metrics
-        Metrics-->>UI: Prometheus format
+        Metrics-->>Client: Prometheus format
     end
 
-    Note over UI,Store: Real-time Events
-    UI->>WS: WebSocket connect (subprotocol token)
+    Note over Client,Store: Real-time Events
+    Client->>WS: WebSocket connect (subprotocol token)
     WS->>Store: Subscribe
     loop On events
         Store-->>WS: Event (switch, test_complete, etc.)
-        WS-->>UI: Push notification
+        WS-->>Client: Push notification
     end
 
-    Note over UI,Store: RPC Operations
-    UI->>RPC: POST SetUpstream (Bearer token)
+    Note over Client,Store: RPC Operations
+    Client->>RPC: POST SetUpstream (Bearer token)
     RPC->>Store: Update primary
     Store-->>RPC: OK
     RPC-->>UI: Success response
@@ -474,8 +461,7 @@ sequenceDiagram
 
 | Endpoint | Method | Purpose | Auth |
 |----------|--------|---------|------|
-| `/` | GET | Serve web UI SPA | None |
-| `/auth` | GET | Token input page | None |
+| `/` | GET | API-only root (404) | None |
 | `/rpc` | POST | JSON-RPC operations | Bearer token |
 | `/metrics` | GET | Prometheus scraping | Bearer token |
 | `/status` | GET | WebSocket stream | Subprotocol token |

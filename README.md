@@ -1,30 +1,27 @@
 # Network Tools Monorepo
 
-This repository contains two Linux-only networking tools built in Go, a
-measurement server binary, and companion Cloudflare Worker services.
+This repository contains Linux-only networking tools built in Go and a
+measurement server binary.
 
 ## fbforward
 
-TCP/UDP port forwarder that selects the best upstream using fbmeasure-derived
-TCP/UDP metrics, with ICMP used for reachability only. Optional features include
-GeoIP-based lookups, persisted IP flow and rejection logging, and CIDR/ASN/country
-firewalling. It exposes Prometheus metrics, a token-protected RPC API, WebSocket
-status stream, and an embedded single-page Web UI with dashboard status rows
-for GeoIP/IP-log and a dedicated IP Log page for unified flow/rejection history.
+TCP/UDP port forwarder that selects route-local upstreams using fbmeasure health
+and RTT observations. Optional features include GeoIP-based lookups, persisted
+IP flow and rejection logging, and CIDR/ASN/country firewalling. It exposes
+Prometheus metrics, a token-protected RPC API, and a WebSocket status stream.
 
 Behavior highlights:
 
 - NAT-style forwarding: clients connect to fbforward; upstream sees fbforward as source.
 - Multiple listeners, single global upstream list; outbound port matches listener port.
-- Probing uses fbmeasure RTT/jitter/retransmission/loss measurements for scoring; ICMP is reachability-only.
-- Auto mode uses time-based confirmation, score threshold, and a minimum hold time; manual mode rejects unusable tags; optional coordination mode applies shared picks from `fbcoord` and falls back to local auto behavior when no valid coordinated pick is available.
-- Fast failover triggers on loss/retrans thresholds or consecutive dial failures.
+- Probing uses fbmeasure TCP/UDP RTT observations to update one unified health state.
+- Auto mode selects within each route using health, RTT, priority, and configuration order; manual mode pins a usable upstream.
+- Fast failover is based on health state and dial cooldown.
 - TCP/UDP flows are pinned to the selected upstream until idle/expired.
 
 fbforward relies on the `fbmeasure` server binary running on each upstream host
-to provide targeted TCP/UDP measurement endpoints.
-Coordination mode is optional and depends on a separate `fbcoord` service
-deployed on Workers with Durable Objects.
+to provide targeted TCP/UDP measurement endpoints. Cross-node selection is
+intentionally out of scope; use route-local configuration for each node.
 
 Docs: `doc/` (start with `doc/project-overview.md`, `doc/user-guide-fbforward.md`, `doc/configuration-reference.md`, and `doc/notification-events.md`).
 
@@ -48,16 +45,14 @@ Docs: `doc/fbnotify/index.md` and `doc/notification-events.md`.
 - Linux only.
 - Go toolchain: 1.25.5+ (per `go.mod`).
 - fbforward:
-  - ICMP probing requires `CAP_NET_RAW` (e.g., `sudo setcap cap_net_raw+ep ./build/bin/fbforward`).
   - Traffic shaping (optional) requires `CAP_NET_ADMIN`.
   - fbforward currently links `github.com/mattn/go-sqlite3` for IP-log support, so building `fbforward` requires a working C toolchain (gcc) on the build host.
-  - Web UI build requires Node.js + npm (see `web/package.json`).
 
 ## Build
 
 ```
 make build            # build all binaries
-make build-fbforward  # build fbforward only (builds UI if available)
+make build-fbforward  # build fbforward only
 make build-bwprobe    # build bwprobe only
 make build-fbmeasure  # build fbmeasure only
 
@@ -96,24 +91,17 @@ control:
   bind_addr: 127.0.0.1
   bind_port: 8080
   auth_token: "replace-with-a-long-random-token"
-  webui:
-    enabled: true
   metrics:
     enabled: true
 
-# Optional coordination mode via fbcoord
-coordination:
-  endpoint: https://fbcoord.example.workers.dev
-  pool: default
-  node_id: fbforward-01
-  token: "replace-with-a-separate-long-random-token"
-  heartbeat_interval: 10s
 ```
 
 Use a random token with at least 16 characters. The placeholder value
 `change-me` is rejected at startup.
 
-See `doc/configuration-reference.md` for the full schema (`forwarding`, `upstreams`, `dns`, `reachability`, `measurement`, `scoring`, `switching`, `control`, `coordination`, `logging`, `shaping`, `geoip`, `ip_log`, `firewall`).
+See `doc/configuration-reference.md` for the full schema (`listeners`, `routes`,
+`upstreams`, `dns`, `measurement`, `health`, `control`, `logging`, `shaping`,
+`geoip`, `ip_log`, `flow_context`, `firewall`).
 
 ## Run (fbforward)
 

@@ -44,9 +44,8 @@ Adaptive routes select only from their configured upstream list:
 4. Prefer higher configured priority.
 5. Preserve configuration order as the final tie-breaker.
 
-Manual and coordination preferences are accepted only when the preferred tag
-belongs to the current route. A route never selects an upstream outside its
-own list.
+Manual preferences are accepted only when the preferred tag belongs to the
+current route. A route never selects an upstream outside its own list.
 
 ## Flow pinning
 

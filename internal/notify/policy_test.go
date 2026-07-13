@@ -212,39 +212,3 @@ func TestPolicyRecoveryResetsUpstreamUnusableEpisode(t *testing.T) {
 		t.Fatalf("unexpected reset event attributes %#v", emitter.events[1].attributes)
 	}
 }
-
-func TestPolicyHandlesSustainedCoordinationDisconnect(t *testing.T) {
-	emitter := &recordingEmitter{}
-	factory := &timerFactory{}
-	policy := NewPolicy(emitter, PolicyConfig{
-		StartTime:            time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
-		CoordinationEndpoint: "https://fbcoord.example",
-		AfterFunc:            factory.After,
-	})
-
-	policy.HandleCoordinationConnection(true)
-	policy.HandleCoordinationConnection(false)
-	firstTimer := factory.Last()
-	if firstTimer == nil || firstTimer.delay != 30*time.Second {
-		t.Fatalf("expected coordination disconnect timer of 30s, got %#v", firstTimer)
-	}
-	policy.HandleCoordinationConnection(true)
-	firstTimer.Fire()
-
-	if len(emitter.events) != 0 {
-		t.Fatalf("expected reconnect to cancel disconnect alert, got %d", len(emitter.events))
-	}
-
-	policy.HandleCoordinationConnection(false)
-	factory.Last().Fire()
-
-	if len(emitter.events) != 1 {
-		t.Fatalf("expected one coordination alert, got %d", len(emitter.events))
-	}
-	if emitter.events[0].name != "coordination.session_ended" {
-		t.Fatalf("unexpected event name %q", emitter.events[0].name)
-	}
-	if emitter.events[0].attributes["coordination.endpoint"] != "https://fbcoord.example" {
-		t.Fatalf("unexpected coordination attributes %#v", emitter.events[0].attributes)
-	}
-}

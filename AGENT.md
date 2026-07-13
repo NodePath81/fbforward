@@ -4,50 +4,36 @@ Primary entry document for LLM agents working with this codebase.
 
 ## Repository overview
 
-This repository contains three production codebases plus a local manual test framework:
+This repository contains three production codebases:
 
 1. **bwprobe** - Network quality measurement tool that tests at a user-specified bandwidth cap
 2. **fbforward** - TCP/UDP port forwarder with fbmeasure-based upstream selection
 3. **fbmeasure** - Measurement server used by fbforward for TCP/UDP link metrics
-4. **fbcoord** - Cloudflare Worker coordination service for multi-node fbforward deployments
-5. **coordlab** - Python-based local lab for manual fbcoord/fbforward testing
 
 The runtime mix is:
 - Go binaries for `bwprobe`, `fbforward`, and `fbmeasure`
-- TypeScript/Cloudflare Workers code for `fbcoord`
-- Python tooling for `test/coordlab`
 
-**fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It measures upstreams using fbmeasure targeted probes (RTT, jitter, TCP retransmission rate, UDP loss rate), scores them, and forwards new flows to the best upstream. ICMP probing provides reachability monitoring only. Optional subsystems include GeoIP database management, persisted IP connection logging (SQLite), and CIDR/ASN/country firewalling. It exposes a token-protected control plane with RPC, Prometheus metrics, WebSocket status streaming with subscription model, and an embedded SPA UI with dashboard operational status and a dedicated IP Log query page.
-
-**fbcoord summary**: Cloudflare Worker backed by Durable Objects. It
-coordinates a shared upstream pick across multiple fbforward nodes in one
-global coordination state, serves an operator UI/API, enforces auth bans
-through an auth-guard DO plus Cloudflare KV, and persists the operator token
-plus per-node tokens in a token DO.
+**fbforward summary**: Linux-only Go userspace NAT-style TCP/UDP forwarder. It
+uses fbmeasure TCP/UDP RTT probes to maintain one unified health state and
+selects new flows locally by route, health, RTT, priority, and configuration
+order. Optional subsystems include GeoIP database management, persisted IP
+connection logging (SQLite), and CIDR/ASN/country firewalling. It exposes a
+token-protected control plane with RPC, Prometheus metrics, and WebSocket
+status streaming.
 
 ## Platform requirements
 
 Go data-plane components require:
-- Linux only - uses SO_MAX_PACING_RATE, TCP_INFO, raw ICMP sockets
+- Linux only - uses SO_MAX_PACING_RATE and TCP_INFO
 - Go 1.25.5+
-- CAP_NET_RAW capability for ICMP operations
 - CAP_NET_ADMIN capability for fbforward traffic shaping (optional)
 - C toolchain (gcc) for `fbforward` builds because IP-log support currently links the CGO-based `github.com/mattn/go-sqlite3` driver
-
-Additional tooling:
-- `fbcoord`: Node.js/npm, `wrangler`, Cloudflare Workers/Durable Objects/KV
-- `coordlab`: Linux host with unprivileged user namespaces enabled, Python venv at `.venv/`
 
 ## Documentation structure
 
 The [doc/](doc/) directory contains structured project documentation:
 
-- [doc/outline.md](doc/outline.md): Complete documentation outline with 8 major sections
 - [doc/user-guide-fbforward.md](doc/user-guide-fbforward.md): fbforward operation guide
-- [doc/fbcoord/index.md](doc/fbcoord/index.md): canonical landing page for fbcoord docs
-- [doc/fbcoord/user-guide.md](doc/fbcoord/user-guide.md): fbcoord deployment, operation, and security guidance
-- [doc/fbcoord/api.md](doc/fbcoord/api.md): fbcoord HTTP/admin API reference
-- [doc/fbcoord/protocol.md](doc/fbcoord/protocol.md): fbcoord node wire contract and state semantics
 - [doc/user-guide-bwprobe.md](doc/user-guide-bwprobe.md): bwprobe operation guide
 - [doc/configuration-reference.md](doc/configuration-reference.md): Complete config schema
 - [doc/api-reference.md](doc/api-reference.md): bwprobe API and fbforward control plane API
@@ -57,7 +43,6 @@ The [doc/](doc/) directory contains structured project documentation:
 - [doc/style-guide.md](doc/style-guide.md): Writing conventions for documentation
 - [doc/logging-guidelines.md](doc/logging-guidelines.md): Structured logging requirements, event naming, OTel alignment, privacy/redaction, and review checks
 - [doc/test/testing-guide.md](doc/test/testing-guide.md): Manual and automated test workflows
-- [doc/test/coordlab.md](doc/test/coordlab.md): coordlab architecture and operator guide
 
 Legacy documentation has been archived to [doc/archive/2025-01-26-legacy/](doc/archive/2025-01-26-legacy/).
 
@@ -67,7 +52,7 @@ Legacy documentation has been archived to [doc/archive/2025-01-26-legacy/](doc/a
 
 bwprobe uses separate control and data channels:
 
-- **Control channel**: JSON-RPC 2.0 over TCP for session setup and sample coordination
+- **Control channel**: JSON-RPC 2.0 over TCP for session setup and sample control
   - Supports fallback to legacy text protocol for compatibility
   - Control methods: [bwprobe/internal/rpc/protocol.go](bwprobe/internal/rpc/protocol.go)
 
@@ -111,39 +96,6 @@ Logic: [bwprobe/internal/engine/samples.go](bwprobe/internal/engine/samples.go)
 - [bwprobe/internal/metrics/](bwprobe/internal/metrics/): RTT sampler, TCP_INFO reader, UDP loss tracking
 - [bwprobe/internal/protocol/](bwprobe/internal/protocol/): Data frame headers and constants
 
-## fbcoord architecture
-
-### Worker + Durable Object design
-
-fbcoord is a Cloudflare Worker with four Durable Object bindings:
-
-- `PoolDurableObject`: live node connections, preferences, and the single global coordinated pick
-- `RegistryDurableObject`: retained binding that is currently unused by runtime behavior
-- `TokenDurableObject`: operator-token record, per-node token records, and session signing secret
-- `AuthGuardDurableObject`: authoritative auth failure counters and active bans
-
-Cloudflare KV (`FBCOORD_AUTH_KV`) is used as a fast replicated ban cache and manual denylist layer, but the auth-guard DO remains the source of truth for short-window enforcement.
-
-### Security model
-
-- Operator login and node auth use different credentials: one operator token for the UI/API, many node tokens for `/ws/node`
-- Token verification uses PBKDF2-HMAC-SHA256 with per-record salt plus a Worker-side pepper secret
-- Operator-token rotation requires both an authenticated operator session and `current_token`
-- Node-token replacement is modeled as revoke plus mint for the same `node_id`
-- Mutating admin endpoints enforce `Origin` when present
-- Node WebSocket traffic is validated at runtime and rate-limited per connection
-
-### Public routes
-
-- `/healthz`: worker health check
-- `/ws/node`: node coordination socket
-- `/api/auth/login`, `/api/auth/check`, `/api/auth/logout`
-- `/api/state`
-- `/api/token/info`, `/api/token/rotate`
-- `/api/node-tokens`
-
-The `fbcoord` admin UI is a separate TypeScript app under `fbcoord/ui/`.
-
 ## fbforward architecture
 
 ### Three-plane design
@@ -151,8 +103,8 @@ The `fbcoord` admin UI is a separate TypeScript app under `fbcoord/ui/`.
 fbforward runs as a single process with three main planes:
 
 1. **Data plane**: TCP/UDP listeners forward traffic to selected upstream with per-connection/mapping pinning
-2. **Control plane**: HTTP server providing RPC, metrics, WebSocket status stream, embedded web UI
-3. **Health/selection plane**: ICMP reachability, fbmeasure measurements, scoring, and switching logic
+2. **Control plane**: HTTP server providing RPC, metrics, and WebSocket status stream
+3. **Health/selection plane**: fbmeasure measurements and route-local health/RTT selection
 4. **Shaping plane** (optional): Linux tc-based ingress/egress shaping via netlink
 
 ### Startup flow
@@ -164,12 +116,12 @@ fbforward runs as a single process with three main planes:
 
 ### Measurement server requirement
 
-**CRITICAL**: fbforward requires `fbmeasure` running on each upstream host:
+fbforward can use `fbmeasure` on each adaptive-route upstream:
 
 - fbmeasure provides TCP/UDP measurement endpoints for targeted probes
 - Default port: 9876 (configurable via `upstreams[].measurement.port`)
 - Deploy with: `make build-fbmeasure` then `./build/bin/fbmeasure --port 9876`
-- Without fbmeasure, fbforward falls back to ICMP-only reachability (degraded mode)
+- Without fbmeasure, adaptive routes expose unknown/stale health and continue using local selection rules.
 
 ### Flow pinning model
 
@@ -183,23 +135,15 @@ fbforward runs as a single process with three main planes:
 
 This ensures in-flight connections are not disrupted during upstream switches.
 
-### Scoring and upstream selection
+### Health and upstream selection
 
-Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algorithm in [doc/algorithm-specifications.md](doc/algorithm-specifications.md):
-
-- Each upstream runs periodic TCP and UDP probe cycles
-- Metrics (RTT, jitter, loss/retrans) are smoothed with EMA
-- Score blends TCP/UDP sub-scores using exponential normalization with configurable weights
-- Protocol weight blends TCP and UDP scores (configurable, default 0.5 each)
-- Static priority and bias adjustments per upstream
-- **ICMP probing is reachability-only** and does not affect scores (migration from legacy ICMP scoring)
-
-**Fast-start mode**: At startup, uses lightweight ICMP RTT probes for immediate primary selection, then transitions to full fbmeasure scoring after warmup period.
+Adaptive routes filter down/cooldown upstreams, prefer healthy candidates, then compare unified RTT,
+priority, current selection, and configuration order. Static routes always use their sole configured
+upstream. Existing flows remain pinned when health changes.
 
 **Auto mode** switching:
-- Requires confirmation duration (time-based), score delta threshold, minimum hold time
-- Fast failover on high loss/retrans windows or consecutive dial failures
-- Unusable upstreams (100% loss, dial failures) automatically recover when probes succeed
+- Adaptive routes prefer healthy upstreams, then lower RTT, priority, current selection, and configuration order
+- Dial failures use a short cooldown; successful probes restore health
 
 **Manual mode**:
 - Operator-selected tag must be usable; otherwise rejected
@@ -214,10 +158,9 @@ Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algor
 **Core runtime:**
 - `internal/app/supervisor.go`: runtime lifecycle (restart, config reload)
 - `internal/app/runtime.go`: component wiring, DNS refresh loop, listener/probe startup
-- `internal/upstream/upstream.go`: scoring, selection, switching logic, EMA metrics, dial-failure cooldown
+- `internal/upstream/upstream.go`: health state, route-local selection, and dial-failure cooldown
 - `internal/measure/collector.go`: fbmeasure measurement loop and metric collection
-- `internal/measure/fast_start.go`: fast-start TCP RTT selection
-- `internal/probe/probe.go`: ICMP reachability probing (no scoring)
+- `internal/fbmeasure/`: fbmeasure probe client
 
 **Data plane:**
 - `internal/forwarding/forward_tcp.go`: TCP forwarding, flow pinning
@@ -234,28 +177,6 @@ Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algor
 - `internal/control/status.go`: WebSocket hub, status store, message broadcast
 - `internal/metrics/metrics.go`: Prometheus metric aggregation (includes IP-log and firewall metrics)
 
-**Web UI:**
-- `web/handler.go`: embedded UI asset handler
-- `web/src/main.ts`: UI application logic
-- `web/src/auth.ts`: browser-side token entry and persistence
-- `web/src/pages/iplog.ts`: IP Log query page
-- `web/src/api/iplog.ts`: IP Log API client
-- `web/src/components/StatusCard/index.ts`: dashboard status cards (GeoIP, IP-log rows)
-- `web/index.html`: SPA template
-
-**fbcoord:**
-- `fbcoord/src/worker.ts`: Worker entrypoint, routing, admin API, auth guard integration
-- `fbcoord/src/durable-objects/pool.ts`: node socket lifecycle and coordinated pick logic
-- `fbcoord/src/durable-objects/token.ts`: operator-token and node-token persistence and verification
-- `fbcoord/src/durable-objects/auth-guard.ts`: auth failure counters, bans, KV cache integration
-- `fbcoord/ui/`: admin UI source
-- `fbcoord/wrangler.toml`: Worker bindings, migrations, KV namespace config
-
-**coordlab:**
-- `test/coordlab/coordlab.py`: CLI entrypoint and orchestration
-- `test/coordlab/lib/`: topology, process, shaping, link-state, proxy, readiness, and state helpers
-- `test/coordlab/web/`: Flask dashboard and API for manual lab control
-
 **Config and docs:**
 - `internal/config/config.go`: YAML config schema, defaults, validation
 - `doc/`: structured documentation (outline, user guides, configuration reference, API reference, algorithm specs)
@@ -270,7 +191,7 @@ Upstream quality is based on fbmeasure TCP/UDP measurements, with detailed algor
 make build
 
 # Build one binary
-make build-fbforward          # fbforward with web UI
+make build-fbforward          # fbforward API-only binary
 make build-bwprobe            # bwprobe only
 make build-fbmeasure          # fbmeasure only
 
@@ -283,7 +204,7 @@ go test ./...
 go test ./internal/upstream -v
 go test ./bwprobe/internal/network -run TestSenderFraming
 
-# Clean build artifacts and web UI
+# Clean build artifacts
 make clean
 ```
 
@@ -302,36 +223,19 @@ go build -o build/bin/bwprobe ./bwprobe/cmd
 ### fbforward
 
 ```bash
-# Build from repo root (builds UI + Go binary)
+# Build from repo root
 make build-fbforward
 
-# Build only Go binary (uses existing web/dist)
+# Build only the Go binary
 go build -o build/bin/fbforward ./cmd/fbforward
 
-# Run with capabilities (required for ICMP probing)
-sudo setcap cap_net_raw+ep ./build/bin/fbforward
-./build/bin/fbforward --config config.yaml
-
 # With traffic shaping support (optional)
-sudo setcap cap_net_raw,cap_net_admin+ep ./build/bin/fbforward
+sudo setcap cap_net_admin+ep ./build/bin/fbforward
+./build/bin/fbforward --config config.yaml
 ```
 
 Note:
 - `fbforward` builds currently require a working C toolchain because the IP-log SQLite driver is compiled in even when `ip_log.enabled` is `false` at runtime.
-
-### fbcoord
-
-```bash
-cd fbcoord
-npm install
-npm run build
-npx wrangler deploy
-```
-
-Deployment notes:
-- `fbcoord/wrangler.toml` uses `new_sqlite_classes` migrations for free-plan Durable Objects
-- `FBCOORD_AUTH_KV` must point at a real Cloudflare KV namespace ID
-- required secrets include `FBCOORD_TOKEN` and `FBCOORD_TOKEN_PEPPER`
 
 ### fbmeasure
 
@@ -346,15 +250,6 @@ make build-fbmeasure
 nc -zv <upstream-host> 9876
 ```
 
-### coordlab
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r test/coordlab/requirements.txt
-.venv/bin/python test/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
-.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
-```
-
 ## Control plane
 
 **Authentication:**
@@ -362,8 +257,7 @@ python3 -m venv .venv
 - WebSocket `/status` uses subprotocol authentication:
   - `fbforward`
   - `fbforward-token.<base64url(token)>`
-- The `fbforward` browser UI stores the raw control token in browser `localStorage` as `fbforward_token`
-- `Logout` clears that browser-side token; there is no cookie-backed server session in `fbforward`
+- The control plane is API-only; clients must provide the bearer token directly.
 
 **Data source responsibilities:**
 - **WebSocket** (`/status`): connection/queue telemetry via subscription (1s/2s/5s intervals), test history events, session events
@@ -371,35 +265,13 @@ python3 -m venv .venv
   - Separate message types: `connections_snapshot`, `queue_snapshot`, `test_history_event`, `add`, `update`, `remove`, `error`
   - All messages include `schema_version: 1`
 - **RPC** (`/rpc`): control commands (`SetUpstream`, `Restart`, `RunMeasurement`, `RefreshGeoIP`), config queries (`GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetIPLogStatus`, `QueryIPLog`)
-  - `GetStatus` returns only non-metric fields (tag, host, IPs, active, usable, reachable)
-  - No numeric metrics (bandwidth, RTT, scores) in RPC responses
-- **Prometheus** (`/metrics`): all numeric metrics (bandwidth, RTT, jitter, loss/retrans rates, scores, utilization, queue depth, active connections)
+  - `GetStatus` returns control-plane state and health fields
+  - Numeric telemetry is exposed through Prometheus
+- **Prometheus** (`/metrics`): RTT, health, probe counters, queue depth, and active connections
 
 **Key principle:** Single source of truth per data type, no duplication across endpoints.
 
 **Details:** See [doc/api-reference.md](doc/api-reference.md) section 5.2
-
-## UI assets
-
-**Structure:**
-- Source: `web/src/` (TypeScript)
-- Built output: `web/dist/` (embedded via `web/handler.go`)
-- Build tool: Vite
-
-**Development workflow:**
-```bash
-cd web
-npm install        # First time only
-npm run dev        # Dev server with hot reload on http://localhost:5173
-npm run build      # Production build to web/dist/
-```
-
-**Production build:**
-```bash
-make build-fbforward  # Builds web UI and Go binary together
-```
-
-The built assets in `web/dist/` are embedded into the Go binary via `web/handler.go`.
 
 ## Key integration points
 
@@ -424,8 +296,8 @@ When modifying behavior across control/data boundary:
 
 When extending functionality:
 
-1. **Switching behavior**: Adjust `SwitchingConfig` and `UpstreamManager` logic in
-   [internal/upstream/upstream.go](internal/upstream/upstream.go). See [doc/algorithm-specifications.md](doc/algorithm-specifications.md) for scoring details.
+1. **Selection behavior**: Adjust health and route-local selection in
+   [internal/upstream/](internal/upstream/), and update the active algorithm documentation.
 
 2. **Control API**: Add new RPC methods in [internal/control/control.go](internal/control/control.go)
 
@@ -434,25 +306,6 @@ When extending functionality:
 4. **Data plane**: Add new protocol listeners following TCP/UDP patterns in
    [internal/forwarding/](internal/forwarding/), ensuring flow pinning semantics
 
-5. **Scoring algorithm**: Modify normalization or weights in [internal/upstream/upstream.go](internal/upstream/upstream.go),
-   update config schema in [internal/config/config.go](internal/config/config.go)
-
-### fbcoord
-
-When extending functionality:
-
-1. **Admin/API auth**: Update route handling in `fbcoord/src/worker.ts` and keep auth-guard + KV behavior aligned
-2. **Pool coordination behavior**: Change node socket or pick logic in `fbcoord/src/durable-objects/pool.ts`
-3. **Token/session behavior**: Update `fbcoord/src/durable-objects/token.ts` and related admin UI flows together
-4. **Deploy config**: Keep `fbcoord/wrangler.toml` bindings, KV IDs, and DO migrations consistent with Worker code
-
-### coordlab
-
-When extending local manual-test tooling:
-
-1. **Topology/process lifecycle**: Change `test/coordlab/coordlab.py` and `test/coordlab/lib/netns.py` / `process.py`
-2. **Lab controls**: Keep CLI, Flask API, and dashboard behavior aligned across `lib/`, `web/app.py`, and `web/static/`
-3. **State model**: Treat `state.json` as the dashboard/CLI contract and update `test/coordlab/lib/state.py` deliberately
 
 ## Implementation principles
 
@@ -467,9 +320,9 @@ When extending local manual-test tooling:
 
 - **NAT-style forwarding**: Clients connect to fbforward; upstream sees fbforward as source
 - **Flow pinning**: TCP/UDP flows pinned to selected upstream until idle/expired
-- **Fast failover**: Immediate switch on high loss windows or dial failures
+- **Fast failover**: Immediate switch on health failure or dial failure
 - **Auto recovery**: Unusable upstreams recover automatically when probes succeed
-- **Measurement-driven**: ICMP for reachability only; fbmeasure measurements drive all scoring
+- **Measurement-driven**: fbmeasure measurements provide unified health and RTT
 
 ## Logging requirements for agents (mandatory)
 
@@ -495,20 +348,12 @@ Acceptance checks for agent changes:
 
 ## Testing
 
-Automated test coverage exists across Go, `fbcoord`, and `coordlab`:
+Automated test coverage is provided by the Go packages:
 
 - Go code: `go test ./...`
-- `fbcoord`: `npm --prefix fbcoord test`
-- `coordlab`: `.venv/bin/python -m unittest discover -s test/coordlab/tests -p 'test_*.py'`
 
 Common validation commands:
 
 ```bash
 go test ./...
-npm --prefix fbcoord test
-npm --prefix fbcoord run build
-.venv/bin/python -m py_compile test/coordlab/coordlab.py test/coordlab/lib/*.py test/coordlab/web/*.py test/coordlab/tests/*.py
-.venv/bin/python -m unittest discover -s test/coordlab/tests -p 'test_*.py'
 ```
-
-For manual coordination testing, use `coordlab` instead of assuming only ad-hoc local configs exist.

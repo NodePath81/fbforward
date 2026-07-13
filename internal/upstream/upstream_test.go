@@ -83,27 +83,6 @@ func TestRouteSelectionPrefersHealthyOverLowerRTTStale(t *testing.T) {
 	}
 }
 
-func TestCoordinationPickAndFallback(t *testing.T) {
-	m := NewUpstreamManager([]*Upstream{
-		testUpstream("alpha", HealthHealthy, 20*time.Millisecond, 1),
-		testUpstream("beta", HealthHealthy, 30*time.Millisecond, 0),
-	}, nil)
-	m.SetCoordination()
-	m.SetCoordinationConnected(true)
-	if _, err := m.ApplyCoordinationPick(1, "beta"); err != nil {
-		t.Fatal(err)
-	}
-	if m.ActiveTag() != "beta" || !m.CoordinationState().Authoritative {
-		t.Fatalf("coordination pick not applied: %+v", m.CoordinationState())
-	}
-	m.RecordProbeFailure("beta", time.Now())
-	m.RecordProbeFailure("beta", time.Now())
-	m.RecordProbeFailure("beta", time.Now())
-	if !m.CoordinationState().FallbackActive {
-		t.Fatalf("expected fallback after coordinated upstream down")
-	}
-}
-
 func testUpstream(tag string, state HealthState, rtt time.Duration, priority float64) *Upstream {
 	health := HealthSnapshot{State: state, RTT: rtt}
 	if state == HealthHealthy || state == HealthStale {

@@ -37,9 +37,7 @@ const (
 
 	defaultControlAddr           = "127.0.0.1"
 	defaultControlPort           = 8080
-	defaultControlWebUIEnabled   = true
 	defaultControlMetricsEnabled = true
-	defaultCoordinationHeartbeat = 10 * time.Second
 	defaultNotifyStartupGrace    = 5 * time.Minute
 	defaultNotifyUnusableDelay   = 30 * time.Second
 	defaultNotifyInterval        = 30 * time.Minute
@@ -99,27 +97,26 @@ func (d Duration) Duration() time.Duration {
 }
 
 type Config struct {
-	Hostname           string             `yaml:"hostname"`
-	Listeners          []ListenerSpec     `yaml:"listeners"`
-	Routes             []RouteConfig      `yaml:"routes"`
-	Forwarding         ForwardingConfig   `yaml:"forwarding"`
-	Upstreams          []UpstreamConfig   `yaml:"upstreams"`
-	DNS                DNSConfig          `yaml:"dns"`
-	Measurement        MeasurementConfig  `yaml:"measurement"`
-	Health             HealthConfig       `yaml:"health"`
-	Control            ControlConfig      `yaml:"control"`
-	Notify             NotifyConfig       `yaml:"notify"`
-	Coordination       CoordinationConfig `yaml:"coordination"`
-	Logging            LoggingConfig      `yaml:"logging"`
-	Shaping            ShapingConfig      `yaml:"shaping"`
-	GeoIP              GeoIPConfig        `yaml:"geoip"`
-	IPLog              IPLogConfig        `yaml:"ip_log"`
-	FlowContext        FlowContextConfig  `yaml:"flow_context"`
-	Firewall           FirewallConfig     `yaml:"firewall"`
-	Warnings           []string           `yaml:"-"`
-	topologyMode       string             `yaml:"-"`
-	topologyNormalized bool               `yaml:"-"`
-	configLoaded       bool               `yaml:"-"`
+	Hostname           string            `yaml:"hostname"`
+	Listeners          []ListenerSpec    `yaml:"listeners"`
+	Routes             []RouteConfig     `yaml:"routes"`
+	Forwarding         ForwardingConfig  `yaml:"forwarding"`
+	Upstreams          []UpstreamConfig  `yaml:"upstreams"`
+	DNS                DNSConfig         `yaml:"dns"`
+	Measurement        MeasurementConfig `yaml:"measurement"`
+	Health             HealthConfig      `yaml:"health"`
+	Control            ControlConfig     `yaml:"control"`
+	Notify             NotifyConfig      `yaml:"notify"`
+	Logging            LoggingConfig     `yaml:"logging"`
+	Shaping            ShapingConfig     `yaml:"shaping"`
+	GeoIP              GeoIPConfig       `yaml:"geoip"`
+	IPLog              IPLogConfig       `yaml:"ip_log"`
+	FlowContext        FlowContextConfig `yaml:"flow_context"`
+	Firewall           FirewallConfig    `yaml:"firewall"`
+	Warnings           []string          `yaml:"-"`
+	topologyMode       string            `yaml:"-"`
+	topologyNormalized bool              `yaml:"-"`
+	configLoaded       bool              `yaml:"-"`
 }
 
 type LoggingConfig struct {
@@ -242,12 +239,7 @@ type ControlConfig struct {
 	BindAddr  string               `yaml:"bind_addr"`
 	BindPort  int                  `yaml:"bind_port"`
 	AuthToken string               `yaml:"auth_token"`
-	WebUI     ControlWebUIConfig   `yaml:"webui"`
 	Metrics   ControlMetricsConfig `yaml:"metrics"`
-}
-
-type ControlWebUIConfig struct {
-	Enabled *bool `yaml:"enabled"`
 }
 
 type ControlMetricsConfig struct {
@@ -263,14 +255,6 @@ type NotifyConfig struct {
 	StartupGracePeriod Duration `yaml:"startup_grace_period"`
 	UnusableInterval   Duration `yaml:"unusable_interval"`
 	NotifyInterval     Duration `yaml:"notify_interval"`
-}
-
-type CoordinationConfig struct {
-	Endpoint          string   `yaml:"endpoint"`
-	Pool              string   `yaml:"pool"`
-	NodeID            string   `yaml:"node_id"`
-	Token             string   `yaml:"token"`
-	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
 }
 
 type GeoIPConfig struct {
@@ -346,28 +330,8 @@ type ShapingLimitConfig struct {
 	DownloadLimit string `yaml:"download_limit"`
 }
 
-func (w ControlWebUIConfig) IsEnabled() bool {
-	return util.BoolValue(w.Enabled, defaultControlWebUIEnabled)
-}
-
 func (m ControlMetricsConfig) IsEnabled() bool {
 	return util.BoolValue(m.Enabled, defaultControlMetricsEnabled)
-}
-
-func (c CoordinationConfig) HasAnyField() bool {
-	return strings.TrimSpace(c.Endpoint) != "" ||
-		strings.TrimSpace(c.Token) != "" ||
-		c.HeartbeatInterval != 0
-}
-
-func (c CoordinationConfig) HasLegacyFields() bool {
-	return strings.TrimSpace(c.Pool) != "" ||
-		strings.TrimSpace(c.NodeID) != ""
-}
-
-func (c CoordinationConfig) IsConfigured() bool {
-	return strings.TrimSpace(c.Endpoint) != "" &&
-		strings.TrimSpace(c.Token) != ""
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -541,10 +505,6 @@ func (c *Config) setDefaults() {
 	if c.Control.BindPort == 0 {
 		c.Control.BindPort = defaultControlPort
 	}
-	if c.Control.WebUI.Enabled == nil {
-		enabled := defaultControlWebUIEnabled
-		c.Control.WebUI.Enabled = &enabled
-	}
 	if c.Control.Metrics.Enabled == nil {
 		enabled := defaultControlMetricsEnabled
 		c.Control.Metrics.Enabled = &enabled
@@ -557,9 +517,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Notify.NotifyInterval == 0 {
 		c.Notify.NotifyInterval = Duration(defaultNotifyInterval)
-	}
-	if c.Coordination.HasAnyField() && c.Coordination.HeartbeatInterval == 0 {
-		c.Coordination.HeartbeatInterval = Duration(defaultCoordinationHeartbeat)
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = defaultLoggingLevel
@@ -837,28 +794,6 @@ func (c *Config) validate() error {
 			}
 		}
 		if err := validateNotifyIdentifier(c.Notify.SourceInstance, "notify.source_instance"); err != nil {
-			return err
-		}
-	}
-
-	c.Coordination.Endpoint = strings.TrimSpace(c.Coordination.Endpoint)
-	c.Coordination.Pool = strings.TrimSpace(c.Coordination.Pool)
-	c.Coordination.NodeID = strings.TrimSpace(c.Coordination.NodeID)
-	c.Coordination.Token = strings.TrimSpace(c.Coordination.Token)
-	if c.Coordination.Pool != "" {
-		c.Warnings = append(c.Warnings, "coordination.pool is ignored and may be removed from the config")
-	}
-	if c.Coordination.NodeID != "" {
-		c.Warnings = append(c.Warnings, "coordination.node_id is ignored and may be removed from the config")
-	}
-	if c.Coordination.HasAnyField() {
-		if c.Coordination.Endpoint == "" || c.Coordination.Token == "" {
-			return errors.New("coordination.endpoint and token must be set together")
-		}
-		if c.Coordination.HeartbeatInterval.Duration() <= 0 {
-			return errors.New("coordination.heartbeat_interval must be > 0")
-		}
-		if err := validateAuthTokenField(c.Coordination.Token, "coordination.token"); err != nil {
 			return err
 		}
 	}

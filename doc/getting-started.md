@@ -12,7 +12,6 @@ fbforward requires Linux. The forwarder uses platform-specific kernel features t
 
 - `SO_MAX_PACING_RATE`: Socket option used by the standalone bwprobe tool
 - `TCP_INFO`: Socket option for reading TCP connection statistics
-- Raw ICMP sockets: For sending and receiving ICMP echo requests
 
 Tested distributions include Ubuntu 22.04+, Debian 12+, and Fedora 38+. Kernel version 5.10 or newer is recommended.
 
@@ -38,24 +37,12 @@ TCP/UDP fbmeasure sidecar.
 
 Capabilities can be assigned to the binary or granted via systemd's `AmbientCapabilities` directive.
 
-### Node.js and npm
-
-Building the web UI requires Node.js 18+ and npm. Check versions:
-
-```bash
-node --version  # Expected: v18.0.0 or newer
-npm --version   # Expected: 9.0.0 or newer
-```
-
-If Node.js is not installed, download from [nodejs.org](https://nodejs.org/).
-
-The web UI is optional. If Node.js is unavailable, the build process skips UI compilation and uses any existing `web/dist` directory.
-
 ### fbmeasure on upstream hosts
 
 fbforward requires fbmeasure running on each upstream host to perform targeted
-TCP/UDP measurements. Without fbmeasure, fbforward operates in degraded mode
-using ICMP probes only.
+TCP/UDP measurements. Without fbmeasure, adaptive upstreams remain unknown or
+stale and static routes continue to use their configured upstream subject to
+dial cooldown.
 
 Deploy fbmeasure on upstreams before starting fbforward. The repository ships:
 
@@ -83,15 +70,14 @@ make build
 ```
 
 This command:
-1. Builds the web UI (if Node.js available) and places output in `web/dist`
-2. Builds fbforward binary to `build/bin/fbforward`
-3. Builds bwprobe binary to `build/bin/bwprobe`
-4. Builds fbmeasure binary to `build/bin/fbmeasure`
+1. Builds fbforward binary to `build/bin/fbforward`
+2. Builds bwprobe binary to `build/bin/bwprobe`
+3. Builds fbmeasure binary to `build/bin/fbmeasure`
 
 To build individual binaries:
 
 ```bash
-make build-fbforward  # fbforward only (includes UI build step)
+make build-fbforward  # fbforward only
 make build-bwprobe    # bwprobe only
 make build-fbmeasure  # fbmeasure only
 ```
@@ -99,9 +85,6 @@ make build-fbmeasure  # fbmeasure only
 To build without make:
 
 ```bash
-# Build UI (optional)
-cd web && npm install && npm run build && cd ..
-
 # Build fbforward
 go build -o build/bin/fbforward ./cmd/fbforward
 
@@ -139,18 +122,15 @@ The package creates a `fbforward` user and group. The systemd service runs as th
 If not using systemd or the Debian package, assign capabilities to the binary:
 
 ```bash
-# Required: CAP_NET_RAW for ICMP
-sudo setcap cap_net_raw+ep ./build/bin/fbforward
-
 # Optional: Add CAP_NET_ADMIN for traffic shaping
-sudo setcap cap_net_raw,cap_net_admin+ep ./build/bin/fbforward
+sudo setcap cap_net_admin+ep ./build/bin/fbforward
 ```
 
 Verify capabilities:
 
 ```bash
 getcap ./build/bin/fbforward
-# Expected output: ./build/bin/fbforward cap_net_raw=ep
+# Expected output: ./build/bin/fbforward cap_net_admin=ep
 ```
 
 ### systemd service setup
@@ -281,8 +261,6 @@ control:
   bind_addr: 127.0.0.1
   bind_port: 8080
   auth_token: "change-me-to-random-string"
-  webui:
-    enabled: true
   metrics:
     enabled: true
 ```
@@ -290,7 +268,7 @@ control:
 This configuration:
 - Listens for TCP and UDP traffic on port 9000
 - Forwards to two upstreams: `upstream1.example.com` (tag: `primary`) and `upstream2.example.com` (tag: `backup`)
-- Enables web UI and Prometheus metrics on `127.0.0.1:8080`
+- Enables Prometheus metrics on `127.0.0.1:8080`; the root path is API-only
 - Requires Bearer token `change-me-to-random-string` for API access
 
 Replace `upstream1.example.com` and `upstream2.example.com` with your actual upstream hostnames or IP addresses. Replace `change-me-to-random-string` with a randomly generated token.
@@ -320,32 +298,27 @@ Expected log output:
 2025/01/26 12:00:00 INFO config loaded path=config.yaml upstreams=2 listeners=2
 2025/01/26 12:00:00 INFO resolved upstream tag=primary host=upstream1.example.com ip=203.0.113.10
 2025/01/26 12:00:00 INFO resolved upstream tag=backup host=upstream2.example.com ip=203.0.113.11
-2025/01/26 12:00:00 INFO starting ICMP prober
 2025/01/26 12:00:00 INFO starting measurement collector
-2025/01/26 12:00:00 INFO fast-start mode enabled timeout=30s
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=tcp
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=udp
 2025/01/26 12:00:00 INFO control server started addr=127.0.0.1:8080
 2025/01/26 12:00:05 INFO upstream health state=healthy upstream=primary rtt_ms=12
 ```
 
-The `primary selected` line confirms fbforward has chosen an upstream. In
-fast-start mode, selection uses lightweight TCP dial probes to each measurement
-endpoint until full fbmeasure probe cycles complete.
+The health state and RTT lines confirm the adaptive route has a usable local
+selection view.
 
 ### Step 5: Verify operation
 
-Open the web UI in a browser:
+The control plane is API-only. Query status or metrics with a bearer token:
 
 ```
-http://127.0.0.1:8080/
+curl -H "Authorization: Bearer change-me-to-random-string" \
+  http://127.0.0.1:8080/rpc
 ```
 
-The UI displays:
-- Current primary upstream
-- Per-upstream health state and RTT metrics
-- Active flow counts
-- Score history chart
+Use `/status` for the authenticated WebSocket stream and `/metrics` for
+Prometheus telemetry.
 
 Test TCP forwarding:
 
@@ -375,7 +348,7 @@ Metrics include `fbforward_flows_active`, `fbforward_upstream_health_state`, `fb
 
 fbforward selects the primary upstream automatically based on measured quality. To observe switching:
 
-1. Watch the web UI or stream status via WebSocket:
+1. Stream status via WebSocket:
 
 ```bash
 # Use wscat or similar WebSocket client

@@ -175,32 +175,6 @@ func TestRefreshGeoIPReturnsResult(t *testing.T) {
 	}
 }
 
-func TestGetRuntimeConfigOmitsLegacyCoordinationFields(t *testing.T) {
-	server := newTestControlServer(t)
-	server.fullCfg.Coordination = config.CoordinationConfig{
-		Endpoint:          "https://fbcoord.example",
-		Token:             "node-token",
-		HeartbeatInterval: config.Duration(5 * time.Second),
-		Pool:              "legacy-pool",
-		NodeID:            "legacy-node",
-	}
-
-	result := server.getRuntimeConfig()
-	coordinationCfg, ok := result["coordination"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("coordination config missing or wrong type: %#v", result["coordination"])
-	}
-	if _, exists := coordinationCfg["pool"]; exists {
-		t.Fatalf("unexpected legacy pool in runtime config: %#v", coordinationCfg)
-	}
-	if _, exists := coordinationCfg["node_id"]; exists {
-		t.Fatalf("unexpected legacy node_id in runtime config: %#v", coordinationCfg)
-	}
-	if coordinationCfg["endpoint"] != "https://fbcoord.example" {
-		t.Fatalf("unexpected coordination endpoint: %#v", coordinationCfg)
-	}
-}
-
 func TestSendTestNotificationRequiresConfiguredNotifier(t *testing.T) {
 	server := newTestControlServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "SendTestNotification", nil)))

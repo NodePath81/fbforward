@@ -19,8 +19,7 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `internal/forwarding/` - TCP/UDP listeners and proxy logic
 - `internal/control/` - HTTP server, RPC handlers, WebSocket status stream
 - `internal/metrics/` - Prometheus metrics aggregation
-- Health probing is implemented by the fbmeasure TCP/UDP collector; the old
-  `internal/probe/` ICMP package has been removed.
+- Health probing is implemented by the fbmeasure TCP/UDP collector.
 - `internal/measure/` - fbmeasure RTT probe orchestration and scheduling
 - `internal/fbmeasure/` - fbmeasure client/server protocol and test implementations
 - `internal/resolver/` - DNS resolution with configurable strategy
@@ -30,7 +29,6 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `internal/firewall/` - CIDR/ASN/country rule evaluation engine
 - `internal/util/` - Logger, helpers, type utilities
 - `internal/version/` - Version string injection
-- `web/` - Embedded web UI (TypeScript, Vite-built, served via `//go:embed`)
 
 **bwprobe packages:**
 
@@ -67,14 +65,12 @@ cmd/fbforward
        ├─> internal/geoip (Manager) [optional]
        ├─> internal/iplog (Store, Pipeline) [optional]
        ├─> internal/firewall (Engine) [optional]
-       └─> web (WebUIHandler)
 ```
 
 **Key invariants:**
 
 - `internal/` packages are private to fbforward; only `bwprobe/pkg/` is public API
 - `bwprobe/internal/` packages must not import any `internal/` packages from fbforward
-- `web/` embeds built TypeScript UI; Go code depends only on `embed.FS`
 - Configuration flows from `internal/config` to all other packages via `Runtime`
 
 ### Concurrency model
@@ -126,7 +122,7 @@ Shutdown sequence:
 
 **Synchronization primitives:**
 
-- `sync.Mutex` in `UpstreamManager` protects mode, coordination state, and health snapshots
+- `sync.Mutex` in `UpstreamManager` protects mode and health snapshots
 - `sync.RWMutex` in `StatusStore` protects TCP/UDP flow maps
 - `sync.WaitGroup` in `Runtime` tracks all background goroutines
 - `sync.Pool` in `forwarding` reuses buffers for TCP proxy
@@ -168,11 +164,11 @@ Flow lifecycle:
 2. Pin to that upstream for lifetime
 3. Remove on FIN/RST (TCP) or idle timeout (UDP)
 
-**Primary upstream selection:**
+**Upstream selection:**
 
-`UpstreamManager` tracks the control mode and coordination preference. Adaptive
-routes select locally by health, RTT, priority, and configuration order for each
-new Flow; static routes use their fixed upstream. Existing Flows never migrate.
+`UpstreamManager` tracks auto/manual mode. Adaptive routes select locally by
+health, RTT, priority, and configuration order for each new Flow; static routes
+use their fixed upstream. Existing Flows never migrate.
 
 **GeoIP state:**
 
@@ -248,7 +244,7 @@ Data flow:
 2. The collector dequeues a ready job.
 3. `RunProtocol` dials fbmeasure and runs the protocol-specific probe cycle.
 4. Results are converted into `upstream.MeasurementResult`.
-5. `UpstreamManager` updates EMA state and scores.
+5. `UpstreamManager` updates the unified health snapshot and RTT EWMA.
 6. Metrics and WebSocket status are refreshed.
 
 ### Error handling conventions
@@ -449,32 +445,7 @@ func (c *ControlServer) handleCustomMethod(params customMethodParams) customMeth
 }
 ```
 
-**Step 3: Update web UI**
-
-If method should be called from web UI, update [web/src/api.ts](../web/src/api.ts):
-
-```typescript
-export async function callCustomMethod(param1: string, param2: number): Promise<string> {
-  const response = await fetch('/rpc', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${getAuthToken()}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'CustomMethod',
-      params: { param1, param2 },
-      id: Date.now(),
-    }),
-  });
-  const data = await response.json();
-  if (!data.ok) throw new Error(data.error);
-  return data.result.result;
-}
-```
-
-**Step 4: Document in API reference**
+**Step 3: Document in API reference**
 
 Add method to Section 5.2.2 in [doc/api-reference.md](api-reference.md).
 
@@ -542,7 +513,6 @@ Add to Section 5.2.4 metric catalog in [doc/api-reference.md](api-reference.md).
 
 - Linux OS (required for platform-specific features)
 - Go 1.25.5 or later
-- Node.js 18+ and npm (for web UI development)
 - Make (optional, for convenience targets)
 
 **Clone repository:**
@@ -556,7 +526,6 @@ cd fbforward
 
 ```bash
 go mod download
-cd web && npm install && cd ..
 ```
 
 **Build all binaries:**
@@ -566,32 +535,16 @@ make build
 ```
 
 This builds:
-- `build/bin/fbforward` (with embedded UI)
+- `build/bin/fbforward`
 - `build/bin/bwprobe`
 - `build/bin/fbmeasure`
 
 **Build individual components:**
 
 ```bash
-make build-fbforward  # Builds UI first, then Go binary
+make build-fbforward  # Builds the Go binary
 make build-bwprobe
 make build-fbmeasure
-```
-
-**Development workflow for web UI:**
-
-```bash
-cd web
-npm run dev  # Starts Vite dev server on http://localhost:5173
-```
-
-Hot reload is enabled. API calls proxy to fbforward running on `localhost:8080` (configure in `vite.config.ts`).
-
-To build UI for embedding:
-
-```bash
-cd web
-npm run build  # Outputs to web/dist/
 ```
 
 No raw-socket capability is required for health probing; fbforward uses the
@@ -683,19 +636,7 @@ func TestFunctionName(t *testing.T) {
 }
 ```
 
-**Manual coordination testing (Linux only):**
-
-The retained manual test framework is `coordlab`. It requires Linux with unprivileged user namespaces enabled and runs from the repo-root Python venv.
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r test/coordlab/requirements.txt
-.venv/bin/python test/coordlab/coordlab.py up --skip-build --workdir /tmp/coordlab-phase5
-.venv/bin/python test/coordlab/coordlab.py web --workdir /tmp/coordlab-phase5
-.venv/bin/python test/coordlab/coordlab.py down --workdir /tmp/coordlab-phase5
-```
-
-See [Testing guide](test/testing-guide.md) and [coordlab guide](test/coordlab.md) for the retained manual-testing workflow and validation commands.
+See [Testing guide](test/testing-guide.md) for the local API and validation workflow.
 
 ### Code style guidelines
 
@@ -713,16 +654,8 @@ See [Testing guide](test/testing-guide.md) and [coordlab guide](test/coordlab.md
 
 - Packages: Lowercase, singular, no underscores (e.g., `forwarding`, `upstream`)
 - Interfaces: Noun or agent noun (e.g., `Closer`, `Logger`)
-- Functions: Verb or verb phrase (e.g., `SelectUpstream`, `ComputeScore`)
+- Functions: Verb or verb phrase (e.g., `SelectUpstream`, `RecordProbe`)
 - Constants: CamelCase (e.g., `defaultTCPTimeout`, not `DEFAULT_TCP_TIMEOUT`)
-
-**TypeScript code (web UI):**
-
-- Use TypeScript strict mode
-- Define types for all API responses and config structures
-- Use functional components with hooks (React)
-- Format with Prettier (configured in `web/.prettierrc`)
-- Follow [Airbnb React/JSX Style Guide](https://github.com/airbnb/javascript/tree/master/react)
 
 **Documentation:**
 
@@ -758,7 +691,7 @@ Examples:
 - `feat: add SCTP forwarding support`
 - `fix: correct utilization penalty calculation`
 - `docs: update configuration reference for shaping`
-- `refactor: extract scoring logic to separate function`
+- `refactor: simplify route-local health selection`
 
 **Pull request checklist:**
 
@@ -782,10 +715,9 @@ Examples:
 If changes break backward compatibility (configuration schema, API, CLI flags), note this in PR description and commit message:
 
 ```
-feat: redesign scoring algorithm
+refactor!: remove distributed mode and embedded browser UI
 
-BREAKING CHANGE: Configuration field `scoring.weights` now requires
-`protocol_blend` sub-field. Existing configs must be updated.
+BREAKING CHANGE: old distributed-mode and browser-UI configuration keys are rejected.
 ```
 
 **Adding dependencies:**

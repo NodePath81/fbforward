@@ -222,7 +222,7 @@ type PolicyEvent struct {
 }
 
 // Compatibility query types. Their JSON shape intentionally matches the
-// existing /rpc responses consumed by the WebUI.
+// existing /rpc responses consumed by management clients.
 type Record struct {
 	ID          int64  `json:"id"`
 	FlowID      string `json:"flow_id,omitempty"`

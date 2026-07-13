@@ -228,9 +228,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 		"control": map[string]interface{}{
 			"bind_addr": cfg.Control.BindAddr,
 			"bind_port": cfg.Control.BindPort,
-			"webui": map[string]interface{}{
-				"enabled": cfg.Control.WebUI.IsEnabled(),
-			},
 			"metrics": map[string]interface{}{
 				"enabled": cfg.Control.Metrics.IsEnabled(),
 			},
@@ -243,10 +240,6 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"startup_grace_period": cfg.Notify.StartupGracePeriod.Duration().String(),
 			"unusable_interval":    cfg.Notify.UnusableInterval.Duration().String(),
 			"notify_interval":      cfg.Notify.NotifyInterval.Duration().String(),
-		},
-		"coordination": map[string]interface{}{
-			"endpoint":           cfg.Coordination.Endpoint,
-			"heartbeat_interval": cfg.Coordination.HeartbeatInterval.Duration().String(),
 		},
 		"geoip": map[string]interface{}{
 			"enabled":          cfg.GeoIP.Enabled,

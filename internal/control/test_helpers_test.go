@@ -12,7 +12,6 @@ import (
 )
 
 type fakeManager struct {
-	coordState upstream.CoordinationState
 }
 
 type fakeGeoIPManager struct {
@@ -30,15 +29,10 @@ type fakeNotifier struct {
 
 func (fakeManager) SetAuto()                              {}
 func (fakeManager) SetManual(string) error                { return nil }
-func (fakeManager) SetCoordination()                      {}
 func (fakeManager) Snapshot() []upstream.UpstreamSnapshot { return nil }
 func (fakeManager) Mode() upstream.Mode                   { return upstream.ModeAuto }
 func (fakeManager) ActiveTag() string                     { return "" }
 func (fakeManager) Get(string) *upstream.Upstream         { return nil }
-func (f fakeManager) CoordinationState() upstream.CoordinationState {
-	return f.coordState
-}
-
 func (f fakeGeoIPManager) Status() geoip.Status {
 	return f.status
 }
@@ -70,7 +64,6 @@ func newTestControlServer(t *testing.T) *ControlServer {
 		fakeManager{},
 		metrics.NewMetrics(nil),
 		NewStatusStore(NewStatusHub(ctxDone, nil)),
-		nil,
 		func() error { return nil },
 		nil,
 	)

@@ -16,10 +16,8 @@ type UsabilityChange struct {
 type UpstreamStateReader interface {
 	SetAuto()
 	SetManual(tag string) error
-	SetCoordination()
 	Snapshot() []UpstreamSnapshot
 	Mode() Mode
 	ActiveTag() string
 	Get(tag string) *Upstream
-	CoordinationState() CoordinationState
 }

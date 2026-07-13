@@ -42,7 +42,7 @@ Once a [flow](glossary.md#flow) (TCP connection or UDP 5-tuple mapping) is assig
 
 ### Operational modes
 
-fbforward supports three upstream selection modes:
+fbforward supports two upstream selection modes:
 
 **Auto mode** (default): adaptive routes select from healthy upstreams, then
 compare RTT, priority, and configuration order for each new Flow. Existing
@@ -50,33 +50,10 @@ Flows remain pinned to their original upstream.
 
 **Manual mode**: An operator selects an upstream via the control plane RPC method `SetUpstream`. fbforward validates the upstream is usable (not marked [unusable](glossary.md#unusable-upstream)) before accepting the selection. The system remains on the selected upstream until another manual selection occurs.
 
-**Coordination mode**: An operator selects coordination mode via the control
-plane RPC method `SetUpstream` with `mode: "coordination"`. fbforward then
-connects to `fbcoord`, submits its sorted local upstream preference list, and
-applies the coordinated upstream returned by `fbcoord` when that pick is
-locally usable. fbcoord periodically reasserts the current pick, so a node that
-temporarily falls back to local auto-selection can return to the coordinated
-upstream without waiting for the coordinator to choose a new version.
-
 Mode behavior:
 - Startup mode is always auto
 - Manual mode is entered only when operator calls `SetUpstream` RPC with `mode: "manual"`
-- Coordination mode is entered only when operator calls `SetUpstream` RPC with `mode: "coordination"` and coordination is configured
-- In coordination mode, a valid coordinated pick overrides local auto selection for new flows
-- If `fbcoord` returns no upstream, disconnects, or returns a locally invalid upstream, fbforward remains in coordination mode but falls back to local auto-selection behavior; repeated coordinator `pick` messages are treated as refreshes of the current shared state
-- The local Web UI exposes `auto`, `manual`, and `coordination` mode buttons when enabled
-
-Coordination configuration now effectively requires only:
-
-- `coordination.endpoint`
-- `coordination.token`
-- optional `coordination.heartbeat_interval`
-
-Legacy `coordination.pool` and `coordination.node_id` are parsed for backward
-compatibility but ignored with warnings. Each fbforward node must use a
-per-node fbcoord token; the operator token is not valid for node connections.
-
-For deploying and operating the coordination service itself, see [fbcoord user guide](fbcoord/user-guide.md). For the node-to-coordinator wire contract and selector details, see [fbcoord protocol reference](fbcoord/protocol.md).
+- The removed distributed-selection mode is no longer supported; selection is local to fbforward
 
 ### Upstream failure handling
 
@@ -187,7 +164,6 @@ control:
   bind_addr: "127.0.0.1"            # Control plane listen address
   bind_port: 8080                   # Control plane listen port
   auth_token: "..."                 # Bearer token for API auth
-  webui: {...}                      # Web UI settings
   metrics: {...}                    # Prometheus metrics settings
 
 geoip:
@@ -260,9 +236,7 @@ Expected startup logs:
 2025/01/26 12:00:00 INFO config loaded path=config.yaml upstreams=2 listeners=2
 2025/01/26 12:00:00 INFO resolved upstream tag=primary host=upstream1.example.com ip=203.0.113.10
 2025/01/26 12:00:00 INFO resolved upstream tag=backup host=upstream2.example.com ip=203.0.113.11
-2025/01/26 12:00:00 INFO starting ICMP prober
 2025/01/26 12:00:00 INFO starting measurement collector
-2025/01/26 12:00:00 INFO fast-start mode enabled timeout=30s
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=tcp
 2025/01/26 12:00:00 INFO listening addr=0.0.0.0:9000 protocol=udp
 2025/01/26 12:00:00 INFO control server started addr=127.0.0.1:8080
@@ -282,10 +256,9 @@ Shutdown sequence:
 1. Stop accepting new connections (close listeners)
 2. Wait for active TCP connections to close or timeout
 3. Remove UDP mappings
-4. Stop ICMP prober
-5. Stop measurement collector
-6. Shut down control plane
-7. Exit
+4. Stop measurement collector
+5. Shut down control plane
+6. Exit
 
 Graceful shutdown timeout is not configurable. Active TCP connections have up to the configured `idle_timeout.tcp` to complete.
 
@@ -314,69 +287,14 @@ Restart sequence:
 
 **Warning**: Restart terminates all active flows. Clients must reconnect.
 
-### Monitoring via web UI
+### Monitoring through the control API
 
-Access the web UI at `http://<bind_addr>:<bind_port>/` (configured in `control` section).
+The legacy browser UI is removed. Use authenticated `/rpc` requests for
+configuration and audit queries, `/status` for the WebSocket connection and
+queue stream, and `/metrics` for Prometheus health, RTT, flow, and probe data.
 
-**Authentication:**
-
-The web UI requires a valid Bearer token (configured in `control.auth_token`).
-On first access:
-
-1. Navigate to `/auth` to enter your token
-2. The UI validates the token by calling the `GetStatus` RPC method
-3. On success, the token is stored in browser `localStorage` (key: `fbforward_token`)
-4. You are redirected to the main UI
-
-The token persists in that browser until you click `Logout` or manually clear
-site data. Closing the browser or reopening the tab does not remove it. Because
-older builds stored the token only in `sessionStorage`, users upgrading to this
-version must log in again once. To use a different token or rotate credentials:
-
-1. Click `Logout` in the UI, or navigate to `/auth` directly
-2. Enter the new token
-3. The UI validates and saves the new token
-
-**Security note:** Tokens are stored in browser `localStorage`, which is still
-accessible to JavaScript running on the same origin. In production, always use
-HTTPS to protect token transmission.
-
-The UI displays:
-
-**Upstream status**:
-- Current primary upstream (highlighted)
-- Per-upstream health state and RTT
-- Reachability status
-
-**Flow statistics**:
-- Active TCP connections
-- Active UDP mappings
-- Total flows created
-
-**Operational status**:
-- GeoIP ASN database availability
-- GeoIP country database availability
-- IP-log total/rejection record counts and file size
-- Manual `Refresh GeoIP` action from the dashboard status card
-
-**RTT history**:
-- Time-series chart of unified upstream RTT
-- Switching events marked on chart
-
-**IP log page**:
-- A dedicated `IP Log` page for querying persisted flow-close and rejection records
-- Filter by time bounds, CIDR, ASN, country, type, protocol, port, and rejection metadata
-- Server-side sort and pagination over persisted records
-
-**Measurement status**:
-- Last measurement time per upstream
-- Next scheduled measurement
-- Measurement errors
-
-**Update mechanisms**:
-- Upstream health, RTT and traffic rates are polled from `/metrics` endpoint at a user-selectable interval (1s, 2s, or 5s via UI buttons)
-- Connection and queue snapshots are delivered via WebSocket subscription
-- Connection/flow events and measurement completions are pushed via WebSocket for real-time updates to the active connections list and test history
+Use the bearer token directly in the `Authorization` header. The root path is
+API-only and returns 404.
 
 ### Monitoring via Prometheus metrics
 
@@ -536,12 +454,12 @@ Resolution: Stop the conflicting process or change `bind_port` in configuration.
 
 **"startup failed: operation not permitted"**
 
-Cause: fbforward lacks required capabilities (CAP_NET_RAW for ICMP or CAP_NET_ADMIN for shaping).
+Cause: fbforward lacks the capability required by the enabled feature (for example CAP_NET_ADMIN for shaping).
 
 Resolution: Assign capabilities with `setcap` or run via systemd with `AmbientCapabilities`.
 
 ```bash
-sudo setcap cap_net_raw+ep ./fbforward
+sudo setcap cap_net_admin+ep ./fbforward
 ```
 
 **"measurement failed: connection refused"**
@@ -564,11 +482,12 @@ Cause: Upstream hostname does not resolve via DNS.
 
 Resolution: Verify DNS configuration or use IP address in `upstreams[].destination.host`.
 
-**"measurement stale: falling back to ICMP"**
+**"measurement stale"**
 
 Cause: fbmeasure probe cycles have not completed within `health.stale_threshold`.
 
-Resolution: Check fbmeasure connectivity and network conditions. Review measurement logs for errors.
+Resolution: Check fbmeasure connectivity and network conditions. The affected
+route filters stale/down upstreams when making new Flow selections.
 
 ### Diagnostic checklist
 
@@ -577,7 +496,7 @@ When fbforward is not operating correctly, verify:
 **1. Capabilities**:
 ```bash
 getcap ./fbforward
-# Expected: cap_net_raw=ep (at minimum)
+# Expected: cap_net_admin=ep when shaping is enabled
 ```
 
 **2. fbmeasure connectivity**:
@@ -630,7 +549,7 @@ iptables -L -n -v | grep <port>
 
 **High latency**:
 
-Check upstream RTT metrics in web UI or Prometheus. High RTT indicates network path issues.
+Check upstream RTT metrics in Prometheus. High RTT indicates network path issues.
 
 Verify:
 - Physical link quality (cable, WiFi signal)
@@ -639,7 +558,7 @@ Verify:
 
 **Low throughput**:
 
-Check traffic-rate metrics in web UI or Prometheus. Low throughput indicates path saturation, throttling, or shaping limits.
+Check traffic-rate metrics in Prometheus. Low throughput indicates path saturation, throttling, or shaping limits.
 
 Verify:
 - No QoS policies throttling traffic

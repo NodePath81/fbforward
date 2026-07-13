@@ -81,5 +81,4 @@ original decision when either policy layer changes.
 
 - PROXY protocol and TProxy are not used for client identity propagation.
 - fbmeasure returns health and raw RTT; it does not own Flow state.
-- fbcoord synchronizes desired state only; it does not replicate measurements
-  or individual Flow records.
+- upstream selection is local to each route; no distributed state is replicated.

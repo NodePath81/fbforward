@@ -26,16 +26,6 @@ type statusResponse struct {
 	Mode           string                      `json:"mode"`
 	ActiveUpstream string                      `json:"active_upstream"`
 	Upstreams      []upstream.UpstreamSnapshot `json:"upstreams"`
-	Coordination   coordinationStatusResponse  `json:"coordination"`
-}
-
-type coordinationStatusResponse struct {
-	Available        bool   `json:"available"`
-	Connected        bool   `json:"connected"`
-	Authoritative    bool   `json:"authoritative"`
-	SelectedUpstream string `json:"selected_upstream"`
-	Version          int64  `json:"version"`
-	FallbackActive   bool   `json:"fallback_active"`
 }
 
 func (c *ControlServer) rpcSetUpstream(ctx *rpcContext, raw json.RawMessage) (any, *rpcFault) {
@@ -47,33 +37,15 @@ func (c *ControlServer) rpcSetUpstream(ctx *rpcContext, raw json.RawMessage) (an
 	switch mode {
 	case "auto":
 		c.manager.SetAuto()
-		if c.coord != nil {
-			c.coord.Disable()
-		}
 		if c.metrics != nil {
 			c.metrics.SetMode(upstream.ModeAuto)
-			c.metrics.SetCoordinationState(c.manager.CoordinationState())
 		}
 	case "manual":
 		if err := c.manager.SetManual(params.Tag); err != nil {
 			return rpcError(http.StatusBadRequest, err.Error())
 		}
-		if c.coord != nil {
-			c.coord.Disable()
-		}
 		if c.metrics != nil {
 			c.metrics.SetMode(upstream.ModeManual)
-			c.metrics.SetCoordinationState(c.manager.CoordinationState())
-		}
-	case "coordination":
-		if c.coord == nil || !c.coord.Configured() {
-			return rpcError(http.StatusBadRequest, "coordination mode is not configured")
-		}
-		c.manager.SetCoordination()
-		c.coord.Enable()
-		if c.metrics != nil {
-			c.metrics.SetMode(upstream.ModeCoordination)
-			c.metrics.SetCoordinationState(c.manager.CoordinationState())
 		}
 	default:
 		return rpcError(http.StatusBadRequest, "invalid mode")
@@ -87,19 +59,10 @@ func (c *ControlServer) rpcGetStatus(_ *rpcContext, raw json.RawMessage) (any, *
 	if fault := decodeOptionalParams(raw, &struct{}{}); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	coordState := c.manager.CoordinationState()
 	return rpcOK(statusResponse{
 		Mode:           c.manager.Mode().String(),
 		ActiveUpstream: c.manager.ActiveTag(),
 		Upstreams:      c.manager.Snapshot(),
-		Coordination: coordinationStatusResponse{
-			Available:        c.fullCfg.Coordination.IsConfigured(),
-			Connected:        coordState.Connected,
-			Authoritative:    coordState.Authoritative,
-			SelectedUpstream: coordState.SelectedUpstream,
-			Version:          coordState.Version,
-			FallbackActive:   coordState.FallbackActive,
-		},
 	})
 }
 
