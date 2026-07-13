@@ -27,6 +27,9 @@ routes:
   - name: proxy
     strategy: adaptive
     upstreams: [primary, backup]
+  - name: other
+    strategy: static
+    upstreams: [backup]
 
 upstreams:
   - tag: primary
@@ -57,6 +60,9 @@ firewall:
 	if got := echoPayload(t, first, "stage-14-primary"); got != "stage-14-primary" {
 		t.Fatalf("initial route selected %q, want primary", got)
 	}
+	if status, _ := forwarder.rpcStatus(t, "e2e-control-token", "SetRouteOverride", map[string]any{"route": "other", "upstream": "primary"}); status != 400 {
+		t.Fatalf("cross-route override status = %d, want 400", status)
+	}
 	_ = primary.listener.Close()
 	if got := echoPayload(t, first, "stage-14-pinned"); got != "stage-14-pinned" {
 		t.Fatalf("existing flow moved or closed: %q", got)
@@ -70,7 +76,9 @@ firewall:
 	}
 	_ = second.Close()
 	var routes []struct {
-		Effective string `json:"effective_upstream"`
+		Name          string `json:"route"`
+		Effective     string `json:"effective_upstream"`
+		OverrideState string `json:"override_state"`
 	}
 	waitForInterval(t, 3*time.Second, 300*time.Millisecond, func() bool {
 		raw := forwarder.rpc(t, "e2e-control-token", "GetRouteStatus", nil)
@@ -78,7 +86,15 @@ firewall:
 		if err := json.Unmarshal(raw, &routes); err != nil {
 			return false
 		}
-		return len(routes) == 1 && routes[0].Effective == "backup"
+		if len(routes) != 2 {
+			return false
+		}
+		for _, route := range routes {
+			if route.Name == "proxy" && route.Effective == "backup" {
+				return true
+			}
+		}
+		return false
 	})
 	third, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(primary.port)), time.Second)
 	if err != nil {

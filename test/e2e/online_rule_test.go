@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/audit"
 )
 
 func TestOnlineDenyExpiresAndRestoresForwarding(t *testing.T) {
@@ -95,7 +97,6 @@ firewall:
 	if err != nil {
 		t.Fatalf("dial after online rule expiry: %v", err)
 	}
-	defer connection.Close()
 	payload := []byte("stage-14-online-expired")
 	if _, err := connection.Write(payload); err != nil {
 		t.Fatalf("write after online rule expiry: %v", err)
@@ -106,5 +107,19 @@ firewall:
 	}
 	if string(response) != string(payload) {
 		t.Fatalf("unexpected response after expiry: %q", response)
+	}
+	_ = connection.Close()
+	forwarder.rpc(t, "e2e-control-token", "ExpireOnlineRule", map[string]any{"rule_id": "e2e-expiring-deny"})
+	store, err := audit.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("open audit store for rule events: %v", err)
+	}
+	defer store.Close()
+	events, err := store.QueryOnlineRuleEvents("e2e-expiring-deny")
+	if err != nil {
+		t.Fatalf("query online rule events: %v", err)
+	}
+	if len(events) != 2 || events[0].Operation != "create" || events[1].Operation != "expire" {
+		t.Fatalf("unexpected online rule events: %+v", events)
 	}
 }

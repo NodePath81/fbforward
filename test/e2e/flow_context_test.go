@@ -109,6 +109,17 @@ firewall:
 	}
 	_ = connection.Close()
 	_ = backendConnection.Close()
+	var closed struct {
+		OK   bool `json:"ok"`
+		Flow struct {
+			FlowID string `json:"flow_id"`
+			State  string `json:"state"`
+		} `json:"flow"`
+	}
+	postFlowContext(t, forwarder.baseURL+"/flow-context/resolve", "e2e-backend-token", resolve, &closed)
+	if !closed.OK || closed.Flow.FlowID != resolved.Flow.FlowID || closed.Flow.State != "closed" {
+		t.Fatalf("unexpected closed grace context: %+v", closed)
+	}
 
 	var audit struct {
 		Total int `json:"total"`

@@ -76,6 +76,30 @@ func (f *forwarderProcess) rpc(t *testing.T, token, method string, params any) j
 	return envelope.Result
 }
 
+func (f *forwarderProcess) rpcStatus(t *testing.T, token, method string, params any) (int, string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"method": method, "params": params})
+	if err != nil {
+		t.Fatalf("marshal %s request: %v", method, err)
+	}
+	request, err := http.NewRequest(http.MethodPost, f.baseURL+"/rpc", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create %s request: %v", method, err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("call %s: %v", method, err)
+	}
+	defer response.Body.Close()
+	var envelope rpcEnvelope
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode %s response: %v", method, err)
+	}
+	return response.StatusCode, envelope.Error
+}
+
 func startForwarder(t *testing.T, config string, controlPort int) *forwarderProcess {
 	t.Helper()
 	root := repositoryRoot(t)

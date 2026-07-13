@@ -68,6 +68,11 @@ func TestClientSecurityInvariants(t *testing.T) {
 			t.Fatalf("app.js contains forbidden client state or HTML sink %q", forbidden)
 		}
 	}
+	for _, forbidden := range []string{"searchParams.set('token'", "searchParams.append('token'", "?token=", "&token="} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("app.js places the control token in the URL: %q", forbidden)
+		}
+	}
 	if !strings.Contains(script, "sessionStorage") || !strings.Contains(script, "Authorization") {
 		t.Fatalf("app.js does not use session-scoped bearer authentication")
 	}

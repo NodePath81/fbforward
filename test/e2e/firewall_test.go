@@ -13,22 +13,14 @@ import (
 )
 
 func TestFirewallRejectsAndAuditsTCPConnection(t *testing.T) {
+	echo := startTCPEcho(t)
 	controlPort := freeTCPPort(t)
-	forwardPort := freeTCPPort(t)
-	upstream, err := net.Listen("tcp", net.JoinHostPort("127.0.0.2", fmt.Sprint(forwardPort)))
-	if err != nil {
-		t.Fatalf("listen upstream: %v", err)
-	}
-	defer upstream.Close()
+	forwardPort := echo.port
 
 	policyPath := filepath.Join(t.TempDir(), "firewall.yaml")
 	policy := []byte(`version: 1
 default: allow
-rules:
-  - id: reject-e2e
-    action: deny
-    match:
-      source_cidr: 127.0.0.0/8
+rules: []
 `)
 	if err := os.WriteFile(policyPath, policy, 0o600); err != nil {
 		t.Fatalf("write policy: %v", err)
@@ -79,10 +71,39 @@ firewall:
 	forwarder := startForwarder(t, config, controlPort)
 	waitForIdentity(t, forwarder)
 
-	// The firewall rejects before the upstream is selected or dialed.
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", forwardPort), time.Second)
+	flowA, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", forwardPort), time.Second)
+	if err != nil {
+		t.Fatalf("dial Flow A: %v", err)
+	}
+	if got := echoPayload(t, flowA, "stage-14-before-reload"); got != "stage-14-before-reload" {
+		t.Fatalf("Flow A before reload: %q", got)
+	}
+
+	denyPolicy := []byte(`version: 1
+default: allow
+rules:
+  - id: reject-e2e
+    action: deny
+    match:
+      source_cidr: 127.0.0.0/8
+`)
+	temporaryPolicy := policyPath + ".new"
+	if err := os.WriteFile(temporaryPolicy, denyPolicy, 0o600); err != nil {
+		t.Fatalf("write replacement policy: %v", err)
+	}
+	if err := os.Rename(temporaryPolicy, policyPath); err != nil {
+		t.Fatalf("replace policy: %v", err)
+	}
+	forwarder.rpc(t, "e2e-control-token", "ReloadFirewallPolicy", nil)
+	if got := echoPayload(t, flowA, "stage-14-after-reload"); got != "stage-14-after-reload" {
+		t.Fatalf("Flow A after reload: %q", got)
+	}
+	_ = flowA.Close()
+
+	// The firewall rejects Flow B before the upstream is selected or dialed.
+	flowB, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", forwardPort), time.Second)
 	if err == nil {
-		_ = conn.Close()
+		_ = flowB.Close()
 	}
 
 	var result struct {
@@ -92,7 +113,7 @@ firewall:
 			MatchedRuleValue string `json:"matched_rule_value"`
 		} `json:"records"`
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	waitForInterval(t, 5*time.Second, 300*time.Millisecond, func() bool {
 		raw := forwarder.rpc(t, "e2e-control-token", "QueryRejectionLog", map[string]any{"limit": 10})
 		result = struct {
 			Total   int `json:"total"`
