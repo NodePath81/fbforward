@@ -217,6 +217,11 @@ func (c *Client) UnsetFlowTag(ctx context.Context, flowID, namespace, key string
 	return c.setTag(ctx, "UnsetFlowTag", flowID, Tag{Namespace: namespace, Key: key})
 }
 
+// UnsetClientTag removes a client tag from the selected fbforward instance.
+func (c *Client) UnsetClientTag(ctx context.Context, flowID, namespace, key string) error {
+	return c.setTag(ctx, "UnsetClientTag", flowID, Tag{Namespace: namespace, Key: key})
+}
+
 func (c *Client) setTag(ctx context.Context, method, flowID string, tag Tag) error {
 	if c == nil || strings.TrimSpace(flowID) == "" || strings.TrimSpace(tag.Namespace) == "" || strings.TrimSpace(tag.Key) == "" || tag.TTL < 0 || tag.TTL%time.Second != 0 {
 		return ErrInvalidRequest

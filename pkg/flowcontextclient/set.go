@@ -111,3 +111,19 @@ func (f ResolvedFlow) SetClientTag(ctx context.Context, tag Tag) error {
 	}
 	return f.client.SetClientTag(ctx, f.ID, tag)
 }
+
+// UnsetFlowTag removes a flow tag from the source instance.
+func (f ResolvedFlow) UnsetFlowTag(ctx context.Context, namespace, key string) error {
+	if f.client == nil || f.ID == "" {
+		return ErrInvalidRequest
+	}
+	return f.client.UnsetFlowTag(ctx, f.ID, namespace, key)
+}
+
+// UnsetClientTag removes a client tag from the source instance.
+func (f ResolvedFlow) UnsetClientTag(ctx context.Context, namespace, key string) error {
+	if f.client == nil || f.ID == "" {
+		return ErrInvalidRequest
+	}
+	return f.client.UnsetClientTag(ctx, f.ID, namespace, key)
+}

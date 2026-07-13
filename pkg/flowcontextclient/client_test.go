@@ -188,11 +188,20 @@ func TestSetTags(t *testing.T) {
 	if err := client.SetClientTag(context.Background(), "flow-1", Tag{Namespace: "app", Key: "risk", Value: "abuse"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 2 {
-		t.Fatalf("requests=%d, want 2", len(requests))
+	if err := client.UnsetFlowTag(context.Background(), "flow-1", "app", "user"); err != nil {
+		t.Fatal(err)
 	}
-	if requests[0].Method != "SetFlowTag" || requests[1].Method != "SetClientTag" {
-		t.Fatalf("methods=%q,%q", requests[0].Method, requests[1].Method)
+	if err := client.UnsetClientTag(context.Background(), "flow-1", "app", "risk"); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 4 {
+		t.Fatalf("requests=%d, want 4", len(requests))
+	}
+	methods := []string{"SetFlowTag", "SetClientTag", "UnsetFlowTag", "UnsetClientTag"}
+	for index, method := range methods {
+		if requests[index].Method != method {
+			t.Fatalf("method[%d]=%q, want %q", index, requests[index].Method, method)
+		}
 	}
 	first := requests[0].Params.(map[string]any)
 	if first["flow_id"] != "flow-1" || first["ttl_seconds"] != float64(3600) {
