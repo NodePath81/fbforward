@@ -34,12 +34,20 @@
       <p id="alert" role="alert" hidden></p>
       <section id="page-status" data-section>
         <h2>Status</h2>
-        <p class="hint">The application shell is ready. Choose a section.</p>
+        <div id="status-summary" class="summary"></div>
+        <form id="mode-form" class="inline-form">
+          <label for="mode">Mode</label>
+          <select id="mode"><option value="auto">auto</option><option value="manual">manual</option></select>
+          <label for="manual-upstream">Manual upstream</label>
+          <select id="manual-upstream"></select>
+          <button type="submit">Apply</button>
+        </form>
+        <div class="scroll"><table><thead><tr><th>upstream</th><th>health</th><th>rtt ms</th><th>active</th></tr></thead><tbody id="upstream-rows"></tbody></table></div>
       </section>
-      <section id="page-flows" data-section hidden><h2>Flows</h2></section>
-      <section id="page-config" data-section hidden><h2>Config</h2></section>
-      <section id="page-audit" data-section hidden><h2>Audit</h2></section>
-      <section id="page-firewall" data-section hidden><h2>Firewall</h2></section>
+      <section id="page-flows" data-section hidden><h2>Flows</h2><label for="flow-filter">Filter current snapshot</label><input id="flow-filter" type="search"><div class="scroll"><table><thead><tr><th>id</th><th>client</th><th>listener</th><th>route</th><th>upstream</th><th>bytes up/down</th><th>activity</th></tr></thead><tbody id="flow-rows"></tbody></table></div></section>
+      <section id="page-config" data-section hidden><h2>Config</h2><pre id="config-json" class="scroll">not loaded</pre></section>
+      <section id="page-audit" data-section hidden><h2>Audit</h2><p class="hint">Audit queries are added in the next UI phase.</p></section>
+      <section id="page-firewall" data-section hidden><h2>Firewall</h2><p class="hint">Firewall controls are added in the next UI phase.</p></section>
     </section>
     <noscript><p class="notice">JavaScript is disabled. Static documentation is available, but API actions require JavaScript.</p></noscript>
   </main>
