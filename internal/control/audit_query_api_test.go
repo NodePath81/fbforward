@@ -63,3 +63,34 @@ func TestQueryAuditRejectsUnknownFieldsAndSQL(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryAuditSourcesAndFilters(t *testing.T) {
+	server := newTestControlServer(t)
+	store := newTestIPLogStore(t, server)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.InsertBatch([]iplog.EnrichedRecord{{CloseEvent: iplog.CloseEvent{IP: "192.0.2.20", Protocol: "udp", Upstream: "backup", BytesUp: 3, BytesDown: 7, RecordedAt: now}, ASN: 64520, Country: "US"}}); err != nil {
+		t.Fatal(err)
+	}
+	queries := []string{
+		"flows ip=192.0.2.20",
+		"events country=us",
+		"top clients protocol=UDP",
+		"top asns protocol=UDP",
+	}
+	for _, query := range queries {
+		rec := callTestRPC(t, server, "0123456789abcdef", "QueryAudit", map[string]any{"query": query})
+		if rec.Code != http.StatusOK {
+			t.Errorf("query %q status=%d body=%s", query, rec.Code, rec.Body.String())
+		}
+	}
+	for _, query := range []string{
+		"flows ip=192.0.2.999",
+		"flows since=2026-01-02T00:00:00Z until=2026-01-01T00:00:00Z",
+		"top asns protocol=icmp",
+	} {
+		rec := callTestRPC(t, server, "0123456789abcdef", "QueryAudit", map[string]any{"query": query})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("invalid query %q status=%d body=%s", query, rec.Code, rec.Body.String())
+		}
+	}
+}
