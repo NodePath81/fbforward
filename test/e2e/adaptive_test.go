@@ -51,6 +51,9 @@ firewall:
 `, primary.port, controlPort)
 	forwarder := startForwarder(t, config, controlPort)
 	waitForIdentity(t, forwarder)
+	if status, _ := forwarder.rpcStatus(t, "e2e-control-token", "SetRouteOverride", map[string]any{"route": "proxy", "upstream": "primary"}); status != 200 {
+		t.Fatalf("adaptive override status = %d, want 200", status)
+	}
 
 	first, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(primary.port)), time.Second)
 	if err != nil {
@@ -90,7 +93,7 @@ firewall:
 			return false
 		}
 		for _, route := range routes {
-			if route.Name == "proxy" && route.Effective == "backup" {
+			if route.Name == "proxy" && route.Effective == "backup" && route.OverrideState == "fallback" {
 				return true
 			}
 		}

@@ -18,48 +18,16 @@ func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
 	echo := startTCPEcho(t)
 	controlPort := freeTCPPort(t)
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
-	config := fmt.Sprintf(`hostname: e2e-context
-
-listeners:
-  - name: tcp
-    bind: 127.0.0.1:%d
-    protocol: tcp
-    route: local
-
-routes:
-  - name: local
-    strategy: static
-    upstreams: [local]
-
-upstreams:
-  - tag: local
-    destination:
-      host: 127.0.0.2
-
-control:
-  bind_addr: 127.0.0.1
-  bind_port: %d
-  auth_token: e2e-control-token
-
-ip_log:
-  enabled: true
-  db_path: %s
-  batch_size: 1
-  flush_interval: 10ms
-
-flow_context:
-  enabled: true
-  max_ttl: 24h
-  identities:
-    - id: caddy
-      token: e2e-backend-token
-      routes: [local]
-      upstreams: [local]
-      namespaces: [app]
-
-firewall:
-  enabled: false
-`, echo.port, controlPort, dbPath)
+	config := staticConfig(staticConfigOptions{
+		hostname:     "e2e-context",
+		protocol:     "tcp",
+		listenerName: "tcp",
+		listenerPort: echo.port,
+		controlPort:  controlPort,
+		upstreamHost: "127.0.0.2",
+		auditPath:    dbPath,
+		flowContext:  true,
+	})
 	forwarder := startForwarder(t, config, controlPort)
 	waitForIdentity(t, forwarder)
 

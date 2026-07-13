@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,53 +16,17 @@ func TestStaticTCPForwardsToLoopbackUpstream(t *testing.T) {
 	echo := startTCPEcho(t)
 	controlPort := freeTCPPort(t)
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
-	config := fmt.Sprintf(`hostname: e2e-tcp
-
-listeners:
-  - name: tcp
-    bind: 127.0.0.1:%d
-    protocol: tcp
-    route: local
-
-routes:
-  - name: local
-    strategy: static
-    upstreams: [local]
-
-upstreams:
-  - tag: local
-    destination:
-      host: 127.0.0.2
-
-control:
-  bind_addr: 127.0.0.1
-  bind_port: %d
-  auth_token: e2e-control-token
-
-ip_log:
-  enabled: true
-  db_path: %s
-  batch_size: 1
-  flush_interval: 10ms
-
-firewall:
-  enabled: false
-`, echo.port, controlPort, dbPath)
-	forwarder := startForwarder(t, config, controlPort)
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	waitFor(t, 5*time.Second, func() bool {
-		request, err := http.NewRequest(http.MethodGet, forwarder.baseURL+"/identity", nil)
-		if err != nil {
-			return false
-		}
-		request.Header.Set("Authorization", "Bearer e2e-control-token")
-		response, err := client.Do(request)
-		if err != nil {
-			return false
-		}
-		_ = response.Body.Close()
-		return response.StatusCode == http.StatusOK
+	config := staticConfig(staticConfigOptions{
+		hostname:     "e2e-tcp",
+		protocol:     "tcp",
+		listenerName: "tcp",
+		listenerPort: echo.port,
+		controlPort:  controlPort,
+		upstreamHost: "127.0.0.2",
+		auditPath:    dbPath,
 	})
+	forwarder := startForwarder(t, config, controlPort)
+	waitForIdentity(t, forwarder)
 
 	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(echo.port)), time.Second)
 	if err != nil {

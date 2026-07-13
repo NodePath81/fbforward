@@ -4,9 +4,7 @@ package e2e
 
 import (
 	"encoding/json"
-	"fmt"
 	"net"
-	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,58 +14,18 @@ func TestStaticUDPForwardsToLoopbackUpstream(t *testing.T) {
 	echo := startUDPEcho(t)
 	controlPort := freeTCPPort(t)
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
-	config := fmt.Sprintf(`hostname: e2e-udp
-
-listeners:
-  - name: udp
-    bind: 127.0.0.1:%d
-    protocol: udp
-    route: local
-
-routes:
-  - name: local
-    strategy: static
-    upstreams: [local]
-
-upstreams:
-  - tag: local
-    destination:
-      host: 127.0.0.2
-
-forwarding:
-  idle_timeout:
-    tcp: 5s
-    udp: 100ms
-
-ip_log:
-  enabled: true
-  db_path: %s
-  batch_size: 1
-  flush_interval: 10ms
-
-control:
-  bind_addr: 127.0.0.1
-  bind_port: %d
-  auth_token: e2e-control-token
-
-firewall:
-  enabled: false
-`, echo.port, dbPath, controlPort)
-	forwarder := startForwarder(t, config, controlPort)
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	waitFor(t, 5*time.Second, func() bool {
-		request, err := http.NewRequest(http.MethodGet, forwarder.baseURL+"/identity", nil)
-		if err != nil {
-			return false
-		}
-		request.Header.Set("Authorization", "Bearer e2e-control-token")
-		response, err := client.Do(request)
-		if err != nil {
-			return false
-		}
-		_ = response.Body.Close()
-		return response.StatusCode == http.StatusOK
+	config := staticConfig(staticConfigOptions{
+		hostname:     "e2e-udp",
+		protocol:     "udp",
+		listenerName: "udp",
+		listenerPort: echo.port,
+		controlPort:  controlPort,
+		upstreamHost: "127.0.0.2",
+		auditPath:    dbPath,
+		udpIdle:      "100ms",
 	})
+	forwarder := startForwarder(t, config, controlPort)
+	waitForIdentity(t, forwarder)
 
 	connection, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: echo.port})
 	if err != nil {

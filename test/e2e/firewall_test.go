@@ -26,48 +26,19 @@ rules: []
 		t.Fatalf("write policy: %v", err)
 	}
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
-	config := fmt.Sprintf(`hostname: e2e
-
-listeners:
-  - name: e2e
-    bind: 127.0.0.1:%d
-    protocol: tcp
-    route: local
-
-routes:
-  - name: local
-    strategy: static
-    upstreams: [local]
-
-upstreams:
-  - tag: local
-    destination:
-      host: 127.0.0.2
-
-forwarding:
-  limits:
-    max_tcp_connections: 10
-    max_udp_mappings: 10
-  idle_timeout:
-    tcp: 5s
-    udp: 5s
-
-control:
-  bind_addr: 127.0.0.1
-  bind_port: %d
-  auth_token: e2e-control-token
-
-ip_log:
-  enabled: true
-  db_path: %s
-  batch_size: 1
-  flush_interval: 10ms
-
-firewall:
-  enabled: true
-  policy_file: %s
-  fail_on_initial_load: true
-`, forwardPort, controlPort, dbPath, policyPath)
+	config := staticConfig(staticConfigOptions{
+		hostname:         "e2e",
+		protocol:         "tcp",
+		listenerName:     "e2e",
+		listenerPort:     forwardPort,
+		controlPort:      controlPort,
+		upstreamHost:     "127.0.0.2",
+		auditPath:        dbPath,
+		forwardingLimits: true,
+		tcpIdle:          "5s",
+		udpIdle:          "5s",
+		policyPath:       policyPath,
+	})
 	forwarder := startForwarder(t, config, controlPort)
 	waitForIdentity(t, forwarder)
 

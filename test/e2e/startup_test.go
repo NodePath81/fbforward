@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"testing"
@@ -14,42 +13,16 @@ import (
 func TestStartupServesIdentityAndEmbeddedAssets(t *testing.T) {
 	controlPort := freeTCPPort(t)
 	forwardPort := freeTCPPort(t)
-	config := fmt.Sprintf(`hostname: e2e
-
-listeners:
-  - name: e2e
-    bind: 127.0.0.1:%d
-    protocol: tcp
-    route: local
-
-routes:
-  - name: local
-    strategy: static
-    upstreams: [local]
-
-upstreams:
-  - tag: local
-    destination:
-      host: 127.0.0.1
-
-forwarding:
-  limits:
-    max_tcp_connections: 10
-    max_udp_mappings: 10
-  idle_timeout:
-    tcp: 5s
-    udp: 5s
-
-control:
-  bind_addr: 127.0.0.1
-  bind_port: %d
-  auth_token: e2e-control-token
-  metrics:
-    enabled: true
-
-firewall:
-  enabled: false
-`, forwardPort, controlPort)
+	config := staticConfig(staticConfigOptions{
+		hostname:         "e2e",
+		protocol:         "tcp",
+		listenerName:     "e2e",
+		listenerPort:     forwardPort,
+		controlPort:      controlPort,
+		upstreamHost:     "127.0.0.1",
+		forwardingLimits: true,
+		metrics:          true,
+	})
 	forwarder := startForwarder(t, config, controlPort)
 
 	client := &http.Client{Timeout: 500 * time.Millisecond}
