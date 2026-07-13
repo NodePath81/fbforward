@@ -81,6 +81,7 @@ func tokenize(input string) ([]token, error) {
 			i++
 			continue
 		}
+		tokenStart := i
 		var value strings.Builder
 		closedQuote := false
 		for i < len(input) {
@@ -89,7 +90,7 @@ func tokenize(input string) ([]token, error) {
 			}
 			if input[i] == '"' {
 				if closedQuote {
-					return nil, fmt.Errorf("quoted value must be separated")
+					return nil, syntaxError(i, "quoted value must be separated")
 				}
 				start := i
 				i++
@@ -121,14 +122,14 @@ func tokenize(input string) ([]token, error) {
 		if value.Len() == 0 {
 			return nil, syntaxError(i, "invalid token")
 		}
-		out = append(out, token{value: value.String(), pos: i - value.Len()})
+		out = append(out, token{value: value.String(), pos: tokenStart})
 	}
 	return out, nil
 }
 
 func Parse(input string) (Query, error) {
 	if len(input) == 0 || len(input) > MaxQueryBytes {
-		return Query{}, fmt.Errorf("query must be between 1 and %d bytes", MaxQueryBytes)
+		return Query{}, syntaxError(0, fmt.Sprintf("query must be between 1 and %d bytes", MaxQueryBytes))
 	}
 	tokens, err := tokenize(input)
 	if err != nil {
@@ -176,7 +177,7 @@ func Parse(input string) (Query, error) {
 			return Query{}, syntaxError(tokens[i].pos, fmt.Sprintf("filter %q is repeated", key))
 		}
 		q.Filters[key] = value
-		filterPositions[key] = tokens[i-1].pos
+		filterPositions[key] = tokens[i].pos
 		i++
 	}
 	for i < len(tokens) {
@@ -243,6 +244,7 @@ func Parse(input string) (Query, error) {
 	}
 	now := time.Now().UTC()
 	var since, until *int64
+	untilPos := 0
 	for key, value := range q.Filters {
 		pos := filterPositions[key]
 		switch key {
@@ -266,6 +268,7 @@ func Parse(input string) (Query, error) {
 				since = &t
 			} else {
 				until = &t
+				untilPos = pos
 			}
 		case "cidr":
 			if _, err := netip.ParsePrefix(value); err != nil {
@@ -283,7 +286,7 @@ func Parse(input string) (Query, error) {
 		}
 	}
 	if since != nil && until != nil && *since > *until {
-		return Query{}, syntaxError(0, "since must be earlier than or equal to until")
+		return Query{}, syntaxError(untilPos, "since must be earlier than or equal to until")
 	}
 	return q, nil
 }
