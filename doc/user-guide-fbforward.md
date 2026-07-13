@@ -335,7 +335,7 @@ These optional features are controlled by the `geoip`, `ip_log`, and `firewall` 
 
 **Minimum required subfields:**
 
-- `geoip`: At least one complete URL+path pair (`asn_db_url` + `asn_db_path`, or `country_db_url` + `country_db_path`)
+- `geoip`: At least one local MMDB path when GeoIP is enabled
 - `ip_log`: `db_path` is required when enabled. `log_rejections` defaults to `true`. `retention` is optional; `0s` disables background pruning.
 - `firewall`: Set `policy_file` and keep each external rule to exactly one of `source_cidr`, `source_asn`, or `source_country`
 
@@ -343,7 +343,7 @@ These optional features are controlled by the `geoip`, `ip_log`, and `firewall` 
 
 When GeoIP or IP logging is enabled, the dashboard shows operational status cards:
 
-- **GeoIP ASN / Country**: Shows whether the in-memory reader is loaded and the on-disk database size. A "Refresh GeoIP" button triggers an immediate re-download from the configured URLs. This is equivalent to calling the `RefreshGeoIP` RPC method.
+- **GeoIP ASN / Country**: Shows whether the in-memory reader is loaded and the on-disk database size. Deployment automation replaces local files and calls `ReloadGeoIP` to reopen them.
 - **IP Log**: Shows the total record count, rejection record count, and database file size. These values come from the `GetIPLogStatus` RPC.
 
 **IP Log page (`#/iplog`):**
