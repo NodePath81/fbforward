@@ -7,16 +7,27 @@ import (
 	"time"
 )
 
-func TestRemovedConfigKeysRejected(t *testing.T) {
+func TestRemovedWebUIConfigKeyRejected(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	webKey := "web" + "ui"
-	removedKey := "coord" + "ination"
-	raw := []byte("control:\n  " + webKey + ":\n    enabled: true\n" + removedKey + ":\n  endpoint: https://removed.example\n  token: token\n")
+	raw := []byte("control:\n  " + webKey + ":\n    enabled: true\n")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadConfig(path); err == nil {
-		t.Fatal("expected removed configuration keys to be rejected")
+		t.Fatal("expected removed Web UI configuration key to be rejected")
+	}
+}
+
+func TestRemovedDistributedConfigKeyRejected(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	removedKey := "coord" + "ination"
+	raw := []byte(removedKey + ":\n  endpoint: https://removed.example\n  token: token\n")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected removed distributed configuration key to be rejected")
 	}
 }
 
