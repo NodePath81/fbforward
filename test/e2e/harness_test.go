@@ -113,13 +113,17 @@ func freeTCPPort(t *testing.T) int {
 }
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+	waitForInterval(t, timeout, 25*time.Millisecond, condition)
+}
+
+func waitForInterval(t *testing.T, timeout, interval time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if condition() {
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(interval)
 	}
 	t.Fatal(strings.TrimSpace("condition did not become true before deadline"))
 }
