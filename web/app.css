@@ -1,0 +1,21 @@
+:root { color-scheme: light dark; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 0; background: Canvas; color: CanvasText; line-height: 1.45; }
+header, main, footer { width: min(100% - 2rem, 72rem); margin: 0 auto; }
+header { padding: 2rem 0 1rem; border-bottom: 2px solid CanvasText; }
+main { padding: 1rem 0 3rem; }
+footer { padding: 1rem 0 2rem; border-top: 1px solid CanvasText; }
+h1, h2 { line-height: 1.1; }
+h1 { font-size: clamp(1.5rem, 5vw, 2.75rem); margin: .25rem 0 1rem; }
+h2 { font-size: 1.25rem; margin-top: 0; }
+.eyebrow, .hint, small { color: GrayText; }
+section { margin: 1rem 0; }
+form { display: grid; gap: .6rem; max-width: 32rem; }
+input, button { min-height: 2.75rem; border: 2px solid CanvasText; border-radius: 0; background: Canvas; color: CanvasText; padding: .5rem .7rem; font: inherit; }
+button { cursor: pointer; font-weight: 700; }
+button:hover, button:focus-visible { background: CanvasText; color: Canvas; }
+nav { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+nav button { flex: 0 1 auto; }
+.notice, #alert { border: 2px solid CanvasText; padding: .75rem; }
+#alert { border-color: #b00020; color: #b00020; }
+@media (max-width: 48rem) { header, main, footer { width: min(100% - 1rem, 72rem); } nav button { flex: 1 1 7rem; } }

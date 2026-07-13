@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fbforward control</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <p class="eyebrow">FBFORWARD / CONTROL</p>
+    <h1>Local forwarding control</h1>
+    <p>Text-first operator interface. The daemon exposes an HTTP API; this page is only a client.</p>
+  </header>
+  <main>
+    <section id="login" aria-labelledby="login-title">
+      <h2 id="login-title">Authentication</h2>
+      <form id="login-form">
+        <label for="token">Control token</label>
+        <input id="token" name="token" type="password" autocomplete="current-password" required>
+        <button type="submit">Store in this session</button>
+      </form>
+      <p class="hint">The token stays in sessionStorage and is sent only as a Bearer header.</p>
+    </section>
+    <section id="app" hidden>
+      <nav aria-label="Sections">
+        <button type="button" data-page="status">Status</button>
+        <button type="button" data-page="flows">Flows</button>
+        <button type="button" data-page="config">Config</button>
+        <button type="button" data-page="audit">Audit</button>
+        <button type="button" data-page="firewall">Firewall</button>
+        <button type="button" id="logout">Logout</button>
+      </nav>
+      <p id="alert" role="alert" hidden></p>
+      <section id="page-status" data-section>
+        <h2>Status</h2>
+        <p class="hint">The application shell is ready. Choose a section.</p>
+      </section>
+      <section id="page-flows" data-section hidden><h2>Flows</h2></section>
+      <section id="page-config" data-section hidden><h2>Config</h2></section>
+      <section id="page-audit" data-section hidden><h2>Audit</h2></section>
+      <section id="page-firewall" data-section hidden><h2>Firewall</h2></section>
+    </section>
+    <noscript><p class="notice">JavaScript is disabled. Static documentation is available, but API actions require JavaScript.</p></noscript>
+  </main>
+  <footer><small>fbforward · API-only daemon · no external resources</small></footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -21,6 +21,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
 	"github.com/NodePath81/fbforward/internal/version"
+	"github.com/NodePath81/fbforward/web"
 )
 
 const (
@@ -95,7 +96,7 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	}
 	mux.HandleFunc("/rpc", c.handleRPC)
 	mux.HandleFunc("/identity", c.handleIdentity)
-	mux.HandleFunc("/", c.handleAPIOnlyRoot)
+	mux.Handle("/", web.Handler())
 
 	addr := util.NetJoin(c.cfg.BindAddr, c.cfg.BindPort)
 	c.server = &http.Server{
@@ -116,10 +117,6 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	}()
 	util.Event(c.logger, slog.LevelInfo, "control.server_started", "listen.addr", addr)
 	return nil
-}
-
-func (c *ControlServer) handleAPIOnlyRoot(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "fbforward control API", http.StatusNotFound)
 }
 
 func (c *ControlServer) Shutdown(ctx context.Context) error {

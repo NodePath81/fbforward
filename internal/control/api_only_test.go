@@ -7,18 +7,6 @@ import (
 	"testing"
 )
 
-func TestAPIOnlyRoot(t *testing.T) {
-	server := newTestControlServer(t)
-	rec := httptest.NewRecorder()
-	server.handleAPIOnlyRoot(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected API-only root to return 404, got %d", rec.Code)
-	}
-	if rec.Body.String() != "fbforward control API\n" {
-		t.Fatalf("unexpected API-only root response: %q", rec.Body.String())
-	}
-}
-
 func TestRemovedDistributedModeIsRejected(t *testing.T) {
 	server := newTestControlServer(t)
 	removedMode := "coord" + "ination"
