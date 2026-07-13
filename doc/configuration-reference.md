@@ -20,7 +20,7 @@ dns: {...}                        # DNS resolution
 measurement: {...}                # fbmeasure probe settings
 health: {...}                     # Unified health and RTT state
 control: {...}                    # Control plane (HTTP API)
-notify: {...}                     # fbnotify event delivery
+webhook: {...}                    # Generic webhook event delivery
 logging: {...}                    # Log level
 geoip: {...}                      # Optional GeoIP database management
 ip_log: {...}                     # Optional SQLite-backed IP logging
@@ -701,9 +701,11 @@ When `false`, `GET /metrics` returns 404.
 
 ---
 
-## 4.10 notify section
+## 4.10 webhook section
 
-The `notify` section configures outbound notification delivery through `fbnotify`.
+The `webhook` section configures outbound generic event delivery. Database
+downloads are deliberately external to fbforward; only local MMDB files are
+read by the process.
 
 **Type:** Object
 
@@ -712,37 +714,30 @@ The `notify` section configures outbound notification delivery through `fbnotify
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable outbound notification delivery |
-| `endpoint` | string | empty | `fbnotify` event-ingress URL |
-| `key_id` | string | empty | `fbnotify` emitter key ID |
-| `token` | string | empty | fbnotify emitter token |
-| `source_instance` | string | empty | Source instance name reported to `fbnotify` |
-| `startup_grace_period` | duration | `5m` | Delay before unusable-state notifications may start |
-| `unusable_interval` | duration | `30s` | Continuous unusable duration before the first alert |
-| `notify_interval` | duration | `30m` | Minimum interval between repeated unusable reminders |
+| `endpoint` | string | empty | HTTP/HTTPS webhook URL |
+| `bearer_token` | string | empty | Optional bearer credential |
+| `source_instance` | string | hostname | Instance field in emitted events |
+| `timeout` | duration | `3s` | Delivery timeout |
 
 **Example:**
 
 ```yaml
-notify:
+webhook:
   enabled: true
-  endpoint: http://10.99.0.30:8787/v1/events
-  key_id: fbnotify-key-id
-  token: replace-with-fbnotify-token
+  endpoint: https://events.example/internal/fbforward
+  bearer_token: replace-with-webhook-token
   source_instance: node-1
-  startup_grace_period: 5m
-  unusable_interval: 30s
-  notify_interval: 30m
+  timeout: 5s
 ```
 
-When `notify.enabled` is `true`:
+When `webhook.enabled` is `true`:
 
 - `endpoint` must be a valid `http` or `https` URL
-- `key_id` must be a valid notify identifier
-- `token` must be non-empty and pass token validation
+- `bearer_token`, when set, must pass token validation
 - `source_instance` defaults to `hostname` or the OS hostname if omitted
-- `startup_grace_period`, `unusable_interval`, and `notify_interval` must each be greater than zero
-
-`notify.token` is intentionally omitted from sanitized runtime-config and control output.
+The JSON body is `{event, occurred_at, instance, attributes}`. Delivery is
+asynchronous and bounded; a full queue drops an event rather than blocking the
+forwarding path.
 
 ## 4.11 shaping section
 
@@ -843,30 +838,24 @@ The `geoip` section configures optional MaxMind MMDB database management for ASN
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable GeoIP database management |
-| `asn_db_url` | string | *none* | URL to download/refresh the ASN MMDB database |
 | `asn_db_path` | string | *none* | Local file path to the ASN MMDB database |
-| `country_db_url` | string | *none* | URL to download/refresh the country MMDB database |
 | `country_db_path` | string | *none* | Local file path to the country MMDB database |
-| `refresh_interval` | duration | `24h` | How often to re-download databases from URLs |
 
 **Example:**
 
 ```yaml
 geoip:
   enabled: true
-  asn_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/GeoLite2-ASN.mmdb"
   asn_db_path: "/var/lib/fbforward/GeoLite2-ASN.mmdb"
-  country_db_url: "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/Country-without-asn.mmdb"
   country_db_path: "/var/lib/fbforward/Country-without-asn.mmdb"
-  refresh_interval: 24h
 ```
 
 ### Operational behavior
 
-- If a `*_db_url`/`*_db_path` pair is configured, fbforward will refresh that database when the local file is missing or stale, and then continue periodic refresh checks every `refresh_interval`.
-- After a successful refresh, the in-memory GeoIP reader is hot-swapped atomically. No restart is required.
-- If neither URL nor path is set for a database type, that lookup type is unavailable.
-- If a database file exists at the path but the URL download fails, fbforward continues using the existing file.
+- Database files are downloaded and atomically replaced by the deployment layer
+  (for example the packaged systemd timer). fbforward only opens local paths.
+- `ReloadGeoIP` reopens the local files and atomically swaps readers without a
+  process restart.
 
 ### Interaction with other features
 

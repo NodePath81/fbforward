@@ -1,0 +1,8 @@
+[Unit]
+Description=Update fbforward GeoIP databases
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/fbforward-geoip
+ExecStart=/usr/local/libexec/fbforward/update-geoip.sh

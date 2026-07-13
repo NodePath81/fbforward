@@ -68,6 +68,10 @@ type geoipManager interface {
 	RefreshNow(context.Context) (geoip.RefreshResult, error)
 }
 
+type geoipReloader interface {
+	Reload(context.Context) error
+}
+
 func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, metrics *metrics.Metrics, status *StatusStore, restartFn func() error, logger util.Logger) *ControlServer {
 	c := &ControlServer{
 		fullCfg:     cfg,

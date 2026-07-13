@@ -211,7 +211,7 @@ func TestGeoIPConfigRejectsIncompletePair(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected incomplete geoip pair to fail")
 	}
-	if !strings.Contains(err.Error(), "geoip.asn_db requires both url and path") {
+	if !strings.Contains(err.Error(), "requires at least one local database path") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -219,7 +219,6 @@ func TestGeoIPConfigRejectsIncompletePair(t *testing.T) {
 func TestGeoIPConfigAcceptsSingleCompletePair(t *testing.T) {
 	cfg := testConfig()
 	cfg.GeoIP.Enabled = true
-	cfg.GeoIP.ASNDBURL = "https://example.com/GeoLite2-ASN.mmdb"
 	cfg.GeoIP.ASNDBPath = "/tmp/GeoLite2-ASN.mmdb"
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
@@ -390,17 +389,13 @@ func TestIPLogConfigRejectsInvalidTuning(t *testing.T) {
 	}
 }
 
-func TestGeoIPConfigRejectsPathWithoutURL(t *testing.T) {
+func TestGeoIPConfigAcceptsPathWithoutURL(t *testing.T) {
 	cfg := testConfig()
 	cfg.GeoIP.Enabled = true
 	cfg.GeoIP.CountryDBPath = "/tmp/Country-without-asn.mmdb"
 	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil {
-		t.Fatalf("expected incomplete geoip pair to fail")
-	}
-	if !strings.Contains(err.Error(), "geoip.country_db requires both url and path") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected local path to validate: %v", err)
 	}
 }
 

@@ -107,6 +107,26 @@ func (c *ControlServer) rpcRefreshGeoIP(ctx *rpcContext, raw json.RawMessage) (a
 	}
 	return rpcOK(result)
 }
+
+func (c *ControlServer) rpcReloadGeoIP(ctx *rpcContext, raw json.RawMessage) (any, *rpcFault) {
+	if fault := decodeOptionalParams(raw, &struct{}{}); fault != nil {
+		return rpcError(fault.Status, fault.Message)
+	}
+	c.geoipMu.RLock()
+	manager := c.geoipMgr
+	c.geoipMu.RUnlock()
+	if manager == nil {
+		return rpcError(http.StatusServiceUnavailable, "geoip manager not available")
+	}
+	reloader, ok := manager.(geoipReloader)
+	if !ok {
+		return rpcError(http.StatusServiceUnavailable, "geoip reload is not available")
+	}
+	if err := reloader.Reload(ctx.Request.Context()); err != nil {
+		return rpcError(http.StatusInternalServerError, err.Error())
+	}
+	return rpcOK(manager.Status())
+}
 func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 	cfg := c.measurement
 	return map[string]interface{}{
@@ -226,12 +246,9 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 			"source_instance": cfg.Notify.SourceInstance,
 		},
 		"geoip": map[string]interface{}{
-			"enabled":          cfg.GeoIP.Enabled,
-			"asn_db_url":       cfg.GeoIP.ASNDBURL,
-			"asn_db_path":      cfg.GeoIP.ASNDBPath,
-			"country_db_url":   cfg.GeoIP.CountryDBURL,
-			"country_db_path":  cfg.GeoIP.CountryDBPath,
-			"refresh_interval": cfg.GeoIP.RefreshInterval.Duration().String(),
+			"enabled":         cfg.GeoIP.Enabled,
+			"asn_db_path":     cfg.GeoIP.ASNDBPath,
+			"country_db_path": cfg.GeoIP.CountryDBPath,
 		},
 		"ip_log": map[string]interface{}{
 			"enabled":          cfg.IPLog.Enabled,

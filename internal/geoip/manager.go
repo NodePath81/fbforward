@@ -3,6 +3,7 @@ package geoip
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -127,27 +128,42 @@ func NewManager(cfg config.GeoIPConfig, logger util.Logger) (*Manager, error) {
 }
 
 func (m *Manager) Start(ctx context.Context) {
+	// Database updates are performed out of process. Runtime only loads local
+	// files at startup; callers use Reload to pick up an atomic replacement.
+}
+
+// Reload reopens the configured local MMDB files and atomically swaps readers.
+// It never downloads or writes files.
+func (m *Manager) Reload(ctx context.Context) error {
 	if m == nil {
-		return
+		return nil
 	}
-	m.startOnce.Do(func() {
-		m.refreshConfigured(ctx)
-		if !m.hasConfiguredDB() {
-			return
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+	var asn asnReader
+	var country countryReader
+	var err error
+	if m.cfg.ASNDBPath != "" {
+		asn, err = m.openASN(m.cfg.ASNDBPath)
+		if err != nil {
+			return fmt.Errorf("open ASN database: %w", err)
 		}
-		ticker := time.NewTicker(m.cfg.RefreshInterval.Duration())
-		go func() {
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					m.refreshConfigured(ctx)
-				}
+	}
+	if m.cfg.CountryDBPath != "" {
+		country, err = m.openCountry(m.cfg.CountryDBPath)
+		if err != nil {
+			if asn != nil {
+				_ = asn.Close()
 			}
-		}()
-	})
+			return fmt.Errorf("open country database: %w", err)
+		}
+	}
+	return m.swapReaders(asn, country)
 }
 
 func (m *Manager) Lookup(ip net.IP) LookupResult {
@@ -439,7 +455,7 @@ func (m *Manager) logAvailability(eventName string) {
 }
 
 func geoDBConfigured(url, path string) bool {
-	return url != "" && path != ""
+	return path != ""
 }
 
 func buildDBStatus(url, path string, available bool) DBStatus {

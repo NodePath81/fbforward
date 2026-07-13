@@ -84,6 +84,7 @@ func (c *ControlServer) registerRPCHandlers() {
 		"GetScheduleStatus":      c.rpcGetScheduleStatus,
 		"GetGeoIPStatus":         c.rpcGetGeoIPStatus,
 		"RefreshGeoIP":           c.rpcRefreshGeoIP,
+		"ReloadGeoIP":            c.rpcReloadGeoIP,
 		"GetIPLogStatus":         c.rpcGetIPLogStatus,
 		"QueryIPLog":             c.rpcQueryIPLog,
 		"QueryRejectionLog":      c.rpcQueryRejectionLog,

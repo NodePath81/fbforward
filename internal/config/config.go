@@ -254,11 +254,11 @@ type NotifyConfig struct {
 
 type GeoIPConfig struct {
 	Enabled         bool     `yaml:"enabled"`
-	ASNDBURL        string   `yaml:"asn_db_url"`
+	ASNDBURL        string   `yaml:"-"`
 	ASNDBPath       string   `yaml:"asn_db_path"`
-	CountryDBURL    string   `yaml:"country_db_url"`
+	CountryDBURL    string   `yaml:"-"`
 	CountryDBPath   string   `yaml:"country_db_path"`
-	RefreshInterval Duration `yaml:"refresh_interval"`
+	RefreshInterval Duration `yaml:"-"`
 }
 
 type IPLogConfig struct {
@@ -833,16 +833,13 @@ func (c *Config) validate() error {
 	c.GeoIP.CountryDBURL = strings.TrimSpace(c.GeoIP.CountryDBURL)
 	c.GeoIP.CountryDBPath = strings.TrimSpace(c.GeoIP.CountryDBPath)
 	if c.GeoIP.Enabled {
-		if c.GeoIP.RefreshInterval.Duration() <= 0 {
-			return errors.New("geoip.refresh_interval must be > 0")
+		if c.GeoIP.ASNDBPath == "" && c.GeoIP.CountryDBPath == "" {
+			return errors.New("geoip.enabled requires at least one local database path")
 		}
-		if !geoDBConfigured(c.GeoIP.ASNDBURL, c.GeoIP.ASNDBPath) && !geoDBConfigured(c.GeoIP.CountryDBURL, c.GeoIP.CountryDBPath) {
-			return errors.New("geoip.enabled requires at least one of asn_db_url/asn_db_path or country_db_url/country_db_path")
-		}
-		if err := validateGeoDBConfig("geoip.asn_db", c.GeoIP.ASNDBURL, c.GeoIP.ASNDBPath); err != nil {
+		if err := validateGeoDBConfig("geoip.asn_db", "", c.GeoIP.ASNDBPath); err != nil {
 			return err
 		}
-		if err := validateGeoDBConfig("geoip.country_db", c.GeoIP.CountryDBURL, c.GeoIP.CountryDBPath); err != nil {
+		if err := validateGeoDBConfig("geoip.country_db", "", c.GeoIP.CountryDBPath); err != nil {
 			return err
 		}
 	}
@@ -991,11 +988,8 @@ func validateNotifyIdentifier(value, field string) error {
 func validateGeoDBConfig(prefix, url, path string) error {
 	url = strings.TrimSpace(url)
 	path = strings.TrimSpace(path)
-	if url == "" && path == "" {
-		return nil
-	}
-	if url == "" || path == "" {
-		return fmt.Errorf("%s requires both url and path", prefix)
+	if url != "" {
+		return fmt.Errorf("%s remote urls are no longer supported; update the local path externally", prefix)
 	}
 	return nil
 }

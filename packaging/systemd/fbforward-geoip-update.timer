@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodic fbforward GeoIP database update
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
