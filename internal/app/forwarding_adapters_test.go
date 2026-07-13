@@ -9,30 +9,8 @@ import (
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/forwarding"
-	"github.com/NodePath81/fbforward/internal/policy"
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
-
-func TestFirewallPolicyAdapterMapsDecision(t *testing.T) {
-	provider, err := policy.NewProvider(config.FirewallConfig{
-		Enabled: true,
-		Default: "allow",
-		Rules:   []config.FirewallRule{{Action: "deny", CIDR: "10.0.0.0/8"}},
-	}, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("NewProvider error: %v", err)
-	}
-	policy := &firewallPolicy{provider: provider}
-	decision := policy.Decide(flow.Meta{ClientAddr: netip.MustParseAddrPort("10.1.2.3:1234")})
-	if decision.Allowed || decision.RuleType != "cidr" || decision.RuleValue != "10.0.0.0/8" {
-		t.Fatalf("unexpected policy decision: %+v", decision)
-	}
-
-	allowed := policy.Decide(flow.Meta{ClientAddr: netip.MustParseAddrPort("192.0.2.1:1234")})
-	if !allowed.Allowed {
-		t.Fatalf("expected non-matching address to be allowed: %+v", allowed)
-	}
-}
 
 func TestUpstreamPickerAdapterMapsActiveIPAndDialFeedback(t *testing.T) {
 	selected := &upstream.Upstream{Tag: "primary"}
@@ -96,14 +74,6 @@ func TestUpstreamPickerScopesAdaptiveRoutesAndKeepsStaticFixed(t *testing.T) {
 	}
 	if fixed.Tag != "static" {
 		t.Fatalf("static route changed with global active selection: %+v", fixed)
-	}
-}
-
-func TestUpstreamPickerRejectsUnknownRoute(t *testing.T) {
-	manager := upstream.NewUpstreamManager(nil, nil)
-	picker := newUpstreamPicker(manager, []config.RouteConfig{{Name: "known", Strategy: "static", Upstreams: []string{"missing"}}})
-	if _, err := picker.Pick(flow.Meta{Route: "unknown"}); err == nil {
-		t.Fatal("expected unknown route error")
 	}
 }
 

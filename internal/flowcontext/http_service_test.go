@@ -151,4 +151,18 @@ func TestHTTPServiceResolveRouteAndRPCMethod(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("resolve status=%d", response.StatusCode)
 	}
+	tooLarge := httptest.NewRequest(http.MethodPost, "/flow-context/resolve", strings.NewReader(strings.Repeat("x", int(maxFlowContextBodyBytes)+1)))
+	tooLarge.Header.Set("Authorization", "Bearer backend-secret")
+	tooLargeRecorder := httptest.NewRecorder()
+	service.HandleResolve(tooLargeRecorder, tooLarge)
+	if tooLargeRecorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("body limit status=%d", tooLargeRecorder.Code)
+	}
+	missing := httptest.NewRequest(http.MethodPost, "/flow-context/resolve", strings.NewReader(`{"protocol":"tcp","backend_key":"primary@192.0.2.10:443","local_addr":"10.0.0.1:9999","remote_addr":"192.0.2.10:443"}`))
+	missing.Header.Set("Authorization", "Bearer backend-secret")
+	missingRecorder := httptest.NewRecorder()
+	service.HandleResolve(missingRecorder, missing)
+	if missingRecorder.Code != http.StatusNotFound {
+		t.Fatalf("missing tuple status=%d", missingRecorder.Code)
+	}
 }

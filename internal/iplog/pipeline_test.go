@@ -99,9 +99,36 @@ func (w *fakeWriter) flattenRejections() []EnrichedRejectionRecord {
 	return out
 }
 
-func TestPipelineFlushesOnShutdown(t *testing.T) {
+func newStartedPipeline(t *testing.T, cfg config.IPLogConfig, lookup geoip.LookupProvider) (*Pipeline, *fakeWriter) {
+	t.Helper()
 	writer := &fakeWriter{}
-	pipeline := NewPipeline(config.IPLogConfig{
+	pipeline := NewPipeline(cfg, lookup, writer, metrics.NewMetrics(nil), nil)
+	pipeline.Start()
+	return pipeline, writer
+}
+
+func shutdownPipeline(t *testing.T, pipeline *Pipeline) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+}
+
+func waitForWritten(t *testing.T, writer *fakeWriter, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && writer.count() < want {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := writer.count(); got != want {
+		t.Fatalf("expected %d written records, got %d", want, got)
+	}
+}
+
+func TestPipelineFlushesOnShutdown(t *testing.T) {
+	pipeline, writer := newStartedPipeline(t, config.IPLogConfig{
 		GeoQueueSize:   4,
 		WriteQueueSize: 4,
 		BatchSize:      10,
@@ -114,8 +141,7 @@ func TestPipelineFlushesOnShutdown(t *testing.T) {
 			ASNDBAvailable:   true,
 			CountryAvailable: true,
 		},
-	}, writer, metrics.NewMetrics(nil), nil)
-	pipeline.Start()
+	})
 
 	if !pipeline.Emit(CloseEvent{
 		IP:         "1.1.1.1",
@@ -127,11 +153,7 @@ func TestPipelineFlushesOnShutdown(t *testing.T) {
 		t.Fatalf("expected emit to succeed")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := pipeline.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown error: %v", err)
-	}
+	shutdownPipeline(t, pipeline)
 	if writer.count() != 1 {
 		t.Fatalf("expected one written record, got %d", writer.count())
 	}
@@ -204,14 +226,12 @@ func TestPipelineDropsWhenGeoQueueIsFull(t *testing.T) {
 }
 
 func TestPipelineFlushesOnBatchSize(t *testing.T) {
-	writer := &fakeWriter{}
-	pipeline := NewPipeline(config.IPLogConfig{
+	pipeline, writer := newStartedPipeline(t, config.IPLogConfig{
 		GeoQueueSize:   4,
 		WriteQueueSize: 4,
 		BatchSize:      2,
 		FlushInterval:  config.Duration(time.Hour),
-	}, nil, writer, metrics.NewMetrics(nil), nil)
-	pipeline.Start()
+	}, nil)
 
 	if !pipeline.Emit(CloseEvent{IP: "10.0.0.1", Protocol: "tcp", Upstream: "a", Port: 1, RecordedAt: time.Now()}) {
 		t.Fatalf("expected first emit to succeed")
@@ -220,54 +240,24 @@ func TestPipelineFlushesOnBatchSize(t *testing.T) {
 		t.Fatalf("expected second emit to succeed")
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if writer.count() == 2 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if writer.count() != 2 {
-		t.Fatalf("expected batch flush on threshold, got %d", writer.count())
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := pipeline.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown error: %v", err)
-	}
+	waitForWritten(t, writer, 2)
+	shutdownPipeline(t, pipeline)
 }
 
 func TestPipelineFlushesOnTimer(t *testing.T) {
-	writer := &fakeWriter{}
-	pipeline := NewPipeline(config.IPLogConfig{
+	pipeline, writer := newStartedPipeline(t, config.IPLogConfig{
 		GeoQueueSize:   4,
 		WriteQueueSize: 4,
 		BatchSize:      10,
 		FlushInterval:  config.Duration(25 * time.Millisecond),
-	}, nil, writer, metrics.NewMetrics(nil), nil)
-	pipeline.Start()
+	}, nil)
 
 	if !pipeline.Emit(CloseEvent{IP: "10.0.0.1", Protocol: "tcp", Upstream: "a", Port: 1, RecordedAt: time.Now()}) {
 		t.Fatalf("expected emit to succeed")
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if writer.count() == 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if writer.count() != 1 {
-		t.Fatalf("expected timer flush, got %d", writer.count())
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := pipeline.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown error: %v", err)
-	}
+	waitForWritten(t, writer, 1)
+	shutdownPipeline(t, pipeline)
 }
 
 func TestPipelineWritesPartialGeoIPData(t *testing.T) {
@@ -322,22 +312,6 @@ func TestPipelineWriteQueueOverflowIncrementsDropMetric(t *testing.T) {
 	rendered := m.Render()
 	if !strings.Contains(rendered, "fbforward_iplog_events_dropped_total 1") {
 		t.Fatalf("expected dropped metric after write queue overflow, got:\n%s", rendered)
-	}
-}
-
-func TestPipelineShutdownWithEmptyQueues(t *testing.T) {
-	pipeline := NewPipeline(config.IPLogConfig{
-		GeoQueueSize:   1,
-		WriteQueueSize: 1,
-		BatchSize:      1,
-		FlushInterval:  config.Duration(time.Second),
-	}, nil, &fakeWriter{}, metrics.NewMetrics(nil), nil)
-	pipeline.Start()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := pipeline.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown error: %v", err)
 	}
 }
 

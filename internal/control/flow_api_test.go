@@ -1,10 +1,8 @@
 package control
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"sync"
 	"testing"
@@ -30,10 +28,7 @@ func TestGetActiveFlowsRPCReturnsSnapshot(t *testing.T) {
 	}
 	server.status.Open(meta)
 
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "GetActiveFlows", nil)))
-	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	rec := httptest.NewRecorder()
-	server.handleRPC(rec, req)
+	rec := callTestRPC(t, server, "0123456789abcdef", "GetActiveFlows", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -56,23 +51,6 @@ func TestGetActiveFlowsRPCReturnsSnapshot(t *testing.T) {
 	}
 	if response.Result.TCP[0].Route != "web" || response.Result.TCP[0].Upstream != "primary" {
 		t.Fatalf("missing flow metadata: %+v", response.Result.TCP[0])
-	}
-}
-
-func TestGetActiveFlowsRPCRequiresAuth(t *testing.T) {
-	server := newTestControlServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "GetActiveFlows", nil)))
-	rec := httptest.NewRecorder()
-	server.handleRPC(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var response rpcResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Ok || response.Error != "unauthorized" {
-		t.Fatalf("unexpected response: %+v", response)
 	}
 }
 

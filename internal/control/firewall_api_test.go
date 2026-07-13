@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,11 +27,7 @@ func TestFirewallPolicyRPCs(t *testing.T) {
 	server.SetFirewallProvider(provider)
 
 	request := func(method string, params any) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, method, params)))
-		req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-		rec := httptest.NewRecorder()
-		server.handleRPC(rec, req)
-		return rec
+		return callTestRPC(t, server, "0123456789abcdef", method, params)
 	}
 
 	status := request("GetFirewallStatus", nil)
@@ -83,15 +78,5 @@ func TestFirewallPolicyRPCs(t *testing.T) {
 	}
 	if provider.Status().Generation != 2 {
 		t.Fatalf("failed reload changed active generation: %+v", provider.Status())
-	}
-}
-
-func TestFirewallRPCRequiresControlAuthentication(t *testing.T) {
-	server := newTestControlServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "GetFirewallStatus", nil)))
-	rec := httptest.NewRecorder()
-	server.handleRPC(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

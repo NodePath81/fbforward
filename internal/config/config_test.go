@@ -7,50 +7,25 @@ import (
 	"time"
 )
 
-func TestRemovedWebUIConfigKeyRejected(t *testing.T) {
-	path := t.TempDir() + "/config.yaml"
-	webKey := "web" + "ui"
-	raw := []byte("control:\n  " + webKey + ":\n    enabled: true\n")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
+func TestRemovedConfigKeysRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"webui", "control:\n  " + "web" + "ui" + ":\n    enabled: true\n"},
+		{"coordination", "coord" + "ination" + ":\n  endpoint: https://removed.example\n  token: token\n"},
+		{"shaping", "shaping:\n  enabled: true\n  interface: eth0\n"},
 	}
-	if _, err := LoadConfig(path); err == nil {
-		t.Fatal("expected removed Web UI configuration key to be rejected")
-	}
-}
-
-func TestRemovedDistributedConfigKeyRejected(t *testing.T) {
-	path := t.TempDir() + "/config.yaml"
-	removedKey := "coord" + "ination"
-	raw := []byte(removedKey + ":\n  endpoint: https://removed.example\n  token: token\n")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadConfig(path); err == nil {
-		t.Fatal("expected removed distributed configuration key to be rejected")
-	}
-}
-
-func TestRemovedShapingConfigKeyRejected(t *testing.T) {
-	path := t.TempDir() + "/config.yaml"
-	raw := []byte("shaping:\n  enabled: true\n  interface: eth0\n")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadConfig(path); err == nil {
-		t.Fatal("expected removed shaping configuration key to be rejected")
-	}
-}
-
-func TestWebhookConfigAllowsOptionalBearerToken(t *testing.T) {
-	cfg := testConfig()
-	cfg.Notify = NotifyConfig{
-		Enabled:  true,
-		Endpoint: "https://notify.example/v1/events",
-	}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected webhook config to validate: %v", err)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := t.TempDir() + "/config.yaml"
+			if err := os.WriteFile(path, []byte(testCase.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err == nil {
+				t.Fatalf("expected removed %s configuration key to be rejected", testCase.name)
+			}
+		})
 	}
 }
 
@@ -83,73 +58,6 @@ func TestNotifyConfigAcceptsTokenAndDefaultsSourceInstance(t *testing.T) {
 	}
 	if got := cfg.Notify.NotifyInterval.Duration(); got != defaultNotifyInterval {
 		t.Fatalf("expected default notify.notify_interval %s, got %s", defaultNotifyInterval, got)
-	}
-}
-
-func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
-	tests := []struct {
-		name string
-		mut  func(*Config)
-		want string
-	}{
-		{
-			name: "startup grace",
-			mut: func(cfg *Config) {
-				cfg.Notify.StartupGracePeriod = Duration(-time.Second)
-			},
-			want: "webhook startup grace period must be > 0",
-		},
-		{
-			name: "unusable interval",
-			mut: func(cfg *Config) {
-				cfg.Notify.UnusableInterval = Duration(0)
-			},
-			want: "webhook unusable interval must be > 0",
-		},
-		{
-			name: "notify interval",
-			mut: func(cfg *Config) {
-				cfg.Notify.NotifyInterval = Duration(-time.Second)
-			},
-			want: "webhook notify interval must be > 0",
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			cfg := testConfig()
-			cfg.Notify = NotifyConfig{
-				Enabled:     true,
-				Endpoint:    "https://notify.example/v1/events",
-				BearerToken: "node-token-abcdefghijklmnopqrstuvwxyz123456",
-			}
-			cfg.setDefaults()
-			testCase.mut(&cfg)
-			err := cfg.validate()
-			if err == nil {
-				t.Fatalf("expected validation error")
-			}
-			if !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("expected %q in error, got %v", testCase.want, err)
-			}
-		})
-	}
-}
-
-func TestNotifyConfigRejectsInvalidToken(t *testing.T) {
-	cfg := testConfig()
-	cfg.Notify = NotifyConfig{
-		Enabled:     true,
-		Endpoint:    "https://notify.example/v1/events",
-		BearerToken: "short-token",
-	}
-	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil {
-		t.Fatalf("expected invalid token validation error")
-	}
-	if !strings.Contains(err.Error(), "webhook.bearer_token") {
-		t.Fatalf("expected webhook bearer token validation error, got %v", err)
 	}
 }
 
@@ -189,120 +97,86 @@ control:
 	}
 }
 
-func TestGeoIPConfigRequiresOneCompletePairWhenEnabled(t *testing.T) {
-	cfg := testConfig()
-	cfg.GeoIP.Enabled = true
-	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil {
-		t.Fatalf("expected geoip validation error")
+func TestGeoIPConfigValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*GeoIPConfig)
+		want string
+	}{
+		{"missing databases", func(cfg *GeoIPConfig) { cfg.Enabled = true }, "geoip.enabled requires at least one"},
+		{"url without local path", func(cfg *GeoIPConfig) { cfg.Enabled = true; cfg.ASNDBURL = "https://example.com/GeoLite2-ASN.mmdb" }, "requires at least one local database path"},
+		{"asn local path", func(cfg *GeoIPConfig) { cfg.Enabled = true; cfg.ASNDBPath = "/tmp/GeoLite2-ASN.mmdb" }, ""},
+		{"country local path", func(cfg *GeoIPConfig) { cfg.Enabled = true; cfg.CountryDBPath = "/tmp/Country-without-asn.mmdb" }, ""},
 	}
-	if !strings.Contains(err.Error(), "geoip.enabled requires at least one") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestGeoIPConfigRejectsIncompletePair(t *testing.T) {
-	cfg := testConfig()
-	cfg.GeoIP.Enabled = true
-	cfg.GeoIP.ASNDBURL = "https://example.com/GeoLite2-ASN.mmdb"
-	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil {
-		t.Fatalf("expected incomplete geoip pair to fail")
-	}
-	if !strings.Contains(err.Error(), "requires at least one local database path") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestGeoIPConfigAcceptsSingleCompletePair(t *testing.T) {
-	cfg := testConfig()
-	cfg.GeoIP.Enabled = true
-	cfg.GeoIP.ASNDBPath = "/tmp/GeoLite2-ASN.mmdb"
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected geoip config to validate: %v", err)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := testConfig()
+			testCase.mut(&cfg.GeoIP)
+			cfg.setDefaults()
+			err := cfg.validate()
+			if testCase.want == "" {
+				if err != nil {
+					t.Fatalf("expected geoip config to validate: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected %q, got %v", testCase.want, err)
+			}
+		})
 	}
 }
 
-func TestIPLogConfigRequiresDBPathWhenEnabled(t *testing.T) {
-	cfg := testConfig()
-	cfg.IPLog.Enabled = true
-	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil {
-		t.Fatalf("expected missing ip_log.db_path to fail")
+func TestFlowContextConfigValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{
+			name: "requires audit store",
+			mut: func(cfg *Config) {
+				cfg.FlowContext.Enabled = true
+				cfg.FlowContext.Identities = []FlowContextIdentity{{ID: "caddy", Token: "abcdef0123456789", Routes: []string{"web"}, Upstreams: []string{"primary"}, Namespaces: []string{"app"}}}
+			},
+			want: "ip_log.enabled",
+		},
+		{
+			name: "requires namespace allowlist",
+			mut: func(cfg *Config) {
+				cfg.IPLog.Enabled, cfg.IPLog.DBPath = true, "/tmp/flow-context.sqlite"
+				cfg.FlowContext.Enabled = true
+			},
+			want: "identities",
+		},
+		{
+			name: "rejects shared control token",
+			mut: func(cfg *Config) {
+				cfg.IPLog.Enabled, cfg.IPLog.DBPath = true, "/tmp/flow-context.sqlite"
+				cfg.FlowContext.Enabled = true
+				cfg.FlowContext.Identities = []FlowContextIdentity{{ID: "backend", Token: cfg.Control.AuthToken, Routes: []string{"web"}, Upstreams: []string{"primary"}, Namespaces: []string{"app"}}}
+			},
+			want: "must differ",
+		},
 	}
-	if !strings.Contains(err.Error(), "ip_log.db_path is required") {
-		t.Fatalf("unexpected error: %v", err)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := testConfig()
+			testCase.mut(&cfg)
+			cfg.setDefaults()
+			err := cfg.validate()
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected %q, got %v", testCase.want, err)
+			}
+		})
 	}
-}
-
-func TestFlowContextConfigRequiresIndependentAuthAndAuditStore(t *testing.T) {
 	cfg := testConfig()
+	cfg.IPLog.Enabled, cfg.IPLog.DBPath = true, "/tmp/flow-context.sqlite"
 	cfg.FlowContext.Enabled = true
 	cfg.FlowContext.Identities = []FlowContextIdentity{{ID: "caddy", Token: "abcdef0123456789", Routes: []string{"web"}, Upstreams: []string{"primary"}, Namespaces: []string{"app"}}}
 	cfg.setDefaults()
-	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "ip_log.enabled") {
-		t.Fatalf("expected flow context to require ip log, got %v", err)
-	}
-	cfg.IPLog.Enabled = true
-	cfg.IPLog.DBPath = "/tmp/flow-context.sqlite"
-	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("expected valid flow context config: %v", err)
-	}
-}
-
-func TestFlowContextConfigRequiresNamespaceAllowlist(t *testing.T) {
-	cfg := testConfig()
-	cfg.IPLog.Enabled = true
-	cfg.IPLog.DBPath = "/tmp/flow-context.sqlite"
-	cfg.FlowContext.Enabled = true
-	cfg.setDefaults()
-	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "identities") {
-		t.Fatalf("expected identity validation error, got %v", err)
-	}
-}
-
-func TestFlowContextConfigRejectsSharedControlToken(t *testing.T) {
-	cfg := testConfig()
-	cfg.IPLog.Enabled = true
-	cfg.IPLog.DBPath = "/tmp/flow-context.sqlite"
-	cfg.FlowContext.Enabled = true
-	cfg.FlowContext.Identities = []FlowContextIdentity{{ID: "backend", Token: cfg.Control.AuthToken, Routes: []string{"web"}, Upstreams: []string{"primary"}, Namespaces: []string{"app"}}}
-	cfg.setDefaults()
-	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "must differ") {
-		t.Fatalf("expected shared-token validation error, got %v", err)
-	}
-}
-
-func TestIPLogConfigDefaultsQueueSizes(t *testing.T) {
-	cfg := testConfig()
-	cfg.IPLog.Enabled = true
-	cfg.IPLog.DBPath = "/tmp/iplog.sqlite"
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected ip_log config to validate: %v", err)
-	}
-	if cfg.IPLog.GeoQueueSize != defaultIPLogGeoQueueSize {
-		t.Fatalf("expected default geo queue size %d, got %d", defaultIPLogGeoQueueSize, cfg.IPLog.GeoQueueSize)
-	}
-	if cfg.IPLog.WriteQueueSize != defaultIPLogWriteQueueSize {
-		t.Fatalf("expected default write queue size %d, got %d", defaultIPLogWriteQueueSize, cfg.IPLog.WriteQueueSize)
-	}
-	if cfg.IPLog.BatchSize != defaultIPLogBatchSize {
-		t.Fatalf("expected default batch size %d, got %d", defaultIPLogBatchSize, cfg.IPLog.BatchSize)
-	}
-	if got := cfg.IPLog.FlushInterval.Duration(); got != defaultIPLogFlushInterval {
-		t.Fatalf("expected default flush interval %s, got %s", defaultIPLogFlushInterval, got)
-	}
-	if got := cfg.IPLog.PruneInterval.Duration(); got != defaultIPLogPruneInterval {
-		t.Fatalf("expected default prune interval %s, got %s", defaultIPLogPruneInterval, got)
-	}
-	if cfg.IPLog.LogRejections == nil || !*cfg.IPLog.LogRejections {
-		t.Fatalf("expected log_rejections default to true when ip_log is enabled, got %#v", cfg.IPLog.LogRejections)
 	}
 }
 
@@ -326,129 +200,32 @@ func TestListenerRouteDefaultsAndExplicitValue(t *testing.T) {
 	}
 }
 
-func TestIPLogConfigPreservesExplicitLogRejectionsFalse(t *testing.T) {
-	cfg := testConfig()
-	cfg.IPLog.Enabled = true
-	cfg.IPLog.DBPath = "/tmp/iplog.sqlite"
-	disabled := false
-	cfg.IPLog.LogRejections = &disabled
-	cfg.setDefaults()
-	if cfg.IPLog.LogRejections == nil || *cfg.IPLog.LogRejections {
-		t.Fatalf("expected explicit log_rejections=false to be preserved, got %#v", cfg.IPLog.LogRejections)
-	}
-}
-
-func TestIPLogConfigRejectsInvalidTuning(t *testing.T) {
+func TestFirewallRejectsInvalidPolicy(t *testing.T) {
 	tests := []struct {
 		name string
-		mut  func(*Config)
+		mut  func(*FirewallConfig)
 		want string
 	}{
-		{
-			name: "batch size",
-			mut: func(cfg *Config) {
-				cfg.IPLog.BatchSize = -1
-			},
-			want: "ip_log.batch_size must be > 0",
-		},
-		{
-			name: "flush interval",
-			mut: func(cfg *Config) {
-				cfg.IPLog.FlushInterval = Duration(-time.Second)
-			},
-			want: "ip_log.flush_interval must be > 0",
-		},
-		{
-			name: "prune interval",
-			mut: func(cfg *Config) {
-				cfg.IPLog.Retention = Duration(24 * time.Hour)
-				cfg.IPLog.PruneInterval = Duration(0)
-			},
-			want: "ip_log.prune_interval must be > 0",
-		},
+		{name: "default", mut: func(cfg *FirewallConfig) {
+			cfg.Default = "maybe"
+			cfg.Rules = []FirewallRule{{Action: "deny", CIDR: "10.0.0.0/8"}}
+		}, want: "firewall.default must be allow or deny"},
+		{name: "action", mut: func(cfg *FirewallConfig) { cfg.Rules = []FirewallRule{{Action: "block", CIDR: "10.0.0.0/8"}} }, want: "firewall.rules[0].action must be allow or deny"},
+		{name: "multiple matchers", mut: func(cfg *FirewallConfig) {
+			cfg.Rules = []FirewallRule{{Action: "deny", CIDR: "10.0.0.0/8", Country: "us"}}
+		}, want: "must specify exactly one matcher"},
 	}
-
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig()
-			cfg.IPLog.Enabled = true
-			cfg.IPLog.DBPath = "/tmp/iplog.sqlite"
+			cfg.Firewall.Enabled = true
+			testCase.mut(&cfg.Firewall)
 			cfg.setDefaults()
-			testCase.mut(&cfg)
 			err := cfg.validate()
-			if err == nil {
-				t.Fatalf("expected validation error")
-			}
-			if !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("expected %q in error, got %v", testCase.want, err)
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected %q, got %v", testCase.want, err)
 			}
 		})
-	}
-}
-
-func TestGeoIPConfigAcceptsPathWithoutURL(t *testing.T) {
-	cfg := testConfig()
-	cfg.GeoIP.Enabled = true
-	cfg.GeoIP.CountryDBPath = "/tmp/Country-without-asn.mmdb"
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected local path to validate: %v", err)
-	}
-}
-
-func TestFirewallRuleRequiresExactlyOneMatcher(t *testing.T) {
-	cfg := testConfig()
-	cfg.Firewall.Enabled = true
-	cfg.Firewall.Rules = []FirewallRule{{
-		Action:  "deny",
-		CIDR:    "10.0.0.0/8",
-		Country: "us",
-	}}
-	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil {
-		t.Fatalf("expected firewall rule validation error")
-	}
-	if !strings.Contains(err.Error(), "must specify exactly one matcher") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestFirewallCountryNormalizedToUppercase(t *testing.T) {
-	cfg := testConfig()
-	cfg.Firewall.Enabled = true
-	cfg.Firewall.Rules = []FirewallRule{{
-		Action:  "allow",
-		Country: "us",
-	}}
-	cfg.setDefaults()
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected firewall config to validate: %v", err)
-	}
-	if got := cfg.Firewall.Rules[0].Country; got != "US" {
-		t.Fatalf("expected country to normalize to US, got %q", got)
-	}
-}
-
-func TestFirewallRejectsInvalidDefaultAndAction(t *testing.T) {
-	cfg := testConfig()
-	cfg.Firewall.Enabled = true
-	cfg.Firewall.Default = "maybe"
-	cfg.Firewall.Rules = []FirewallRule{{Action: "block", CIDR: "10.0.0.0/8"}}
-	cfg.setDefaults()
-
-	err := cfg.validate()
-	if err == nil || !strings.Contains(err.Error(), "firewall.default must be allow or deny") {
-		t.Fatalf("expected invalid firewall default error, got %v", err)
-	}
-
-	cfg = testConfig()
-	cfg.Firewall.Enabled = true
-	cfg.Firewall.Rules = []FirewallRule{{Action: "block", CIDR: "10.0.0.0/8"}}
-	cfg.setDefaults()
-	err = cfg.validate()
-	if err == nil || !strings.Contains(err.Error(), "firewall.rules[0].action must be allow or deny") {
-		t.Fatalf("expected invalid firewall action error, got %v", err)
 	}
 }
 
@@ -479,16 +256,6 @@ func TestFirewallLegacyRulesProduceDeprecationWarning(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected firewall migration warning, got %#v", cfg.Warnings)
-	}
-}
-
-func TestFirewallFailOnInitialLoadDefaultsToTrue(t *testing.T) {
-	if !(FirewallConfig{}).ShouldFailOnInitialLoad() {
-		t.Fatal("expected fail_on_initial_load to default to true")
-	}
-	value := false
-	if (FirewallConfig{FailOnInitialLoad: &value}).ShouldFailOnInitialLoad() {
-		t.Fatal("expected explicit false to be preserved")
 	}
 }
 

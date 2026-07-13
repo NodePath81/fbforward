@@ -23,11 +23,7 @@ func TestRouteOverrideRPCAndStatus(t *testing.T) {
 	server.SetRouteStateReader(routeReaderAdapter{selector})
 
 	call := func(method string, params any) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, method, params)))
-		req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-		rec := httptest.NewRecorder()
-		server.handleRPC(rec, req)
-		return rec
+		return callTestRPC(t, server, "0123456789abcdef", method, params)
 	}
 
 	status := call("GetRouteStatus", nil)
@@ -60,10 +56,7 @@ func TestLegacySetUpstreamRejectsAmbiguousMultipleRoutes(t *testing.T) {
 	})
 	server := newTestControlServer(t)
 	server.SetRouteStateReader(routeReaderAdapter{selector})
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "SetUpstream", map[string]any{"mode": "auto"})))
-	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	rec := httptest.NewRecorder()
-	server.handleRPC(rec, req)
+	rec := callTestRPC(t, server, "0123456789abcdef", "SetUpstream", map[string]any{"mode": "auto"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected ambiguous legacy mode to fail, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -84,11 +77,7 @@ func TestLegacySetUpstreamMapsToSingleRouteOverride(t *testing.T) {
 	server.SetRouteStateReader(routeReaderAdapter{selector})
 
 	call := func(params map[string]any) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "SetUpstream", params)))
-		req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-		rec := httptest.NewRecorder()
-		server.handleRPC(rec, req)
-		return rec
+		return callTestRPC(t, server, "0123456789abcdef", "SetUpstream", params)
 	}
 	if rec := call(map[string]any{"mode": "manual", "tag": "b"}); rec.Code != http.StatusOK {
 		t.Fatalf("legacy manual compatibility failed: %d %s", rec.Code, rec.Body.String())

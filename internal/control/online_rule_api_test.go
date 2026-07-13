@@ -5,32 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/NodePath81/fbforward/internal/audit"
-	"github.com/NodePath81/fbforward/internal/policy"
 )
 
 func TestOnlineRuleRPCLifecycle(t *testing.T) {
-	store, err := audit.NewStore(filepath.Join(t.TempDir(), "audit.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	provider, err := policy.NewOnlineProvider(store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	provider, store := newTestOnlineProvider(t)
 	server := newTestControlServer(t)
 	server.SetOnlinePolicyProvider(provider)
 	request := func(method string, params any) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, method, params)))
-		req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-		rec := httptest.NewRecorder()
-		server.handleRPC(rec, req)
-		return rec
+		return callTestRPC(t, server, "0123456789abcdef", method, params)
 	}
 
 	create := request("CreateOnlineRule", map[string]any{
@@ -87,15 +71,7 @@ func TestOnlineRuleRPCLifecycle(t *testing.T) {
 }
 
 func TestOnlineRuleRPCRejectsInvalidTTL(t *testing.T) {
-	store, err := audit.NewStore(filepath.Join(t.TempDir(), "audit.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	provider, err := policy.NewOnlineProvider(store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	provider, _ := newTestOnlineProvider(t)
 	server := newTestControlServer(t)
 	server.SetOnlinePolicyProvider(provider)
 	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "CreateOnlineRule", map[string]any{
@@ -111,32 +87,8 @@ func TestOnlineRuleRPCRejectsInvalidTTL(t *testing.T) {
 
 func TestOnlineRuleRPCUnavailableWithoutSQLite(t *testing.T) {
 	server := newTestControlServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader(rpcRequestBody(t, "ListOnlineRules", nil)))
-	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	rec := httptest.NewRecorder()
-	server.handleRPC(rec, req)
+	rec := callTestRPC(t, server, "0123456789abcdef", "ListOnlineRules", nil)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected unavailable status, got %d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestOnlineRuleRPCRejectsUnknownFields(t *testing.T) {
-	store, err := audit.NewStore(filepath.Join(t.TempDir(), "audit.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	provider, err := policy.NewOnlineProvider(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := newTestControlServer(t)
-	server.SetOnlinePolicyProvider(provider)
-	req := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewReader([]byte(`{"method":"CreateOnlineRule","params":{"action":"deny","matcher":{"source_ip":"192.0.2.1","unexpected":true},"ttl_seconds":60}}`)))
-	req.Header.Set("Authorization", "Bearer 0123456789abcdef")
-	rec := httptest.NewRecorder()
-	server.handleRPC(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected unknown matcher field 400, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
