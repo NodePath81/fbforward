@@ -81,8 +81,16 @@ type tcpEcho struct {
 }
 
 func startTCPEcho(t *testing.T) tcpEcho {
+	return startTCPEchoOn(t, "127.0.0.2")
+}
+
+func startTCPEchoOn(t *testing.T, host string) tcpEcho {
+	return startTCPEchoAt(t, host, 0)
+}
+
+func startTCPEchoAt(t *testing.T, host string, port int) tcpEcho {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.2:0")
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(port)))
 	if err != nil {
 		t.Fatalf("listen echo upstream: %v", err)
 	}
