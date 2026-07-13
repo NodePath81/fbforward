@@ -344,14 +344,11 @@ func (s *Store) QueryLogEvents(params LogEventQueryParams) (LogEventQueryResult,
 }
 
 func (s *Store) GetTopTalkers(params TopTalkerParams) ([]TopTalker, error) {
+	if err := validateTopQuery(params.StartTime, params.EndTime, params.Protocol, params.Limit, params.Offset); err != nil {
+		return nil, err
+	}
 	if params.Limit <= 0 {
 		params.Limit = 10
-	}
-	if params.Limit > MaxQueryLimit {
-		params.Limit = MaxQueryLimit
-	}
-	if params.Offset < 0 {
-		return nil, errors.New("offset must be >= 0")
 	}
 	sortColumn, sortOrder, err := topSort(params.SortBy, params.SortOrder, "client_ip")
 	if err != nil {
@@ -406,14 +403,11 @@ func (s *Store) GetTopTalkers(params TopTalkerParams) ([]TopTalker, error) {
 // GetTopASNs performs the aggregation in SQLite and returns only the bounded
 // result set needed by the control API.
 func (s *Store) GetTopASNs(params TopASNParams) ([]TopASN, error) {
+	if err := validateTopQuery(params.StartTime, params.EndTime, params.Protocol, params.Limit, params.Offset); err != nil {
+		return nil, err
+	}
 	if params.Limit <= 0 {
 		params.Limit = 10
-	}
-	if params.Limit > MaxQueryLimit {
-		params.Limit = MaxQueryLimit
-	}
-	if params.Offset < 0 {
-		return nil, errors.New("offset must be >= 0")
 	}
 	sortColumn, sortOrder, err := topSort(params.SortBy, params.SortOrder, "asn")
 	if err != nil {
@@ -442,11 +436,11 @@ func (s *Store) GetTopASNs(params TopASNParams) ([]TopASN, error) {
 		now := time.Now().UTC().UnixMilli()
 		args = append(args, tag, now, tag, now)
 	}
-	query := `SELECT COALESCE(asn, 0), COALESCE(as_org, ''), COALESCE(country, ''), COALESCE(SUM(bytes_up), 0), COALESCE(SUM(bytes_down), 0), COALESCE(SUM(bytes_up + bytes_down), 0), COUNT(*) FROM flows`
+	query := `SELECT COALESCE(asn, 0), COALESCE(MAX(as_org), ''), CASE WHEN COUNT(DISTINCT country) = 1 THEN COALESCE(MAX(country), '') ELSE '' END, COALESCE(SUM(bytes_up), 0), COALESCE(SUM(bytes_down), 0), COALESCE(SUM(bytes_up + bytes_down), 0), COUNT(*) FROM flows`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " GROUP BY asn, as_org, country ORDER BY " + sortColumn + " " + sortOrder + ", asn ASC, as_org ASC LIMIT ? OFFSET ?"
+	query += " GROUP BY asn ORDER BY " + sortColumn + " " + sortOrder + ", asn ASC LIMIT ? OFFSET ?"
 	args = append(args, params.Limit, params.Offset)
 	rows, err := s.readDB.Query(query, args...)
 	if err != nil {
@@ -464,6 +458,23 @@ func (s *Store) GetTopASNs(params TopASNParams) ([]TopASN, error) {
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func validateTopQuery(start, end *int64, protocol string, limit, offset int) error {
+	if start != nil && end != nil && *start > *end {
+		return errors.New("start_time must be earlier than or equal to end_time")
+	}
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol != "" && protocol != "tcp" && protocol != "udp" {
+		return errors.New("protocol must be tcp or udp")
+	}
+	if limit < 0 || limit > MaxQueryLimit {
+		return fmt.Errorf("limit must be between 1 and %d", MaxQueryLimit)
+	}
+	if offset < 0 {
+		return errors.New("offset must be >= 0")
+	}
+	return nil
 }
 
 func topSort(sortBy, sortOrder, tieColumn string) (string, string, error) {
