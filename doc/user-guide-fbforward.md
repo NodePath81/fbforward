@@ -290,7 +290,7 @@ Restart sequence:
 ### Monitoring through the control API
 
 The legacy browser UI is removed. Use authenticated `/rpc` requests for
-configuration and audit queries, `/status` for the WebSocket connection and
+configuration and audit queries, and `GetActiveFlows` for active-flow snapshots;
 queue stream, and `/metrics` for Prometheus health, RTT, flow, and probe data.
 
 Use the bearer token directly in the `Authorization` header. The root path is

@@ -84,8 +84,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		tags = append(tags, up.Tag)
 	}
 	metricSet := metrics.NewMetrics(tags)
-	statusHub := control.NewStatusHub(ctx.Done(), util.ComponentLogger(logger, util.CompControl))
-	status := control.NewStatusStore(statusHub)
+	status := control.NewStatusStore()
 	flowRegistry := flow.NewRegistry()
 	flowContextRegistry := flowcontext.NewRegistry(flowcontext.DefaultOptions())
 	initialized := false
@@ -348,25 +347,6 @@ func (r *Runtime) startMeasurement() {
 	}
 
 	r.collector = measure.NewCollector(r.cfg.Measurement, r.manager, r.metrics, scheduler, measureLogger)
-	r.collector.OnTestComplete = func(upstream, protocol string, startTime time.Time, duration time.Duration, success bool, result *measure.TestResultMetrics, errMsg string) {
-		if r.status == nil {
-			return
-		}
-		payload := control.TestHistoryPayload{
-			Upstream:   upstream,
-			Protocol:   protocol,
-			Timestamp:  startTime.UnixMilli(),
-			DurationMs: duration.Milliseconds(),
-			Success:    success,
-		}
-		if result != nil {
-			payload.RTTMs = result.RTTMs
-		}
-		if !success && errMsg != "" {
-			payload.Error = errMsg
-		}
-		r.status.BroadcastTestHistoryEvent(payload)
-	}
 	if r.control != nil {
 		r.control.SetCollector(r.collector)
 	}

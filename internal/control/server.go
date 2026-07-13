@@ -24,15 +24,10 @@ import (
 )
 
 const (
-	maxRPCBodyBytes   = 1 << 20
-	rpcRatePerSecond  = 5
-	rpcRateBurst      = 10
-	rpcRateTTL        = 5 * time.Minute
-	wsTokenPrefix     = "fbforward-token."
-	wsPrimaryProtocol = "fbforward"
-	wsWriteWait       = 10 * time.Second
-	wsPongWait        = 60 * time.Second
-	wsPingInterval    = 30 * time.Second
+	maxRPCBodyBytes  = 1 << 20
+	rpcRatePerSecond = 5
+	rpcRateBurst     = 10
+	rpcRateTTL       = 5 * time.Minute
 )
 
 type ControlServer struct {
@@ -63,7 +58,6 @@ type ControlServer struct {
 	online      *policy.OnlineProvider
 	flowContext *flowcontext.Service
 	nextReqID   uint64
-	nextWSID    uint64
 	rpcs        *rpcRegistry
 }
 
@@ -100,7 +94,6 @@ func (c *ControlServer) Start(ctx context.Context) error {
 		mux.HandleFunc("/flow-context/rpc", c.flowContext.HandleRPC)
 	}
 	mux.HandleFunc("/rpc", c.handleRPC)
-	mux.HandleFunc("/status", c.handleStatus)
 	mux.HandleFunc("/identity", c.handleIdentity)
 	mux.HandleFunc("/", c.handleAPIOnlyRoot)
 

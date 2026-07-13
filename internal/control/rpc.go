@@ -71,6 +71,7 @@ func (c *ControlServer) registerRPCHandlers() {
 	registrations := map[string]RPCHandler{
 		"SetUpstream":            c.rpcSetUpstream,
 		"GetStatus":              c.rpcGetStatus,
+		"GetActiveFlows":         c.rpcGetActiveFlows,
 		"ListUpstreams":          c.rpcListUpstreams,
 		"RunMeasurement":         c.rpcRunMeasurement,
 		"Restart":                c.rpcRestart,

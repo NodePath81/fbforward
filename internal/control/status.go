@@ -1,16 +1,12 @@
 package control
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/flow"
-	"github.com/NodePath81/fbforward/internal/util"
 )
 
 type StatusEntry struct {
@@ -32,35 +28,32 @@ type StatusEntry struct {
 }
 
 type statusEntry struct {
-	kind          string
-	id            string
-	clientAddr    string
-	listener      string
-	route         string
-	startedAt     time.Time
-	port          int
-	upstream      string
-	bytesUp       uint64
-	bytesDown     uint64
-	segmentsUp    uint64
-	segmentsDown  uint64
-	lastActivity  time.Time
-	created       time.Time
-	lastBroadcast time.Time
+	kind         string
+	id           string
+	clientAddr   string
+	listener     string
+	route        string
+	startedAt    time.Time
+	port         int
+	upstream     string
+	bytesUp      uint64
+	bytesDown    uint64
+	segmentsUp   uint64
+	segmentsDown uint64
+	lastActivity time.Time
+	created      time.Time
 }
 
 type StatusStore struct {
 	mu  sync.Mutex
 	tcp map[string]*statusEntry
 	udp map[string]*statusEntry
-	hub *StatusHub
 }
 
-func NewStatusStore(hub *StatusHub) *StatusStore {
+func NewStatusStore() *StatusStore {
 	return &StatusStore{
 		tcp: make(map[string]*statusEntry),
 		udp: make(map[string]*statusEntry),
-		hub: hub,
 	}
 }
 
@@ -89,17 +82,12 @@ func (s *StatusStore) Open(meta flow.Meta) {
 		s.udp[id] = entry
 	}
 	s.mu.Unlock()
-	snapshot := s.toStatusEntry(entry)
-	if s.hub != nil {
-		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "add", Entry: &snapshot})
-	}
 }
 
 func (s *StatusStore) Update(id flow.ID, counters flow.Counters) {
-	var entry *statusEntry
 	s.mu.Lock()
 	idString := id.String()
-	entry = s.tcp[idString]
+	entry := s.tcp[idString]
 	if entry == nil {
 		entry = s.udp[idString]
 	}
@@ -112,42 +100,19 @@ func (s *StatusStore) Update(id flow.ID, counters flow.Counters) {
 			entry.lastActivity = counters.LastActivity
 		}
 	}
-	now := time.Now()
-	shouldBroadcast := entry != nil && now.Sub(entry.lastBroadcast) >= time.Second
-	var snapshot *StatusEntry
-	if shouldBroadcast {
-		entry.lastBroadcast = now
-		temp := s.toStatusEntry(entry)
-		snapshot = &temp
-	}
 	s.mu.Unlock()
-	if snapshot != nil && s.hub != nil {
-		s.hub.Broadcast(statusMessage{SchemaVersion: 1, Type: "update", Entry: snapshot})
-	}
 }
 
 func (s *StatusStore) Close(summary flow.Summary) {
 	kind := summary.Protocol
 	id := summary.ID.String()
 	s.mu.Lock()
-	var entry *statusEntry
 	if kind == flow.ProtocolTCP {
-		entry = s.tcp[id]
 		delete(s.tcp, id)
 	} else {
-		entry = s.udp[id]
 		delete(s.udp, id)
 	}
 	s.mu.Unlock()
-	if entry != nil && s.hub != nil {
-		s.hub.Broadcast(statusMessage{
-			SchemaVersion: 1,
-			Type:          "remove",
-			Timestamp:     time.Now().UnixMilli(),
-			ID:            id,
-			Kind:          kind,
-		})
-	}
 }
 
 func (s *StatusStore) Reject(flow.Rejection) {}
@@ -194,152 +159,4 @@ func listenerPort(listener string) int {
 		}
 	}
 	return 0
-}
-
-type TestHistoryPayload struct {
-	Upstream   string  `json:"upstream"`
-	Protocol   string  `json:"protocol"`
-	Timestamp  int64   `json:"timestamp"`
-	DurationMs int64   `json:"duration_ms"`
-	Success    bool    `json:"success"`
-	RTTMs      float64 `json:"rtt_ms"`
-	Error      string  `json:"error,omitempty"`
-}
-
-type statusErrorPayload struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-type statusMessage struct {
-	SchemaVersion       int           `json:"schema_version"`
-	Type                string        `json:"type"`
-	Timestamp           int64         `json:"timestamp,omitempty"`
-	TCP                 []StatusEntry `json:"tcp,omitempty"`
-	UDP                 []StatusEntry `json:"udp,omitempty"`
-	Entry               *StatusEntry  `json:"entry,omitempty"`
-	ID                  string        `json:"id,omitempty"`
-	Kind                string        `json:"kind,omitempty"`
-	*TestHistoryPayload `json:",omitempty"`
-	*statusErrorPayload `json:",omitempty"`
-}
-
-type StatusHub struct {
-	mu         sync.Mutex
-	clients    map[*statusClient]struct{}
-	broadcast  chan statusMessage
-	ctxDone    <-chan struct{}
-	logger     util.Logger
-	maxClients int
-}
-
-type statusClient struct {
-	send         chan []byte
-	connID       string
-	sendMu       sync.RWMutex
-	closeOnce    sync.Once
-	subscribed   bool
-	intervalMs   int
-	tickerCancel context.CancelFunc
-}
-
-func NewStatusHub(ctxDone <-chan struct{}, logger util.Logger) *StatusHub {
-	h := &StatusHub{
-		clients:    make(map[*statusClient]struct{}),
-		broadcast:  make(chan statusMessage, 128),
-		ctxDone:    ctxDone,
-		logger:     logger,
-		maxClients: 100,
-	}
-	go h.run()
-	return h
-}
-
-func (h *StatusHub) run() {
-	for {
-		select {
-		case <-h.ctxDone:
-			h.mu.Lock()
-			for client := range h.clients {
-				client.close()
-			}
-			h.clients = make(map[*statusClient]struct{})
-			h.mu.Unlock()
-			return
-		case msg := <-h.broadcast:
-			h.mu.Lock()
-			data, _ := json.Marshal(msg)
-			for client := range h.clients {
-				if !client.enqueue(data) {
-					util.Event(h.logger, slog.LevelDebug, "control.ws.client_queue_drop",
-						"ws.conn_id", client.connID,
-						"queue.capacity", cap(client.send),
-						"result", "dropped",
-					)
-				}
-			}
-			h.mu.Unlock()
-		}
-	}
-}
-
-func (h *StatusHub) CanRegister() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.clients) < h.maxClients
-}
-
-func (h *StatusHub) TryRegister(client *statusClient) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if len(h.clients) >= h.maxClients {
-		return false
-	}
-	h.clients[client] = struct{}{}
-	return true
-}
-
-func (h *StatusHub) Unregister(client *statusClient) {
-	h.mu.Lock()
-	delete(h.clients, client)
-	h.mu.Unlock()
-	client.close()
-}
-
-func (h *StatusHub) Broadcast(msg statusMessage) {
-	select {
-	case h.broadcast <- msg:
-	default:
-		util.Event(h.logger, slog.LevelDebug, "control.ws.hub_broadcast_drop",
-			"queue.capacity", cap(h.broadcast),
-			"result", "dropped",
-		)
-	}
-}
-
-func (s *StatusStore) BroadcastTestHistoryEvent(payload TestHistoryPayload) {
-	s.hub.Broadcast(statusMessage{
-		SchemaVersion:      1,
-		Type:               "test_history_event",
-		TestHistoryPayload: &payload,
-	})
-}
-
-func (c *statusClient) close() {
-	c.closeOnce.Do(func() {
-		c.sendMu.Lock()
-		defer c.sendMu.Unlock()
-		close(c.send)
-	})
-}
-
-func (c *statusClient) enqueue(data []byte) bool {
-	c.sendMu.RLock()
-	defer c.sendMu.RUnlock()
-	select {
-	case c.send <- data:
-		return true
-	default:
-		return false
-	}
 }

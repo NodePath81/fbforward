@@ -317,7 +317,7 @@ curl -H "Authorization: Bearer change-me-to-random-string" \
   http://127.0.0.1:8080/rpc
 ```
 
-Use `/status` for the authenticated WebSocket stream and `/metrics` for
+Use the authenticated `GetActiveFlows` RPC for active-flow snapshots and `/metrics` for
 Prometheus telemetry.
 
 Test TCP forwarding:
@@ -348,11 +348,13 @@ Metrics include `fbforward_flows_active`, `fbforward_upstream_health_state`, `fb
 
 fbforward selects the primary upstream automatically based on measured quality. To observe switching:
 
-1. Stream status via WebSocket:
+1. Query active flows through RPC:
 
 ```bash
-# Use wscat or similar WebSocket client
-wscat -c ws://127.0.0.1:8080/status -H "Authorization: Bearer change-me-to-random-string"
+curl -s http://127.0.0.1:8080/rpc \
+  -H 'Authorization: Bearer change-me-to-random-string' \
+  -H 'Content-Type: application/json' \
+  --data '{"method":"GetActiveFlows"}'
 ```
 
 2. Degrade network quality on the current primary (e.g., add latency with tc or disconnect the link)

@@ -408,18 +408,15 @@ The control plane follows a single-source-of-truth architecture:
 
 | Data Type | Source | Notes |
 |-----------|--------|-------|
-| Active connections (list) | WebSocket `connections_snapshot` | Periodic, subscription-controlled |
-| Queue status (list) | WebSocket `queue_snapshot` | Periodic, subscription-controlled |
+| Active connections (list) | RPC `GetActiveFlows` | Client-controlled polling |
 | Numeric metrics (health, RTT, probes, traffic rates) | Prometheus `/metrics` | Poll-based, summary metrics only |
-| Test history (events) | WebSocket `test_history_event` | Event-driven, broadcast immediately |
-| Session history (events) | WebSocket `add`/`update`/`remove` | Event-driven, broadcast immediately |
 | Control commands | RPC `/rpc` | `SetUpstream`, `Restart`, `RunMeasurement` |
 | Config and scheduler queries | RPC `/rpc` | `GetStatus`, `GetMeasurementConfig`, `GetRuntimeConfig`, `GetScheduleStatus`, `GetGeoIPStatus`, `GetFirewallPolicy`, `GetFirewallStatus`, `ValidateFirewallPolicy`, `ReloadFirewallPolicy`, `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents` |
 | Online rule operations | RPC `/rpc` | `CreateOnlineRule`, `ListOnlineRules`, `DeleteOnlineRule`, `ExpireOnlineRule` |
 | GeoIP/IP-log operations | RPC `/rpc` | `RefreshGeoIP` (trigger re-download) |
 
 **Key principles:**
-- WebSocket delivers connection/queue telemetry via subscription (no polling)
+- `GetActiveFlows` returns active-flow telemetry as a point-in-time snapshot.
 - RPC methods provide only control actions and non-metric status queries
 - Prometheus provides all numeric metrics (health, RTT, probes, and traffic rates)
 - No data duplication across endpoints
@@ -430,7 +427,6 @@ The control plane follows a single-source-of-truth architecture:
 |------|--------|---------------|-------------|
 | `/` | GET | No | API-only root; returns 404 |
 | `/rpc` | POST | Yes | Control RPC methods |
-| `/status` | GET | Yes | WebSocket status stream |
 | `/identity` | GET | Yes | Instance identity (hostname, IPs, version) |
 | `/metrics` | GET | Yes | Prometheus metrics |
 
@@ -588,8 +584,8 @@ Retrieve current runtime status.
 - `health_state`: Unified `unknown`, `healthy`, `stale`, or `down` state
 
 **Note:** RTT, health, probe, and traffic metrics are available via Prometheus
-`/metrics`. Active connection counts are available via WebSocket
-`connections_snapshot` or Prometheus metrics.
+`/metrics`. Active connection counts are available via the `GetActiveFlows`
+RPC or Prometheus metrics.
 
 **Example:**
 
@@ -1068,9 +1064,37 @@ curl -X POST http://localhost:8080/rpc \
   -d '{"method": "RunMeasurement", "params": {"tag": "primary", "protocol": "tcp"}}'
 ```
 
-### 5.2.3 WebSocket status stream
+### 5.2.3 Active-flow polling
 
-The `/status` endpoint provides real-time status updates via WebSocket.
+The former `/status` WebSocket endpoint was removed in phase 12.1. Active
+flows are returned by the authenticated `GetActiveFlows` RPC. Clients choose
+the polling interval; the minimal UI polls every two seconds while its Flow
+view is visible. The response is a single snapshot and does not include queue
+state, measurement history, or event replay.
+
+#### GetActiveFlows
+
+**Method:** `GetActiveFlows`
+
+**Parameters:** Empty object `{}`
+
+**Result:**
+
+```json
+{
+  "captured_at": 1710000000000,
+  "tcp": [],
+  "udp": []
+}
+```
+
+Each entry contains the flow ID, protocol, client address, listener, route,
+pinned upstream, cumulative byte/segment counters, and activity timestamps.
+
+The historical WebSocket protocol text that follows is retained only as
+migration reference; the current server does not implement it.
+
+<!--
 
 #### Authentication
 
@@ -1407,6 +1431,7 @@ function unsubscribe() {
   ws.send(JSON.stringify({type: 'unsubscribe'}));
 }
 ```
+-->
 
 ### 5.2.4 Prometheus metrics
 
@@ -1541,5 +1566,5 @@ remain fixed and only honor dial cooldown.
 |-----|------------|---------------------|
 | bwprobe/pkg | [3.2](user-guide-bwprobe.md) | [6.2](algorithm-specifications.md#62-bandwidth-measurement-algorithm-bwprobe) |
 | Control RPC | [3.1.3](user-guide-fbforward.md#313-operation) | - |
-| WebSocket | [3.1.3](user-guide-fbforward.md#313-operation) | - |
+| Active-flow polling | [3.1.3](user-guide-fbforward.md#313-operation) | - |
 | Prometheus | [3.1.3](user-guide-fbforward.md#313-operation) | - |

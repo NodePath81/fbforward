@@ -383,7 +383,7 @@ flowchart TB
 ├── GET  /          → API-only 404
 ├── POST /rpc       → JSON-RPC methods
 ├── GET  /metrics   → Prometheus metrics
-└── GET  /status    → WebSocket stream
+└── POST /rpc       → GetActiveFlows and control methods
 ```
 
 ---
@@ -427,7 +427,7 @@ sequenceDiagram
     participant Client as API client
     participant RPC as /rpc
     participant Metrics as /metrics
-    participant WS as /status (WebSocket)
+    participant Flows as GetActiveFlows
     participant Store as StatusStore
 
     Note over Client,Store: Bearer token authentication
@@ -442,12 +442,12 @@ sequenceDiagram
         Metrics-->>Client: Prometheus format
     end
 
-    Note over Client,Store: Real-time Events
-    Client->>WS: WebSocket connect (subprotocol token)
-    WS->>Store: Subscribe
-    loop On events
-        Store-->>WS: Event (switch, test_complete, etc.)
-        WS-->>Client: Push notification
+    Note over Client,Store: Active-flow polling
+    loop Every 2 seconds while Flow view is visible
+        Client->>Flows: POST GetActiveFlows (Bearer token)
+        Flows->>Store: Snapshot
+        Store-->>Flows: Active TCP/UDP flows
+        Flows-->>Client: JSON snapshot
     end
 
     Note over Client,Store: RPC Operations
@@ -464,7 +464,7 @@ sequenceDiagram
 | `/` | GET | API-only root (404) | None |
 | `/rpc` | POST | JSON-RPC operations | Bearer token |
 | `/metrics` | GET | Prometheus scraping | Bearer token |
-| `/status` | GET | WebSocket stream | Subprotocol token |
+| `GetActiveFlows` | POST `/rpc` | Active-flow snapshot | Bearer token |
 
 ---
 

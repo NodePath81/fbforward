@@ -27,7 +27,7 @@ fbforward is a TCP/UDP port forwarder that selects upstreams based on measured n
 - Can optionally enforce CIDR/ASN/country firewall rules before upstream selection
 
 The forwarder exposes an API-only control plane with RPC, Prometheus metrics,
-and a WebSocket status stream for monitoring and manual control.
+and a polling RPC for monitoring and manual control.
 
 ### What bwprobe does
 
@@ -82,7 +82,7 @@ The architecture separates concerns into several planes:
 
 **Data plane**: Handles actual traffic forwarding. TCP listeners accept client connections and proxy bidirectionally to the assigned upstream. UDP listeners create per-5-tuple mappings and forward packets to the assigned upstream. Each [flow](glossary.md#flow) (TCP connection or UDP mapping) is [pinned](glossary.md#flow-pinning) to an upstream at creation time and remains pinned until termination or expiry.
 
-**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, status queries, GeoIP management (`GetGeoIPStatus`, `RefreshGeoIP`), IP-log queries (`GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents`), and operational status. The server also exposes Prometheus metrics at `/metrics` and a WebSocket endpoint at `/status` for real-time status streaming. The root path is API-only and does not serve a web application. All management endpoints require Bearer token authentication. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
+**Control plane**: Exposes management interfaces. An HTTP server provides JSON-RPC methods for manual upstream selection, configuration reload, status queries (`GetStatus`, `GetActiveFlows`), GeoIP management (`GetGeoIPStatus`, `RefreshGeoIP`), IP-log queries (`GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents`), and operational status. The server also exposes Prometheus metrics at `/metrics`. The root path is API-only and does not serve a web application. All management endpoints require Bearer token authentication. See [Diagram D16](diagrams.md#d16-control-plane-data-flow) for the control plane data flow.
 
 **Measurement plane**: Runs fbmeasure TCP/UDP RTT probes for upstreams used by
 adaptive routes. Results update one `HealthSnapshot`; route-local selection
@@ -100,7 +100,7 @@ configuration order.
 graph TB
     subgraph Control Plane
         API[HTTP API]
-        WS[WebSocket]
+        Flows[GetActiveFlows RPC]
         Metrics[Prometheus]
     end
 
@@ -194,7 +194,7 @@ fbforward initializes components in a specific order to ensure dependencies are 
    - Creates firewall policy provider: loads and compiles the external policy file (or deprecated inline fallback), wires GeoIP lookups for ASN/country rules, and supports atomic reload
    - Starts the measurement collector only for upstreams used by adaptive routes
    - Creates and starts TCP/UDP listeners for each configured bind address
-   - Starts ControlServer with RPC, metrics, WebSocket, and UI endpoints
+   - Starts ControlServer with RPC and metrics endpoints
 4. **Running state**: All goroutines operational, system ready to accept flows
 
 <!-- Diagram: D4 Startup sequence -->
@@ -231,7 +231,7 @@ and configuration order. Static routes use their configured upstream. Manual
 and manual preferences are constrained to the route, and existing Flows remain
 pinned.
 
-**Status propagation**: The measurement plane updates the StatusStore on every measurement cycle. The control plane serves current status via HTTP GET, streams updates via WebSocket, and aggregates metrics for Prometheus scraping.
+**Status propagation**: The measurement plane updates the StatusStore on every measurement cycle. The control plane returns current status through authenticated RPC snapshots and aggregates metrics for Prometheus scraping.
 
 ### Shutdown and restart lifecycle
 
@@ -246,7 +246,7 @@ fbforward uses goroutines for concurrency:
 - One goroutine per TCP connection for bidirectional copying
 - One goroutine per UDP listener for packet dispatching
 - One goroutine for fbmeasure probe scheduling
-- One goroutine per control plane endpoint (RPC, WebSocket, metrics)
+- Control-plane request handlers are ordinary HTTP handlers; there is no status-stream goroutine.
 - One goroutine for GeoIP refresh loop (if `geoip.enabled`)
 - Two goroutines for IP-log pipeline: enrichment worker and batch writer (if `ip_log.enabled`)
 - One goroutine for IP-log retention pruning (if `ip_log.enabled`)

@@ -1,9 +1,7 @@
 package control
 
 import (
-	"bufio"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,7 +14,6 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/util"
-	"github.com/gorilla/websocket"
 )
 
 type requestCtx struct {
@@ -52,14 +49,6 @@ func (sw *statusWriter) Write(b []byte) (int, error) {
 		sw.written = true
 	}
 	return sw.ResponseWriter.Write(b)
-}
-
-func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hijacker, ok := sw.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("response writer does not support hijacking")
-	}
-	return hijacker.Hijack()
 }
 
 func (c *ControlServer) newRequestCtx(r *http.Request, protocol string, authOK bool) requestCtx {
@@ -99,12 +88,6 @@ func authMethodForRequest(r *http.Request) string {
 		if _, ok := bearerToken(r); ok {
 			return "bearer"
 		}
-		return "unknown"
-	}
-	if _, ok := tokenFromWebSocketProtocols(r); ok {
-		return "ws_subprotocol"
-	}
-	if len(websocket.Subprotocols(r)) > 0 {
 		return "unknown"
 	}
 	return "none"
@@ -196,16 +179,6 @@ func (c *ControlServer) checkAuth(r *http.Request) bool {
 	return ok && secureTokenEqual(token, c.cfg.AuthToken)
 }
 
-func (c *ControlServer) checkStatusAuth(r *http.Request) bool {
-	if token, ok := bearerToken(r); ok {
-		return secureTokenEqual(token, c.cfg.AuthToken)
-	}
-	if token, ok := tokenFromWebSocketProtocols(r); ok {
-		return secureTokenEqual(token, c.cfg.AuthToken)
-	}
-	return false
-}
-
 func bearerToken(r *http.Request) (string, bool) {
 	auth := r.Header.Get("Authorization")
 	const prefix = "Bearer "
@@ -214,23 +187,6 @@ func bearerToken(r *http.Request) (string, bool) {
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
 	return token, token != ""
-}
-
-func tokenFromWebSocketProtocols(r *http.Request) (string, bool) {
-	for _, proto := range websocket.Subprotocols(r) {
-		if !strings.HasPrefix(proto, wsTokenPrefix) {
-			continue
-		}
-		encoded := strings.TrimPrefix(proto, wsTokenPrefix)
-		if encoded == "" {
-			continue
-		}
-		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
-		if err == nil && len(decoded) > 0 {
-			return string(decoded), true
-		}
-	}
-	return "", false
 }
 
 func secureTokenEqual(a, b string) bool {

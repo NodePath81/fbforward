@@ -626,8 +626,9 @@ accepted. The material below is retained only as historical migration context.
 
 ## 4.9 control section
 
-The `control` section configures the HTTP control plane: RPC API, WebSocket
-status stream, and Prometheus metrics.
+The `control` section configures the HTTP control plane: RPC API and
+Prometheus metrics. Active flows are retrieved with the authenticated
+`GetActiveFlows` RPC.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -662,7 +663,6 @@ The control plane exposes the following HTTP endpoints:
 | `/` | GET | API-only root; returns 404 |
 | `/rpc` | POST | JSON-RPC methods |
 | `/metrics` | GET | Prometheus metrics |
-| `/status` | GET | WebSocket status stream |
 | `/identity` | GET | Instance identity document |
 
 All management endpoints require Bearer token authentication:
@@ -671,20 +671,9 @@ All management endpoints require Bearer token authentication:
 curl -H "Authorization: Bearer replace-with-a-long-random-token" http://localhost:8080/metrics
 ```
 
-WebSocket authentication uses subprotocol for browser compatibility:
-
-```javascript
-const token = 'replace-with-a-long-random-token';
-const encoded = btoa(token)
-  .replace(/\+/g, '-')
-  .replace(/\//g, '_')
-  .replace(/=+$/g, '');
-
-new WebSocket('ws://localhost:8080/status', ['fbforward', `fbforward-token.${encoded}`]);
-```
-
-Browser WebSocket requests must be same-origin. fbforward rejects upgrades whose
-`Origin` host does not match the request host.
+Active flows are queried with the authenticated `GetActiveFlows` RPC. Clients
+choose the polling interval; the minimal UI polls every two seconds only while
+its Flow view is visible.
 
 See [Section 5.2](api-reference.md#52-control-plane-api) for API details.
 

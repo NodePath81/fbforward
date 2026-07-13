@@ -23,7 +23,6 @@ This is a structured-logging standard. Do not add free-form operational logs.
 
 Include correlation IDs whenever the context exists:
 - `request.id` for HTTP/RPC/identity/metrics request flows
-- `ws.conn_id` for WebSocket session lifecycle/events
 - `flow.id` for TCP/UDP data-plane mapping lifecycle
 - `measure.cycle_id` for measurement run lifecycle
 

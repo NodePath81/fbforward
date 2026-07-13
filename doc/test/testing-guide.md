@@ -47,7 +47,7 @@ remaining endpoints with an HTTP client:
 
 - `/` returns 404;
 - `/rpc`, `/identity`, and `/metrics` require Bearer authentication;
-- `/status` continues to provide the authenticated WebSocket stream;
+- `GetActiveFlows` continues to provide authenticated active-flow snapshots;
 - `/flow-context/*` remains available when configured.
 
 The repository no longer runs npm frontend builds or removed external-control

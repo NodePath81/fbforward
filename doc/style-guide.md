@@ -106,7 +106,7 @@ To restart fbforward:
 
 1. Connect to the control API.
 2. Call the `Restart` RPC method.
-3. Verify status via WebSocket or `/metrics`.
+3. Verify status via `GetActiveFlows` or `/metrics`.
 ```
 
 ### 2.4 Code blocks
@@ -339,7 +339,7 @@ fbforward logs to stderr by default. Verify startup by checking for the
 
 ### Monitoring
 
-Use authenticated `/rpc`, `/status`, and `/metrics` requests. The control
+Use authenticated `/rpc` and `/metrics` requests. The control
 plane is API-only and exposes health, RTT, and active flow telemetry.
 ```
 

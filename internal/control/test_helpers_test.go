@@ -50,8 +50,6 @@ func (f *fakeNotifier) Emit(eventName string, severity notify.Severity, attribut
 
 func newTestControlServer(t *testing.T) *ControlServer {
 	t.Helper()
-	ctxDone := make(chan struct{})
-	t.Cleanup(func() { close(ctxDone) })
 	return NewControlServer(
 		config.Config{
 			Hostname: "test",
@@ -63,7 +61,7 @@ func newTestControlServer(t *testing.T) *ControlServer {
 		},
 		fakeManager{},
 		metrics.NewMetrics(nil),
-		NewStatusStore(NewStatusHub(ctxDone, nil)),
+		NewStatusStore(),
 		func() error { return nil },
 		nil,
 	)

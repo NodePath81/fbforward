@@ -44,8 +44,6 @@ func (m *recordingManager) Get(string) *upstream.Upstream { return nil }
 
 func newRecordingControlServer(t *testing.T, manager *recordingManager) *ControlServer {
 	t.Helper()
-	ctxDone := make(chan struct{})
-	t.Cleanup(func() { close(ctxDone) })
 	return NewControlServer(
 		config.Config{
 			Hostname: "test",
@@ -57,7 +55,7 @@ func newRecordingControlServer(t *testing.T, manager *recordingManager) *Control
 		},
 		manager,
 		metrics.NewMetrics(nil),
-		NewStatusStore(NewStatusHub(ctxDone, nil)),
+		NewStatusStore(),
 		func() error { return nil },
 		nil,
 	)

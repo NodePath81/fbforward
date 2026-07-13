@@ -7,7 +7,7 @@ This glossary defines domain terminology used throughout the fbforward documenta
 ## Architecture terms
 
 ### Control plane
-The subsystem that handles management operations: HTTP API, WebSocket status streaming, RPC methods, and Prometheus metrics endpoint. Runs on the configurable `control.bind_addr:control.bind_port`. See [Section 1.2](project-overview.md), [Section 5.2](project-overview.md).
+The subsystem that handles management operations: HTTP API, RPC methods, and Prometheus metrics endpoint. Runs on the configurable `control.bind_addr:control.bind_port`. Active flows are queried with `GetActiveFlows`. See [Section 1.2](project-overview.md), [Section 5.2](project-overview.md).
 
 ### Data plane
 The subsystem that handles actual traffic forwarding: TCP listeners, UDP listeners, and per-flow proxying to upstreams. Configured via `forwarding.listeners`. See [Section 1.2](project-overview.md), [Section 4.2](project-overview.md).
@@ -160,8 +160,6 @@ Protocol used for bwprobe control communication and fbforward control plane RPC.
 ### Reverse mode
 bwprobe mode where the server sends data to the client (download test) instead of client sending to server (upload). See [Section 3.2.1](project-overview.md).
 
-### WebSocket
-Protocol used for real-time status streaming from fbforward control plane. Authenticated via Bearer token in subprotocol. See [Section 5.2.3](project-overview.md).
 
 ---
 

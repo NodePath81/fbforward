@@ -9,7 +9,7 @@ import (
 )
 
 func TestStatusStoreProjectsFlowLifecycle(t *testing.T) {
-	store := NewStatusStore(nil)
+	store := NewStatusStore()
 	id, err := flow.NewID()
 	if err != nil {
 		t.Fatalf("NewID error: %v", err)

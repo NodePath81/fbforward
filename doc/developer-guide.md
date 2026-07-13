@@ -17,7 +17,7 @@ The fbforward repository is organized as a monorepo containing two main projects
 - `internal/config/` - Configuration loading, validation, custom unmarshaling
 - `internal/upstream/` - Upstream state, health, and route-local selection
 - `internal/forwarding/` - TCP/UDP listeners and proxy logic
-- `internal/control/` - HTTP server, RPC handlers, WebSocket status stream
+- `internal/control/` - HTTP server, RPC handlers, and status snapshot projection
 - `internal/metrics/` - Prometheus metrics aggregation
 - Health probing is implemented by the fbmeasure TCP/UDP collector.
 - `internal/measure/` - fbmeasure RTT probe orchestration and scheduling
@@ -87,7 +87,6 @@ fbforward runs a single process with multiple goroutines for parallel I/O and ba
 | `TCPListener.handleConn()` | Per-connection proxy goroutine | 1 per TCP connection | Terminates on connection close or idle timeout |
 | `UDPListener.Start()` | Per-mapping relay goroutine | 1 per UDP 5-tuple mapping | Terminates on idle timeout or context cancel |
 | `ControlServer.Start()` | HTTP server handler goroutines | 1 per request (managed by `http.Server`) | Terminates on request completion |
-| `StatusHub.Run()` | WebSocket broadcast loop | 1 | Terminated by context cancel |
 | `Metrics.Start()` | Periodic metric updates | 1 | Terminated by context cancel |
 | `GeoIPManager.refreshLoop()` | Periodic GeoIP DB re-download | 1 (if `geoip.enabled`) | Terminated by context cancel |
 | `IPLogPipeline.enrichWorker()` | GeoIP enrichment of IP-log events | 1 (if `ip_log.enabled`) | Terminated by context cancel |
@@ -117,7 +116,7 @@ Shutdown sequence:
 
 - **Fan-out probing**: Each upstream gets independent probe/measurement goroutine
 - **Per-flow isolation**: TCP connections and UDP mappings run in separate goroutines with pinned upstream
-- **Broadcast updates**: `StatusHub` broadcasts state changes to all WebSocket clients
+- **Status snapshots**: `StatusStore` keeps active Flow projections for `GetActiveFlows` polling
 - **Lock-free reads**: Metrics use atomic operations or mutex-protected snapshots
 
 **Synchronization primitives:**
@@ -235,7 +234,7 @@ Queue mechanics:
 
 Observability:
 - `GetScheduleStatus` RPC: queue length, next scheduled time, last measurements per upstream/protocol
-- WebSocket `queue_snapshot`: detailed running and pending queue entries
+- `GetScheduleStatus`: detailed running and pending queue entries
 - `fbforward_measurement_queue_size` gauge: current queue depth
 - `fbforward_measurement_last_run_seconds{upstream,protocol}` gauge: age of last successful run
 
@@ -245,7 +244,7 @@ Data flow:
 3. `RunProtocol` dials fbmeasure and runs the protocol-specific probe cycle.
 4. Results are converted into `upstream.MeasurementResult`.
 5. `UpstreamManager` updates the unified health snapshot and RTT EWMA.
-6. Metrics and WebSocket status are refreshed.
+6. Metrics are refreshed; active flows remain available through `GetActiveFlows`.
 
 ### Error handling conventions
 

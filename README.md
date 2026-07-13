@@ -8,7 +8,8 @@ measurement server binary.
 TCP/UDP port forwarder that selects route-local upstreams using fbmeasure health
 and RTT observations. Optional features include GeoIP-based lookups, persisted
 IP flow and rejection logging, and CIDR/ASN/country firewalling. It exposes
-Prometheus metrics, a token-protected RPC API, and a WebSocket status stream.
+Prometheus metrics and a token-protected RPC API. Active flows are exposed by
+the authenticated `GetActiveFlows` RPC for lightweight polling clients.
 
 Behavior highlights:
 
