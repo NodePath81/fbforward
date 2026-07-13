@@ -183,7 +183,7 @@ func (c *Client) resolve(ctx context.Context, payload resolveRequest) (Flow, err
 	}
 	var envelope resolveEnvelope
 	if err := decodeLimited(response, &envelope); err != nil {
-		return Flow{}, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return Flow{}, decodeError(err)
 	}
 	if response.StatusCode != http.StatusOK {
 		return Flow{}, responseError(response.StatusCode, envelope.Error)
@@ -243,7 +243,7 @@ func (c *Client) setTag(ctx context.Context, method, flowID string, tag Tag) err
 	}
 	var envelope rpcEnvelope
 	if err := decodeLimited(response, &envelope); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return decodeError(err)
 	}
 	if response.StatusCode != http.StatusOK {
 		return responseError(response.StatusCode, envelope.Error)
@@ -257,6 +257,22 @@ func (c *Client) setTag(ctx context.Context, method, flowID string, tag Tag) err
 type clientResponse struct {
 	StatusCode int
 	Body       io.ReadCloser
+	cancel     context.CancelFunc
+}
+
+func (r *clientResponse) close() error {
+	if r == nil {
+		return nil
+	}
+	var err error
+	if r.Body != nil {
+		err = r.Body.Close()
+	}
+	if r.cancel != nil {
+		r.cancel()
+		r.cancel = nil
+	}
+	return err
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (*clientResponse, error) {
@@ -264,24 +280,36 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*cli
 		ctx = context.Background()
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, method, c.endpoint+path, bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 	request.Header.Set("Authorization", "Bearer "+c.token)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.httpClient.Do(request)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	return &clientResponse{StatusCode: response.StatusCode, Body: response.Body}, nil
+	if response == nil || response.Body == nil {
+		cancel()
+		return nil, fmt.Errorf("%w: empty HTTP response", ErrInvalidResponse)
+	}
+	return &clientResponse{StatusCode: response.StatusCode, Body: response.Body, cancel: cancel}, nil
 }
 
 func decodeLimited(response *clientResponse, target any) error {
-	defer response.Body.Close()
+	defer response.close()
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxBodySize))
 	return decoder.Decode(target)
+}
+
+func decodeError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 }
 
 func responseError(status int, message string) error {

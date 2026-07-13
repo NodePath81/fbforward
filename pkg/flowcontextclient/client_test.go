@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -165,6 +166,72 @@ func TestClientTimeoutDoesNotRetry(t *testing.T) {
 		t.Fatalf("request count=%d, want 1", got)
 	}
 }
+
+func TestResponseBodyReadKeepsRequestContext(t *testing.T) {
+	client, err := New(Options{
+		Endpoint:   "http://127.0.0.1:1",
+		Token:      "backend-token",
+		BackendKey: "primary@192.0.2.10:9000",
+		Timeout:    100 * time.Millisecond,
+		HTTPClient: httpDoerFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       &delayedBody{ctx: request.Context(), delay: 10 * time.Millisecond, data: []byte(testFlowEnvelope())},
+			}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ResolveTuple(context.Background(), testTuple()); err != nil {
+		t.Fatalf("delayed response failed: %v", err)
+	}
+}
+
+func TestResponseBodyReadHonorsTimeout(t *testing.T) {
+	client, err := New(Options{
+		Endpoint:   "http://127.0.0.1:1",
+		Token:      "backend-token",
+		BackendKey: "primary@192.0.2.10:9000",
+		Timeout:    10 * time.Millisecond,
+		HTTPClient: httpDoerFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       &delayedBody{ctx: request.Context(), delay: 100 * time.Millisecond, data: []byte(testFlowEnvelope())},
+			}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ResolveTuple(context.Background(), testTuple()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("error=%v, want unavailable", err)
+	}
+}
+
+type delayedBody struct {
+	ctx   context.Context
+	delay time.Duration
+	data  []byte
+	done  bool
+}
+
+func (b *delayedBody) Read(target []byte) (int, error) {
+	if b.done {
+		return 0, io.EOF
+	}
+	timer := time.NewTimer(b.delay)
+	defer timer.Stop()
+	select {
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	case <-timer.C:
+		b.done = true
+		return copy(target, b.data), nil
+	}
+}
+
+func (b *delayedBody) Close() error { return nil }
 
 type httpDoerFunc func(*http.Request) (*http.Response, error)
 
