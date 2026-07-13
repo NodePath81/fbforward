@@ -5,6 +5,7 @@ package auditdsl
 
 import (
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,11 @@ var sortFields = map[Source]map[string]bool{
 
 type token struct {
 	value string
+	pos   int
+}
+
+func syntaxError(pos int, message string) error {
+	return fmt.Errorf("byte %d: %s", pos+1, message)
 }
 
 func tokenize(input string) ([]token, error) {
@@ -71,7 +77,7 @@ func tokenize(input string) ([]token, error) {
 			break
 		}
 		if input[i] == '|' {
-			out = append(out, token{value: "|"})
+			out = append(out, token{value: "|", pos: i})
 			i++
 			continue
 		}
@@ -95,7 +101,7 @@ func tokenize(input string) ([]token, error) {
 					if input[i] == '"' {
 						raw, err := strconv.Unquote(input[start : i+1])
 						if err != nil {
-							return nil, fmt.Errorf("invalid quoted value")
+							return nil, syntaxError(start, "invalid quoted value")
 						}
 						value.WriteString(raw)
 						i++
@@ -105,7 +111,7 @@ func tokenize(input string) ([]token, error) {
 					i++
 				}
 				if !closedQuote {
-					return nil, fmt.Errorf("unterminated quoted value")
+					return nil, syntaxError(start, "unterminated quoted value")
 				}
 				continue
 			}
@@ -113,9 +119,9 @@ func tokenize(input string) ([]token, error) {
 			i++
 		}
 		if value.Len() == 0 {
-			return nil, fmt.Errorf("invalid token")
+			return nil, syntaxError(i, "invalid token")
 		}
-		out = append(out, token{value: value.String()})
+		out = append(out, token{value: value.String(), pos: i - value.Len()})
 	}
 	return out, nil
 }
@@ -129,9 +135,10 @@ func Parse(input string) (Query, error) {
 		return Query{}, err
 	}
 	if len(tokens) == 0 {
-		return Query{}, fmt.Errorf("query is empty")
+		return Query{}, syntaxError(0, "query is empty")
 	}
 	q := Query{Filters: make(map[string]string), Limit: DefaultLimit, SortOrder: "desc"}
+	filterPositions := make(map[string]int)
 	sortSet, limitSet, offsetSet := false, false, false
 	i := 0
 	switch tokens[i].value {
@@ -143,7 +150,7 @@ func Parse(input string) (Query, error) {
 		q.Source = SourceEvents
 	case "top":
 		if len(tokens) < 2 || (tokens[1].value != "clients" && tokens[1].value != "asns") {
-			return Query{}, fmt.Errorf("top must be followed by clients or asns")
+			return Query{}, syntaxError(tokens[i].pos, "top must be followed by clients or asns")
 		}
 		if tokens[1].value == "clients" {
 			q.Source = SourceTopClients
@@ -152,78 +159,79 @@ func Parse(input string) (Query, error) {
 		}
 		i++
 	default:
-		return Query{}, fmt.Errorf("unknown source %q", tokens[i].value)
+		return Query{}, syntaxError(tokens[i].pos, fmt.Sprintf("unknown source %q", tokens[i].value))
 	}
 	i++
 	for i < len(tokens) && tokens[i].value != "|" {
 		item := tokens[i].value
 		key, value, ok := strings.Cut(item, "=")
 		if !ok || key == "" || value == "" {
-			return Query{}, fmt.Errorf("filter must be key=value")
+			return Query{}, syntaxError(tokens[i].pos, "filter must be key=value")
 		}
 		key = strings.ToLower(key)
 		if !sourceFilters[q.Source][key] {
-			return Query{}, fmt.Errorf("filter %q is not valid for %s", key, q.Source)
+			return Query{}, syntaxError(tokens[i].pos, fmt.Sprintf("filter %q is not valid for %s", key, q.Source))
 		}
 		if _, exists := q.Filters[key]; exists {
-			return Query{}, fmt.Errorf("filter %q is repeated", key)
+			return Query{}, syntaxError(tokens[i].pos, fmt.Sprintf("filter %q is repeated", key))
 		}
 		q.Filters[key] = value
+		filterPositions[key] = tokens[i-1].pos
 		i++
 	}
 	for i < len(tokens) {
 		if tokens[i].value != "|" {
-			return Query{}, fmt.Errorf("expected pipeline separator")
+			return Query{}, syntaxError(tokens[i].pos, "expected pipeline separator")
 		}
 		i++
 		if i >= len(tokens) {
-			return Query{}, fmt.Errorf("pipeline stage is missing")
+			return Query{}, syntaxError(tokens[i-1].pos, "pipeline stage is missing")
 		}
 		switch tokens[i].value {
 		case "sort":
 			if i+2 >= len(tokens) || tokens[i+1].value == "|" || tokens[i+2].value == "|" {
-				return Query{}, fmt.Errorf("sort requires field and order")
+				return Query{}, syntaxError(tokens[i].pos, "sort requires field and order")
 			}
 			if !sortFields[q.Source][tokens[i+1].value] {
-				return Query{}, fmt.Errorf("sort field %q is not valid for %s", tokens[i+1].value, q.Source)
+				return Query{}, syntaxError(tokens[i+1].pos, fmt.Sprintf("sort field %q is not valid for %s", tokens[i+1].value, q.Source))
 			}
 			order := strings.ToLower(tokens[i+2].value)
 			if order != "asc" && order != "desc" {
-				return Query{}, fmt.Errorf("sort order must be asc or desc")
+				return Query{}, syntaxError(tokens[i+2].pos, "sort order must be asc or desc")
 			}
 			if sortSet {
-				return Query{}, fmt.Errorf("sort may be specified once")
+				return Query{}, syntaxError(tokens[i].pos, "sort may be specified once")
 			}
 			q.SortBy, q.SortOrder = tokens[i+1].value, order
 			sortSet = true
 			i += 3
 		case "limit", "offset":
 			if i+1 >= len(tokens) || tokens[i+1].value == "|" {
-				return Query{}, fmt.Errorf("%s requires a number", tokens[i].value)
+				return Query{}, syntaxError(tokens[i].pos, fmt.Sprintf("%s requires a number", tokens[i].value))
 			}
 			n, parseErr := strconv.Atoi(tokens[i+1].value)
 			if parseErr != nil || n < 0 {
-				return Query{}, fmt.Errorf("%s must be a non-negative number", tokens[i].value)
+				return Query{}, syntaxError(tokens[i+1].pos, fmt.Sprintf("%s must be a non-negative number", tokens[i].value))
 			}
 			if tokens[i].value == "limit" {
 				if n == 0 || n > MaxLimit {
-					return Query{}, fmt.Errorf("limit must be between 1 and %d", MaxLimit)
+					return Query{}, syntaxError(tokens[i+1].pos, fmt.Sprintf("limit must be between 1 and %d", MaxLimit))
 				}
 				if limitSet {
-					return Query{}, fmt.Errorf("limit may be specified once")
+					return Query{}, syntaxError(tokens[i].pos, "limit may be specified once")
 				}
 				q.Limit = n
 				limitSet = true
 			} else {
 				if offsetSet {
-					return Query{}, fmt.Errorf("offset may be specified once")
+					return Query{}, syntaxError(tokens[i].pos, "offset may be specified once")
 				}
 				q.Offset = n
 				offsetSet = true
 			}
 			i += 2
 		default:
-			return Query{}, fmt.Errorf("unknown pipeline stage %q", tokens[i].value)
+			return Query{}, syntaxError(tokens[i].pos, fmt.Sprintf("unknown pipeline stage %q", tokens[i].value))
 		}
 	}
 	if q.SortBy == "" {
@@ -233,31 +241,55 @@ func Parse(input string) (Query, error) {
 			q.SortBy = "recorded_at"
 		}
 	}
+	now := time.Now().UTC()
+	var since, until *int64
 	for key, value := range q.Filters {
+		pos := filterPositions[key]
 		switch key {
 		case "protocol":
+			value = strings.ToLower(value)
 			if value != "tcp" && value != "udp" {
-				return Query{}, fmt.Errorf("protocol must be tcp or udp")
+				return Query{}, syntaxError(pos, "protocol must be tcp or udp")
 			}
+			q.Filters[key] = value
 		case "asn":
-			if _, err := strconv.Atoi(value); err != nil {
-				return Query{}, fmt.Errorf("asn must be an integer")
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 0 {
+				return Query{}, syntaxError(pos, "asn must be a non-negative integer")
 			}
 		case "since", "until":
-			if _, err := ParseTime(value, time.Now().UTC()); err != nil {
-				return Query{}, err
+			t, err := ParseTime(value, now)
+			if err != nil {
+				return Query{}, syntaxError(pos, err.Error())
+			}
+			if key == "since" {
+				since = &t
+			} else {
+				until = &t
 			}
 		case "cidr":
-			if strings.ContainsAny(value, "'\"") {
-				return Query{}, fmt.Errorf("invalid cidr")
+			if _, err := netip.ParsePrefix(value); err != nil {
+				return Query{}, syntaxError(pos, "invalid cidr")
+			}
+		case "ip":
+			if _, err := netip.ParseAddr(value); err != nil {
+				return Query{}, syntaxError(pos, "invalid ip")
 			}
 		case "country":
-			if len(value) != 2 {
-				return Query{}, fmt.Errorf("country must be a two-letter code")
+			if len(value) != 2 || !isLetter(value[0]) || !isLetter(value[1]) {
+				return Query{}, syntaxError(pos, "country must be a two-letter code")
 			}
+			q.Filters[key] = strings.ToUpper(value)
 		}
 	}
+	if since != nil && until != nil && *since > *until {
+		return Query{}, syntaxError(0, "since must be earlier than or equal to until")
+	}
 	return q, nil
+}
+
+func isLetter(value byte) bool {
+	return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
 }
 
 func ParseTime(raw string, now time.Time) (int64, error) {

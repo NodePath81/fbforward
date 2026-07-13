@@ -73,3 +73,34 @@ func TestQueryLimit(t *testing.T) {
 		t.Fatal("oversized query accepted")
 	}
 }
+
+func TestParseStrictValuesAndPositions(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"flows ip=not-an-ip", "ip"},
+		{"flows cidr=not-a-cidr", "cidr"},
+		{"flows asn=-1", "asn"},
+		{"flows country=1!", "country"},
+		{"flows protocol=ICMP", "protocol"},
+		{"flows since=2026-01-02T00:00:00Z until=2026-01-01T00:00:00Z", "since"},
+		{"flows | sort bytes_total sideways", "sort order"},
+	}
+	for _, test := range tests {
+		_, err := Parse(test.input)
+		if err == nil || !strings.Contains(err.Error(), "byte ") || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("Parse(%q) error = %v, want positioned %q error", test.input, err, test.want)
+		}
+	}
+}
+
+func TestParseNormalizesProtocolAndCountry(t *testing.T) {
+	query, err := Parse("flows protocol=TCP country=us")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query.Filters["protocol"] != "tcp" || query.Filters["country"] != "US" {
+		t.Fatalf("filters = %#v", query.Filters)
+	}
+}
