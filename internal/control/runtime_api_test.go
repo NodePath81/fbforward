@@ -251,8 +251,7 @@ func TestRuntimeConfigSanitizesNotifyConfig(t *testing.T) {
 	server.fullCfg.Notify = config.NotifyConfig{
 		Enabled:            true,
 		Endpoint:           "https://notify.example/v1/events",
-		KeyID:              "key-1",
-		Token:              "secret-node-token",
+		BearerToken:        "secret-node-token",
 		SourceInstance:     "node-1",
 		StartupGracePeriod: config.Duration(10 * time.Minute),
 		UnusableInterval:   config.Duration(45 * time.Second),
@@ -260,26 +259,14 @@ func TestRuntimeConfigSanitizesNotifyConfig(t *testing.T) {
 	}
 
 	cfg := server.getRuntimeConfig()
-	notifyCfg, ok := cfg["notify"].(map[string]interface{})
+	notifyCfg, ok := cfg["webhook"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("notify config missing or wrong type: %#v", cfg["notify"])
+		t.Fatalf("webhook config missing or wrong type: %#v", cfg["webhook"])
 	}
 	if notifyCfg["endpoint"] != "https://notify.example/v1/events" {
 		t.Fatalf("unexpected notify endpoint: %#v", notifyCfg["endpoint"])
 	}
-	if notifyCfg["startup_grace_period"] != "10m0s" {
-		t.Fatalf("unexpected startup_grace_period: %#v", notifyCfg["startup_grace_period"])
-	}
-	if notifyCfg["unusable_interval"] != "45s" {
-		t.Fatalf("unexpected unusable_interval: %#v", notifyCfg["unusable_interval"])
-	}
-	if notifyCfg["notify_interval"] != "2h0m0s" {
-		t.Fatalf("unexpected notify_interval: %#v", notifyCfg["notify_interval"])
-	}
-	if _, exists := notifyCfg["token"]; exists {
-		t.Fatalf("unexpected notify token in runtime config: %#v", notifyCfg)
-	}
-	if _, exists := notifyCfg["token_env"]; exists {
-		t.Fatalf("unexpected notify token_env in runtime config: %#v", notifyCfg)
+	if _, exists := notifyCfg["bearer_token"]; exists {
+		t.Fatalf("unexpected webhook bearer token in runtime config: %#v", notifyCfg)
 	}
 }

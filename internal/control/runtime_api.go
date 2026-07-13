@@ -220,14 +220,10 @@ func (c *ControlServer) getRuntimeConfig() map[string]interface{} {
 				"enabled": cfg.Control.Metrics.IsEnabled(),
 			},
 		},
-		"notify": map[string]interface{}{
-			"enabled":              cfg.Notify.Enabled,
-			"endpoint":             cfg.Notify.Endpoint,
-			"key_id":               cfg.Notify.KeyID,
-			"source_instance":      cfg.Notify.SourceInstance,
-			"startup_grace_period": cfg.Notify.StartupGracePeriod.Duration().String(),
-			"unusable_interval":    cfg.Notify.UnusableInterval.Duration().String(),
-			"notify_interval":      cfg.Notify.NotifyInterval.Duration().String(),
+		"webhook": map[string]interface{}{
+			"enabled":         cfg.Notify.Enabled,
+			"endpoint":        cfg.Notify.Endpoint,
+			"source_instance": cfg.Notify.SourceInstance,
 		},
 		"geoip": map[string]interface{}{
 			"enabled":          cfg.GeoIP.Enabled,

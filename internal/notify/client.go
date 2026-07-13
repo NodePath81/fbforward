@@ -3,16 +3,12 @@ package notify
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"sync"
 	"time"
 
@@ -33,17 +29,10 @@ const (
 )
 
 type Event struct {
-	SchemaVersion int            `json:"schema_version"`
-	EventName     string         `json:"event_name"`
-	Severity      Severity       `json:"severity"`
-	Timestamp     string         `json:"timestamp"`
-	Source        EventSource    `json:"source"`
-	Attributes    map[string]any `json:"attributes"`
-}
-
-type EventSource struct {
-	Service  string `json:"service"`
-	Instance string `json:"instance"`
+	Event      string         `json:"event"`
+	OccurredAt string         `json:"occurred_at"`
+	Instance   string         `json:"instance"`
+	Attributes map[string]any `json:"attributes"`
 }
 
 type Emitter interface {
@@ -52,9 +41,7 @@ type Emitter interface {
 
 type Config struct {
 	Endpoint       string
-	KeyID          string
-	Token          string
-	SourceService  string
+	BearerToken    string
 	SourceInstance string
 	QueueSize      int
 	Timeout        time.Duration
@@ -65,9 +52,7 @@ type Config struct {
 
 type Client struct {
 	endpoint       string
-	keyID          string
-	token          string
-	sourceService  string
+	bearerToken    string
 	sourceInstance string
 	timeout        time.Duration
 	now            func() time.Time
@@ -112,9 +97,7 @@ func NewClient(cfg Config) (*Client, error) {
 
 	c := &Client{
 		endpoint:       parsed.String(),
-		keyID:          cfg.KeyID,
-		token:          cfg.Token,
-		sourceService:  cfg.SourceService,
+		bearerToken:    cfg.BearerToken,
 		sourceInstance: cfg.SourceInstance,
 		timeout:        timeout,
 		now:            nowFn,
@@ -130,33 +113,27 @@ func NewClient(cfg Config) (*Client, error) {
 func (c *Client) Emit(eventName string, severity Severity, attributes map[string]any) bool {
 	now := c.now().UTC()
 	event := Event{
-		SchemaVersion: 1,
-		EventName:     eventName,
-		Severity:      severity,
-		Timestamp:     now.Format(time.RFC3339Nano),
-		Source: EventSource{
-			Service:  c.sourceService,
-			Instance: c.sourceInstance,
-		},
+		Event:      eventName,
+		OccurredAt: now.Format(time.RFC3339Nano),
+		Instance:   c.sourceInstance,
 		Attributes: cloneAttributes(attributes),
 	}
 	util.Event(c.logger, slog.LevelInfo, "notify.triggered",
-		"notify.event_name", event.EventName,
-		"notify.severity", event.Severity,
-		"source.service", event.Source.Service,
-		"source.instance", event.Source.Instance,
+		"notify.event", event.Event,
+		"notify.severity", severity,
+		"source.instance", event.Instance,
 	)
 	submitted := c.Submit(event)
 	if submitted {
 		util.Event(c.logger, slog.LevelInfo, "notify.enqueued",
-			"notify.event_name", event.EventName,
-			"notify.severity", event.Severity,
+			"notify.event", event.Event,
+			"notify.severity", severity,
 		)
 		return true
 	}
 	util.Event(c.logger, slog.LevelWarn, "notify.enqueue_failed",
-		"notify.event_name", event.EventName,
-		"notify.severity", event.Severity,
+		"notify.event", event.Event,
+		"notify.severity", severity,
 	)
 	return false
 }
@@ -210,49 +187,40 @@ func (c *Client) run() {
 func (c *Client) send(event Event) {
 	rawBody, err := json.Marshal(event)
 	if err != nil {
-		util.Event(c.logger, slog.LevelWarn, "notify.marshal_failed", "event.name", event.EventName, "error", err)
+		util.Event(c.logger, slog.LevelWarn, "notify.marshal_failed", "event.name", event.Event, "error", err)
 		return
 	}
-
-	headerTimestamp := strconv.FormatInt(c.now().Unix(), 10)
-	signature := sign(headerTimestamp+"."+string(rawBody), c.token)
 
 	req, err := http.NewRequest(http.MethodPost, c.endpoint, bytes.NewReader(rawBody))
 	if err != nil {
-		util.Event(c.logger, slog.LevelWarn, "notify.request_build_failed", "event.name", event.EventName, "error", err)
+		util.Event(c.logger, slog.LevelWarn, "notify.request_build_failed", "event.name", event.Event, "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-FBNotify-Key-Id", c.keyID)
-	req.Header.Set("X-FBNotify-Timestamp", headerTimestamp)
-	req.Header.Set("X-FBNotify-Signature", signature)
+	if c.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 	req = req.WithContext(ctx)
 	util.Event(c.logger, slog.LevelInfo, "notify.delivery_started",
-		"notify.event_name", event.EventName,
+		"notify.event", event.Event,
 		"notify.endpoint", c.endpoint,
 	)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.EventName, "error", err)
+		util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.Event, "error", err)
 		return
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.EventName, "http.status_code", resp.StatusCode)
+		util.Event(c.logger, slog.LevelWarn, "notify.delivery_failed", "event.name", event.Event, "http.status_code", resp.StatusCode)
 		return
 	}
-	util.Event(c.logger, slog.LevelInfo, "notify.delivered", "notify.event_name", event.EventName, "http.status_code", resp.StatusCode)
-}
-
-func sign(payload, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(payload))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	util.Event(c.logger, slog.LevelInfo, "notify.delivered", "notify.event", event.Event, "http.status_code", resp.StatusCode)
 }
 
 func cloneAttributes(attributes map[string]any) map[string]any {

@@ -2,9 +2,6 @@ package notify
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,14 +10,12 @@ import (
 	"time"
 )
 
-func TestClientSignsAndSendsEvent(t *testing.T) {
+func TestClientSendsGenericWebhookEvent(t *testing.T) {
 	fixedNow := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
 
 	var gotPath string
 	var gotBody string
-	var gotKeyID string
-	var gotTimestamp string
-	var gotSignature string
+	var gotAuth string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -29,18 +24,14 @@ func TestClientSignsAndSendsEvent(t *testing.T) {
 		}
 		gotPath = r.URL.Path
 		gotBody = string(body)
-		gotKeyID = r.Header.Get("X-FBNotify-Key-Id")
-		gotTimestamp = r.Header.Get("X-FBNotify-Timestamp")
-		gotSignature = r.Header.Get("X-FBNotify-Signature")
+		gotAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
 
 	client, err := NewClient(Config{
 		Endpoint:       server.URL + "/v1/events",
-		KeyID:          "key-1",
-		Token:          "node-token-abcdefghijklmnopqrstuvwxyz123456",
-		SourceService:  "fbforward",
+		BearerToken:    "node-token-abcdefghijklmnopqrstuvwxyz123456",
 		SourceInstance: "node-1",
 		Now:            func() time.Time { return fixedNow },
 	})
@@ -61,17 +52,10 @@ func TestClientSignsAndSendsEvent(t *testing.T) {
 	if gotPath != "/v1/events" {
 		t.Fatalf("expected /v1/events path, got %q", gotPath)
 	}
-	if gotKeyID != "key-1" {
-		t.Fatalf("unexpected key id %q", gotKeyID)
+	if gotAuth != "Bearer node-token-abcdefghijklmnopqrstuvwxyz123456" {
+		t.Fatalf("unexpected authorization header %q", gotAuth)
 	}
-	if gotTimestamp != "1775822400" {
-		t.Fatalf("unexpected timestamp header %q", gotTimestamp)
-	}
-	wantSignature := rawBase64HMAC(gotTimestamp+"."+gotBody, "node-token-abcdefghijklmnopqrstuvwxyz123456")
-	if gotSignature != wantSignature {
-		t.Fatalf("unexpected signature %q want %q", gotSignature, wantSignature)
-	}
-	if want := `"event_name":"upstream.unusable"`; !contains(gotBody, want) {
+	if want := `"event":"upstream.unusable"`; !contains(gotBody, want) {
 		t.Fatalf("expected body to contain %s, got %s", want, gotBody)
 	}
 }
@@ -97,9 +81,7 @@ func TestClientDropsWhenQueueFull(t *testing.T) {
 
 	client, err := NewClient(Config{
 		Endpoint:       "https://notify.example/v1/events",
-		KeyID:          "key-1",
-		Token:          "node-token-abcdefghijklmnopqrstuvwxyz123456",
-		SourceService:  "fbforward",
+		BearerToken:    "node-token-abcdefghijklmnopqrstuvwxyz123456",
 		SourceInstance: "node-1",
 		QueueSize:      1,
 		HTTPClient:     httpClient,
@@ -129,12 +111,6 @@ type roundTripFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
-}
-
-func rawBase64HMAC(payload, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(payload))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func contains(value, needle string) bool {

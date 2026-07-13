@@ -173,10 +173,9 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		notifyLogger := util.ComponentLogger(logger, util.CompNotify)
 		notifier, err := notify.NewClient(notify.Config{
 			Endpoint:       cfg.Notify.Endpoint,
-			KeyID:          cfg.Notify.KeyID,
-			Token:          cfg.Notify.Token,
-			SourceService:  "fbforward",
+			BearerToken:    cfg.Notify.BearerToken,
 			SourceInstance: cfg.Notify.SourceInstance,
+			Timeout:        cfg.Notify.Timeout.Duration(),
 			Logger:         notifyLogger,
 		})
 		if err != nil {

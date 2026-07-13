@@ -104,7 +104,7 @@ type Config struct {
 	Measurement        MeasurementConfig `yaml:"measurement"`
 	Health             HealthConfig      `yaml:"health"`
 	Control            ControlConfig     `yaml:"control"`
-	Notify             NotifyConfig      `yaml:"notify"`
+	Notify             NotifyConfig      `yaml:"webhook"`
 	Logging            LoggingConfig     `yaml:"logging"`
 	GeoIP              GeoIPConfig       `yaml:"geoip"`
 	IPLog              IPLogConfig       `yaml:"ip_log"`
@@ -244,12 +244,12 @@ type ControlMetricsConfig struct {
 type NotifyConfig struct {
 	Enabled            bool     `yaml:"enabled"`
 	Endpoint           string   `yaml:"endpoint"`
-	KeyID              string   `yaml:"key_id"`
-	Token              string   `yaml:"token"`
+	BearerToken        string   `yaml:"bearer_token"`
 	SourceInstance     string   `yaml:"source_instance"`
-	StartupGracePeriod Duration `yaml:"startup_grace_period"`
-	UnusableInterval   Duration `yaml:"unusable_interval"`
-	NotifyInterval     Duration `yaml:"notify_interval"`
+	Timeout            Duration `yaml:"timeout"`
+	StartupGracePeriod Duration `yaml:"-"`
+	UnusableInterval   Duration `yaml:"-"`
+	NotifyInterval     Duration `yaml:"-"`
 }
 
 type GeoIPConfig struct {
@@ -722,37 +722,32 @@ func (c *Config) validate() error {
 	}
 
 	c.Notify.Endpoint = strings.TrimSpace(c.Notify.Endpoint)
-	c.Notify.KeyID = strings.TrimSpace(c.Notify.KeyID)
-	c.Notify.Token = strings.TrimSpace(c.Notify.Token)
+	c.Notify.BearerToken = strings.TrimSpace(c.Notify.BearerToken)
 	c.Notify.SourceInstance = strings.TrimSpace(c.Notify.SourceInstance)
 	if c.Notify.Enabled {
 		if c.Notify.StartupGracePeriod.Duration() <= 0 {
-			return errors.New("notify.startup_grace_period must be > 0")
+			return errors.New("webhook startup grace period must be > 0")
 		}
 		if c.Notify.UnusableInterval.Duration() <= 0 {
-			return errors.New("notify.unusable_interval must be > 0")
+			return errors.New("webhook unusable interval must be > 0")
 		}
 		if c.Notify.NotifyInterval.Duration() <= 0 {
-			return errors.New("notify.notify_interval must be > 0")
+			return errors.New("webhook notify interval must be > 0")
 		}
 		if c.Notify.Endpoint == "" {
-			return errors.New("notify.endpoint is required when notify.enabled is true")
+			return errors.New("webhook.endpoint is required when webhook.enabled is true")
 		}
 		parsedNotifyEndpoint, err := url.Parse(c.Notify.Endpoint)
 		if err != nil || parsedNotifyEndpoint.Host == "" {
-			return errors.New("notify.endpoint must be a valid URL")
+			return errors.New("webhook.endpoint must be a valid URL")
 		}
 		if parsedNotifyEndpoint.Scheme != "http" && parsedNotifyEndpoint.Scheme != "https" {
-			return errors.New("notify.endpoint must use http or https")
+			return errors.New("webhook.endpoint must use http or https")
 		}
-		if err := validateNotifyIdentifier(c.Notify.KeyID, "notify.key_id"); err != nil {
-			return err
-		}
-		if c.Notify.Token == "" {
-			return errors.New("notify.token is required when notify.enabled is true")
-		}
-		if err := validateAuthTokenField(c.Notify.Token, "notify.token"); err != nil {
-			return err
+		if c.Notify.BearerToken != "" {
+			if err := validateAuthTokenField(c.Notify.BearerToken, "webhook.bearer_token"); err != nil {
+				return err
+			}
 		}
 		if c.Notify.SourceInstance == "" {
 			c.Notify.SourceInstance = strings.TrimSpace(c.Hostname)
@@ -764,7 +759,7 @@ func (c *Config) validate() error {
 				c.Notify.SourceInstance = strings.TrimSpace(hostname)
 			}
 		}
-		if err := validateNotifyIdentifier(c.Notify.SourceInstance, "notify.source_instance"); err != nil {
+		if err := validateNotifyIdentifier(c.Notify.SourceInstance, "webhook.source_instance"); err != nil {
 			return err
 		}
 	}

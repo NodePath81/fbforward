@@ -100,19 +100,14 @@ control:
   metrics:
     enabled: true
 
-# Optional notification delivery to fbnotify.
-# When enabled, fbforward uses the endpoint, key_id, token, and
-# source_instance fields below.
-notify:
+# Optional generic webhook delivery. The request body is a small JSON event;
+# bearer_token is optional and is sent as an Authorization header.
+webhook:
   enabled: false
-  endpoint: http://10.99.0.30:8787/v1/events
-  key_id: "replace-with-fbnotify-key-id"
-  token: "replace-with-fbnotify-token"
+  endpoint: https://events.example/internal/fbforward
+  bearer_token: "replace-with-webhook-token"
   source_instance: node-1
-  # Timing controls for unusable-state alerts.
-  startup_grace_period: 5m
-  unusable_interval: 30s
-  notify_interval: 30m
+  timeout: 5s
 
 geoip:
   enabled: false

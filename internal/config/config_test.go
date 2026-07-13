@@ -42,34 +42,31 @@ func TestRemovedShapingConfigKeyRejected(t *testing.T) {
 	}
 }
 
-func TestNotifyConfigRequiresTokenWhenEnabled(t *testing.T) {
+func TestWebhookConfigAllowsOptionalBearerToken(t *testing.T) {
 	cfg := testConfig()
 	cfg.Notify = NotifyConfig{
 		Enabled:  true,
 		Endpoint: "https://notify.example/v1/events",
-		KeyID:    "key-1",
 	}
 	cfg.setDefaults()
-	err := cfg.validate()
-	if err == nil || !strings.Contains(err.Error(), "notify.token is required when notify.enabled is true") {
-		t.Fatalf("expected missing notify token error, got %v", err)
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected webhook config to validate: %v", err)
 	}
 }
 
 func TestNotifyConfigAcceptsTokenAndDefaultsSourceInstance(t *testing.T) {
 	cfg := testConfig()
 	cfg.Notify = NotifyConfig{
-		Enabled:  true,
-		Endpoint: "https://notify.example/v1/events",
-		KeyID:    "key-1",
-		Token:    "node-token-abcdefghijklmnopqrstuvwxyz123456",
+		Enabled:     true,
+		Endpoint:    "https://notify.example/v1/events",
+		BearerToken: "node-token-abcdefghijklmnopqrstuvwxyz123456",
 	}
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
-		t.Fatalf("expected notify config to validate: %v", err)
+		t.Fatalf("expected webhook config to validate: %v", err)
 	}
-	if cfg.Notify.Token != "node-token-abcdefghijklmnopqrstuvwxyz123456" {
-		t.Fatalf("expected notify token to be preserved, got %q", cfg.Notify.Token)
+	if cfg.Notify.BearerToken != "node-token-abcdefghijklmnopqrstuvwxyz123456" {
+		t.Fatalf("expected webhook bearer token to be preserved, got %q", cfg.Notify.BearerToken)
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -100,21 +97,21 @@ func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
 			mut: func(cfg *Config) {
 				cfg.Notify.StartupGracePeriod = Duration(-time.Second)
 			},
-			want: "notify.startup_grace_period must be > 0",
+			want: "webhook startup grace period must be > 0",
 		},
 		{
 			name: "unusable interval",
 			mut: func(cfg *Config) {
 				cfg.Notify.UnusableInterval = Duration(0)
 			},
-			want: "notify.unusable_interval must be > 0",
+			want: "webhook unusable interval must be > 0",
 		},
 		{
 			name: "notify interval",
 			mut: func(cfg *Config) {
 				cfg.Notify.NotifyInterval = Duration(-time.Second)
 			},
-			want: "notify.notify_interval must be > 0",
+			want: "webhook notify interval must be > 0",
 		},
 	}
 
@@ -122,10 +119,9 @@ func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig()
 			cfg.Notify = NotifyConfig{
-				Enabled:  true,
-				Endpoint: "https://notify.example/v1/events",
-				KeyID:    "key-1",
-				Token:    "node-token-abcdefghijklmnopqrstuvwxyz123456",
+				Enabled:     true,
+				Endpoint:    "https://notify.example/v1/events",
+				BearerToken: "node-token-abcdefghijklmnopqrstuvwxyz123456",
 			}
 			cfg.setDefaults()
 			tc.mut(&cfg)
@@ -143,18 +139,17 @@ func TestNotifyConfigRejectsInvalidDurationsWhenEnabled(t *testing.T) {
 func TestNotifyConfigRejectsInvalidToken(t *testing.T) {
 	cfg := testConfig()
 	cfg.Notify = NotifyConfig{
-		Enabled:  true,
-		Endpoint: "https://notify.example/v1/events",
-		KeyID:    "key-1",
-		Token:    "short-token",
+		Enabled:     true,
+		Endpoint:    "https://notify.example/v1/events",
+		BearerToken: "short-token",
 	}
 	cfg.setDefaults()
 	err := cfg.validate()
 	if err == nil {
 		t.Fatalf("expected invalid token validation error")
 	}
-	if !strings.Contains(err.Error(), "notify.token") {
-		t.Fatalf("expected notify.token validation error, got %v", err)
+	if !strings.Contains(err.Error(), "webhook.bearer_token") {
+		t.Fatalf("expected webhook bearer token validation error, got %v", err)
 	}
 }
 
