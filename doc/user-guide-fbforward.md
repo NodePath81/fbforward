@@ -346,16 +346,18 @@ When GeoIP or IP logging is enabled, the dashboard shows operational status card
 - **GeoIP ASN / Country**: Shows whether the in-memory reader is loaded and the on-disk database size. Deployment automation replaces local files and calls `ReloadGeoIP` to reopen them.
 - **IP Log**: Shows the total record count, rejection record count, and database file size. These values come from the `GetIPLogStatus` RPC.
 
-**IP Log page (`#/iplog`):**
+**Audit page:**
 
-The dedicated IP Log page lets operators query unified persisted flow and rejection history via the `QueryLogEvents` RPC:
+The text-first Audit page submits a bounded query to the `QueryAudit` RPC. It
+does not accept arbitrary SQL and does not load the database into the browser.
+See [the query reference](audit-query.md).
 
-- Filter by time range (start/end timestamps)
-- Filter by CIDR prefix (e.g., `10.0.0.0/8`)
-- Filter by ASN, country, protocol, port, or entry type
-- Filter rejection rows by reason, matched rule type, or matched rule value
-- Sort by common fields across all rows, or use flow-only / rejection-only sort keys after narrowing the type filter
-- Server-side pagination for large result sets
+- `flows`, `rejections`, and `events` return lifecycle or rejection rows.
+- `top clients` groups traffic by client IP.
+- `top asns` groups traffic by ASN, organization, and country.
+- `tag=app:test`, protocol, upstream, CIDR, IP, ASN, country, reason, and
+  relative/absolute time filters are pushed to SQLite.
+- `sort`, `limit`, and `offset` are server-side pipeline stages.
 
 CIDR queries require a time bound to prevent full-table scans.
 

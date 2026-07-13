@@ -28,7 +28,9 @@ GeoIP files are downloaded and atomically replaced by deployment automation.
 ## Audit and policy
 
 - `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`, `QueryLogEvents`
-- `GetTopTalkers`
+- `GetTopTalkers`, `GetTopASNs`, `QueryAudit`
+- `QueryAudit` uses the restricted syntax documented in
+  [`audit-query.md`](audit-query.md); it never executes caller-provided SQL.
 - `GetFirewallPolicy`, `GetFirewallStatus`, `ValidateFirewallPolicy`,
   `ReloadFirewallPolicy`
 - `CreateOnlineRule`, `ListOnlineRules`, `DeleteOnlineRule`,
