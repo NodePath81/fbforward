@@ -62,6 +62,18 @@ function renderAudit(data, talkers) {
   const talkerRows = document.querySelector('#talker-rows'); talkerRows.replaceChildren();
   for (const talker of talkers || []) { const row = document.createElement('tr'); cell(row, talker.client_ip); cell(row, talker.bytes_up); cell(row, talker.bytes_down); cell(row, talker.bytes_total); cell(row, talker.flow_count); talkerRows.append(row); }
 }
+async function optionalRPC(method, params) { try { return { value: await rpc(method, params) }; } catch (error) { return { error: error.message }; } }
+function actionButton(label, message, action) { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.addEventListener('click', async () => { if (!confirm(message)) return; try { await action(); await refreshFirewall(); showAlert(''); } catch (error) { showAlert(error.message); } }); return button; }
+async function refreshFirewall() {
+  const status = await optionalRPC('GetFirewallStatus');
+  const policy = await optionalRPC('GetFirewallPolicy');
+  const rules = await optionalRPC('ListOnlineRules', { include_expired: true });
+  document.querySelector('#firewall-status').textContent = status.error ? `persistent policy: unavailable (${status.error})` : `persistent policy: ${status.value.state} · ${status.value.source || status.value.policy_file || 'none'} · generation ${status.value.generation}`;
+  document.querySelector('#firewall-policy').textContent = policy.error ? `persistent policy unavailable: ${policy.error}` : JSON.stringify(policy.value, null, 2);
+  const rows = document.querySelector('#online-rule-rows'); rows.replaceChildren();
+  if (rules.error) { const row = document.createElement('tr'); cell(row, `online rules unavailable: ${rules.error}`); rows.append(row); return; }
+  for (const rule of rules.value || []) { const row = document.createElement('tr'); cell(row, rule.rule_id); cell(row, rule.action); cell(row, JSON.stringify(rule.matcher)); cell(row, rule.priority); cell(row, rule.expires_at || ''); cell(row, `${rule.state}${rule.state_reason ? ` (${rule.state_reason})` : ''}`); const ops = document.createElement('td'); if (rule.state === 'active') ops.append(actionButton('Expire', `Expire online rule ${rule.rule_id}?`, () => rpc('ExpireOnlineRule', { rule_id: rule.rule_id }))); ops.append(' ', actionButton('Delete', `Delete online rule ${rule.rule_id}?`, () => rpc('DeleteOnlineRule', { rule_id: rule.rule_id }))); row.append(ops); rows.append(row); }
+}
 
 async function refreshPage() {
   if (state.inFlight || !sessionStorage.getItem(tokenKey) || document.hidden) return;
@@ -71,6 +83,7 @@ async function refreshPage() {
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
     if (state.page === 'config') document.querySelector('#config-json').textContent = JSON.stringify(await rpc('GetRuntimeConfig'), null, 2);
     if (state.page === 'audit') { const params = auditParams(); const result = await rpc('QueryLogEvents', params); const talkers = await rpc('GetTopTalkers', { protocol: params.protocol, tag: params.tag, limit: Math.min(params.limit, 100) }); renderAudit(result, talkers); }
+    if (state.page === 'firewall') await refreshFirewall();
     showAlert('');
   } catch (error) { if (error.message !== 'unauthorized') showAlert(error.message); }
   finally { state.inFlight = false; }
@@ -87,6 +100,8 @@ document.querySelector('#audit-form').addEventListener('submit', (event) => { ev
 document.querySelector('#audit-prev').addEventListener('click', () => { state.auditOffset = Math.max(0, state.auditOffset - (Number(document.querySelector('#audit-limit').value) || 50)); saveAuditURL(); refreshPage(); });
 document.querySelector('#audit-next').addEventListener('click', () => { state.auditOffset += Number(document.querySelector('#audit-limit').value) || 50; saveAuditURL(); refreshPage(); });
 document.querySelector('#audit-export').addEventListener('click', () => { if (!state.audit) return; const blob = new Blob([JSON.stringify(state.audit, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'fbforward-audit.json'; link.click(); URL.revokeObjectURL(link.href); });
+document.querySelector('#firewall-reload').addEventListener('click', async () => { if (!confirm('Reload the persistent firewall policy file?')) return; try { await rpc('ReloadFirewallPolicy'); await refreshFirewall(); showAlert(''); } catch (error) { showAlert(error.message); await refreshFirewall(); } });
+document.querySelector('#firewall-validate').addEventListener('click', async () => { try { await rpc('ValidateFirewallPolicy'); showAlert('persistent policy is valid'); } catch (error) { showAlert(`policy validation failed: ${error.message}`); } });
 document.querySelector('#mode-form').addEventListener('submit', async (event) => { event.preventDefault(); const mode = document.querySelector('#mode').value; const tag = document.querySelector('#manual-upstream').value; try { await rpc('SetUpstream', { mode, ...(mode === 'manual' ? { tag } : {}) }); await refreshPage(); } catch (error) { showAlert(error.message); } });
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopPolling(); else startPolling(); });
 loadAuditURL();
