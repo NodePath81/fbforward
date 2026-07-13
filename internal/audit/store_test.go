@@ -363,6 +363,38 @@ func TestTopASNsAggregatesFlowBytes(t *testing.T) {
 	}
 }
 
+func TestTopASNsCombinesCountriesPerASN(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.InsertBatch([]EnrichedRecord{
+		{CloseEvent: CloseEvent{IP: "192.0.2.10", Protocol: "tcp", BytesUp: 10, BytesDown: 5, RecordedAt: now}, ASN: 64510, ASOrg: "Org A", Country: "US"},
+		{CloseEvent: CloseEvent{IP: "192.0.2.11", Protocol: "tcp", BytesUp: 20, BytesDown: 5, RecordedAt: now}, ASN: 64510, ASOrg: "Org B", Country: "GB"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.GetTopASNs(TopASNParams{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ASN != 64510 || rows[0].BytesTotal != 40 || rows[0].FlowCount != 2 || rows[0].Country != "" {
+		t.Fatalf("unexpected combined ASN: %#v", rows)
+	}
+}
+
+func TestTopQueriesValidateBounds(t *testing.T) {
+	store := newTestStore(t)
+	start, end := int64(20), int64(10)
+	if _, err := store.GetTopTalkers(TopTalkerParams{StartTime: &start, EndTime: &end}); err == nil {
+		t.Fatal("reversed top talker range accepted")
+	}
+	if _, err := store.GetTopASNs(TopASNParams{Protocol: "icmp"}); err == nil {
+		t.Fatal("invalid top ASN protocol accepted")
+	}
+	if _, err := store.GetTopASNs(TopASNParams{Limit: MaxQueryLimit + 1}); err == nil {
+		t.Fatal("oversized top ASN limit accepted")
+	}
+}
+
 func TestBackupRestore(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.sqlite")
