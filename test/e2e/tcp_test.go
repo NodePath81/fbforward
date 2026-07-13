@@ -77,6 +77,7 @@ firewall:
 type tcpEcho struct {
 	listener net.Listener
 	port     int
+	accepted chan net.Conn
 }
 
 func startTCPEcho(t *testing.T) tcpEcho {
@@ -85,12 +86,16 @@ func startTCPEcho(t *testing.T) tcpEcho {
 	if err != nil {
 		t.Fatalf("listen echo upstream: %v", err)
 	}
-	echo := tcpEcho{listener: listener, port: listener.Addr().(*net.TCPAddr).Port}
+	echo := tcpEcho{listener: listener, port: listener.Addr().(*net.TCPAddr).Port, accepted: make(chan net.Conn, 1)}
 	go func() {
 		for {
 			connection, acceptErr := listener.Accept()
 			if acceptErr != nil {
 				return
+			}
+			select {
+			case echo.accepted <- connection:
+			default:
 			}
 			go func() {
 				defer connection.Close()
