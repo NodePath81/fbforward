@@ -49,7 +49,7 @@ func TestStatsSnapshotRefreshesStaleState(t *testing.T) {
 		RecoveryThreshold: 2,
 		StaleThreshold:    config.Duration(time.Second),
 	})
-	m.UpdateMeasurement("primary", &MeasurementResult{RTTMs: 5, Timestamp: time.Now().Add(-2 * time.Second)})
+	m.RecordProbe("primary", ProbeObservation{Success: true, RTT: 5 * time.Millisecond, ObservedAt: time.Now().Add(-2 * time.Second)})
 
 	stats := m.StatsSnapshot()
 	if got := stats["primary"].HealthState; got != HealthStale {
@@ -119,7 +119,7 @@ func TestRouteSelectorAdaptiveOverrideFallsBackAndRecovers(t *testing.T) {
 	b.SetActiveIP(net.ParseIP("192.0.2.2"))
 	m := NewUpstreamManager([]*Upstream{a, b}, nil)
 	m.SetHealthConfig(config.HealthConfig{RTTEWMAAlpha: 0.25, FailureThreshold: 3, RecoveryThreshold: 2, StaleThreshold: config.Duration(time.Minute)})
-	m.UpdateMeasurement("b", &MeasurementResult{RTTMs: 10, Timestamp: time.Now()})
+	m.RecordProbe("b", ProbeObservation{Success: true, RTT: 10 * time.Millisecond, ObservedAt: time.Now()})
 	for i := 0; i < 3; i++ {
 		m.RecordProbeFailure("a", time.Now())
 	}
@@ -131,8 +131,8 @@ func TestRouteSelectorAdaptiveOverrideFallsBackAndRecovers(t *testing.T) {
 	if err != nil || selected.Tag != "b" || status.OverrideState != OverrideFallback {
 		t.Fatalf("expected adaptive fallback: selected=%v status=%+v err=%v", selected, status, err)
 	}
-	m.UpdateMeasurement("a", &MeasurementResult{RTTMs: 5, Timestamp: time.Now()})
-	m.UpdateMeasurement("a", &MeasurementResult{RTTMs: 5, Timestamp: time.Now()})
+	m.RecordProbe("a", ProbeObservation{Success: true, RTT: 5 * time.Millisecond, ObservedAt: time.Now()})
+	m.RecordProbe("a", ProbeObservation{Success: true, RTT: 5 * time.Millisecond, ObservedAt: time.Now()})
 	selected, status, err = selector.Pick("proxy")
 	if err != nil || selected.Tag != "a" || status.OverrideState != OverrideActive {
 		t.Fatalf("expected override recovery: selected=%v status=%+v err=%v", selected, status, err)

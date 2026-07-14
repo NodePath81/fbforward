@@ -62,9 +62,10 @@ func TestCollectorSyncsStaleHealthToMetrics(t *testing.T) {
 		RecoveryThreshold: 2,
 		StaleThreshold:    config.Duration(time.Second),
 	})
-	manager.UpdateMeasurement("primary", &upstream.MeasurementResult{
-		RTTMs:     10,
-		Timestamp: time.Now().Add(-2 * time.Second),
+	manager.RecordProbe("primary", upstream.ProbeObservation{
+		Success:    true,
+		RTT:        10 * time.Millisecond,
+		ObservedAt: time.Now().Add(-2 * time.Second),
 	})
 	metricSet := metrics.NewMetrics([]string{"primary"})
 	collector := NewCollector(config.MeasurementConfig{}, manager, metricSet, nil, nil)
@@ -109,7 +110,7 @@ func TestCollectorUsesMinimalFBMeasureSDK(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runMeasurement(%s): %v", protocol, err)
 		}
-		if result == nil || result.RTTMs <= 0 {
+		if !result.Success || result.RTT <= 0 {
 			t.Fatalf("runMeasurement(%s) returned invalid result: %+v", protocol, result)
 		}
 	}

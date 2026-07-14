@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"strings"
 	"sync"
@@ -56,13 +55,6 @@ type Upstream struct {
 	health        HealthSnapshot
 	dialFailUntil time.Time
 	dialFailCount int
-}
-
-// MeasurementResult is retained as the fbmeasure adapter boundary. Only
-// RTT, timestamp and success are consumed by the health model.
-type MeasurementResult struct {
-	RTTMs     float64
-	Timestamp time.Time
 }
 
 type UpstreamManager struct {
@@ -285,19 +277,12 @@ func hasTag(tags map[string]struct{}, tag string) bool {
 	return ok
 }
 
-func (m *UpstreamManager) UpdateMeasurement(tag string, result *MeasurementResult) UpstreamStats {
-	if result == nil || !sanitizeMeasurementResult(result) {
-		return UpstreamStats{}
-	}
-	return m.applyObservation(tag, ProbeObservation{
-		Success:    result.RTTMs > 0,
-		RTT:        time.Duration(result.RTTMs * float64(time.Millisecond)),
-		ObservedAt: result.Timestamp,
-	})
+func (m *UpstreamManager) RecordProbe(tag string, observation ProbeObservation) UpstreamStats {
+	return m.applyObservation(tag, observation)
 }
 
 func (m *UpstreamManager) RecordProbeFailure(tag string, observedAt time.Time) UpstreamStats {
-	return m.applyObservation(tag, ProbeObservation{ObservedAt: observedAt})
+	return m.RecordProbe(tag, ProbeObservation{ObservedAt: observedAt})
 }
 
 func (m *UpstreamManager) applyObservation(tag string, observation ProbeObservation) UpstreamStats {
@@ -513,19 +498,6 @@ func containsIP(ips []net.IP, target net.IP) bool {
 		}
 	}
 	return false
-}
-
-func sanitizeMeasurementResult(result *MeasurementResult) bool {
-	if result == nil || math.IsNaN(result.RTTMs) || math.IsInf(result.RTTMs, 0) || result.RTTMs <= 0 {
-		return false
-	}
-	if result.Timestamp.IsZero() {
-		result.Timestamp = time.Now()
-	}
-	if result.RTTMs > 10000 {
-		result.RTTMs = 10000
-	}
-	return true
 }
 
 type UpstreamSnapshot struct {

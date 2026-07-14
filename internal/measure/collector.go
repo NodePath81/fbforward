@@ -146,15 +146,16 @@ func (c *Collector) handleMeasurementFailure(tag string, err error) error {
 	return err
 }
 
-func (c *Collector) handleMeasurementSuccess(tag string, result *upstream.MeasurementResult) {
-	stats := c.manager.UpdateMeasurement(tag, result)
+func (c *Collector) handleMeasurementSuccess(tag string, result upstream.ProbeObservation) {
+	stats := c.manager.RecordProbe(tag, result)
 	if c.metrics != nil {
 		c.metrics.RecordProbe(tag, true)
 		c.metrics.SetUpstreamMetrics(tag, stats)
 	}
 }
 
-func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string, timeout time.Duration) (*upstream.MeasurementResult, error) {
+func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string, timeout time.Duration) (upstream.ProbeObservation, error) {
+	var empty upstream.ProbeObservation
 	target := up.MeasureHost
 	if target == "" {
 		target = up.Host
@@ -192,7 +193,7 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 	client, err := fbmeasure.NewClient(fbmeasure.ClientConfig{Address: addr, Timeout: timeout})
 	if err != nil {
 		errMsg = err.Error()
-		return nil, err
+		return empty, err
 	}
 	defer client.Close()
 
@@ -210,14 +211,15 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 			"network.protocol", network,
 			"error", err,
 		)
-		return nil, err
+		return empty, err
 	}
 
-	result := &upstream.MeasurementResult{
-		Timestamp: probeResult.ObservedAt,
-		RTTMs:     float64(probeResult.RTT) / float64(time.Millisecond),
+	result := upstream.ProbeObservation{
+		Success:    probeResult.Reachable,
+		RTT:        probeResult.RTT,
+		ObservedAt: probeResult.ObservedAt,
 	}
-	resultMetrics.RTTMs = result.RTTMs
+	resultMetrics.RTTMs = float64(result.RTT) / float64(time.Millisecond)
 
 	success = true
 	util.Event(c.logger, slog.LevelInfo, "measure.completed",
@@ -225,7 +227,7 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		"upstream", up.Tag,
 		"network.protocol", network,
 		"measure.duration_ms", time.Since(startTime).Milliseconds(),
-		"measure.rtt_ms", result.RTTMs,
+		"measure.rtt_ms", resultMetrics.RTTMs,
 	)
 	return result, nil
 }
