@@ -107,6 +107,7 @@ func (c *ControlServer) rpcReloadGeoIP(ctx *rpcContext, raw json.RawMessage) (an
 func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 	cfg := c.measurement
 	return map[string]interface{}{
+		"probe_timeout": cfg.ProbeTimeout.Duration().String(),
 		"schedule": map[string]interface{}{
 			"interval": map[string]interface{}{
 				"min": cfg.Schedule.Interval.Min.Duration().String(),
@@ -114,26 +115,12 @@ func (c *ControlServer) getMeasurementConfig() map[string]interface{} {
 			},
 			"upstream_gap": cfg.Schedule.UpstreamGap.Duration().String(),
 		},
-		"security": map[string]interface{}{
-			"mode":        cfg.Security.Mode,
-			"server_name": cfg.Security.ServerName,
-		},
 		"protocols": map[string]interface{}{
 			"tcp": map[string]interface{}{
-				"enabled":    util.BoolValue(cfg.Protocols.TCP.Enabled, true),
-				"ping_count": cfg.Protocols.TCP.PingCount,
-				"timeout": map[string]interface{}{
-					"per_sample": cfg.Protocols.TCP.Timeout.PerSample.Duration().String(),
-					"per_cycle":  cfg.Protocols.TCP.Timeout.PerCycle.Duration().String(),
-				},
+				"enabled": util.BoolValue(cfg.Protocols.TCP.Enabled, true),
 			},
 			"udp": map[string]interface{}{
-				"enabled":    util.BoolValue(cfg.Protocols.UDP.Enabled, true),
-				"ping_count": cfg.Protocols.UDP.PingCount,
-				"timeout": map[string]interface{}{
-					"per_sample": cfg.Protocols.UDP.Timeout.PerSample.Duration().String(),
-					"per_cycle":  cfg.Protocols.UDP.Timeout.PerCycle.Duration().String(),
-				},
+				"enabled": util.BoolValue(cfg.Protocols.UDP.Enabled, true),
 			},
 		},
 	}

@@ -18,12 +18,9 @@ const (
 	defaultMeasurementScheduleMaxInterval = 45 * time.Minute
 	defaultMeasurementScheduleUpstreamGap = 5 * time.Second
 
-	defaultMeasurementPingCount    = 5
-	defaultMeasurementPerSample    = 10 * time.Second
-	defaultMeasurementPerCycle     = 30 * time.Second
+	defaultMeasurementProbeTimeout = 2 * time.Second
 	defaultMeasurementTCPEnabled   = true
 	defaultMeasurementUDPEnabled   = true
-	defaultMeasurementSecurityMode = "off"
 
 	defaultHealthAlpha    = 0.25
 	defaultHealthFailure  = 3
@@ -183,17 +180,9 @@ type DNSConfig struct {
 }
 
 type MeasurementConfig struct {
-	Schedule  MeasurementScheduleConfig  `yaml:"schedule"`
-	Protocols MeasurementProtocolsConfig `yaml:"protocols"`
-	Security  MeasurementSecurityConfig  `yaml:"security"`
-}
-
-type MeasurementSecurityConfig struct {
-	Mode           string `yaml:"mode"`
-	CAFile         string `yaml:"ca_file"`
-	ServerName     string `yaml:"server_name"`
-	ClientCertFile string `yaml:"client_cert_file"`
-	ClientKeyFile  string `yaml:"client_key_file"`
+	Schedule     MeasurementScheduleConfig  `yaml:"schedule"`
+	ProbeTimeout Duration                   `yaml:"probe_timeout"`
+	Protocols    MeasurementProtocolsConfig `yaml:"protocols"`
 }
 
 type MeasurementScheduleConfig struct {
@@ -212,14 +201,7 @@ type MeasurementProtocolsConfig struct {
 }
 
 type MeasurementProtocolConfig struct {
-	Enabled   *bool                    `yaml:"enabled"`
-	PingCount int                      `yaml:"ping_count"`
-	Timeout   MeasurementTimeoutConfig `yaml:"timeout"`
-}
-
-type MeasurementTimeoutConfig struct {
-	PerSample Duration `yaml:"per_sample"`
-	PerCycle  Duration `yaml:"per_cycle"`
+	Enabled *bool `yaml:"enabled"`
 }
 
 type HealthConfig struct {
@@ -252,11 +234,11 @@ type NotifyConfig struct {
 }
 
 type GeoIPConfig struct {
-	Enabled         bool     `yaml:"enabled"`
-	ASNDBURL        string   `yaml:"-"`
-	ASNDBPath       string   `yaml:"asn_db_path"`
-	CountryDBURL    string   `yaml:"-"`
-	CountryDBPath   string   `yaml:"country_db_path"`
+	Enabled       bool   `yaml:"enabled"`
+	ASNDBURL      string `yaml:"-"`
+	ASNDBPath     string `yaml:"asn_db_path"`
+	CountryDBURL  string `yaml:"-"`
+	CountryDBPath string `yaml:"country_db_path"`
 }
 
 type IPLogConfig struct {
@@ -458,8 +440,8 @@ func (c *Config) setDefaults() {
 		c.Measurement.Schedule.UpstreamGap = Duration(defaultMeasurementScheduleUpstreamGap)
 	}
 
-	if strings.TrimSpace(c.Measurement.Security.Mode) == "" {
-		c.Measurement.Security.Mode = defaultMeasurementSecurityMode
+	if c.Measurement.ProbeTimeout == 0 {
+		c.Measurement.ProbeTimeout = Duration(defaultMeasurementProbeTimeout)
 	}
 
 	setProtocolDefaults(&c.Measurement.Protocols.TCP, true)
@@ -548,15 +530,6 @@ func setProtocolDefaults(cfg *MeasurementProtocolConfig, isTCP bool) {
 			val = defaultMeasurementUDPEnabled
 		}
 		cfg.Enabled = &val
-	}
-	if cfg.PingCount == 0 {
-		cfg.PingCount = defaultMeasurementPingCount
-	}
-	if cfg.Timeout.PerSample == 0 {
-		cfg.Timeout.PerSample = Duration(defaultMeasurementPerSample)
-	}
-	if cfg.Timeout.PerCycle == 0 {
-		cfg.Timeout.PerCycle = Duration(defaultMeasurementPerCycle)
 	}
 }
 
@@ -791,14 +764,8 @@ func (c *Config) validate() error {
 	if !tcpEnabled && !udpEnabled {
 		return errors.New("measurement requires at least one protocol enabled")
 	}
-	if err := validateProtocolConfig("tcp", c.Measurement.Protocols.TCP, tcpEnabled); err != nil {
-		return err
-	}
-	if err := validateProtocolConfig("udp", c.Measurement.Protocols.UDP, udpEnabled); err != nil {
-		return err
-	}
-	if err := validateMeasurementSecurity(c.Measurement.Security); err != nil {
-		return err
+	if c.Measurement.ProbeTimeout.Duration() < 100*time.Millisecond || c.Measurement.ProbeTimeout.Duration() > 10*time.Second {
+		return errors.New("measurement.probe_timeout must be between 100ms and 10s")
 	}
 
 	if c.Health.RTTEWMAAlpha <= 0 || c.Health.RTTEWMAAlpha > 1 {
@@ -1018,38 +985,6 @@ func normalizeFlowContextScope(values *[]string, field string, index int) error 
 		}
 		seen[value] = struct{}{}
 		(*values)[i] = value
-	}
-	return nil
-}
-
-func validateMeasurementSecurity(cfg MeasurementSecurityConfig) error {
-	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
-	switch mode {
-	case "", defaultMeasurementSecurityMode, "tls", "mtls":
-	default:
-		return fmt.Errorf("measurement.security.mode must be one of off, tls, or mtls")
-	}
-	if (cfg.ClientCertFile == "") != (cfg.ClientKeyFile == "") {
-		return errors.New("measurement.security.client_cert_file and client_key_file must be set together")
-	}
-	if mode == "mtls" && (cfg.ClientCertFile == "" || cfg.ClientKeyFile == "") {
-		return errors.New("measurement.security.mode mtls requires client_cert_file and client_key_file")
-	}
-	return nil
-}
-
-func validateProtocolConfig(proto string, cfg MeasurementProtocolConfig, enabled bool) error {
-	if !enabled {
-		return nil
-	}
-	if cfg.PingCount <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.ping_count must be > 0", proto)
-	}
-	if cfg.Timeout.PerSample.Duration() <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.timeout.per_sample must be > 0", proto)
-	}
-	if cfg.Timeout.PerCycle.Duration() <= 0 {
-		return fmt.Errorf("measurement.protocols.%s.timeout.per_cycle must be > 0", proto)
 	}
 	return nil
 }

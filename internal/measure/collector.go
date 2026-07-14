@@ -12,13 +12,15 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/fbmeasure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
 	"github.com/NodePath81/fbforward/internal/util"
+	"github.com/NodePath81/fbforward/pkg/fbmeasure"
 )
 
 const retryDelay = 30 * time.Second
+
+const defaultProbeTimeout = 2 * time.Second
 
 type Collector struct {
 	cfg            config.MeasurementConfig
@@ -116,15 +118,17 @@ func (c *Collector) syncScheduleMetrics() {
 }
 
 func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, network string) error {
-	protoCfg, err := c.protocolConfig(network)
-	if err != nil {
+	if _, err := c.protocolConfig(network); err != nil {
 		return err
 	}
-
-	cycleCtx, cancel := context.WithTimeout(ctx, protoCfg.Timeout.PerCycle.Duration())
+	probeTimeout := c.cfg.ProbeTimeout.Duration()
+	if probeTimeout <= 0 {
+		probeTimeout = defaultProbeTimeout
+	}
+	cycleCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	result, err := c.runMeasurement(cycleCtx, up, network, protoCfg)
+	result, err := c.runMeasurement(cycleCtx, up, network, probeTimeout)
 	if err != nil {
 		return c.handleMeasurementFailure(up.Tag, err)
 	}
@@ -150,7 +154,7 @@ func (c *Collector) handleMeasurementSuccess(tag string, result *upstream.Measur
 	}
 }
 
-func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string, protoCfg config.MeasurementProtocolConfig) (*upstream.MeasurementResult, error) {
+func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, network string, timeout time.Duration) (*upstream.MeasurementResult, error) {
 	target := up.MeasureHost
 	if target == "" {
 		target = up.Host
@@ -185,33 +189,19 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 		c.OnTestComplete(up.Tag, network, startTime, time.Since(startTime), success, resultMetrics, errMsg)
 	}()
 
-	client, err := fbmeasure.Dial(ctx, addr, fbmeasure.ClientSecurityConfig{
-		Mode:           c.cfg.Security.Mode,
-		CAFile:         c.cfg.Security.CAFile,
-		ServerName:     c.cfg.Security.ServerName,
-		ClientCertFile: c.cfg.Security.ClientCertFile,
-		ClientKeyFile:  c.cfg.Security.ClientKeyFile,
-	})
+	client, err := fbmeasure.NewClient(fbmeasure.ClientConfig{Address: addr, Timeout: timeout})
 	if err != nil {
 		errMsg = err.Error()
-		util.Event(c.logger, slog.LevelWarn, "measure.failed",
-			"measure.cycle_id", cycleID,
-			"upstream", up.Tag,
-			"network.protocol", network,
-			"error", err,
-		)
 		return nil, err
 	}
 	defer client.Close()
 
-	rttCtx, cancel := context.WithTimeout(ctx, protoCfg.Timeout.PerSample.Duration())
-	var rttStats fbmeasure.RTTStats
+	var probeResult fbmeasure.Result
 	if network == "tcp" {
-		rttStats, err = client.PingTCP(rttCtx, protoCfg.PingCount)
+		probeResult, err = client.ProbeTCP(ctx)
 	} else {
-		rttStats, err = client.PingUDP(rttCtx, protoCfg.PingCount)
+		probeResult, err = client.ProbeUDP(ctx)
 	}
-	cancel()
 	if err != nil {
 		errMsg = err.Error()
 		util.Event(c.logger, slog.LevelWarn, "measure.failed",
@@ -224,8 +214,8 @@ func (c *Collector) runMeasurement(ctx context.Context, up *upstream.Upstream, n
 	}
 
 	result := &upstream.MeasurementResult{
-		Timestamp: time.Now(),
-		RTTMs:     float64(rttStats.Mean) / float64(time.Millisecond),
+		Timestamp: probeResult.ObservedAt,
+		RTTMs:     float64(probeResult.RTT) / float64(time.Millisecond),
 	}
 	resultMetrics.RTTMs = result.RTTMs
 

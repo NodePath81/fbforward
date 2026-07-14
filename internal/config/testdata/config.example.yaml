@@ -45,6 +45,9 @@ dns:
 measurement:
   # The first adaptive probe runs immediately.
 
+  # fbmeasure is a fixed small-packet echo service on a trusted network.
+  probe_timeout: 2s
+
   # Scheduling.
   schedule:
     interval:
@@ -52,28 +55,11 @@ measurement:
       max: 45s
     upstream_gap: 5s
 
-  # Optional transport security for fbmeasure.
-  security:
-    mode: off   # off, tls, mtls
-    ca_file: ""
-    server_name: ""
-    client_cert_file: ""
-    client_key_file: ""
-
-  # Protocol-specific test parameters.
   protocols:
     tcp:
       enabled: true
-      ping_count: 5
-      timeout:
-        per_sample: 10s
-        per_cycle: 30s
     udp:
       enabled: true
-      ping_count: 5
-      timeout:
-        per_sample: 10s
-        per_cycle: 30s
 
 health:
   rtt_ewma_alpha: 0.25
