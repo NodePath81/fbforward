@@ -7,12 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 
-	"github.com/NodePath81/fbforward/internal/fbmeasure"
 	"github.com/NodePath81/fbforward/internal/util"
 	"github.com/NodePath81/fbforward/internal/version"
+	"github.com/NodePath81/fbforward/pkg/fbmeasure"
 )
 
 func main() {
@@ -27,13 +26,9 @@ func main() {
 		}
 	}
 
-	port := flag.Int("port", 9876, "Listen port")
+	listen := flag.String("listen", "127.0.0.1:9876", "TCP and UDP listen address")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	logFormat := flag.String("log-format", "text", "Log format (text or json)")
-	tlsCertFile := flag.String("tls-cert-file", "", "TLS server certificate file")
-	tlsKeyFile := flag.String("tls-key-file", "", "TLS server key file")
-	tlsClientCAFile := flag.String("tls-client-ca-file", "", "CA bundle for validating client certificates")
-	tlsRequireClientCert := flag.Bool("tls-require-client-cert", false, "Require and verify client certificates")
 	showVersion := flag.Bool("version", false, "Print version")
 	flag.Parse()
 
@@ -43,37 +38,27 @@ func main() {
 	}
 
 	logger := util.ComponentLogger(util.NewLogger(*logLevel, *logFormat), "fbmeasure")
-	if runtime.GOOS != "linux" {
-		util.Event(logger, slog.LevelError, "fbmeasure.unsupported_os", "goos", runtime.GOOS)
-		os.Exit(1)
-	}
-
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	srv := fbmeasure.NewServer(fbmeasure.Config{
-		Port: *port,
-		Security: fbmeasure.ServerSecurityConfig{
-			CertFile:          *tlsCertFile,
-			KeyFile:           *tlsKeyFile,
-			ClientCAFile:      *tlsClientCAFile,
-			RequireClientCert: *tlsRequireClientCert,
-		},
-	}, logger)
-	if err := srv.Start(ctx); err != nil {
+	server, err := fbmeasure.NewServer(fbmeasure.ServerConfig{ListenAddress: *listen})
+	if err != nil {
 		util.Event(logger, slog.LevelError, "fbmeasure.start_failed", "error", err)
 		os.Exit(1)
 	}
-	util.Event(logger, slog.LevelInfo, "fbmeasure.ready", "port", srv.Port(), "version", version.Version)
-	srv.Wait()
+	defer server.Close()
+	util.Event(logger, slog.LevelInfo, "fbmeasure.ready", "listen.addr", server.Addr().String(), "version", version.Version)
+	if err := server.Serve(ctx); err != nil {
+		util.Event(logger, slog.LevelError, "fbmeasure.serve_failed", "error", err)
+		os.Exit(1)
+	}
 }
 
 func printHelp() {
-	fmt.Print(`fbmeasure - targeted measurement server
+	fmt.Print(`fbmeasure - fixed small-packet RTT echo server
 
 Usage:
-  fbmeasure --port <port> [--log-level info] [--log-format text]
-  fbmeasure --tls-cert-file server.crt --tls-key-file server.key [--tls-client-ca-file ca.crt --tls-require-client-cert]
+  fbmeasure --listen <addr:port> [--log-level info] [--log-format text]
   fbmeasure --version
 `)
 }
