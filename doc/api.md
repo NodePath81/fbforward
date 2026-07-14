@@ -165,6 +165,24 @@ identity and configured maximum. Backend identities have exact route,
 upstream, and namespace permissions. Tag changes are persisted in SQLite
 transactions and do not block the forwarding path.
 
+The same RPC endpoint exposes direct controls for the currently active Flow:
+
+```json
+{"method":"SetFlowLimit","params":{"flow_id":"01...","rate_bps":1000000}}
+{"method":"ClearFlowLimit","params":{"flow_id":"01..."}}
+{"method":"BlockFlow","params":{"flow_id":"01...","reason":"abuse"}}
+```
+
+`rate_bps` is a bidirectional Flow budget. A backend limit can only reduce an
+existing persistent or online limit; `ClearFlowLimit` restores that policy
+limit. `BlockFlow` closes the current TCP stream or UDP mapping with the
+`backend_blocked` close reason. Neither operation affects future Flows; use an
+online rule when future connections must be denied or limited. These controls
+require an active Flow and the identity's route/upstream permission. Invalid
+parameters return `400`, an unauthorized Flow returns `403`, a closed or
+otherwise inactive Flow returns `409`, and an unavailable controller or audit
+store returns `503`.
+
 The Go package `pkg/flowcontextclient` provides `Client` for one instance and
 `ClientSet` for multiple fbforward instances. Each instance is identified by
 the unique source address visible to the backend, so callers do not construct
