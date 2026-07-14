@@ -190,6 +190,25 @@ The Go package `pkg/flowcontextclient` provides `Client` for one instance and
 the unique source address visible to the backend, so callers do not construct
 tuple JSON manually.
 
+For a UDP backend, read the source address of the packet received from
+fbforward and use the local address of the backend socket as the destination:
+
+```go
+source := receivedPacket.SourceAddr()       // fbforward's address at backend
+destination := backendConn.LocalAddr()      // backend address fbforward dialed
+flow, err := clients.ResolveBackendTuple(ctx, "udp", source, destination)
+if err == nil {
+	err = flow.SetFlowTag(ctx, flowcontextclient.Tag{
+		Namespace: "app", Key: "user", Value: "alice",
+	})
+}
+```
+
+The source selects the configured fbforward instance; the destination selects
+the `backend_key` for that instance. Use the actual observed addresses rather
+than the listener address, especially when UDP listeners or upstreams are
+bound to wildcard addresses. TCP callers can continue using `ResolveConn`.
+
 ## Security and limits
 
 - Tokens are sent only in the `Authorization` header.
