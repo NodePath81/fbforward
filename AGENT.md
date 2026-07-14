@@ -11,7 +11,8 @@ is plain HTML/CSS/JavaScript and uses polling RPC snapshots.
 - `internal/app`: runtime wiring and lifecycle.
 - `internal/forwarding`: TCP/UDP data plane and route-aware picker interfaces.
 - `internal/upstream`: upstream definitions, health snapshots, and selectors.
-- `internal/measure` and `internal/fbmeasure`: probe scheduling and protocol.
+- `internal/measure` and `pkg/fbmeasure`: probe scheduling and the fixed RTT
+  echo SDK/protocol.
 - `internal/control`: HTTP RPC, middleware, audit, and status projection.
 - `internal/audit`: SQLite audit store and asynchronous pipeline.
 - `internal/flowcontext`: backend tuple registry and tag API.
