@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/flow"
 )
 
 func TestByteRateLimiterUsesBitsPerSecondAndSharedBudget(t *testing.T) {
@@ -235,6 +237,45 @@ func TestUDPWithinBudgetReachesUpstream(t *testing.T) {
 	}
 	if string(buf[:n]) != string(payload) {
 		t.Fatalf("unexpected upstream payload %q", buf[:n])
+	}
+}
+
+func TestUDPFlowControlLimitAppliesToNextPacket(t *testing.T) {
+	sink, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	upstream, err := net.DialUDP("udp", nil, sink.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	recorder := &rateDropRecorder{}
+	registry := flow.NewRegistry()
+	mapping := &udpMapping{
+		parent:       &UDPListener{dropRecorder: recorder},
+		upstreamConn: upstream,
+		rateLimiter:  newByteRateLimiter(0),
+		done:         make(chan struct{}),
+	}
+	mapping.id, _ = flow.NewID()
+	registry.Register(flow.Meta{ID: mapping.id, Protocol: flow.ProtocolUDP}, mapping.close)
+	registry.SetControls(mapping.id, flow.Controls{
+		SetLimit:   mapping.setRateLimit,
+		ClearLimit: mapping.clearRateLimit,
+	})
+	if !registry.SetLimit(mapping.id, 1) {
+		t.Fatal("expected UDP limit control to apply")
+	}
+	if !mapping.rateLimiter.Try(minRateLimitBurst) {
+		t.Fatal("expected to consume initial burst")
+	}
+	if err := mapping.forwardToUpstream([]byte("next-packet")); err != errUDPRateLimited {
+		t.Fatalf("expected next packet to be dropped, got %v", err)
+	}
+	if recorder.bytes == 0 {
+		t.Fatal("expected UDP drop telemetry")
 	}
 }
 
