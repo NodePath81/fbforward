@@ -1,16 +1,20 @@
 package flowcontext
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/flow"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 func newHTTPTagServiceTest(t *testing.T) (*Service, *Registry, *audit.Store, flow.BackendTuple) {
@@ -182,6 +186,84 @@ func TestHTTPServiceFlowControlsAndAudit(t *testing.T) {
 	}
 	if len(controller.blocked) != 1 || len(controller.cleared) != 1 {
 		t.Fatalf("unexpected controller calls: %+v", controller)
+	}
+}
+
+type recordingSlogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingSlogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingSlogHandler) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	h.records = append(h.records, record.Clone())
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *recordingSlogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *recordingSlogHandler) WithGroup(string) slog.Handler { return h }
+
+func (h *recordingSlogHandler) snapshot() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]slog.Record(nil), h.records...)
+}
+
+func TestHTTPServiceFlowControlAuditFields(t *testing.T) {
+	service, _, _, _ := newHTTPTagServiceTest(t)
+	handler := &recordingSlogHandler{}
+	service.logger = util.ComponentLogger(slog.New(handler), util.CompControl)
+	service.SetFlowController(&recordingFlowController{})
+	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))
+	defer server.Close()
+
+	for _, request := range []struct {
+		method string
+		params map[string]any
+	}{
+		{"SetFlowLimit", map[string]any{"flow_id": "f1", "rate_bps": 1000}},
+		{"ClearFlowLimit", map[string]any{"flow_id": "f1"}},
+		{"BlockFlow", map[string]any{"flow_id": "f1", "reason": "abuse"}},
+	} {
+		if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", request.method, request.params); status != http.StatusOK {
+			t.Fatalf("%s status=%d", request.method, status)
+		}
+	}
+	records := handler.snapshot()
+	if len(records) < 3 {
+		t.Fatalf("audit records=%d, want at least 3", len(records))
+	}
+	want := map[string]map[string]any{
+		"set_flow_limit":   {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "rate_bps": uint64(1000), "result": "applied"},
+		"clear_flow_limit": {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "result": "applied"},
+		"block_flow":       {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "reason": "abuse", "result": "applied"},
+	}
+	found := make(map[string]bool)
+	for _, record := range records {
+		attrs := make(map[string]any)
+		record.Attrs(func(attr slog.Attr) bool {
+			attrs[attr.Key] = attr.Value.Resolve().Any()
+			return true
+		})
+		fields, ok := want[record.Message]
+		if !ok {
+			continue
+		}
+		for key, value := range fields {
+			if attrs[key] != value {
+				t.Fatalf("%s audit %s=%v, want %v (all=%v)", record.Message, key, attrs[key], value, attrs)
+			}
+		}
+		found[record.Message] = true
+	}
+	for event := range want {
+		if !found[event] {
+			t.Fatalf("missing %s audit event", event)
+		}
 	}
 }
 
