@@ -71,10 +71,12 @@ last_success_at / last_attempt_at
 consecutive_successes / consecutive_failures
 ```
 
-Any successful probe in a cycle counts as a successful cycle. Failure and
-recovery thresholds control `down` and `healthy`; `stale` is derived at read
-time from the last successful probe. Dial failures use a separate short
-cooldown and do not alter RTT health.
+Each completed TCP or UDP probe observation updates the shared snapshot
+independently. A successful observation updates the RTT EWMA, records the last
+success, and resets the failure count. A failed observation increments the
+failure count. Failure and recovery thresholds control `down` and `healthy`;
+`stale` is derived at read time from the last successful probe. Dial failures
+use a separate short cooldown and do not alter RTT health.
 
 Adaptive candidate ordering is:
 
