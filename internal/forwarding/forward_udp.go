@@ -346,6 +346,13 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		StartedAt:  candidate.StartedAt,
 	}, mapping.observer, mapping.registry, mapping.close)
 	mapping.lifecycle.Open()
+	if mapping.registry != nil {
+		mapping.registry.SetControls(mapping.id, flow.Controls{
+			Block:      func() { mapping.closeWithReason("backend_blocked") },
+			SetLimit:   mapping.rateLimiter.SetOverride,
+			ClearLimit: mapping.rateLimiter.ClearOverride,
+		})
+	}
 	if l.binder != nil {
 		if tuple, bindErr := backendTuple(flow.ProtocolUDP, mapping.upstreamTag, upConn.LocalAddr(), upConn.RemoteAddr()); bindErr != nil {
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.backend_bind_failed", "flow.id", mapping.id, "error", bindErr)

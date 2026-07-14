@@ -266,6 +266,13 @@ func (c *tcpConn) start(ctx context.Context) {
 		StartedAt:  c.created,
 	}, c.observer, c.registry, c.close)
 	c.lifecycle.Open()
+	if c.registry != nil {
+		c.registry.SetControls(c.id, flow.Controls{
+			Block:      func() { c.closeWithReason("backend_blocked") },
+			SetLimit:   c.rateLimiter.SetOverride,
+			ClearLimit: c.rateLimiter.ClearOverride,
+		})
+	}
 	if c.binder != nil {
 		if tuple, bindErr := backendTuple(flow.ProtocolTCP, c.upstreamTag, c.upstream.LocalAddr(), c.upstream.RemoteAddr()); bindErr != nil {
 			util.Event(c.logger, slog.LevelWarn, "forward.tcp.backend_bind_failed", "flow.id", c.id, "error", bindErr)

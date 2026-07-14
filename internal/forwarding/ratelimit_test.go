@@ -42,6 +42,56 @@ func TestByteRateLimiterContextCancellation(t *testing.T) {
 	}
 }
 
+func TestByteRateLimiterBackendOverrideCannotWidenBasePolicy(t *testing.T) {
+	limiter := newByteRateLimiter(16000)
+	limiter.SetOverride(8000)
+	limiter.mu.Lock()
+	if limiter.rate != 1000 {
+		limiter.mu.Unlock()
+		t.Fatalf("expected 8000 bit/s effective rate, got %f bytes/s", limiter.rate)
+	}
+	limiter.mu.Unlock()
+
+	limiter.SetOverride(32000)
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if limiter.rate != 2000 {
+		t.Fatalf("backend override widened base policy: got %f bytes/s", limiter.rate)
+	}
+}
+
+func TestByteRateLimiterClearOverrideRestoresBaseAndWakesWaiter(t *testing.T) {
+	limiter := newByteRateLimiter(0)
+	limiter.SetOverride(1)
+	if !limiter.Try(minRateLimitBurst) {
+		t.Fatal("expected to consume initial burst")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- limiter.Wait(context.Background(), 1) }()
+	time.Sleep(10 * time.Millisecond)
+	limiter.ClearOverride()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("wait after clear: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("clearing the limit did not wake the waiter")
+	}
+}
+
+func TestByteRateLimiterCanBeEnabledAfterFlowCreation(t *testing.T) {
+	limiter := newByteRateLimiter(0)
+	if !limiter.Try(64 * 1024) {
+		t.Fatal("disabled limiter should allow traffic")
+	}
+	limiter.SetOverride(8000)
+	if limiter.Try(minRateLimitBurst) == false {
+		t.Fatal("newly enabled limiter should have an initial burst")
+	}
+}
+
 func TestTCPProxyWaitsForFlowRateBudget(t *testing.T) {
 	limiter := newByteRateLimiter(8000)
 	if !limiter.Try(minRateLimitBurst) {
