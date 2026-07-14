@@ -480,6 +480,38 @@ func TestTCPCloseWithReasonEmitsOneSummary(t *testing.T) {
 	}
 }
 
+func TestTCPRegistryBlockClosesWithBackendReason(t *testing.T) {
+	observer := &recordingObserver{}
+	client, peer1 := net.Pipe()
+	upstreamConn, peer2 := net.Pipe()
+	defer peer1.Close()
+	defer peer2.Close()
+
+	registry := flow.NewRegistry()
+	conn := &tcpConn{
+		client: client, upstream: upstreamConn, upstreamTag: "primary", observer: observer,
+		registry: registry, done: make(chan struct{}), created: time.Now().UTC(),
+		clientAddr: "1.1.1.1:12345", clientIP: "1.1.1.1", listenAddr: ":9000",
+	}
+	conn.id, _ = flow.NewID()
+	conn.lifecycle = flow.NewLifecycle(flow.Meta{
+		ID: conn.id, Protocol: flow.ProtocolTCP, ClientAddr: netip.MustParseAddrPort(conn.clientAddr),
+		Listener: conn.listenAddr, Upstream: conn.upstreamTag, StartedAt: conn.created,
+	}, conn.observer, registry, conn.close)
+	conn.lifecycle.Open()
+	registry.SetControls(conn.id, flow.Controls{Block: func() { conn.closeWithReason("backend_blocked") }})
+
+	if !registry.Block(conn.id) {
+		t.Fatal("expected registry block to dispatch")
+	}
+	if registry.Block(conn.id) {
+		t.Fatal("expected a closed flow to reject a second block")
+	}
+	if len(observer.closes) != 1 || observer.closes[0].CloseReason != "backend_blocked" {
+		t.Fatalf("unexpected TCP block summary: %+v", observer.closes)
+	}
+}
+
 func TestUDPCloseWithReasonEmitsOneSummary(t *testing.T) {
 	observer := &recordingObserver{}
 	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -529,5 +561,45 @@ func TestUDPCloseWithReasonEmitsOneSummary(t *testing.T) {
 	}
 	if len(parent.mappings) != 0 {
 		t.Fatalf("expected mapping removal on close")
+	}
+}
+
+func TestUDPRegistryBlockClosesWithBackendReason(t *testing.T) {
+	observer := &recordingObserver{}
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP error: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	parent := &UDPListener{
+		sem: make(chan struct{}, 1), mappings: make(map[string]*udpMapping),
+		ipCounts: map[string]int{"1.1.1.1": 1},
+	}
+	parent.sem <- struct{}{}
+	registry := flow.NewRegistry()
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 12345}
+	mapping := &udpMapping{
+		parent: parent, clientAddr: clientAddr, clientAddrStr: clientAddr.String(), clientIP: "1.1.1.1",
+		upstreamTag: "primary", upstreamConn: upstreamConn, observer: observer, registry: registry,
+		done: make(chan struct{}), created: time.Now().UTC(), listenAddr: ":9000",
+	}
+	mapping.id, _ = flow.NewID()
+	mapping.lifecycle = flow.NewLifecycle(flow.Meta{
+		ID: mapping.id, Protocol: flow.ProtocolUDP, ClientAddr: netip.MustParseAddrPort(mapping.clientAddrStr),
+		Listener: mapping.listenAddr, Upstream: mapping.upstreamTag, StartedAt: mapping.created,
+	}, mapping.observer, registry, mapping.close)
+	mapping.lifecycle.Open()
+	parent.mappings[mapping.clientAddrStr] = mapping
+	registry.SetControls(mapping.id, flow.Controls{Block: func() { mapping.closeWithReason("backend_blocked") }})
+
+	if !registry.Block(mapping.id) {
+		t.Fatal("expected registry block to dispatch")
+	}
+	if registry.Block(mapping.id) {
+		t.Fatal("expected a closed mapping to reject a second block")
+	}
+	if len(observer.closes) != 1 || observer.closes[0].CloseReason != "backend_blocked" {
+		t.Fatalf("unexpected UDP block summary: %+v", observer.closes)
 	}
 }
