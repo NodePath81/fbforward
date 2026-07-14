@@ -67,6 +67,21 @@ type Service struct {
 	logger     util.Logger
 }
 
+type rpcAuditMeta struct {
+	RequestID string
+	Method    string
+}
+
+type rpcAuditMetaKey struct{}
+
+func contextAuditMeta(ctx context.Context) (rpcAuditMeta, bool) {
+	if ctx == nil {
+		return rpcAuditMeta{}, false
+	}
+	meta, ok := ctx.Value(rpcAuditMetaKey{}).(rpcAuditMeta)
+	return meta, ok
+}
+
 // FlowController applies the small set of direct controls exposed to a
 // trusted backend. The data-plane implementation is injected by Runtime.
 type FlowController interface {
@@ -199,18 +214,23 @@ func (s *Service) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		s.auditRequest(r, identity.ID, status, err.Error(), started)
 		return
 	}
-	result, err := s.dispatch(r.Context(), strings.TrimSpace(request.Method), request.Params, identity)
+	method := strings.TrimSpace(request.Method)
+	rpcCtx := context.WithValue(r.Context(), rpcAuditMetaKey{}, rpcAuditMeta{
+		RequestID: r.Header.Get("X-Request-ID"),
+		Method:    method,
+	})
+	result, err := s.dispatch(rpcCtx, method, request.Params, identity)
 	if err != nil {
 		status := flowErrorStatus(err)
 		message := flowErrorMessage(err)
 		writeFlowError(w, status, message)
-		s.auditRequest(r, identity.ID, status, message, started)
+		s.auditRequestMethod(r, identity.ID, status, message, started, method)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(httpRPCResponse{Ok: true, Result: result})
-	s.auditRequest(r, identity.ID, http.StatusOK, "", started)
+	s.auditRequestMethod(r, identity.ID, http.StatusOK, "", started, method)
 }
 
 func (s *Service) authenticate(r *http.Request) (Identity, bool) {
@@ -401,6 +421,10 @@ func writeFlowError(w http.ResponseWriter, status int, message string) {
 }
 
 func (s *Service) auditRequest(r *http.Request, identity string, status int, message string, started time.Time) {
+	s.auditRequestMethod(r, identity, status, message, started, "")
+}
+
+func (s *Service) auditRequestMethod(r *http.Request, identity string, status int, message string, started time.Time, rpcMethod string) {
 	if s.logger == nil {
 		return
 	}
@@ -411,6 +435,9 @@ func (s *Service) auditRequest(r *http.Request, identity string, status int, mes
 		result = "failed"
 	}
 	attrs := []interface{}{"request.id", r.Header.Get("X-Request-ID"), "request.method", r.Method, "request.path", r.URL.Path, "client.addr", r.RemoteAddr, "auth.identity", identity, "http.status_code", status, "result", result, "latency_ms", time.Since(started).Milliseconds()}
+	if rpcMethod != "" {
+		attrs = append(attrs, "rpc.method", rpcMethod)
+	}
 	if message != "" {
 		attrs = append(attrs, "error", message)
 	}

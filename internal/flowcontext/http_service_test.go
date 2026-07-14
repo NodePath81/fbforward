@@ -3,6 +3,7 @@ package flowcontext
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,7 @@ func callHTTPRPC(t *testing.T, client *http.Client, endpoint, token, method stri
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-Request-ID", "test-request")
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -144,11 +146,12 @@ type recordingFlowController struct {
 	blocked []flow.ID
 	limited map[flow.ID]uint64
 	cleared []flow.ID
+	fail    bool
 }
 
 func (c *recordingFlowController) Block(id flow.ID) bool {
 	c.blocked = append(c.blocked, id)
-	return true
+	return !c.fail
 }
 
 func (c *recordingFlowController) SetLimit(id flow.ID, rate uint64) bool {
@@ -156,12 +159,12 @@ func (c *recordingFlowController) SetLimit(id flow.ID, rate uint64) bool {
 		c.limited = make(map[flow.ID]uint64)
 	}
 	c.limited[id] = rate
-	return true
+	return !c.fail
 }
 
 func (c *recordingFlowController) ClearLimit(id flow.ID) bool {
 	c.cleared = append(c.cleared, id)
-	return true
+	return !c.fail
 }
 
 func TestHTTPServiceFlowControlsAndAudit(t *testing.T) {
@@ -238,9 +241,9 @@ func TestHTTPServiceFlowControlAuditFields(t *testing.T) {
 		t.Fatalf("audit records=%d, want at least 3", len(records))
 	}
 	want := map[string]map[string]any{
-		"set_flow_limit":   {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "rate_bps": uint64(1000), "result": "applied"},
-		"clear_flow_limit": {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "result": "applied"},
-		"block_flow":       {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "reason": "abuse", "result": "applied"},
+		"set_flow_limit":   {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "rate_bps": uint64(1000), "result": "applied", "request.id": "test-request", "rpc.method": "SetFlowLimit"},
+		"clear_flow_limit": {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "result": "applied", "request.id": "test-request", "rpc.method": "ClearFlowLimit"},
+		"block_flow":       {"flow.id": flow.ID("f1"), "flow.route": "web", "flow.upstream": "primary", "backend.identity": "caddy", "reason": "abuse", "result": "applied", "request.id": "test-request", "rpc.method": "BlockFlow"},
 	}
 	found := make(map[string]bool)
 	for _, record := range records {
@@ -312,6 +315,34 @@ func TestHTTPServiceFlowControlsValidateStateAndAuthorization(t *testing.T) {
 	if status, _ := callHTTPRPC(t, storeServer.Client(), storeServer.URL, "backend-secret", "SetFlowLimit", map[string]any{"flow_id": "f1", "rate_bps": 1000}); status != http.StatusServiceUnavailable {
 		t.Fatalf("missing store status=%d", status)
 	}
+}
+
+func TestHTTPServiceControlFailureAuditCorrelation(t *testing.T) {
+	service, _, _, _ := newHTTPTagServiceTest(t)
+	handler := &recordingSlogHandler{}
+	service.logger = util.ComponentLogger(slog.New(handler), util.CompControl)
+	service.SetFlowController(&recordingFlowController{fail: true})
+	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))
+	defer server.Close()
+
+	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "BlockFlow", map[string]any{"flow_id": "f1"}); status != http.StatusConflict {
+		t.Fatalf("failed block status=%d", status)
+	}
+	for _, record := range handler.snapshot() {
+		if record.Message != "flow_context.request_completed" {
+			continue
+		}
+		attrs := make(map[string]any)
+		record.Attrs(func(attr slog.Attr) bool {
+			attrs[attr.Key] = attr.Value.Resolve().Any()
+			return true
+		})
+		if attrs["request.id"] != "test-request" || attrs["rpc.method"] != "BlockFlow" || fmt.Sprint(attrs["http.status_code"]) != "409" {
+			t.Fatalf("incomplete failure audit: %v", attrs)
+		}
+		return
+	}
+	t.Fatal("missing request completion audit")
 }
 
 func TestHTTPServiceResolveRouteAndRPCMethod(t *testing.T) {

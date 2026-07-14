@@ -33,38 +33,26 @@ func (s *Service) SetFlowLimit(ctx context.Context, request FlowLimitRequest, id
 	if request.RateBPS == 0 {
 		return nil, ErrInvalidRate
 	}
-	value, err := s.authorizedActiveFlow(request.FlowID, identity)
+	value, err := s.controlTarget(ctx, request.FlowID, identity)
 	if err != nil {
-		return nil, err
-	}
-	if s.controller == nil {
-		return nil, ErrFlowController
-	}
-	if err := s.ensureControlStore(); err != nil {
 		return nil, err
 	}
 	if !s.controller.SetLimit(value.FlowID, request.RateBPS) {
 		return nil, ErrFlowNotActive
 	}
-	s.auditControl("set_flow_limit", value, identity, request.RateBPS, "")
+	s.auditControl(ctx, "set_flow_limit", value, identity, request.RateBPS, "")
 	return map[string]any{"flow_id": value.FlowID.String(), "rate_bps": request.RateBPS}, nil
 }
 
 func (s *Service) ClearFlowLimit(ctx context.Context, request FlowIDRequest, identity Identity) (map[string]any, error) {
-	value, err := s.authorizedActiveFlow(request.FlowID, identity)
+	value, err := s.controlTarget(ctx, request.FlowID, identity)
 	if err != nil {
-		return nil, err
-	}
-	if s.controller == nil {
-		return nil, ErrFlowController
-	}
-	if err := s.ensureControlStore(); err != nil {
 		return nil, err
 	}
 	if !s.controller.ClearLimit(value.FlowID) {
 		return nil, ErrFlowNotActive
 	}
-	s.auditControl("clear_flow_limit", value, identity, 0, "")
+	s.auditControl(ctx, "clear_flow_limit", value, identity, 0, "")
 	return map[string]any{"flow_id": value.FlowID.String(), "cleared": true}, nil
 }
 
@@ -73,25 +61,33 @@ func (s *Service) BlockFlow(ctx context.Context, request FlowActionRequest, iden
 	if len(reason) > 256 || strings.ContainsAny(reason, "\r\n") {
 		return nil, ErrInvalidParams
 	}
-	value, err := s.authorizedActiveFlow(request.FlowID, identity)
+	value, err := s.controlTarget(ctx, request.FlowID, identity)
 	if err != nil {
-		return nil, err
-	}
-	if s.controller == nil {
-		return nil, ErrFlowController
-	}
-	if err := s.ensureControlStore(); err != nil {
 		return nil, err
 	}
 	if !s.controller.Block(value.FlowID) {
 		return nil, ErrFlowNotActive
 	}
-	s.auditControl("block_flow", value, identity, 0, reason)
+	s.auditControl(ctx, "block_flow", value, identity, 0, reason)
 	return map[string]any{"flow_id": value.FlowID.String(), "blocked": true}, nil
 }
 
-func (s *Service) authorizedActiveFlow(flowID string, identity Identity) (Context, error) {
-	value, err := s.authorizedFlow(context.Background(), flowID, identity)
+func (s *Service) controlTarget(ctx context.Context, flowID string, identity Identity) (Context, error) {
+	value, err := s.authorizedActiveFlow(ctx, flowID, identity)
+	if err != nil {
+		return Context{}, err
+	}
+	if s.controller == nil {
+		return Context{}, ErrFlowController
+	}
+	if err := s.ensureControlStore(); err != nil {
+		return Context{}, err
+	}
+	return value, nil
+}
+
+func (s *Service) authorizedActiveFlow(ctx context.Context, flowID string, identity Identity) (Context, error) {
+	value, err := s.authorizedFlow(ctx, flowID, identity)
 	if err != nil {
 		return Context{}, err
 	}
@@ -108,7 +104,7 @@ func (s *Service) ensureControlStore() error {
 	return nil
 }
 
-func (s *Service) auditControl(event string, value Context, identity Identity, rateBPS uint64, reason string) {
+func (s *Service) auditControl(ctx context.Context, event string, value Context, identity Identity, rateBPS uint64, reason string) {
 	if s.logger == nil {
 		return
 	}
@@ -119,6 +115,9 @@ func (s *Service) auditControl(event string, value Context, identity Identity, r
 		"flow.upstream", value.Upstream,
 		"backend.identity", identity.ID,
 		"result", "applied",
+	}
+	if meta, ok := contextAuditMeta(ctx); ok {
+		attrs = append(attrs, "request.id", meta.RequestID, "rpc.method", meta.Method)
 	}
 	if rateBPS > 0 {
 		attrs = append(attrs, "rate_bps", rateBPS)
