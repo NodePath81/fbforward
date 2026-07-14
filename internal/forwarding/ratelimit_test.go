@@ -81,6 +81,73 @@ func TestByteRateLimiterClearOverrideRestoresBaseAndWakesWaiter(t *testing.T) {
 	}
 }
 
+func TestByteRateLimiterClearOverrideCancelsLargeWait(t *testing.T) {
+	limiter := newByteRateLimiter(0)
+	limiter.SetOverride(1)
+	if !limiter.Try(minRateLimitBurst) {
+		t.Fatal("expected to consume initial burst")
+	}
+	done := make(chan error, 1)
+	go func() { done <- limiter.Wait(context.Background(), 64*1024) }()
+	time.Sleep(10 * time.Millisecond)
+	limiter.ClearOverride()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("large wait after clear: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("large wait remained blocked after clear")
+	}
+}
+
+func TestByteRateLimiterSetOverrideWakesWaiter(t *testing.T) {
+	limiter := newByteRateLimiter(0)
+	limiter.SetOverride(1)
+	if !limiter.Try(minRateLimitBurst) {
+		t.Fatal("expected to consume initial burst")
+	}
+	done := make(chan error, 1)
+	go func() { done <- limiter.Wait(context.Background(), 1) }()
+	time.Sleep(10 * time.Millisecond)
+	limiter.SetOverride(16000)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("wait after set: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("set override did not wake waiter")
+	}
+}
+
+func TestByteRateLimiterClearRestoresBaseRate(t *testing.T) {
+	limiter := newByteRateLimiter(16000)
+	limiter.SetOverride(8000)
+	limiter.ClearOverride()
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if limiter.rate != 2000 {
+		t.Fatalf("clear did not restore base rate: %f", limiter.rate)
+	}
+}
+
+func TestByteRateLimiterSameOverridePreservesBudget(t *testing.T) {
+	limiter := newByteRateLimiter(16000)
+	limiter.SetOverride(8000)
+	limiter.mu.Lock()
+	limiter.tokens = 123
+	limiter.last = time.Now()
+	before := limiter.tokens
+	limiter.mu.Unlock()
+	limiter.SetOverride(8000)
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if limiter.tokens <= before || limiter.tokens >= limiter.burst {
+		t.Fatalf("same override unexpectedly reset budget: before=%f after=%f burst=%f", before, limiter.tokens, limiter.burst)
+	}
+}
+
 func TestByteRateLimiterCanBeEnabledAfterFlowCreation(t *testing.T) {
 	limiter := newByteRateLimiter(0)
 	if !limiter.Try(64 * 1024) {

@@ -42,8 +42,10 @@ func (l *byteRateLimiter) SetOverride(limitBPS uint64) {
 		return
 	}
 	l.mu.Lock()
+	now := time.Now()
+	l.replenish(now)
 	l.overrideBPS = limitBPS
-	l.recomputeLocked(time.Now(), false)
+	l.recomputeLocked(now, false)
 	l.mu.Unlock()
 }
 
@@ -52,17 +54,20 @@ func (l *byteRateLimiter) ClearOverride() {
 		return
 	}
 	l.mu.Lock()
+	now := time.Now()
+	l.replenish(now)
 	l.overrideBPS = 0
-	l.recomputeLocked(time.Now(), false)
+	l.recomputeLocked(now, false)
 	l.mu.Unlock()
 }
 
 func (l *byteRateLimiter) recomputeLocked(now time.Time, initial bool) {
+	previousRate := l.rate
+	previousBurst := l.burst
 	effective := l.baseBPS
 	if effective == 0 || (l.overrideBPS > 0 && l.overrideBPS < effective) {
 		effective = l.overrideBPS
 	}
-	previousRate := l.rate
 	l.rate = float64(effective) / 8
 	l.burst = l.rate * rateLimitBurstWindow.Seconds()
 	if l.burst < minRateLimitBurst && l.rate > 0 {
@@ -77,7 +82,7 @@ func (l *byteRateLimiter) recomputeLocked(now time.Time, initial bool) {
 		l.tokens = l.burst
 	}
 	l.last = now
-	if !initial {
+	if !initial && (previousRate != l.rate || previousBurst != l.burst) {
 		old := l.changed
 		l.changed = make(chan struct{})
 		close(old)
@@ -109,33 +114,41 @@ func (l *byteRateLimiter) Wait(ctx context.Context, size int) error {
 	}
 	remaining := size
 	for remaining > 0 {
-		chunk := remaining
-		if float64(chunk) > l.burst {
-			chunk = int(math.Floor(l.burst))
-		}
-		if err := l.waitChunk(ctx, chunk); err != nil {
+		chunk, disabled, err := l.waitChunk(ctx, remaining)
+		if err != nil {
 			return err
+		}
+		if disabled {
+			return nil
 		}
 		remaining -= chunk
 	}
 	return nil
 }
 
-func (l *byteRateLimiter) waitChunk(ctx context.Context, size int) error {
+func (l *byteRateLimiter) waitChunk(ctx context.Context, remaining int) (int, bool, error) {
 	for {
 		now := time.Now()
 		l.mu.Lock()
 		l.replenish(now)
 		if l.rate == 0 {
 			l.mu.Unlock()
-			return nil
+			return 0, true, nil
 		}
-		if l.tokens >= float64(size) {
-			l.tokens -= float64(size)
+		chunk := remaining
+		maxChunk := int(math.Floor(l.burst))
+		if maxChunk < 1 {
+			maxChunk = 1
+		}
+		if chunk > maxChunk {
+			chunk = maxChunk
+		}
+		if l.tokens >= float64(chunk) {
+			l.tokens -= float64(chunk)
 			l.mu.Unlock()
-			return nil
+			return chunk, false, nil
 		}
-		wait := time.Duration((float64(size) - l.tokens) / l.rate * float64(time.Second))
+		wait := time.Duration((float64(chunk) - l.tokens) / l.rate * float64(time.Second))
 		changed := l.changed
 		l.mu.Unlock()
 		if wait < time.Millisecond {
@@ -147,7 +160,7 @@ func (l *byteRateLimiter) waitChunk(ctx context.Context, size int) error {
 			if !timer.Stop() {
 				<-timer.C
 			}
-			return ctx.Err()
+			return 0, false, ctx.Err()
 		case <-changed:
 			if !timer.Stop() {
 				select {
