@@ -86,6 +86,62 @@ func TestClientSetSelectsInstanceBySourceAddress(t *testing.T) {
 	}
 }
 
+func TestClientSetResolveBackendTupleUsesUDPAndSourceSelection(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var request resolveRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		want := resolveRequest{
+			Protocol:   "udp",
+			BackendKey: "primary@192.0.2.10:9000",
+			LocalAddr:  "127.0.0.2:53000",
+			RemoteAddr: "192.0.2.20:443",
+			WaitMS:     100,
+		}
+		if request != want {
+			t.Fatalf("request=%+v, want %+v", request, want)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"flow":{"flow_id":"udp-flow","protocol":"udp","client_addr":"203.0.113.40:51234","listener":"0.0.0.0:443","route":"udp","upstream":"primary","state":"active"}}`))
+	}))
+	t.Cleanup(server.Close)
+	set, err := NewClientSet([]InstanceOptions{instanceOptions("edge-a", netip.MustParseAddr("127.0.0.2"), server.URL)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.HasSource(netip.MustParseAddr("127.0.0.2")) || set.HasSource(netip.MustParseAddr("127.0.0.9")) {
+		t.Fatal("HasSource returned unexpected result")
+	}
+	flow, err := set.ResolveBackendTuple(context.Background(), "udp", netip.MustParseAddrPort("127.0.0.2:53000"), netip.MustParseAddrPort("192.0.2.20:443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flow.ID != "udp-flow" || flow.Protocol != "udp" || flow.Instance != "edge-a" {
+		t.Fatalf("unexpected flow: %+v", flow)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls=%d, want one", calls.Load())
+	}
+}
+
+func TestClientSetResolveBackendTupleUnknownSourceDoesNotCallEndpoint(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	t.Cleanup(server.Close)
+	set, err := NewClientSet([]InstanceOptions{instanceOptions("edge-a", netip.MustParseAddr("127.0.0.2"), server.URL)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = set.ResolveBackendTuple(context.Background(), "udp", netip.MustParseAddrPort("127.0.0.9:53000"), netip.MustParseAddrPort("192.0.2.20:443"))
+	if !errors.Is(err, ErrUnknownInstance) || calls.Load() != 0 {
+		t.Fatalf("error=%v calls=%d, want unknown instance and no call", err, calls.Load())
+	}
+}
+
 func TestClientSetRejectsAmbiguousConfiguration(t *testing.T) {
 	validSourceA := netip.MustParseAddr("127.0.0.2")
 	validSourceB := netip.MustParseAddr("127.0.0.3")

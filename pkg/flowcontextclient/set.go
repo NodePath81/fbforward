@@ -71,6 +71,46 @@ func NewClientSet(options []InstanceOptions) (*ClientSet, error) {
 	return &ClientSet{instances: instances}, nil
 }
 
+// HasSource reports whether addr is configured as an fbforward source
+// address. It performs only the local immutable set lookup and never contacts
+// an endpoint.
+func (s *ClientSet) HasSource(addr netip.Addr) bool {
+	if s == nil || !addr.IsValid() {
+		return false
+	}
+	for _, instance := range s.instances {
+		if instance.sourceAddr == addr {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveBackendTuple resolves a tuple expressed from fbforward's socket
+// perspective. localAddr is the fbforward source address and selects the
+// configured instance; remoteAddr is the MicProxy listener address.
+func (s *ClientSet) ResolveBackendTuple(ctx context.Context, protocol string, localAddr, remoteAddr netip.AddrPort) (ResolvedFlow, error) {
+	if s == nil || !localAddr.IsValid() || !remoteAddr.IsValid() {
+		return ResolvedFlow{}, ErrInvalidRequest
+	}
+	for _, instance := range s.instances {
+		if instance.sourceAddr != localAddr.Addr() {
+			continue
+		}
+		flow, err := instance.client.ResolveTuple(ctx, Tuple{
+			Protocol:   protocol,
+			BackendKey: instance.client.backendKey,
+			LocalAddr:  localAddr,
+			RemoteAddr: remoteAddr,
+		})
+		if err != nil {
+			return ResolvedFlow{}, err
+		}
+		return ResolvedFlow{Flow: flow, Instance: instance.name, client: instance.client}, nil
+	}
+	return ResolvedFlow{}, ErrUnknownInstance
+}
+
 // ResolveConn selects the only configured instance whose source address is
 // visible as conn.RemoteAddr(). No other endpoint is queried when the source
 // is unknown or the selected endpoint returns an error.
@@ -82,17 +122,14 @@ func (s *ClientSet) ResolveConn(ctx context.Context, conn net.Conn) (ResolvedFlo
 	if err != nil {
 		return ResolvedFlow{}, fmt.Errorf("%w: source address: %v", ErrInvalidRequest, err)
 	}
-	for _, instance := range s.instances {
-		if instance.sourceAddr != remote.Addr() {
-			continue
-		}
-		flow, err := instance.client.ResolveConn(ctx, conn)
-		if err != nil {
-			return ResolvedFlow{}, err
-		}
-		return ResolvedFlow{Flow: flow, Instance: instance.name, client: instance.client}, nil
+	if conn.LocalAddr() == nil {
+		return ResolvedFlow{}, ErrInvalidRequest
 	}
-	return ResolvedFlow{}, ErrUnknownInstance
+	local, err := netAddrPort(conn.LocalAddr())
+	if err != nil {
+		return ResolvedFlow{}, fmt.Errorf("%w: remote address: %v", ErrInvalidRequest, err)
+	}
+	return s.ResolveBackendTuple(ctx, "tcp", remote, local)
 }
 
 // SetFlowTag writes a tag to the fbforward instance that resolved the flow.
