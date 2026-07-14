@@ -56,8 +56,8 @@ All selections affect new Flows only.
 
 ## Removed configuration
 
-The following are rejected: shaping, coordination, bwprobe, scoring, old
-embedded listener topology, inline legacy policy when `policy_file` is set,
-remote GeoIP download settings, and the old `notify` section. Use external
-traffic controls for shaping, `webhook` for events, and deployment automation
-for GeoIP downloads followed by `ReloadGeoIP`.
+Legacy traffic-control, distributed-mode, throughput-probe, and ranking fields,
+the old embedded listener topology, inline legacy policy when `policy_file` is
+set, remote GeoIP download settings, and the old event section are rejected.
+Use host automation for traffic control, `webhook` for events, and deployment
+automation for GeoIP downloads followed by `ReloadGeoIP`.

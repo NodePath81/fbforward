@@ -7,8 +7,9 @@ static routes use their configured upstream.
 
 The service also provides an authenticated HTTP control API, Prometheus
 metrics, local SQLite audit storage, firewall policy reload, and Flow Context
-lookup for backend applications. It does not implement PROXY protocol,
-TProxy, kernel traffic shaping, distributed coordination, or arbitrary SQL.
+lookup for backend applications. It does not implement transparent socket
+identity propagation, kernel traffic control, distributed state, or arbitrary
+SQL.
 
 ## Build and run
 

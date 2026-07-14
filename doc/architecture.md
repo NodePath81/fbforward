@@ -116,6 +116,6 @@ Runtime shutdown closes listeners, stops measurement, drains audit queues, and
 stops the control plane. Existing Flow close behavior remains explicit and
 observable.
 
-The service does not implement PROXY protocol, TProxy, kernel traffic shaping,
-distributed coordination, arbitrary SQL, application-layer proxying, or
-cross-route upstream selection.
+The service does not implement transparent socket identity propagation, kernel
+traffic control, distributed state, arbitrary SQL, application-layer proxying,
+or cross-route upstream selection.
