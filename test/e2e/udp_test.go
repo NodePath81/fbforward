@@ -60,6 +60,7 @@ func TestStaticUDPForwardsToLoopbackUpstream(t *testing.T) {
 type udpEcho struct {
 	connection *net.UDPConn
 	port       int
+	received   chan *net.UDPAddr
 }
 
 func startUDPEcho(t *testing.T) udpEcho {
@@ -68,13 +69,21 @@ func startUDPEcho(t *testing.T) udpEcho {
 	if err != nil {
 		t.Fatalf("listen echo upstream: %v", err)
 	}
-	echo := udpEcho{connection: connection, port: connection.LocalAddr().(*net.UDPAddr).Port}
+	echo := udpEcho{
+		connection: connection,
+		port:       connection.LocalAddr().(*net.UDPAddr).Port,
+		received:   make(chan *net.UDPAddr, 8),
+	}
 	go func() {
 		buffer := make([]byte, 64*1024)
 		for {
 			n, remote, readErr := connection.ReadFromUDP(buffer)
 			if readErr != nil {
 				return
+			}
+			select {
+			case echo.received <- remote:
+			default:
 			}
 			_, _ = connection.WriteToUDP(buffer[:n], remote)
 		}
