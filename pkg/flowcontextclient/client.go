@@ -21,6 +21,7 @@ var (
 	ErrFlowNotFound    = errors.New("flow was not found on the selected fbforward")
 	ErrUnauthorized    = errors.New("flow context authentication failed")
 	ErrForbidden       = errors.New("flow context access denied")
+	ErrFlowNotActive   = errors.New("flow context flow is not active")
 	ErrRateLimited     = errors.New("flow context rate limited")
 	ErrUnavailable     = errors.New("flow context service unavailable")
 	ErrInvalidRequest  = errors.New("invalid flow context request")
@@ -221,6 +222,49 @@ func (c *Client) UnsetClientTag(ctx context.Context, flowID, namespace, key stri
 	return c.setTag(ctx, "UnsetClientTag", flowID, Tag{Namespace: namespace, Key: key})
 }
 
+func (c *Client) SetFlowLimit(ctx context.Context, flowID string, rateBPS uint64) error {
+	if c == nil || strings.TrimSpace(flowID) == "" || rateBPS == 0 {
+		return ErrInvalidRequest
+	}
+	return c.callRPC(ctx, "SetFlowLimit", map[string]any{"flow_id": flowID, "rate_bps": rateBPS})
+}
+
+func (c *Client) ClearFlowLimit(ctx context.Context, flowID string) error {
+	if c == nil || strings.TrimSpace(flowID) == "" {
+		return ErrInvalidRequest
+	}
+	return c.callRPC(ctx, "ClearFlowLimit", map[string]any{"flow_id": flowID})
+}
+
+func (c *Client) BlockFlow(ctx context.Context, flowID, reason string) error {
+	if c == nil || strings.TrimSpace(flowID) == "" || len(reason) > 256 || strings.ContainsAny(reason, "\r\n") {
+		return ErrInvalidRequest
+	}
+	return c.callRPC(ctx, "BlockFlow", map[string]any{"flow_id": flowID, "reason": reason})
+}
+
+func (c *Client) callRPC(ctx context.Context, method string, params any) error {
+	body, err := json.Marshal(rpcRequest{Method: method, Params: params})
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	response, err := c.do(ctx, http.MethodPost, rpcPath, body)
+	if err != nil {
+		return err
+	}
+	var envelope rpcEnvelope
+	if err := decodeLimited(response, &envelope); err != nil {
+		return decodeError(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return responseError(response.StatusCode, envelope.Error)
+	}
+	if !envelope.OK {
+		return fmt.Errorf("%w: %s", ErrInvalidResponse, envelope.Error)
+	}
+	return nil
+}
+
 func (c *Client) setTag(ctx context.Context, method, flowID string, tag Tag) error {
 	if c == nil || strings.TrimSpace(flowID) == "" || strings.TrimSpace(tag.Namespace) == "" || strings.TrimSpace(tag.Key) == "" || tag.TTL < 0 || tag.TTL%time.Second != 0 {
 		return ErrInvalidRequest
@@ -320,6 +364,8 @@ func responseError(status int, message string) error {
 		base = ErrUnauthorized
 	case http.StatusForbidden:
 		base = ErrForbidden
+	case http.StatusConflict:
+		base = ErrFlowNotActive
 	case http.StatusGone:
 		base = ErrFlowNotFound
 	case http.StatusTooManyRequests:

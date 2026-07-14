@@ -127,3 +127,24 @@ func (f ResolvedFlow) UnsetClientTag(ctx context.Context, namespace, key string)
 	}
 	return f.client.UnsetClientTag(ctx, f.ID, namespace, key)
 }
+
+func (f ResolvedFlow) SetLimit(ctx context.Context, rateBPS uint64) error {
+	if f.client == nil || f.ID == "" {
+		return ErrInvalidRequest
+	}
+	return f.client.SetFlowLimit(ctx, f.ID, rateBPS)
+}
+
+func (f ResolvedFlow) ClearLimit(ctx context.Context) error {
+	if f.client == nil || f.ID == "" {
+		return ErrInvalidRequest
+	}
+	return f.client.ClearFlowLimit(ctx, f.ID)
+}
+
+func (f ResolvedFlow) Block(ctx context.Context, reason string) error {
+	if f.client == nil || f.ID == "" {
+		return ErrInvalidRequest
+	}
+	return f.client.BlockFlow(ctx, f.ID, reason)
+}

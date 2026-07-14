@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -295,6 +296,66 @@ func TestTagErrorMapping(t *testing.T) {
 				t.Fatalf("error=%v, want %v", err, testCase.want)
 			}
 		})
+	}
+}
+
+func TestFlowControlRPCs(t *testing.T) {
+	var requests []rpcRequest
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != rpcPath || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var request rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, request)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	if err := client.SetFlowLimit(context.Background(), "flow-1", 8000); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ClearFlowLimit(context.Background(), "flow-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.BlockFlow(context.Background(), "flow-1", "bad handshake"); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("requests=%d, want 3", len(requests))
+	}
+	wantMethods := []string{"SetFlowLimit", "ClearFlowLimit", "BlockFlow"}
+	for index, want := range wantMethods {
+		if requests[index].Method != want {
+			t.Fatalf("method[%d]=%q, want %q", index, requests[index].Method, want)
+		}
+	}
+	limitParams := requests[0].Params.(map[string]any)
+	if limitParams["flow_id"] != "flow-1" || limitParams["rate_bps"] != float64(8000) {
+		t.Fatalf("unexpected limit params: %+v", limitParams)
+	}
+	blockParams := requests[2].Params.(map[string]any)
+	if blockParams["flow_id"] != "flow-1" || blockParams["reason"] != "bad handshake" {
+		t.Fatalf("unexpected block params: %+v", blockParams)
+	}
+}
+
+func TestFlowControlValidationAndErrorMapping(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"flow is closed"}`))
+	})
+	if err := client.SetFlowLimit(context.Background(), "flow-1", 8000); !errors.Is(err, ErrFlowNotActive) {
+		t.Fatalf("error=%v, want flow not active", err)
+	}
+	if err := client.SetFlowLimit(context.Background(), "flow-1", 0); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("zero rate error=%v, want invalid request", err)
+	}
+	if err := client.ClearFlowLimit(context.Background(), ""); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("empty flow id error=%v, want invalid request", err)
+	}
+	if err := client.BlockFlow(context.Background(), "flow-1", strings.Repeat("x", 257)); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("long reason error=%v, want invalid request", err)
 	}
 }
 
