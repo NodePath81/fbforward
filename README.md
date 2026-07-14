@@ -1,129 +1,57 @@
-# Network Tools Monorepo
+# fbforward
 
-This repository contains Linux-only networking tools built in Go and a
-measurement server binary.
+fbforward is a Linux TCP/UDP port forwarder. Each listener points to a
+route; each new Flow is assigned one upstream and remains pinned to it until
+close. Adaptive routes use local health and RTT observations from `fbmeasure`;
+static routes use their configured upstream.
 
-## fbforward
+The service also provides an authenticated HTTP control API, Prometheus
+metrics, local SQLite audit storage, firewall policy reload, and Flow Context
+lookup for backend applications. It does not implement PROXY protocol,
+TProxy, kernel traffic shaping, distributed coordination, or arbitrary SQL.
 
-TCP/UDP port forwarder that selects route-local upstreams using fbmeasure health
-and RTT observations. Optional features include GeoIP-based lookups, persisted
-IP flow and rejection logging, and CIDR/ASN/country firewalling. It exposes
-Prometheus metrics and a token-protected RPC API. Active flows are exposed by
-the authenticated `GetActiveFlows` RPC for lightweight polling clients.
+## Build and run
 
-The root endpoint serves a dependency-free embedded operator page. It uses the
-control token from session storage and polls the same RPC API; no Node.js or
-frontend build is required.
+Requirements: Linux, Go 1.25.5 or newer, and a C toolchain for SQLite.
 
-Behavior highlights:
-
-- NAT-style forwarding: clients connect to fbforward; upstream sees fbforward as source.
-- Multiple listeners, single global upstream list; outbound port matches listener port.
-- Probing uses fbmeasure TCP/UDP RTT observations to update one unified health state.
-- Auto mode selects within each route using health, RTT, priority, and configuration order; manual mode pins a usable upstream.
-- Fast failover is based on health state and dial cooldown.
-- TCP/UDP flows are pinned to the selected upstream until idle/expired.
-
-fbforward relies on the `fbmeasure` server binary running on each upstream host
-to provide targeted TCP/UDP measurement endpoints. Cross-node selection is
-intentionally out of scope; use route-local configuration for each node.
-
-Docs: `doc/` (start with `doc/project-overview.md`, `doc/user-guide-fbforward.md`,
-`doc/configuration-reference.md`, and `doc/api-reference.md`).
-
-## Requirements
-
-- Linux only.
-- Go toolchain: 1.25.5+ (per `go.mod`).
-- fbforward currently links `github.com/mattn/go-sqlite3` for IP-log support, so building `fbforward` requires a working C toolchain (gcc) on the build host.
-
-## Build
-
-```
-make build            # build all binaries
-make build-fbforward  # build fbforward only
-make build-fbmeasure  # build fbmeasure only
-
-# Or build directly:
-go build ./cmd/fbforward
-go build ./cmd/fbmeasure
-```
-
-Outputs:
-- `build/bin/fbforward`
-- `build/bin/fbmeasure`
-
-## fbforward config (YAML)
-
-Minimal example:
-
-```yaml
-forwarding:
-  listeners:
-    - bind_addr: 0.0.0.0
-      bind_port: 9000
-      protocol: tcp
-    - bind_addr: 0.0.0.0
-      bind_port: 9000
-      protocol: udp
-upstreams:
-  - tag: primary
-    destination:
-      host: 203.0.113.10
-  - tag: backup
-    destination:
-      host: example.net
-control:
-  bind_addr: 127.0.0.1
-  bind_port: 8080
-  auth_token: "replace-with-a-long-random-token"
-  metrics:
-    enabled: true
-
-```
-
-Use a random token with at least 16 characters. The placeholder value
-`change-me` is rejected at startup.
-
-See `doc/configuration-reference.md` for the full schema (`listeners`, `routes`,
-`upstreams`, `dns`, `measurement`, `health`, `control`, `logging`,
-`geoip`, `ip_log`, `flow_context`, `firewall`).
-
-## Run (fbforward)
-
-```
+```bash
+make build
 cp configs/config.example.yaml config.yaml
 ./build/bin/fbforward --config config.yaml
 ```
 
-## Deploy fbmeasure
+The build produces `fbforward` and `fbmeasure`. Run `fbmeasure` on upstream
+hosts that are used by adaptive routes; its deployment is independent of the
+forwarder's control plane.
 
-For upstream hosts, build and run the supplied runtime image:
+## Minimal topology
 
-```bash
-podman build -f deploy/container/fbmeasure/Containerfile -t fbmeasure:latest .
-podman run -d --name fbmeasure \
-  --restart unless-stopped \
-  -p 9876:9876/tcp \
-  -p 9876:9876/udp \
-  fbmeasure:latest
+```yaml
+listeners:
+  - name: web
+    bind: 0.0.0.0:9000
+    protocol: tcp
+    route: web
+routes:
+  - name: web
+    strategy: static
+    upstreams: [local]
+upstreams:
+  - tag: local
+    destination: {host: 127.0.0.1}
 ```
 
-The same `Containerfile` works with Docker by replacing `podman` with `docker`.
+Use [configs/config.example.yaml](/home/huangyj/Workspace/fbforward/configs/config.example.yaml)
+for the complete current sample. The YAML decoder is strict; removed or
+unknown fields fail startup.
 
-For secure deployments, enable TLS on `fbmeasure` with
-`--tls-cert-file/--tls-key-file` and configure `measurement.security` in
-fbforward. See `doc/user-guide-fbmeasure.md` and
-`doc/configuration-reference.md`.
+## Documentation
 
-## Debian packaging (fbforward)
+- [Getting started](doc/getting-started.md)
+- [Configuration](doc/configuration.md)
+- [Operations](doc/operations.md)
+- [API](doc/api.md)
+- [Architecture](doc/architecture.md)
+- [Development and testing](doc/development.md)
 
-```
-# Build a .deb (from repo root)
-deploy/packaging/debian/build.sh
-```
-
-Prereqs:
-- `dpkg-deb` (from `dpkg` package)
-- Go toolchain (for building `fbforward` if the binary is not already present)
-- systemd (for install/enable on target host)
+Historical design notes and test baselines are kept under `doc/archive/`.
