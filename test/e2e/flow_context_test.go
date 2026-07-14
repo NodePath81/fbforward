@@ -78,8 +78,15 @@ func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set flow tag: %v", err)
 	}
-	_ = connection.Close()
-	_ = backendConnection.Close()
+	if err := resolved.SetLimit(context.Background(), 1_000_000); err != nil {
+		t.Fatalf("set flow limit: %v", err)
+	}
+	if err := resolved.ClearLimit(context.Background()); err != nil {
+		t.Fatalf("clear flow limit: %v", err)
+	}
+	if err := resolved.Block(context.Background(), "e2e block"); err != nil {
+		t.Fatalf("block flow: %v", err)
+	}
 	closed, err := clients.ResolveConn(context.Background(), backendConnection)
 	if err != nil {
 		t.Fatalf("resolve closed flow context: %v", err)
@@ -87,6 +94,8 @@ func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
 	if closed.ID != resolved.ID || closed.State != "closed" {
 		t.Fatalf("unexpected closed grace context: %+v", closed)
 	}
+	_ = connection.Close()
+	_ = backendConnection.Close()
 
 	var audit struct {
 		Total int `json:"total"`
@@ -94,6 +103,23 @@ func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
 	waitForInterval(t, 5*time.Second, 300*time.Millisecond, func() bool {
 		raw := forwarder.rpc(t, "e2e-control-token", "QueryIPLog", map[string]any{"tag": "app:case=e2e", "limit": 10})
 		return json.Unmarshal(raw, &audit) == nil && audit.Total == 1
+	})
+	var events struct {
+		Records []struct {
+			CloseReason string `json:"close_reason"`
+		} `json:"records"`
+	}
+	waitForInterval(t, 5*time.Second, 300*time.Millisecond, func() bool {
+		raw := forwarder.rpc(t, "e2e-control-token", "QueryLogEvents", map[string]any{"entry_type": "flow", "limit": 20})
+		if json.Unmarshal(raw, &events) != nil {
+			return false
+		}
+		for _, record := range events.Records {
+			if record.CloseReason == "backend_blocked" {
+				return true
+			}
+		}
+		return false
 	})
 }
 
