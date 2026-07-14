@@ -2,6 +2,7 @@ const tokenKey = 'fbforward.control_token';
 const login = document.querySelector('#login');
 const app = document.querySelector('#app');
 const alertBox = document.querySelector('#alert');
+const loginError = document.querySelector('#login-error');
 const tokenInput = document.querySelector('#token');
 const pages = new Set(['status', 'flows', 'config', 'audit', 'firewall']);
 const pollingIntervals = { status: 5000, flows: 2000 };
@@ -9,8 +10,9 @@ const requestedPage = new URLSearchParams(location.search).get('page');
 const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, auditPending: false, auditPendingQuery: '', auditGeneration: 0, auditView: 'table', status: null, identity: null, identityLoaded: false, routes: [], flows: { tcp: [], udp: [] }, audit: null };
 
 function showAlert(message) { alertBox.textContent = message; alertBox.hidden = !message; }
+function showLoginError(message) { loginError.textContent = message; loginError.hidden = !message; }
 function setAuthenticated(value) { login.hidden = value; app.hidden = !value; if (value) loadIdentity(); else stopPolling(); }
-function logout() { sessionStorage.removeItem(tokenKey); state.identity = null; state.identityLoaded = false; document.querySelector('#instance-summary').textContent = ''; setAuthenticated(false); tokenInput.value = ''; showAlert(''); }
+function logout(message = '') { sessionStorage.removeItem(tokenKey); state.identity = null; state.identityLoaded = false; document.querySelector('#instance-summary').textContent = ''; setAuthenticated(false); tokenInput.value = ''; showAlert(''); showLoginError(message); }
 function text(value) { return value == null ? '' : String(value); }
 function cell(row, value) { const node = document.createElement('td'); node.textContent = text(value); row.append(node); }
 
@@ -22,7 +24,7 @@ async function requestJSON(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...headers, ...(options.headers || {}) } });
   let payload = null;
   try { payload = await response.json(); } catch (_) { throw new Error(`HTTP ${response.status}`); }
-  if (response.status === 401) { logout(); throw new Error('unauthorized'); }
+  if (response.status === 401) { logout('invalid token'); throw new Error('unauthorized'); }
   if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
   return payload.result;
 }
@@ -149,7 +151,7 @@ function startPolling() { stopPolling(); if (!sessionStorage.getItem(tokenKey)) 
 function showPage(page) { for (const section of document.querySelectorAll('[data-section]')) section.hidden = section.id !== `page-${page}`; for (const button of document.querySelectorAll('[data-page]')) { if (button.dataset.page === page) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); } }
 function selectPage(page) { if (!pages.has(page)) return; state.page = page; const url = new URL(location.href); url.searchParams.set('page', page); history.replaceState(null, '', `${url.pathname}${url.search}`); showPage(page); startPolling(); }
 
-document.querySelector('#login-form').addEventListener('submit', (event) => { event.preventDefault(); sessionStorage.setItem(tokenKey, tokenInput.value); tokenInput.value = ''; setAuthenticated(true); startPolling(); });
+document.querySelector('#login-form').addEventListener('submit', (event) => { event.preventDefault(); showLoginError(''); sessionStorage.setItem(tokenKey, tokenInput.value); tokenInput.value = ''; setAuthenticated(true); startPolling(); });
 document.querySelector('#logout').addEventListener('click', logout);
 for (const button of document.querySelectorAll('[data-page]')) button.addEventListener('click', () => selectPage(button.dataset.page));
 document.querySelector('#flow-filter').addEventListener('input', () => { if (state.page === 'flows') renderFlowTable(); });

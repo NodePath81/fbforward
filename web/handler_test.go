@@ -46,7 +46,7 @@ func TestHTMLHasNoInlineOrExternalResources(t *testing.T) {
 	if !strings.Contains(body, `script type="module" src="/app.js"`) || !strings.Contains(body, `href="/app.css"`) {
 		t.Fatalf("HTML does not use same-origin external assets")
 	}
-	for _, id := range []string{"instance-summary", "upstream-rows", "route-rows", "flow-rows", "audit-form", "audit-query", "audit-view-toggle", "audit-raw", "firewall-status"} {
+	for _, id := range []string{"login-error", "instance-summary", "upstream-rows", "route-rows", "flow-rows", "audit-form", "audit-query", "audit-view-toggle", "audit-raw", "firewall-status"} {
 		if !strings.Contains(body, `id="`+id+`"`) {
 			t.Fatalf("HTML is missing UI region %q", id)
 		}
@@ -81,7 +81,7 @@ func TestClientSecurityInvariants(t *testing.T) {
 	if !strings.Contains(script, "sessionStorage") || !strings.Contains(script, "Authorization") {
 		t.Fatalf("app.js does not use session-scoped bearer authentication")
 	}
-	for _, required := range []string{"requestJSON('/identity')", "if (state.identityLoaded) return", "state.flows", "renderFlowTable()", "page: 'audit'", "history.replaceState", "refreshPending", "auditPending", "auditGeneration", "performance.now()", "requestPage", "QueryAudit", "audit-query", "audit-view-toggle", "key === 'Escape'", "pollingIntervals = { status: 5000, flows: 2000 }", "setAttribute('aria-current', 'page')", "SetRouteOverride", "ClearRouteOverride"} {
+	for _, required := range []string{"requestJSON('/identity')", "logout('invalid token')", "showLoginError('')", "if (state.identityLoaded) return", "state.flows", "renderFlowTable()", "page: 'audit'", "history.replaceState", "refreshPending", "auditPending", "auditGeneration", "performance.now()", "requestPage", "QueryAudit", "audit-query", "audit-view-toggle", "key === 'Escape'", "pollingIntervals = { status: 5000, flows: 2000 }", "setAttribute('aria-current', 'page')", "SetRouteOverride", "ClearRouteOverride"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("app.js is missing behavior %q", required)
 		}
