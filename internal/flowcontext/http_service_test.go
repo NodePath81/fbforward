@@ -268,7 +268,7 @@ func TestHTTPServiceFlowControlAuditFields(t *testing.T) {
 }
 
 func TestHTTPServiceFlowControlsValidateStateAndAuthorization(t *testing.T) {
-	service, _, _, _ := newHTTPTagServiceTest(t)
+	service, registry, _, _ := newHTTPTagServiceTest(t)
 	service.SetFlowController(&recordingFlowController{})
 	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))
 	defer server.Close()
@@ -282,6 +282,35 @@ func TestHTTPServiceFlowControlsValidateStateAndAuthorization(t *testing.T) {
 	service.SetFlowController(nil)
 	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "BlockFlow", map[string]any{"flow_id": "f1"}); status != http.StatusServiceUnavailable {
 		t.Fatalf("missing controller status=%d", status)
+	}
+	service.SetFlowController(&recordingFlowController{})
+	for _, method := range []string{"SetFlowLimit", "ClearFlowLimit", "BlockFlow"} {
+		params := map[string]any{"flow_id": "missing"}
+		if method == "SetFlowLimit" {
+			params["rate_bps"] = 1000
+		}
+		if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", method, params); status != http.StatusNotFound {
+			t.Fatalf("%s missing flow status=%d", method, status)
+		}
+	}
+	registry.Close(flow.Summary{Meta: testMeta("f1", flow.ProtocolTCP), EndedAt: time.Now().UTC()})
+	for _, method := range []string{"SetFlowLimit", "ClearFlowLimit", "BlockFlow"} {
+		params := map[string]any{"flow_id": "f1"}
+		if method == "SetFlowLimit" {
+			params["rate_bps"] = 1000
+		}
+		if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", method, params); status != http.StatusConflict {
+			t.Fatalf("%s closed flow status=%d", method, status)
+		}
+	}
+
+	storeService, _, _, _ := newHTTPTagServiceTest(t)
+	storeService.SetFlowController(&recordingFlowController{})
+	storeService.store = nil
+	storeServer := httptest.NewServer(http.HandlerFunc(storeService.HandleRPC))
+	defer storeServer.Close()
+	if status, _ := callHTTPRPC(t, storeServer.Client(), storeServer.URL, "backend-secret", "SetFlowLimit", map[string]any{"flow_id": "f1", "rate_bps": 1000}); status != http.StatusServiceUnavailable {
+		t.Fatalf("missing store status=%d", status)
 	}
 }
 
