@@ -76,8 +76,8 @@ Measurement schedule intervals must be positive, with `max >= min`; the
 upstream gap may be zero. At least one measurement protocol must be enabled.
 `measurement.probe_timeout` must be between `100ms` and `10s`. The probe
 sample count and frame size are fixed by fbmeasure and cannot be configured.
-The removed `security`, `ping_count`, `per_sample`, and `per_cycle` fields are
-rejected by strict decoding.
+Obsolete transport-security and per-probe tuning fields are rejected by
+strict decoding.
 
 ## Route behavior
 
