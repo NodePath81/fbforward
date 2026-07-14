@@ -169,12 +169,13 @@ func (c *Client) ProbeUDP(ctx context.Context) (Result, error) {
 			break
 		}
 		for {
-			var response [frameSize]byte
-			if _, err := io.ReadFull(conn, response[:]); err != nil {
+			var response [64 * 1024]byte
+			n, err := conn.Read(response[:])
+			if err != nil {
 				lastErr = err
 				break
 			}
-			decoded, err := parseFrame(response[:])
+			decoded, err := parseFrame(response[:n])
 			if err != nil || decoded != probe {
 				if err != nil {
 					lastErr = err

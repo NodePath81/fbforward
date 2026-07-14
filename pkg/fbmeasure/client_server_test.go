@@ -2,6 +2,7 @@ package fbmeasure
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -73,4 +74,40 @@ func TestServerUsesOneNumericPort(t *testing.T) {
 		t.Fatalf("UDP dial: %v", err)
 	}
 	_ = udpConn.Close()
+}
+
+func TestClientRejectsOversizedUDPEcho(t *testing.T) {
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP: %v", err)
+	}
+	defer listener.Close()
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		var buf [64 * 1024]byte
+		for {
+			n, addr, readErr := listener.ReadFromUDP(buf[:])
+			if readErr != nil {
+				return
+			}
+			response := append(append([]byte(nil), buf[:n]...), 0)
+			_, _ = listener.WriteToUDP(response, addr)
+		}
+	}()
+
+	client, err := NewClient(ClientConfig{
+		Address: net.JoinHostPort("127.0.0.1", fmt.Sprint(listener.LocalAddr().(*net.UDPAddr).Port)),
+		Timeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	result, err := client.ProbeUDP(context.Background())
+	_ = client.Close()
+	_ = listener.Close()
+	<-serverDone
+	if err == nil || result.Reachable {
+		t.Fatalf("oversized UDP echo was accepted: result=%+v err=%v", result, err)
+	}
 }
