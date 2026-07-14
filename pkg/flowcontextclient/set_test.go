@@ -87,9 +87,21 @@ func TestClientSetSelectsInstanceBySourceAddress(t *testing.T) {
 }
 
 func TestClientSetResolveBackendTupleUsesUDPAndSourceSelection(t *testing.T) {
-	var calls atomic.Int32
+	var resolveCalls, tagCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
+		if r.URL.Path == rpcPath {
+			tagCalls.Add(1)
+			var request rpcRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode tag request: %v", err)
+			}
+			if request.Method != "SetFlowTag" {
+				t.Fatalf("tag method=%q, want SetFlowTag", request.Method)
+			}
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		resolveCalls.Add(1)
 		var request resolveRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -121,8 +133,46 @@ func TestClientSetResolveBackendTupleUsesUDPAndSourceSelection(t *testing.T) {
 	if flow.ID != "udp-flow" || flow.Protocol != "udp" || flow.Instance != "edge-a" {
 		t.Fatalf("unexpected flow: %+v", flow)
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("calls=%d, want one", calls.Load())
+	if err := flow.SetFlowTag(context.Background(), Tag{Namespace: "app", Key: "user", Value: "udp-user"}); err != nil {
+		t.Fatalf("set UDP flow tag: %v", err)
+	}
+	if resolveCalls.Load() != 1 || tagCalls.Load() != 1 {
+		t.Fatalf("resolve calls=%d tag calls=%d, want one each", resolveCalls.Load(), tagCalls.Load())
+	}
+}
+
+func TestClientSetResolveBackendTupleRejectsInvalidInput(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+	}))
+	t.Cleanup(server.Close)
+	set, err := NewClientSet([]InstanceOptions{instanceOptions("edge-a", netip.MustParseAddr("127.0.0.2"), server.URL)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validSource := netip.MustParseAddrPort("127.0.0.2:53000")
+	validDestination := netip.MustParseAddrPort("192.0.2.20:443")
+	tests := []struct {
+		name     string
+		protocol string
+		source   netip.AddrPort
+		dest     netip.AddrPort
+	}{
+		{name: "protocol", protocol: "icmp", source: validSource, dest: validDestination},
+		{name: "source", protocol: "udp", source: netip.AddrPort{}, dest: validDestination},
+		{name: "destination", protocol: "udp", source: validSource, dest: netip.AddrPort{}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := set.ResolveBackendTuple(context.Background(), testCase.protocol, testCase.source, testCase.dest)
+			if !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("error=%v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid requests contacted endpoint %d times", calls.Load())
 	}
 }
 

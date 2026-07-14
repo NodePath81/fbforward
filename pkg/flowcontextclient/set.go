@@ -87,21 +87,21 @@ func (s *ClientSet) HasSource(addr netip.Addr) bool {
 }
 
 // ResolveBackendTuple resolves a tuple expressed from fbforward's socket
-// perspective. localAddr is the fbforward source address and selects the
-// configured instance; remoteAddr is the MicProxy listener address.
-func (s *ClientSet) ResolveBackendTuple(ctx context.Context, protocol string, localAddr, remoteAddr netip.AddrPort) (ResolvedFlow, error) {
-	if s == nil || !localAddr.IsValid() || !remoteAddr.IsValid() {
+// perspective. fbforwardSource selects the configured instance; the backend
+// destination is the address fbforward connected or sent to.
+func (s *ClientSet) ResolveBackendTuple(ctx context.Context, protocol string, fbforwardSource, backendDestination netip.AddrPort) (ResolvedFlow, error) {
+	if s == nil || !fbforwardSource.IsValid() || !backendDestination.IsValid() {
 		return ResolvedFlow{}, ErrInvalidRequest
 	}
 	for _, instance := range s.instances {
-		if instance.sourceAddr != localAddr.Addr() {
+		if instance.sourceAddr != fbforwardSource.Addr() {
 			continue
 		}
 		flow, err := instance.client.ResolveTuple(ctx, Tuple{
 			Protocol:   protocol,
 			BackendKey: instance.client.backendKey,
-			LocalAddr:  localAddr,
-			RemoteAddr: remoteAddr,
+			LocalAddr:  fbforwardSource,
+			RemoteAddr: backendDestination,
 		})
 		if err != nil {
 			return ResolvedFlow{}, err
