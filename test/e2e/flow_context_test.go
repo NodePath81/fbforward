@@ -98,23 +98,17 @@ func TestFlowContextResolvesAndTagsTCPFlow(t *testing.T) {
 	_ = backendConnection.Close()
 
 	var audit struct {
-		Total int `json:"total"`
-	}
-	waitForInterval(t, 5*time.Second, 300*time.Millisecond, func() bool {
-		raw := forwarder.rpc(t, "e2e-control-token", "QueryIPLog", map[string]any{"tag": "app:case=e2e", "limit": 10})
-		return json.Unmarshal(raw, &audit) == nil && audit.Total == 1
-	})
-	var events struct {
+		Total   int `json:"total"`
 		Records []struct {
 			CloseReason string `json:"close_reason"`
 		} `json:"records"`
 	}
 	waitForInterval(t, 5*time.Second, 300*time.Millisecond, func() bool {
-		raw := forwarder.rpc(t, "e2e-control-token", "QueryLogEvents", map[string]any{"entry_type": "flow", "limit": 20})
-		if json.Unmarshal(raw, &events) != nil {
+		raw := forwarder.rpc(t, "e2e-control-token", "QueryIPLog", map[string]any{"tag": "app:case=e2e", "limit": 10})
+		if json.Unmarshal(raw, &audit) != nil || audit.Total != 1 {
 			return false
 		}
-		for _, record := range events.Records {
+		for _, record := range audit.Records {
 			if record.CloseReason == "backend_blocked" {
 				return true
 			}
