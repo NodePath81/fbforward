@@ -2,6 +2,8 @@ package flow
 
 import (
 	"net/netip"
+	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -127,5 +129,45 @@ func TestRegistryClosesMatchingFlowsOutsideRegistryLock(t *testing.T) {
 	defer mu.Unlock()
 	if len(closed) != 1 || closed[0] != first.ID {
 		t.Fatalf("unexpected matching closes: %v", closed)
+	}
+}
+
+func TestRegistryDispatchesFlowControlsOutsideRegistryLock(t *testing.T) {
+	registry := NewRegistry()
+	meta := newTestMeta(t, "primary")
+	registry.Register(meta, nil)
+
+	var mu sync.Mutex
+	var calls []string
+	registry.SetControls(meta.ID, Controls{
+		Block: func() {
+			mu.Lock()
+			calls = append(calls, "block")
+			mu.Unlock()
+			registry.Unregister(meta.ID)
+		},
+		SetLimit: func(rate uint64) {
+			mu.Lock()
+			calls = append(calls, "limit:"+strconv.FormatUint(rate, 10))
+			mu.Unlock()
+		},
+		ClearLimit: func() {
+			mu.Lock()
+			calls = append(calls, "clear")
+			mu.Unlock()
+		},
+	})
+
+	if !registry.SetLimit(meta.ID, 1000) || !registry.ClearLimit(meta.ID) || !registry.Block(meta.ID) {
+		t.Fatal("expected all controls to dispatch")
+	}
+	if registry.SetLimit(meta.ID, 2000) {
+		t.Fatal("expected controls to be unavailable after unregister")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := calls, []string{"limit:1000", "clear", "block"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected control calls: got %v want %v", got, want)
 	}
 }

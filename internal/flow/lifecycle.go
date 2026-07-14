@@ -114,9 +114,19 @@ type Registry struct {
 	entries map[ID]registryEntry
 }
 
+// Controls are the small set of operations that an external, authorized
+// controller may apply to an active Flow. The callbacks are owned by the
+// data-plane connection; Registry only stores and dispatches them.
+type Controls struct {
+	Block      func()
+	SetLimit   func(uint64)
+	ClearLimit func()
+}
+
 type registryEntry struct {
-	meta    Meta
-	closeFn func()
+	meta     Meta
+	closeFn  func()
+	controls Controls
 }
 
 func NewRegistry() *Registry {
@@ -139,6 +149,58 @@ func (r *Registry) Unregister(id ID) {
 	r.mu.Lock()
 	delete(r.entries, id)
 	r.mu.Unlock()
+}
+
+// SetControls attaches data-plane controls to an already-open Flow. It is
+// intentionally separate from Register so Lifecycle and forwarding can keep
+// their existing construction APIs.
+func (r *Registry) SetControls(id ID, controls Controls) bool {
+	if r == nil || id == "" {
+		return false
+	}
+	r.mu.Lock()
+	entry, ok := r.entries[id]
+	if ok {
+		entry.controls = controls
+		r.entries[id] = entry
+	}
+	r.mu.Unlock()
+	return ok
+}
+
+func (r *Registry) Block(id ID) bool {
+	return r.withControl(id, func(controls Controls) func() { return controls.Block })
+}
+
+func (r *Registry) SetLimit(id ID, rateBPS uint64) bool {
+	return r.withControl(id, func(controls Controls) func() {
+		if controls.SetLimit == nil {
+			return nil
+		}
+		return func() { controls.SetLimit(rateBPS) }
+	})
+}
+
+func (r *Registry) ClearLimit(id ID) bool {
+	return r.withControl(id, func(controls Controls) func() { return controls.ClearLimit })
+}
+
+func (r *Registry) withControl(id ID, pick func(Controls) func()) bool {
+	if r == nil || id == "" {
+		return false
+	}
+	r.mu.Lock()
+	entry, ok := r.entries[id]
+	var callback func()
+	if ok {
+		callback = pick(entry.controls)
+	}
+	r.mu.Unlock()
+	if callback == nil {
+		return false
+	}
+	callback()
+	return true
 }
 
 func (r *Registry) CloseByUpstream(upstream string) {
