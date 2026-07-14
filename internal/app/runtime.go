@@ -166,6 +166,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 			Identities: identities,
 			MaxTTL:     cfg.FlowContext.MaxTTL.Duration(),
 		}, logger)
+		rt.flowContextService.SetFlowController(flowRegistry)
 	}
 	rt.flowObserver = flowObservers
 	rt.policy = &firewallPolicy{provider: rt.firewall, onlineProvider: rt.onlinePolicy}

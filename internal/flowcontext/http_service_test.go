@@ -136,6 +136,73 @@ func TestHTTPServiceIdentityAndTagValidation(t *testing.T) {
 	}
 }
 
+type recordingFlowController struct {
+	blocked []flow.ID
+	limited map[flow.ID]uint64
+	cleared []flow.ID
+}
+
+func (c *recordingFlowController) Block(id flow.ID) bool {
+	c.blocked = append(c.blocked, id)
+	return true
+}
+
+func (c *recordingFlowController) SetLimit(id flow.ID, rate uint64) bool {
+	if c.limited == nil {
+		c.limited = make(map[flow.ID]uint64)
+	}
+	c.limited[id] = rate
+	return true
+}
+
+func (c *recordingFlowController) ClearLimit(id flow.ID) bool {
+	c.cleared = append(c.cleared, id)
+	return true
+}
+
+func TestHTTPServiceFlowControlsAndAudit(t *testing.T) {
+	service, _, _, _ := newHTTPTagServiceTest(t)
+	controller := &recordingFlowController{}
+	service.SetFlowController(controller)
+	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))
+	defer server.Close()
+
+	base := map[string]any{"flow_id": "f1"}
+	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "SetFlowLimit", map[string]any{"flow_id": "f1", "rate_bps": 1000000}); status != http.StatusOK {
+		t.Fatalf("set limit status=%d", status)
+	}
+	if controller.limited["f1"] != 1000000 {
+		t.Fatalf("unexpected limit calls: %+v", controller.limited)
+	}
+	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "ClearFlowLimit", base); status != http.StatusOK {
+		t.Fatalf("clear limit status=%d", status)
+	}
+	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "BlockFlow", map[string]any{"flow_id": "f1", "reason": "abuse"}); status != http.StatusOK {
+		t.Fatalf("block status=%d", status)
+	}
+	if len(controller.blocked) != 1 || len(controller.cleared) != 1 {
+		t.Fatalf("unexpected controller calls: %+v", controller)
+	}
+}
+
+func TestHTTPServiceFlowControlsValidateStateAndAuthorization(t *testing.T) {
+	service, _, _, _ := newHTTPTagServiceTest(t)
+	service.SetFlowController(&recordingFlowController{})
+	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))
+	defer server.Close()
+
+	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "SetFlowLimit", map[string]any{"flow_id": "f1", "rate_bps": 0}); status != http.StatusBadRequest {
+		t.Fatalf("zero rate status=%d", status)
+	}
+	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "other-secret", "BlockFlow", map[string]any{"flow_id": "f1"}); status != http.StatusForbidden {
+		t.Fatalf("cross route block status=%d", status)
+	}
+	service.SetFlowController(nil)
+	if status, _ := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "BlockFlow", map[string]any{"flow_id": "f1"}); status != http.StatusServiceUnavailable {
+		t.Fatalf("missing controller status=%d", status)
+	}
+}
+
 func TestHTTPServiceResolveRouteAndRPCMethod(t *testing.T) {
 	service, _, _, tuple := newHTTPTagServiceTest(t)
 	resolve := httptest.NewServer(http.HandlerFunc(service.HandleResolve))

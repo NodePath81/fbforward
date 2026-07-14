@@ -60,10 +60,19 @@ func (o HTTPOptions) normalized() HTTPOptions {
 type Service struct {
 	registry   *Registry
 	store      *audit.Store
+	controller FlowController
 	options    HTTPOptions
 	identities []Identity
 	limiter    *identityRateLimiter
 	logger     util.Logger
+}
+
+// FlowController applies the small set of direct controls exposed to a
+// trusted backend. The data-plane implementation is injected by Runtime.
+type FlowController interface {
+	Block(flow.ID) bool
+	SetLimit(flow.ID, uint64) bool
+	ClearLimit(flow.ID) bool
 }
 
 func NewService(registry *Registry, store *audit.Store, options HTTPOptions, logger util.Logger) *Service {
@@ -77,6 +86,12 @@ func NewService(registry *Registry, store *audit.Store, options HTTPOptions, log
 		identities: identities,
 		limiter:    newIdentityRateLimiter(options.RateLimitBurst, options.RateLimitWindow),
 		logger:     util.ComponentLogger(logger, util.CompControl),
+	}
+}
+
+func (s *Service) SetFlowController(controller FlowController) {
+	if s != nil {
+		s.controller = controller
 	}
 }
 
@@ -258,6 +273,27 @@ func (s *Service) dispatch(ctx context.Context, method string, raw json.RawMessa
 		}
 		result, err := s.ListFlowTags(ctx, request, identity)
 		return map[string]any{"tags": result}, err
+	case "SetFlowLimit":
+		var request FlowLimitRequest
+		if err := decodeParams(raw, &request); err != nil {
+			return nil, err
+		}
+		result, err := s.SetFlowLimit(ctx, request, identity)
+		return result, err
+	case "ClearFlowLimit":
+		var request FlowIDRequest
+		if err := decodeParams(raw, &request); err != nil {
+			return nil, err
+		}
+		result, err := s.ClearFlowLimit(ctx, request, identity)
+		return result, err
+	case "BlockFlow":
+		var request FlowActionRequest
+		if err := decodeParams(raw, &request); err != nil {
+			return nil, err
+		}
+		result, err := s.BlockFlow(ctx, request, identity)
+		return result, err
 	default:
 		return nil, ErrUnknownMethod
 	}
@@ -307,6 +343,12 @@ func flowErrorStatus(err error) int {
 		return http.StatusTooManyRequests
 	case errors.Is(err, ErrFlowNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, ErrFlowNotActive):
+		return http.StatusConflict
+	case errors.Is(err, ErrInvalidRate):
+		return http.StatusBadRequest
+	case errors.Is(err, ErrFlowController):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, ErrClosed), errors.Is(err, ErrTagStore):
 		return http.StatusServiceUnavailable
 	default:
