@@ -42,7 +42,7 @@ upstreams:
     destination: {host: 127.0.0.1}
 ```
 
-Use [configs/config.example.yaml](/home/huangyj/Workspace/fbforward/configs/config.example.yaml)
+Use [configs/config.example.yaml](configs/config.example.yaml)
 for the complete current sample. The YAML decoder is strict; removed or
 unknown fields fail startup.
 
