@@ -199,7 +199,7 @@ func TestFlowContextResolvesAndTagsUDPFlow(t *testing.T) {
 		t.Fatalf("unexpected UDP flow context: %+v", resolved)
 	}
 	if err := resolved.SetFlowTag(context.Background(), flowcontextclient.Tag{
-		Namespace: "app", Key: "case", Value: "e2e-udp",
+		Namespace: "app", Key: "user", Value: "test",
 	}); err != nil {
 		connection.Close()
 		t.Fatalf("set UDP flow tag: %v", err)
@@ -210,18 +210,19 @@ func TestFlowContextResolvesAndTagsUDPFlow(t *testing.T) {
 		Total   int `json:"total"`
 		Records []struct {
 			Protocol  string `json:"protocol"`
+			Route     string `json:"route"`
 			Upstream  string `json:"upstream"`
 			BytesUp   uint64 `json:"bytes_up"`
 			BytesDown uint64 `json:"bytes_down"`
 		} `json:"records"`
 	}
 	waitForInterval(t, 5*time.Second, 300*time.Millisecond, func() bool {
-		raw := forwarder.rpc(t, "e2e-control-token", "QueryIPLog", map[string]any{"tag": "app:case=e2e-udp", "limit": 10})
+		raw := forwarder.rpc(t, "e2e-control-token", "QueryIPLog", map[string]any{"tag": "app:user=test", "limit": 10})
 		if json.Unmarshal(raw, &audit) != nil || audit.Total != 1 || len(audit.Records) != 1 {
 			return false
 		}
 		record := audit.Records[0]
-		return record.Protocol == "udp" && record.Upstream == "local" && record.BytesUp >= uint64(len(payload)) && record.BytesDown >= uint64(len(payload))
+		return record.Protocol == "udp" && record.Route == "local" && record.Upstream == "local" && record.BytesUp >= uint64(len(payload)) && record.BytesDown >= uint64(len(payload))
 	})
 }
 
