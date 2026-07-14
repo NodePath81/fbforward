@@ -71,6 +71,8 @@ the configured grace period. A trusted backend may also call `SetFlowLimit`,
 `ClearFlowLimit`, or `BlockFlow` for an active Flow it is authorized to see.
 The limit is bidirectional and can only tighten an existing policy. Blocking
 closes that Flow with `backend_blocked`; use an online rule for future Flows.
+The close transition is exactly-once; a repeated block or a request racing
+with another close is rejected with `409`.
 
 ## Firewall policy
 

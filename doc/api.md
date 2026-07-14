@@ -181,7 +181,9 @@ online rule when future connections must be denied or limited. These controls
 require an active Flow and the identity's route/upstream permission. Invalid
 parameters return `400`, an unauthorized Flow returns `403`, a closed or
 otherwise inactive Flow returns `409`, and an unavailable controller or audit
-store returns `503`.
+store returns `503`. Control application is exactly-once at the data plane;
+repeating `BlockFlow`, or racing a control request with Flow close, returns
+`409` when the operation was not applied.
 
 The Go package `pkg/flowcontextclient` provides `Client` for one instance and
 `ClientSet` for multiple fbforward instances. Each instance is identified by
