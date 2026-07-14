@@ -499,7 +499,7 @@ func TestTCPRegistryBlockClosesWithBackendReason(t *testing.T) {
 		Listener: conn.listenAddr, Upstream: conn.upstreamTag, StartedAt: conn.created,
 	}, conn.observer, registry, conn.close)
 	conn.lifecycle.Open()
-	registry.SetControls(conn.id, flow.Controls{Block: func() { conn.closeWithReason("backend_blocked") }})
+	registry.SetControls(conn.id, flow.Controls{Block: func() bool { return conn.closeWithReason("backend_blocked") }})
 
 	if !registry.Block(conn.id) {
 		t.Fatal("expected registry block to dispatch")
@@ -509,6 +509,26 @@ func TestTCPRegistryBlockClosesWithBackendReason(t *testing.T) {
 	}
 	if len(observer.closes) != 1 || observer.closes[0].CloseReason != "backend_blocked" {
 		t.Fatalf("unexpected TCP block summary: %+v", observer.closes)
+	}
+}
+
+func TestTCPRegistryBlockRacesWithClose(t *testing.T) {
+	client, peer1 := net.Pipe()
+	upstreamConn, peer2 := net.Pipe()
+	defer peer1.Close()
+	defer peer2.Close()
+	registry := flow.NewRegistry()
+	conn := &tcpConn{client: client, upstream: upstreamConn, done: make(chan struct{})}
+	conn.id, _ = flow.NewID()
+	registry.Register(flow.Meta{ID: conn.id, Protocol: flow.ProtocolTCP}, conn.close)
+	registry.SetControls(conn.id, flow.Controls{Block: func() bool { return conn.closeWithReason("backend_blocked") }})
+
+	results := make(chan bool, 2)
+	go func() { results <- conn.closeWithReason("peer_closed") }()
+	go func() { results <- registry.Block(conn.id) }()
+	first, second := <-results, <-results
+	if (first && second) || (!first && !second) {
+		t.Fatalf("expected exactly one close winner, got %v and %v", first, second)
 	}
 }
 
@@ -591,7 +611,7 @@ func TestUDPRegistryBlockClosesWithBackendReason(t *testing.T) {
 	}, mapping.observer, registry, mapping.close)
 	mapping.lifecycle.Open()
 	parent.mappings[mapping.clientAddrStr] = mapping
-	registry.SetControls(mapping.id, flow.Controls{Block: func() { mapping.closeWithReason("backend_blocked") }})
+	registry.SetControls(mapping.id, flow.Controls{Block: func() bool { return mapping.closeWithReason("backend_blocked") }})
 
 	if !registry.Block(mapping.id) {
 		t.Fatal("expected registry block to dispatch")

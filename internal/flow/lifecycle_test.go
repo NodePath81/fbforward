@@ -140,21 +140,24 @@ func TestRegistryDispatchesFlowControlsOutsideRegistryLock(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
 	registry.SetControls(meta.ID, Controls{
-		Block: func() {
+		Block: func() bool {
 			mu.Lock()
 			calls = append(calls, "block")
 			mu.Unlock()
 			registry.Unregister(meta.ID)
+			return true
 		},
-		SetLimit: func(rate uint64) {
+		SetLimit: func(rate uint64) bool {
 			mu.Lock()
 			calls = append(calls, "limit:"+strconv.FormatUint(rate, 10))
 			mu.Unlock()
+			return true
 		},
-		ClearLimit: func() {
+		ClearLimit: func() bool {
 			mu.Lock()
 			calls = append(calls, "clear")
 			mu.Unlock()
+			return true
 		},
 	})
 
@@ -169,5 +172,17 @@ func TestRegistryDispatchesFlowControlsOutsideRegistryLock(t *testing.T) {
 	defer mu.Unlock()
 	if got, want := calls, []string{"limit:1000", "clear", "block"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected control calls: got %v want %v", got, want)
+	}
+}
+
+func TestRegistryReturnsControlApplicationResult(t *testing.T) {
+	registry := NewRegistry()
+	meta := newTestMeta(t, "primary")
+	registry.Register(meta, nil)
+	registry.SetControls(meta.ID, Controls{
+		SetLimit: func(uint64) bool { return false },
+	})
+	if registry.SetLimit(meta.ID, 1000) {
+		t.Fatal("expected failed control application to be reported")
 	}
 }

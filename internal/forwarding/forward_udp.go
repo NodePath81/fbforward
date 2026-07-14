@@ -348,9 +348,9 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 	mapping.lifecycle.Open()
 	if mapping.registry != nil {
 		mapping.registry.SetControls(mapping.id, flow.Controls{
-			Block:      func() { mapping.closeWithReason("backend_blocked") },
-			SetLimit:   mapping.rateLimiter.SetOverride,
-			ClearLimit: mapping.rateLimiter.ClearOverride,
+			Block:      func() bool { return mapping.closeWithReason("backend_blocked") },
+			SetLimit:   mapping.setRateLimit,
+			ClearLimit: mapping.clearRateLimit,
 		})
 	}
 	if l.binder != nil {
@@ -426,6 +426,8 @@ type udpMapping struct {
 
 	id         flow.ID
 	closeOnce  sync.Once
+	controlMu  sync.Mutex
+	closed     bool
 	activityCh chan struct{}
 	done       chan struct{}
 	lifecycle  *flow.Lifecycle
@@ -540,8 +542,37 @@ func (m *udpMapping) idleWatcher(ctx context.Context) {
 	}
 }
 
-func (m *udpMapping) closeWithReason(reason string) {
+func (m *udpMapping) setRateLimit(rateBPS uint64) bool {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
+	if m.closed {
+		return false
+	}
+	m.rateLimiter.SetOverride(rateBPS)
+	return true
+}
+
+func (m *udpMapping) clearRateLimit() bool {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
+	if m.closed {
+		return false
+	}
+	m.rateLimiter.ClearOverride()
+	return true
+}
+
+func (m *udpMapping) closeWithReason(reason string) bool {
+	m.controlMu.Lock()
+	if m.closed {
+		m.controlMu.Unlock()
+		return false
+	}
+	m.closed = true
+	m.controlMu.Unlock()
+	closed := false
 	m.closeOnce.Do(func() {
+		closed = true
 		close(m.done)
 		_ = m.upstreamConn.Close()
 		m.parent.removeMapping(m.clientAddr.String(), m.clientIP)
@@ -570,6 +601,7 @@ func (m *udpMapping) closeWithReason(reason string) {
 		)
 		<-m.parent.sem
 	})
+	return closed
 }
 
 func (m *udpMapping) close() {

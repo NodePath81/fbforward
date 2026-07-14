@@ -225,6 +225,8 @@ type tcpConn struct {
 
 	id         flow.ID
 	closeOnce  sync.Once
+	controlMu  sync.Mutex
+	closed     bool
 	activityCh chan struct{}
 	done       chan struct{}
 	created    time.Time
@@ -268,9 +270,9 @@ func (c *tcpConn) start(ctx context.Context) {
 	c.lifecycle.Open()
 	if c.registry != nil {
 		c.registry.SetControls(c.id, flow.Controls{
-			Block:      func() { c.closeWithReason("backend_blocked") },
-			SetLimit:   c.rateLimiter.SetOverride,
-			ClearLimit: c.rateLimiter.ClearOverride,
+			Block:      func() bool { return c.closeWithReason("backend_blocked") },
+			SetLimit:   c.setRateLimit,
+			ClearLimit: c.clearRateLimit,
 		})
 	}
 	if c.binder != nil {
@@ -437,8 +439,37 @@ func (c *tcpConn) idleWatcher(ctx context.Context) {
 	}
 }
 
-func (c *tcpConn) closeWithReason(reason string) {
+func (c *tcpConn) setRateLimit(rateBPS uint64) bool {
+	c.controlMu.Lock()
+	defer c.controlMu.Unlock()
+	if c.closed {
+		return false
+	}
+	c.rateLimiter.SetOverride(rateBPS)
+	return true
+}
+
+func (c *tcpConn) clearRateLimit() bool {
+	c.controlMu.Lock()
+	defer c.controlMu.Unlock()
+	if c.closed {
+		return false
+	}
+	c.rateLimiter.ClearOverride()
+	return true
+}
+
+func (c *tcpConn) closeWithReason(reason string) bool {
+	c.controlMu.Lock()
+	if c.closed {
+		c.controlMu.Unlock()
+		return false
+	}
+	c.closed = true
+	c.controlMu.Unlock()
+	closed := false
 	c.closeOnce.Do(func() {
+		closed = true
 		close(c.done)
 		_ = c.client.Close()
 		_ = c.upstream.Close()
@@ -466,6 +497,7 @@ func (c *tcpConn) closeWithReason(reason string) {
 			"result", "closed",
 		)
 	})
+	return closed
 }
 
 func (c *tcpConn) close() {

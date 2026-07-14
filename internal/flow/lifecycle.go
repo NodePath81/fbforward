@@ -118,9 +118,9 @@ type Registry struct {
 // controller may apply to an active Flow. The callbacks are owned by the
 // data-plane connection; Registry only stores and dispatches them.
 type Controls struct {
-	Block      func()
-	SetLimit   func(uint64)
-	ClearLimit func()
+	Block      func() bool
+	SetLimit   func(uint64) bool
+	ClearLimit func() bool
 }
 
 type registryEntry struct {
@@ -169,29 +169,29 @@ func (r *Registry) SetControls(id ID, controls Controls) bool {
 }
 
 func (r *Registry) Block(id ID) bool {
-	return r.withControl(id, func(controls Controls) func() { return controls.Block })
+	return r.withControl(id, func(controls Controls) func() bool { return controls.Block })
 }
 
 func (r *Registry) SetLimit(id ID, rateBPS uint64) bool {
-	return r.withControl(id, func(controls Controls) func() {
+	return r.withControl(id, func(controls Controls) func() bool {
 		if controls.SetLimit == nil {
 			return nil
 		}
-		return func() { controls.SetLimit(rateBPS) }
+		return func() bool { return controls.SetLimit(rateBPS) }
 	})
 }
 
 func (r *Registry) ClearLimit(id ID) bool {
-	return r.withControl(id, func(controls Controls) func() { return controls.ClearLimit })
+	return r.withControl(id, func(controls Controls) func() bool { return controls.ClearLimit })
 }
 
-func (r *Registry) withControl(id ID, pick func(Controls) func()) bool {
+func (r *Registry) withControl(id ID, pick func(Controls) func() bool) bool {
 	if r == nil || id == "" {
 		return false
 	}
 	r.mu.Lock()
 	entry, ok := r.entries[id]
-	var callback func()
+	var callback func() bool
 	if ok {
 		callback = pick(entry.controls)
 	}
@@ -199,8 +199,7 @@ func (r *Registry) withControl(id ID, pick func(Controls) func()) bool {
 	if callback == nil {
 		return false
 	}
-	callback()
-	return true
+	return callback()
 }
 
 func (r *Registry) CloseByUpstream(upstream string) {
