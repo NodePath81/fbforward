@@ -10,6 +10,7 @@ import (
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
+	"github.com/NodePath81/fbforward/pkg/fbmeasure"
 )
 
 func TestCollectorRunsReadyProbeImmediately(t *testing.T) {
@@ -75,5 +76,41 @@ func TestCollectorSyncsStaleHealthToMetrics(t *testing.T) {
 	}
 	if !strings.Contains(metricSet.Render(), `fbforward_upstream_health_state{upstream="primary",state="stale"} 1`) {
 		t.Fatal("rendered metrics did not expose stale health")
+	}
+}
+
+func TestCollectorUsesMinimalFBMeasureSDK(t *testing.T) {
+	server, err := fbmeasure.NewServer(fbmeasure.ServerConfig{ListenAddress: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Serve(ctx) }()
+	defer func() {
+		_ = server.Close()
+		select {
+		case <-serverDone:
+		case <-time.After(time.Second):
+			t.Error("fbmeasure server did not stop")
+		}
+	}()
+
+	addr := server.Addr()
+	manager := upstream.NewUpstreamManager([]*upstream.Upstream{{
+		Tag:         "primary",
+		MeasureHost: "127.0.0.1",
+		MeasurePort: int(addr.Port()),
+	}}, nil)
+	collector := NewCollector(config.MeasurementConfig{ProbeTimeout: config.Duration(time.Second)}, manager, nil, nil, nil)
+	for _, protocol := range []string{"tcp", "udp"} {
+		result, err := collector.runMeasurement(ctx, manager.Get("primary"), protocol, time.Second)
+		if err != nil {
+			t.Fatalf("runMeasurement(%s): %v", protocol, err)
+		}
+		if result == nil || result.RTTMs <= 0 {
+			t.Fatalf("runMeasurement(%s) returned invalid result: %+v", protocol, result)
+		}
 	}
 }

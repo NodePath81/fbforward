@@ -46,9 +46,10 @@ route membership must remain unique.
 - `upstreams`: destination host, unique tag, optional measurement endpoint and
   priority.
 - `dns`: optional resolver addresses and IPv4/IPv6 strategy.
-- `measurement`: adaptive-route probe schedule, protocol settings, and
-  fbmeasure transport security. Only upstreams referenced by adaptive routes
-  require scheduled probes.
+- `measurement`: adaptive-route probe schedule, a bounded `probe_timeout`, and
+  TCP/UDP protocol enable switches. Only upstreams referenced by adaptive
+  routes require scheduled probes. fbmeasure is a fixed small-packet echo
+  service; network access is controlled outside fbforward.
 - `health`: RTT EWMA alpha in `(0,1]`, positive failure/recovery thresholds,
   and a positive stale threshold.
 - `control`: HTTP bind address/port, bearer token (at least 16 characters),
@@ -73,9 +74,10 @@ route membership must remain unique.
 
 Measurement schedule intervals must be positive, with `max >= min`; the
 upstream gap may be zero. At least one measurement protocol must be enabled.
-Protocol ping counts and sample/cycle timeouts must be positive. Measurement
-security supports `off`, `tls`, and `mtls`; mTLS requires both client
-certificate and key files.
+`measurement.probe_timeout` must be between `100ms` and `10s`. The probe
+sample count and frame size are fixed by fbmeasure and cannot be configured.
+The removed `security`, `ping_count`, `per_sample`, and `per_cycle` fields are
+rejected by strict decoding.
 
 ## Route behavior
 

@@ -35,7 +35,7 @@ an upstream from adaptive selection; `stale` is visible but does not mean the
 Flow already moved.
 
 If measurement is unavailable, verify the fbmeasure endpoint, firewall rules,
-DNS resolution, and `measurement.security`. Static routes can continue to
+DNS resolution, and trusted-network access. Static routes can continue to
 forward without fbmeasure.
 
 ## Control API and monitoring

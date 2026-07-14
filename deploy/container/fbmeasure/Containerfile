@@ -6,6 +6,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY cmd/fbmeasure ./cmd/fbmeasure
+COPY pkg/fbmeasure ./pkg/fbmeasure
 COPY internal ./internal
 
 ARG TARGETOS=linux
@@ -32,4 +33,4 @@ EXPOSE 9876/tcp
 EXPOSE 9876/udp
 
 ENTRYPOINT ["/usr/local/bin/fbmeasure"]
-CMD ["--port", "9876", "--log-format", "json"]
+CMD ["--listen", "127.0.0.1:9876", "--log-format", "json"]
