@@ -55,6 +55,24 @@ route when an override is unavailable; static routes do not automatically
 fail over. `SetUpstream` remains only as a deprecated compatibility wrapper
 for a single-route configuration and accepts `auto` or `manual`.
 
+The principal runtime response groups are:
+
+| Method | Purpose |
+| --- | --- |
+| `GetStatus` | Process, listener, and upstream status |
+| `GetActiveFlows` | Current TCP streams and UDP mappings |
+| `GetRouteStatus` | Route-local effective and override state |
+| `ListUpstreams` | Configured addresses and health snapshots |
+| `GetRuntimeConfig` | Sanitized loaded configuration; secrets omitted |
+| `GetMeasurementConfig` | Effective probe and security settings |
+| `GetScheduleStatus` | Adaptive probe queue and next-due state |
+| `GetIPLogStatus` | SQLite availability, counts, and retention state |
+
+`RunMeasurement` starts one requested probe asynchronously and accepts only a
+configured upstream and enabled protocol. `Restart` schedules a runtime
+restart rather than blocking the HTTP request. `SendTestNotification` returns
+service unavailable when the webhook sink is disabled.
+
 ## Health, GeoIP, and metrics
 
 - `GetGeoIPStatus` returns local database state.
@@ -159,3 +177,9 @@ tuple JSON manually.
 - Request bodies have endpoint-specific hard limits.
 - Control and Flow Context identities are separate.
 - The API does not implement arbitrary SQL, PROXY protocol, or TProxy.
+
+The static page is not an authentication boundary: protect the HTTP listener
+at the network layer and rely on the API token for data access. Prometheus
+exposes operational measurements but does not provide a second control path.
+Flow Context backend tokens cannot call control RPCs, and the control token
+cannot resolve or tag backend Flows.

@@ -60,6 +60,14 @@ For an adaptive route, verify that the measurement endpoint is reachable from
 the fbforward host and that the first probe runs immediately. Static routes do
 not require a measurement scheduler.
 
+For a control-plane smoke test, send an authenticated `GetStatus` request to
+`/rpc` and check that the response has `ok: true`. For UDP, send more than one
+datagram from the same client tuple and confirm that they appear as one active
+mapping. A new client tuple creates a separate mapping. These checks validate
+the forwarding boundary without requiring the embedded operator page.
+If a connection is rejected, inspect rejection records only after enabling
+`ip_log`; otherwise use the structured startup and forwarding logs.
+
 ## Next steps
 
 - [Configuration reference](configuration.md)

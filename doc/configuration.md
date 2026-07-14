@@ -87,6 +87,35 @@ override falls back within the same route and recovers automatically.
 
 All selections affect new Flows only.
 
+## Forwarding and upstream details
+
+`forwarding.limits.max_tcp_connections` limits accepted TCP connections and
+`max_udp_mappings` limits active client mappings. Both values must be positive.
+`forwarding.idle_timeout.tcp` and `.udp` close inactive resources; they do not
+change an already selected route or upstream.
+
+Each upstream has a unique `tag` and a destination host. The listener port is
+used when constructing the destination endpoint, so a listener on port 443
+connects to port 443 at the selected upstream address. An optional upstream
+measurement host/port controls where fbmeasure probes; if omitted, the
+destination host and the default probe port are used. `priority` is consulted
+only when adaptive candidates otherwise tie.
+
+DNS servers are optional. An empty server list uses the system resolver;
+`ipv4_only` restricts address resolution, while `prefer_ipv6` changes address
+preference without disabling IPv4 fallback. DNS refresh does not move an
+existing Flow.
+
+The control listener should remain on loopback unless a deployment provides
+TLS termination or a trusted private network. The control token is never
+returned by `GetRuntimeConfig`. Flow Context identities use separate tokens
+and can be restricted independently by route, upstream, and namespace.
+
+When `geoip.enabled` is true, at least one local MMDB path is required. A
+database may be updated by an external timer using an atomic same-filesystem
+replacement, followed by `ReloadGeoIP`; the service itself performs no
+network download.
+
 ## Removed configuration
 
 Legacy traffic-control, distributed-mode, throughput-probe, and ranking fields,
