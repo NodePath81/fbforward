@@ -112,7 +112,14 @@ func (s *Service) auditControl(event string, value Context, identity Identity, r
 	if s.logger == nil {
 		return
 	}
-	attrs := []interface{}{"flow.id", value.FlowID, "backend.identity", identity.ID}
+	attrs := []interface{}{
+		"flow.id", value.FlowID,
+		"flow.protocol", value.Protocol,
+		"flow.route", value.Route,
+		"flow.upstream", value.Upstream,
+		"backend.identity", identity.ID,
+		"result", "applied",
+	}
 	if rateBPS > 0 {
 		attrs = append(attrs, "rate_bps", rateBPS)
 	}
