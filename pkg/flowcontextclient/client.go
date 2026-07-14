@@ -276,25 +276,7 @@ func (c *Client) setTag(ctx context.Context, method, flowID string, tag Tag) err
 	if tag.TTL > 0 {
 		params["ttl_seconds"] = int64(tag.TTL / time.Second)
 	}
-	body, err := json.Marshal(rpcRequest{Method: method, Params: params})
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
-	}
-	response, err := c.do(ctx, http.MethodPost, rpcPath, body)
-	if err != nil {
-		return err
-	}
-	var envelope rpcEnvelope
-	if err := decodeLimited(response, &envelope); err != nil {
-		return decodeError(err)
-	}
-	if response.StatusCode != http.StatusOK {
-		return responseError(response.StatusCode, envelope.Error)
-	}
-	if !envelope.OK {
-		return fmt.Errorf("%w: %s", ErrInvalidResponse, envelope.Error)
-	}
-	return nil
+	return c.callRPC(ctx, method, params)
 }
 
 type clientResponse struct {

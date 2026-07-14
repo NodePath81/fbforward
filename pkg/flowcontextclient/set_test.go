@@ -168,3 +168,16 @@ func TestResolvedFlowTagsOriginalInstance(t *testing.T) {
 		t.Fatalf("tag calls A=%d B=%d", aTags.Load(), bTags.Load())
 	}
 }
+
+func TestResolvedFlowControlZeroValueRejects(t *testing.T) {
+	var resolved ResolvedFlow
+	if err := resolved.SetLimit(context.Background(), 1000); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("SetLimit error=%v", err)
+	}
+	if err := resolved.ClearLimit(context.Background()); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ClearLimit error=%v", err)
+	}
+	if err := resolved.Block(context.Background(), "test"); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Block error=%v", err)
+	}
+}
