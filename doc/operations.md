@@ -57,9 +57,13 @@ active Flow identity is held separately in `flow_entities`. Queries use the
 bounded Audit DSL and execute filtering, sorting, aggregation, and pagination
 inside SQLite.
 
-Use `QueryAudit` for routine searches. Use SQLite backup/restore helpers for
-offline maintenance. Retention removes old Flow, rejection, checkpoint, tag,
-policy, and online-rule event data according to the configured intervals.
+Use `QueryAudit` for routine searches. SQLite backup, restore, and integrity
+helpers currently exist as internal Go library operations; they are not
+exposed as a Control RPC or standalone CLI command. Perform offline
+maintenance only when the process is stopped, using a small maintenance
+program or an approved operational wrapper. Retention removes old Flow,
+rejection, checkpoint, tag, policy, and online-rule event data according to
+the configured intervals.
 
 Flow Context tags are written transactionally and do not block forwarding.
 After a Flow closes, tuple resolution and tagging remain available only during

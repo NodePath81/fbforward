@@ -52,8 +52,9 @@ fields and removed features are rejected before listeners start.
 
 Start a TCP or UDP service on the configured upstream, then connect to the
 listener with a client tool such as `nc` or `iperf3`. Confirm the Flow in the
-authenticated `GetActiveFlows` RPC and inspect closed records through
-`QueryAudit`.
+authenticated `GetActiveFlows` RPC. If `ip_log.enabled` is enabled, inspect
+closed records through `QueryAudit`; with the default disabled audit store,
+audit queries correctly report that persistent storage is unavailable.
 
 For an adaptive route, verify that the measurement endpoint is reachable from
 the fbforward host and that the first probe runs immediately. Static routes do
