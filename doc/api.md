@@ -191,23 +191,31 @@ the unique source address visible to the backend, so callers do not construct
 tuple JSON manually.
 
 For a UDP backend, read the source address of the packet received from
-fbforward and use the local address of the backend socket as the destination:
+fbforward and use the actual address of the backend socket as the destination:
 
 ```go
-source := receivedPacket.SourceAddr()       // fbforward's address at backend
-destination := backendConn.LocalAddr()      // backend address fbforward dialed
+source := netip.MustParseAddrPort("10.0.0.2:53000")
+destination := netip.MustParseAddrPort("10.0.0.20:443")
 flow, err := clients.ResolveBackendTuple(ctx, "udp", source, destination)
-if err == nil {
-	err = flow.SetFlowTag(ctx, flowcontextclient.Tag{
-		Namespace: "app", Key: "user", Value: "alice",
-	})
+if err != nil {
+	return err
 }
+return flow.SetFlowTag(ctx, flowcontextclient.Tag{
+	Namespace: "app",
+	Key:       "user",
+	Value:     userID,
+})
 ```
 
-The source selects the configured fbforward instance; the destination selects
-the `backend_key` for that instance. Use the actual observed addresses rather
-than the listener address, especially when UDP listeners or upstreams are
-bound to wildcard addresses. TCP callers can continue using `ResolveConn`.
+Each fbforward must present a unique source IP to the backend. If multiple
+instances share one SNAT source IP, `ClientSet` cannot select the originating
+instance. The `backend_key` comes from the selected instance configuration and
+must exactly match the backend key recorded by fbforward; the destination only
+identifies the backend tuple and does not select or override that key. Use the
+actual backend address rather than a wildcard listener address, or obtain the
+destination with packet-info support. `HasSource` is only local traffic
+classification and is not authentication. Keep Flow Context on a trusted
+network or behind external TLS. TCP callers can continue using `ResolveConn`.
 
 ## Security and limits
 
