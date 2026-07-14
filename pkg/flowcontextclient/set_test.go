@@ -86,6 +86,118 @@ func TestClientSetSelectsInstanceBySourceAddress(t *testing.T) {
 	}
 }
 
+func TestClientSetHasSourceBoundaries(t *testing.T) {
+	set, err := NewClientSet([]InstanceOptions{instanceOptions("edge-a", netip.MustParseAddr("127.0.0.2"), "http://127.0.0.1:1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		set  *ClientSet
+		addr netip.Addr
+		want bool
+	}{
+		{name: "known", set: set, addr: netip.MustParseAddr("127.0.0.2"), want: true},
+		{name: "unknown", set: set, addr: netip.MustParseAddr("127.0.0.9")},
+		{name: "invalid", set: set},
+		{name: "nil set", addr: netip.MustParseAddr("127.0.0.2")},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := testCase.set.HasSource(testCase.addr); got != testCase.want {
+				t.Fatalf("HasSource(%v) = %v, want %v", testCase.addr, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestClientSetResolveConnUsesBackendTuplePerspective(t *testing.T) {
+	var request resolveRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(flowEnvelope("set-tcp-flow")))
+	}))
+	t.Cleanup(server.Close)
+	set, err := NewClientSet([]InstanceOptions{instanceOptions("edge-a", netip.MustParseAddr("127.0.0.2"), server.URL)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.ResolveConn(context.Background(), testConn("127.0.0.2:52000", "192.0.2.10:9000")); err != nil {
+		t.Fatal(err)
+	}
+	want := resolveRequest{
+		Protocol:   "tcp",
+		BackendKey: "primary@192.0.2.10:9000",
+		LocalAddr:  "127.0.0.2:52000",
+		RemoteAddr: "192.0.2.10:9000",
+		WaitMS:     100,
+	}
+	if request != want {
+		t.Fatalf("request=%+v, want %+v", request, want)
+	}
+}
+
+func TestClientSetUDPTagStaysOnResolvedInstance(t *testing.T) {
+	var aTags, bTags atomic.Int32
+	newServer := func(counter *atomic.Int32, id string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == rpcPath {
+				counter.Add(1)
+				var request rpcRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				if request.Method != "SetFlowTag" {
+					t.Fatalf("method=%q, want SetFlowTag", request.Method)
+				}
+				_, _ = w.Write([]byte(`{"ok":true}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"flow":{"flow_id":"` + id + `","protocol":"udp","client_addr":"203.0.113.40:51234","listener":"0.0.0.0:443","route":"udp","upstream":"primary","state":"active"}}`))
+		}))
+	}
+	serverA := newServer(&aTags, "udp-a")
+	t.Cleanup(serverA.Close)
+	serverB := newServer(&bTags, "udp-b")
+	t.Cleanup(serverB.Close)
+	set, err := NewClientSet([]InstanceOptions{
+		instanceOptions("edge-a", netip.MustParseAddr("127.0.0.2"), serverA.URL),
+		instanceOptions("edge-b", netip.MustParseAddr("127.0.0.3"), serverB.URL),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow, err := set.ResolveBackendTuple(context.Background(), "udp", netip.MustParseAddrPort("127.0.0.3:53000"), netip.MustParseAddrPort("192.0.2.20:443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flow.ID != "udp-b" || flow.Instance != "edge-b" {
+		t.Fatalf("unexpected flow: %+v", flow)
+	}
+	if err := flow.SetFlowTag(context.Background(), Tag{Namespace: "app", Key: "user", Value: "udp-user"}); err != nil {
+		t.Fatal(err)
+	}
+	if aTags.Load() != 0 || bTags.Load() != 1 {
+		t.Fatalf("tag calls A=%d B=%d, want 0 and 1", aTags.Load(), bTags.Load())
+	}
+}
+
+func TestClientSetNilInputsReturnStableErrors(t *testing.T) {
+	var nilSet *ClientSet
+	if _, err := nilSet.ResolveBackendTuple(context.Background(), "udp", netip.MustParseAddrPort("127.0.0.2:53000"), netip.MustParseAddrPort("192.0.2.20:443")); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil set tuple error=%v, want ErrInvalidRequest", err)
+	}
+	if _, err := nilSet.ResolveConn(context.Background(), testConn("127.0.0.2:52000", "192.0.2.10:9000")); !errors.Is(err, ErrUnknownInstance) {
+		t.Fatalf("nil set conn error=%v, want ErrUnknownInstance", err)
+	}
+	set := &ClientSet{}
+	if _, err := set.ResolveConn(context.Background(), nil); !errors.Is(err, ErrUnknownInstance) {
+		t.Fatalf("nil conn error=%v, want ErrUnknownInstance", err)
+	}
+}
+
 func TestClientSetResolveBackendTupleUsesUDPAndSourceSelection(t *testing.T) {
 	var resolveCalls, tagCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
