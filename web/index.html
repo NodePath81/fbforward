@@ -8,19 +8,16 @@
 </head>
 <body>
   <header>
-    <p class="eyebrow">FBFORWARD / CONTROL</p>
-    <h1>Local forwarding control</h1>
-    <p>Text-first operator interface. The daemon exposes an HTTP API; this page is only a client.</p>
+    <strong>fbforward</strong>
+    <span id="instance-summary" class="hint"></span>
   </header>
   <main>
-    <section id="login" aria-labelledby="login-title">
-      <h2 id="login-title">Authentication</h2>
+    <section id="login" aria-label="Authentication">
       <form id="login-form">
-        <label for="token">Control token</label>
-        <input id="token" name="token" type="password" autocomplete="current-password" required>
-        <button type="submit">Store in this session</button>
+        <label for="token" class="sr-only">Control token</label>
+        <input id="token" name="token" type="password" autocomplete="current-password" placeholder="control token" required>
+        <button type="submit">LOGIN</button>
       </form>
-      <p class="hint">The token stays in sessionStorage and is sent only as a Bearer header.</p>
     </section>
     <section id="app" hidden>
       <nav aria-label="Sections">
@@ -33,29 +30,24 @@
       </nav>
       <p id="alert" role="alert" hidden></p>
       <section id="page-status" data-section>
-        <h2>Status</h2>
-        <p id="identity-summary" class="hint">identity: not loaded</p>
-        <div id="status-summary" class="summary"></div>
-        <p id="schedule-summary" class="hint">schedule: not loaded</p>
-        <p id="iplog-summary" class="hint">ip-log: not loaded</p>
-        <div class="scroll"><table><thead><tr><th>upstream</th><th>health</th><th>rtt ms</th><th>active</th></tr></thead><tbody id="upstream-rows"></tbody></table></div>
-        <h3>Routes</h3>
+        <h2>STATUS</h2>
+        <div class="scroll"><table><thead><tr><th>upstream</th><th>health</th><th>rtt ms</th></tr></thead><tbody id="upstream-rows"></tbody></table></div>
+        <h3>ROUTES</h3>
         <form id="route-override-form" class="inline-form">
-          <label for="route-name">Route</label><select id="route-name"></select>
-          <label for="route-upstream">Override upstream</label><select id="route-upstream"></select>
-          <button type="submit">Set override</button>
-          <button type="button" id="route-override-clear">Clear override</button>
+          <label for="route-name" class="sr-only">Route</label><select id="route-name" aria-label="Route"></select>
+          <label for="route-upstream" class="sr-only">Override upstream</label><select id="route-upstream" aria-label="Override upstream"></select>
+          <button type="submit">SET</button>
+          <button type="button" id="route-override-clear">CLEAR</button>
         </form>
-        <div class="scroll"><table><thead><tr><th>route</th><th>strategy</th><th>configured</th><th>default</th><th>effective</th><th>override</th><th>state</th></tr></thead><tbody id="route-rows"></tbody></table></div>
+        <div class="scroll"><table><thead><tr><th>route</th><th>strategy</th><th>effective</th><th>override</th><th>state</th></tr></thead><tbody id="route-rows"></tbody></table></div>
       </section>
-      <section id="page-flows" data-section hidden><h2>Flows</h2><label for="flow-filter">Filter current snapshot</label><input id="flow-filter" type="search"><div class="scroll"><table><thead><tr><th>id</th><th>client</th><th>listener</th><th>route</th><th>upstream</th><th>bytes up/down</th><th>activity</th></tr></thead><tbody id="flow-rows"></tbody></table></div></section>
-      <section id="page-config" data-section hidden><h2>Config</h2><pre id="config-json" class="scroll">not loaded</pre></section>
-      <section id="page-audit" data-section hidden><h2>Audit</h2><form id="audit-form" class="query-form"><label for="audit-query">query</label><input id="audit-query" autocomplete="off" spellcheck="false" placeholder="flows tag=app:test since=-24h | sort bytes_total desc | limit 50"><div class="audit-actions"><button type="submit">RUN</button><button type="button" id="audit-clear">CLEAR</button><button type="button" id="audit-help-toggle">HELP</button><button type="button" id="audit-table-toggle">TABLE</button><button type="button" id="audit-raw-toggle">RAW</button><button type="button" id="audit-export">EXPORT JSON</button></div></form><p id="audit-help" class="hint" hidden>sources: flows, rejections, events, top clients, top asns · filters: tag, protocol, cidr, ip, asn, country, upstream, reason, since, until · stages: sort field asc|desc, limit n, offset n</p><p id="audit-count" class="hint"></p><div id="audit-table-view" class="scroll"><table><thead id="audit-head"></thead><tbody id="audit-rows"></tbody></table></div><pre id="audit-raw" class="scroll" hidden></pre></section>
-      <section id="page-firewall" data-section hidden><h2>Firewall</h2><p id="firewall-status" class="hint">not loaded</p><p><button type="button" id="firewall-validate">Validate current policy</button> <button type="button" id="firewall-reload">Reload persistent policy</button></p><pre id="firewall-policy" class="scroll">not loaded</pre><h3>Online rules</h3><div class="scroll"><table><thead><tr><th>id</th><th>action</th><th>matcher</th><th>priority</th><th>expires</th><th>state</th><th>operation</th></tr></thead><tbody id="online-rule-rows"></tbody></table></div></section>
+      <section id="page-flows" data-section hidden><h2>FLOWS</h2><label for="flow-filter" class="sr-only">Filter current snapshot</label><input id="flow-filter" type="search" placeholder="filter flows"><div class="scroll"><table><thead><tr><th>id</th><th>client</th><th>listener</th><th>route</th><th>upstream</th><th>bytes up/down</th><th>activity</th></tr></thead><tbody id="flow-rows"></tbody></table></div></section>
+      <section id="page-config" data-section hidden><h2>CONFIG</h2><pre id="config-json" class="scroll"></pre></section>
+      <section id="page-audit" data-section hidden><h2>AUDIT</h2><form id="audit-form" class="query-form"><label for="audit-query" class="sr-only">Query</label><input id="audit-query" autocomplete="off" spellcheck="false" placeholder="flows tag=app:test since=-24h | sort bytes_total desc | limit 50"><div class="audit-actions"><button type="submit">RUN</button><button type="button" id="audit-clear">CLEAR</button><button type="button" id="audit-help-toggle">HELP</button><button type="button" id="audit-view-toggle">RAW</button><button type="button" id="audit-export">EXPORT</button></div></form><p id="audit-help" class="hint" hidden>sources: flows, rejections, events, top clients, top asns · filters: tag, protocol, cidr, ip, asn, country, upstream, reason, since, until · stages: sort field asc|desc, limit n, offset n</p><p id="audit-count" class="hint"></p><div id="audit-table-view" class="scroll"><table><thead id="audit-head"></thead><tbody id="audit-rows"></tbody></table></div><pre id="audit-raw" class="scroll" hidden></pre></section>
+      <section id="page-firewall" data-section hidden><h2>FIREWALL</h2><p id="firewall-status" class="hint"></p><p><button type="button" id="firewall-validate">VALIDATE</button> <button type="button" id="firewall-reload">RELOAD</button></p><details><summary>POLICY SOURCE</summary><pre id="firewall-policy" class="scroll"></pre></details><h3>ONLINE RULES</h3><div class="scroll"><table><thead><tr><th>id</th><th>action</th><th>matcher</th><th>priority</th><th>expires</th><th>state</th><th>operation</th></tr></thead><tbody id="online-rule-rows"></tbody></table></div></section>
     </section>
-    <noscript><p class="notice">JavaScript is disabled. Static documentation is available, but API actions require JavaScript.</p></noscript>
+    <noscript><p class="notice">JavaScript required.</p></noscript>
   </main>
-  <footer><small>fbforward · API-only daemon · no external resources</small></footer>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

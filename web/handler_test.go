@@ -46,9 +46,14 @@ func TestHTMLHasNoInlineOrExternalResources(t *testing.T) {
 	if !strings.Contains(body, `script type="module" src="/app.js"`) || !strings.Contains(body, `href="/app.css"`) {
 		t.Fatalf("HTML does not use same-origin external assets")
 	}
-	for _, id := range []string{"identity-summary", "status-summary", "flow-rows", "audit-form", "audit-query", "audit-table-toggle", "audit-raw", "firewall-status"} {
+	for _, id := range []string{"instance-summary", "upstream-rows", "route-rows", "flow-rows", "audit-form", "audit-query", "audit-view-toggle", "audit-raw", "firewall-status"} {
 		if !strings.Contains(body, `id="`+id+`"`) {
 			t.Fatalf("HTML is missing UI region %q", id)
+		}
+	}
+	for _, removed := range []string{"Local forwarding control", "Text-first operator interface", "Store in this session", "not loaded", "<footer"} {
+		if strings.Contains(body, removed) {
+			t.Fatalf("HTML still contains nonessential copy %q", removed)
 		}
 	}
 	csp := rec.Header().Get("Content-Security-Policy")
@@ -76,12 +81,33 @@ func TestClientSecurityInvariants(t *testing.T) {
 	if !strings.Contains(script, "sessionStorage") || !strings.Contains(script, "Authorization") {
 		t.Fatalf("app.js does not use session-scoped bearer authentication")
 	}
-	for _, required := range []string{"requestJSON('/identity')", "state.flows", "renderFlowTable()", "page: 'audit'", "history.replaceState", "refreshPending", "auditPending", "auditGeneration", "performance.now()", "requestPage", "QueryAudit", "audit-query", "audit-table-toggle", "key === 'Escape'", "GetRouteStatus", "SetRouteOverride", "ClearRouteOverride"} {
+	for _, required := range []string{"requestJSON('/identity')", "if (state.identityLoaded) return", "state.flows", "renderFlowTable()", "page: 'audit'", "history.replaceState", "refreshPending", "auditPending", "auditGeneration", "performance.now()", "requestPage", "QueryAudit", "audit-query", "audit-view-toggle", "key === 'Escape'", "pollingIntervals = { status: 5000, flows: 2000 }", "setAttribute('aria-current', 'page')", "SetRouteOverride", "ClearRouteOverride"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("app.js is missing behavior %q", required)
 		}
 	}
+	for _, redundant := range []string{"GetRouteStatus", "GetScheduleStatus", "GetIPLogStatus"} {
+		if strings.Contains(script, redundant) {
+			t.Fatalf("app.js still requests redundant status RPC %q", redundant)
+		}
+	}
+	if strings.Count(script, "rpc('GetStatus')") != 1 {
+		t.Fatalf("status refresh must issue exactly one status RPC")
+	}
 	if strings.Contains(script, "flow-filter').addEventListener('input', () => { if (state.page === 'flows') refreshPage()") {
 		t.Fatalf("flow filtering still performs a network refresh")
+	}
+	css, err := assets.ReadFile("app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	stylesheet := string(css)
+	for _, required := range []string{`nav button[aria-current="page"]`, ".sr-only", "width: max-content", "min-width: 100%"} {
+		if !strings.Contains(stylesheet, required) {
+			t.Fatalf("app.css is missing responsive behavior %q", required)
+		}
+	}
+	if strings.Contains(stylesheet, "min-width: 42rem") {
+		t.Fatalf("app.css still forces wide tables")
 	}
 }

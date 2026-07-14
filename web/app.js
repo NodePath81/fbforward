@@ -4,12 +4,13 @@ const app = document.querySelector('#app');
 const alertBox = document.querySelector('#alert');
 const tokenInput = document.querySelector('#token');
 const pages = new Set(['status', 'flows', 'config', 'audit', 'firewall']);
+const pollingIntervals = { status: 5000, flows: 2000 };
 const requestedPage = new URLSearchParams(location.search).get('page');
-const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, auditPending: false, auditPendingQuery: '', auditGeneration: 0, auditView: 'table', status: null, identity: null, routes: [], flows: { tcp: [], udp: [] }, audit: null };
+const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, auditPending: false, auditPendingQuery: '', auditGeneration: 0, auditView: 'table', status: null, identity: null, identityLoaded: false, routes: [], flows: { tcp: [], udp: [] }, audit: null };
 
 function showAlert(message) { alertBox.textContent = message; alertBox.hidden = !message; }
-function setAuthenticated(value) { login.hidden = value; app.hidden = !value; if (!value) stopPolling(); }
-function logout() { sessionStorage.removeItem(tokenKey); setAuthenticated(false); tokenInput.value = ''; showAlert(''); }
+function setAuthenticated(value) { login.hidden = value; app.hidden = !value; if (value) loadIdentity(); else stopPolling(); }
+function logout() { sessionStorage.removeItem(tokenKey); state.identity = null; state.identityLoaded = false; document.querySelector('#instance-summary').textContent = ''; setAuthenticated(false); tokenInput.value = ''; showAlert(''); }
 function text(value) { return value == null ? '' : String(value); }
 function cell(row, value) { const node = document.createElement('td'); node.textContent = text(value); row.append(node); }
 
@@ -28,20 +29,22 @@ async function requestJSON(path, options = {}) {
 
 function renderStatus(data) {
   state.status = data;
-  const summary = document.querySelector('#status-summary'); summary.replaceChildren();
-  for (const [label, value] of [['mode', data.mode], ['active', data.active_upstream || 'none']]) { const item = document.createElement('span'); item.textContent = `${label}: ${text(value)}`; summary.append(item); }
   const rows = document.querySelector('#upstream-rows'); rows.replaceChildren();
-  for (const up of data.upstreams || []) { const row = document.createElement('tr'); cell(row, up.tag); cell(row, up.health_state); cell(row, up.rtt_ms); cell(row, up.active ? 'yes' : 'no'); rows.append(row); }
+  for (const up of data.upstreams || []) { const row = document.createElement('tr'); cell(row, up.tag); cell(row, up.health_state); cell(row, up.rtt_ms); rows.append(row); }
 }
 function renderIdentity(data) {
   state.identity = data;
-  document.querySelector('#identity-summary').textContent = `identity: ${text(data.hostname)} · version ${text(data.version)} · IPs ${Array.isArray(data.ips) && data.ips.length ? data.ips.join(', ') : 'none'}`;
+  const values = [data.hostname, data.version, ...(Array.isArray(data.ips) ? data.ips : [])].filter(Boolean);
+  document.querySelector('#instance-summary').textContent = values.join(' · ');
 }
-function renderStatusExtras(schedule, iplog) {
-  document.querySelector('#schedule-summary').textContent = schedule.error ? `schedule: unavailable (${schedule.error})` : `schedule: ${schedule.value.queue_length || 0} pending · next ${schedule.value.next_scheduled || 'none'}`;
-  document.querySelector('#iplog-summary').textContent = iplog.error ? `ip-log: unavailable (${iplog.error})` : `ip-log: ${iplog.value.total_record_count || 0} records`;
+async function loadIdentity() {
+  if (state.identityLoaded) return;
+  state.identityLoaded = true;
+  try { renderIdentity(await requestJSON('/identity')); }
+  catch (error) { if (error.message !== 'unauthorized') document.querySelector('#instance-summary').textContent = 'identity unavailable'; }
 }
 function currentRoute() { return state.routes.find((route) => route.route === document.querySelector('#route-name').value) || state.routes[0]; }
+function routeState(route) { if (route.override_state === 'active') return 'overridden'; if (route.override_state === 'fallback') return 'fallback'; return route.strategy === 'adaptive' ? 'automatic' : 'configured'; }
 function renderRoutes(data) {
   state.routes = Array.isArray(data) ? data : (data && Array.isArray(data.routes) ? data.routes : []);
   const routeSelect = document.querySelector('#route-name'); const upstreamSelect = document.querySelector('#route-upstream');
@@ -50,7 +53,7 @@ function renderRoutes(data) {
   const route = currentRoute(); upstreamSelect.replaceChildren();
   for (const tag of (route && route.upstreams) || []) { const option = document.createElement('option'); option.value = tag; option.textContent = tag; option.selected = tag === (route.override_upstream || route.effective_upstream || route.default_upstream); upstreamSelect.append(option); }
   const rows = document.querySelector('#route-rows'); rows.replaceChildren();
-  for (const item of state.routes) { const row = document.createElement('tr'); cell(row, item.route); cell(row, item.strategy); cell(row, (item.upstreams || []).join(', ')); cell(row, item.default_upstream || ''); cell(row, item.effective_upstream || 'unavailable'); cell(row, item.override_upstream || ''); cell(row, item.strategy === 'adaptive' && item.override_state === 'fallback' ? 'fallback' : (item.strategy === 'static' && item.override_upstream ? 'overridden' : (item.strategy === 'adaptive' ? 'automatic' : 'configured'))); rows.append(row); }
+  for (const item of state.routes) { const row = document.createElement('tr'); cell(row, item.route); cell(row, item.strategy); cell(row, item.effective_upstream || 'unavailable'); cell(row, item.override_upstream || ''); cell(row, routeState(item)); rows.append(row); }
 }
 
 function renderFlows(data) {
@@ -83,7 +86,7 @@ function renderAudit(data) {
   const count = data && data.result && !Array.isArray(data.result) ? data.result.total : (data && Array.isArray(data.result) ? data.result.length : 0);
   document.querySelector('#audit-count').textContent = data ? `${count} rows · ${data.source}${state.auditDuration == null ? '' : ` · ${state.auditDuration.toFixed(0)} ms`}` : 'enter a query and press RUN';
   const head = document.querySelector('#audit-head'); const rows = document.querySelector('#audit-rows'); head.replaceChildren(); rows.replaceChildren();
-  const raw = document.querySelector('#audit-raw'); raw.textContent = data ? JSON.stringify(data, null, 2) : ''; raw.hidden = state.auditView !== 'raw'; document.querySelector('#audit-table-view').hidden = state.auditView !== 'table';
+  const raw = document.querySelector('#audit-raw'); raw.textContent = data ? JSON.stringify(data, null, 2) : ''; raw.hidden = state.auditView !== 'raw'; document.querySelector('#audit-table-view').hidden = state.auditView !== 'table'; document.querySelector('#audit-view-toggle').textContent = state.auditView === 'table' ? 'RAW' : 'TABLE';
   if (!data) return;
   const result = data.result; const records = Array.isArray(result) ? result : (result.records || []);
   const columns = Array.isArray(result) ? (data.source === 'top asns' ? ['asn', 'as_org', 'country', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count'] : ['client_ip', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count']) : ['entry_type', 'ip', 'protocol', 'port', 'recorded_at', 'upstream', 'reason', 'close_reason', 'bytes_up', 'bytes_down', 'flow_id'];
@@ -118,7 +121,7 @@ async function refreshPage() {
   state.inFlight = true;
   state.requestPage = state.page;
   try {
-    if (state.page === 'status') { const [status, identity, schedule, iplog, routes] = await Promise.all([rpc('GetStatus'), requestJSON('/identity'), optionalRPC('GetScheduleStatus'), optionalRPC('GetIPLogStatus'), optionalRPC('GetRouteStatus')]); renderStatus(status); renderIdentity(identity); renderStatusExtras(schedule, iplog); renderRoutes(routes.error ? status.routes : routes.value); }
+    if (state.page === 'status') { const status = await rpc('GetStatus'); renderStatus(status); renderRoutes(status.routes); }
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
     if (state.page === 'config') document.querySelector('#config-json').textContent = JSON.stringify(await rpc('GetRuntimeConfig'), null, 2);
     if (state.page === 'audit') {
@@ -142,8 +145,9 @@ async function refreshPage() {
   }
 }
 function stopPolling() { if (state.timer) { clearInterval(state.timer); state.timer = 0; } }
-function startPolling() { stopPolling(); if (!sessionStorage.getItem(tokenKey)) return; const interval = state.page === 'flows' ? 2000 : (state.page === 'audit' ? 0 : 5000); if (interval) state.timer = setInterval(refreshPage, interval); refreshPage(); }
-function selectPage(page) { if (!pages.has(page)) return; state.page = page; const url = new URL(location.href); url.searchParams.set('page', page); history.replaceState(null, '', `${url.pathname}${url.search}`); for (const section of document.querySelectorAll('[data-section]')) section.hidden = section.id !== `page-${page}`; startPolling(); }
+function startPolling() { stopPolling(); if (!sessionStorage.getItem(tokenKey)) return; const interval = pollingIntervals[state.page] || 0; if (interval) state.timer = setInterval(refreshPage, interval); refreshPage(); }
+function showPage(page) { for (const section of document.querySelectorAll('[data-section]')) section.hidden = section.id !== `page-${page}`; for (const button of document.querySelectorAll('[data-page]')) { if (button.dataset.page === page) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); } }
+function selectPage(page) { if (!pages.has(page)) return; state.page = page; const url = new URL(location.href); url.searchParams.set('page', page); history.replaceState(null, '', `${url.pathname}${url.search}`); showPage(page); startPolling(); }
 
 document.querySelector('#login-form').addEventListener('submit', (event) => { event.preventDefault(); sessionStorage.setItem(tokenKey, tokenInput.value); tokenInput.value = ''; setAuthenticated(true); startPolling(); });
 document.querySelector('#logout').addEventListener('click', logout);
@@ -152,8 +156,7 @@ document.querySelector('#flow-filter').addEventListener('input', () => { if (sta
 document.querySelector('#audit-form').addEventListener('submit', (event) => { event.preventDefault(); state.auditGeneration++; saveAuditURL(); refreshPage(); });
 document.querySelector('#audit-clear').addEventListener('click', () => { state.auditGeneration++; state.auditPendingQuery = ''; document.querySelector('#audit-query').value = ''; state.audit = null; saveAuditURL(); renderAudit(null); });
 document.querySelector('#audit-help-toggle').addEventListener('click', () => { const help = document.querySelector('#audit-help'); help.hidden = !help.hidden; });
-document.querySelector('#audit-table-toggle').addEventListener('click', () => { state.auditView = 'table'; renderAudit(state.audit); });
-document.querySelector('#audit-raw-toggle').addEventListener('click', () => { state.auditView = 'raw'; renderAudit(state.audit); });
+document.querySelector('#audit-view-toggle').addEventListener('click', () => { state.auditView = state.auditView === 'table' ? 'raw' : 'table'; renderAudit(state.audit); });
 document.querySelector('#audit-query').addEventListener('keydown', (event) => { if (event.key === 'Escape') { document.querySelector('#audit-help').hidden = true; event.currentTarget.focus(); } if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); state.auditGeneration++; saveAuditURL(); refreshPage(); } });
 document.querySelector('#audit-export').addEventListener('click', () => { if (!state.audit) return; const blob = new Blob([JSON.stringify(state.audit, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'fbforward-audit.json'; link.click(); URL.revokeObjectURL(link.href); });
 document.querySelector('#route-name').addEventListener('change', () => renderRoutes(state.routes));
@@ -163,5 +166,5 @@ document.querySelector('#firewall-reload').addEventListener('click', async () =>
 document.querySelector('#firewall-validate').addEventListener('click', async () => { try { await rpc('ValidateFirewallPolicy'); showAlert('persistent policy is valid'); } catch (error) { showAlert(`policy validation failed: ${error.message}`); } });
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopPolling(); else startPolling(); });
 loadAuditURL();
-for (const section of document.querySelectorAll('[data-section]')) section.hidden = section.id !== `page-${state.page}`;
+showPage(state.page);
 setAuthenticated(Boolean(sessionStorage.getItem(tokenKey))); if (sessionStorage.getItem(tokenKey)) startPolling();
