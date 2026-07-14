@@ -1,8 +1,9 @@
 # Configuration
 
-The YAML schema is strict. Unknown and removed fields fail startup. The
-complete sample is [configs/config.example.yaml](/home/huangyj/Workspace/fbforward/configs/config.example.yaml);
-this document explains the stable sections without duplicating that file.
+The YAML schema is strict for the active configuration shape. Unknown or
+removed fields fail startup. The complete sample is
+[configs/config.example.yaml](../configs/config.example.yaml); this document
+explains the stable sections without duplicating that file.
 
 ## Topology
 
@@ -22,9 +23,21 @@ upstreams:
 ```
 
 Listener names and bind/protocol pairs are unique. A route must exist before
-it can be referenced. `static` routes use one default upstream and never
-automatically fail over. `adaptive` routes require at least two upstreams and
-select only from their own list.
+it can be referenced. `bind` accepts IPv4, IPv6, and `:port` forms; ports are
+in the range 1–65535 and protocols are `tcp` or `udp`.
+
+`static` routes must contain at least one upstream. With one upstream,
+`default_upstream` is filled from that item; with multiple upstreams,
+`default_upstream` is required and must belong to the route. Static routes
+never automatically fail over. `adaptive` routes require at least two
+upstreams, select only from their own list, and must not set
+`default_upstream`.
+
+The previous `forwarding.listeners` shape is still accepted during the
+compatibility period. It is normalized into top-level listeners and routes and
+adds a deprecation warning to the loaded configuration. New files should use
+the explicit topology above. Listener names, route names, upstream tags, and
+route membership must remain unique.
 
 ## Runtime sections
 
@@ -34,15 +47,35 @@ select only from their own list.
   priority.
 - `dns`: optional resolver addresses and IPv4/IPv6 strategy.
 - `measurement`: adaptive-route probe schedule, protocol settings, and
-  fbmeasure transport security.
-- `health`: RTT EWMA alpha, failure/recovery thresholds, and stale threshold.
-- `control`: HTTP bind address/port, bearer token, and Prometheus toggle.
-- `webhook`: optional asynchronous generic event endpoint.
-- `geoip`: local ASN and country MMDB paths only.
-- `ip_log`: SQLite path, queues, batching, retention, and pruning.
+  fbmeasure transport security. Only upstreams referenced by adaptive routes
+  require scheduled probes.
+- `health`: RTT EWMA alpha in `(0,1]`, positive failure/recovery thresholds,
+  and a positive stale threshold.
+- `control`: HTTP bind address/port, bearer token (at least 16 characters),
+  and the Prometheus toggle.
+- `webhook`: optional asynchronous generic event endpoint. When enabled,
+  `endpoint` must be HTTP(S); the optional bearer token and source instance
+  identify the outbound event sender.
+- `logging`: `level` is `debug`, `info`, `warn`, or `error`; `format` is
+  `text` or `json`.
+- `geoip`: local ASN and country MMDB paths only. Database downloads are an
+  external deployment task.
+- `ip_log`: SQLite path, queue sizes, batching, retention, flush, and prune
+  intervals. `db_path` and positive queue/batch/flush values are required when
+  enabled.
 - `flow_context`: backend identities, route/upstream scopes, namespaces, and
-  maximum tag TTL.
-- `firewall`: external policy file and initial-load failure behavior.
+  maximum tag TTL. Enabling it requires `ip_log.enabled` and at least one
+  identity; backend tokens must differ from the control token.
+- `firewall`: external policy file and initial-load failure behavior. With
+  `fail_on_initial_load: true`, an unreadable or invalid initial policy stops
+  startup; otherwise a degraded deny-all policy is installed. The policy file
+  and legacy inline rules cannot be configured together.
+
+Measurement schedule intervals must be positive, with `max >= min`; the
+upstream gap may be zero. At least one measurement protocol must be enabled.
+Protocol ping counts and sample/cycle timeouts must be positive. Measurement
+security supports `off`, `tls`, and `mtls`; mTLS requires both client
+certificate and key files.
 
 ## Route behavior
 
@@ -57,7 +90,13 @@ All selections affect new Flows only.
 ## Removed configuration
 
 Legacy traffic-control, distributed-mode, throughput-probe, and ranking fields,
-the old embedded listener topology, inline legacy policy when `policy_file` is
-set, remote GeoIP download settings, and the old event section are rejected.
-Use host automation for traffic control, `webhook` for events, and deployment
-automation for GeoIP downloads followed by `ReloadGeoIP`.
+remote GeoIP download settings, and the old event section are rejected. The
+legacy embedded listener topology is accepted only as a migration path and
+emits a warning. Legacy inline firewall policy is also accepted when no
+`policy_file` is set, but emits a warning; configuring both sources is an
+error. Use host automation for traffic control, `webhook` for events, and
+deployment automation for GeoIP downloads followed by `ReloadGeoIP`.
+
+`ip_log` is also the persistence prerequisite for online runtime rules. If
+SQLite audit storage is disabled, online-rule and Flow Context operations are
+unavailable rather than silently using an in-memory substitute.
