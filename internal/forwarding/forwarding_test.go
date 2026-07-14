@@ -623,3 +623,34 @@ func TestUDPRegistryBlockClosesWithBackendReason(t *testing.T) {
 		t.Fatalf("unexpected UDP block summary: %+v", observer.closes)
 	}
 }
+
+func TestUDPRegistryBlockRacesWithClose(t *testing.T) {
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstreamConn.Close()
+	parent := &UDPListener{
+		sem:      make(chan struct{}, 1),
+		mappings: make(map[string]*udpMapping),
+		ipCounts: map[string]int{"1.1.1.1": 1},
+	}
+	parent.sem <- struct{}{}
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 12345}
+	mapping := &udpMapping{
+		parent: parent, clientAddr: clientAddr, clientAddrStr: clientAddr.String(), clientIP: "1.1.1.1",
+		upstreamConn: upstreamConn, done: make(chan struct{}),
+	}
+	mapping.id, _ = flow.NewID()
+	registry := flow.NewRegistry()
+	registry.Register(flow.Meta{ID: mapping.id, Protocol: flow.ProtocolUDP}, mapping.close)
+	registry.SetControls(mapping.id, flow.Controls{Block: func() bool { return mapping.closeWithReason("backend_blocked") }})
+
+	results := make(chan bool, 2)
+	go func() { results <- mapping.closeWithReason("idle_timeout") }()
+	go func() { results <- registry.Block(mapping.id) }()
+	first, second := <-results, <-results
+	if (first && second) || (!first && !second) {
+		t.Fatalf("expected exactly one close winner, got %v and %v", first, second)
+	}
+}
