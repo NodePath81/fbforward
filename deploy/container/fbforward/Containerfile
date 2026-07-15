@@ -1,0 +1,37 @@
+FROM golang:1.25.11-trixie AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/fbforward ./cmd/fbforward
+COPY internal ./internal
+COPY pkg ./pkg
+COPY web ./web
+
+ARG VERSION=dev
+
+# fbforward uses mattn/go-sqlite3, so the production binary intentionally
+# keeps CGO enabled and runs on a matching glibc-based image.
+RUN CGO_ENABLED=1 go build \
+      -trimpath \
+      -buildvcs=false \
+      -ldflags "-s -w -X github.com/NodePath81/fbforward/internal/version.Version=${VERSION}" \
+      -o /out/fbforward ./cmd/fbforward \
+    && /out/fbforward version \
+    && install -d /out/etc/fbforward /out/var/lib/fbforward
+
+FROM gcr.io/distroless/base-debian13:nonroot
+
+COPY --from=build --chown=65532:65532 /out/etc/fbforward /etc/fbforward
+COPY --from=build --chown=65532:65532 /out/var/lib/fbforward /var/lib/fbforward
+COPY --from=build --chown=65532:65532 /out/fbforward /usr/local/bin/fbforward
+
+USER 65532:65532
+WORKDIR /var/lib/fbforward
+
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/usr/local/bin/fbforward"]
+CMD ["run", "--config", "/etc/fbforward/config.yaml"]
