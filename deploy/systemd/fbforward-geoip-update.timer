@@ -1,0 +1,12 @@
+[Unit]
+Description=Update fbforward GeoIP databases weekly
+
+[Timer]
+OnCalendar=Fri *-*-* 04:00:00
+RandomizedDelaySec=1h
+Persistent=true
+Unit=fbforward-geoip-update.service
+
+[Install]
+WantedBy=timers.target
+
