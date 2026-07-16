@@ -73,11 +73,11 @@ func callHTTPRPC(t *testing.T, client *http.Client, endpoint, token, method stri
 }
 
 func TestHTTPServicePing(t *testing.T) {
-	service, registry, store, _ := newHTTPTagServiceTest(t)
+	service := NewService(nil, nil, HTTPOptions{Identities: []Identity{
+		{ID: "backend", Token: "backend-secret"},
+	}}, nil)
 	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))
 	t.Cleanup(server.Close)
-	_ = registry
-	_ = store
 
 	status, response := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "Ping", nil)
 	if status != http.StatusOK || response["ok"] != true {

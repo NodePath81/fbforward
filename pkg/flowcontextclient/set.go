@@ -71,20 +71,6 @@ func NewClientSet(options []InstanceOptions) (*ClientSet, error) {
 	return &ClientSet{instances: instances}, nil
 }
 
-// PingAll checks every configured fbforward instance in order. An empty set
-// is a no-op because ClientSet is also used for optional integration.
-func (s *ClientSet) PingAll(ctx context.Context) error {
-	if s == nil {
-		return ErrInvalidRequest
-	}
-	for _, instance := range s.instances {
-		if err := instance.client.Ping(ctx); err != nil {
-			return fmt.Errorf("flow context instance %q: %w", instance.name, err)
-		}
-	}
-	return nil
-}
-
 // HasSource reports whether addr is configured as an fbforward source
 // address. It performs only the local immutable set lookup and never contacts
 // an endpoint.
