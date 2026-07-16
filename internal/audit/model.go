@@ -145,15 +145,15 @@ type RejectionRow struct {
 }
 
 type FlowTagEvent struct {
-	EventID   string
-	FlowID    string
-	Tag       string
-	Operation string
-	Source    string
-	Actor     string
-	ExpiresAt *time.Time
-	CreatedAt time.Time
-	Metadata  string
+	EventID   string     `json:"event_id"`
+	FlowID    string     `json:"flow_id"`
+	Tag       string     `json:"tag"`
+	Operation string     `json:"operation"`
+	Source    string     `json:"source"`
+	Actor     string     `json:"actor"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	Metadata  string     `json:"metadata,omitempty"`
 }
 
 type FlowTag struct {
@@ -172,6 +172,26 @@ type ClientTag struct {
 	ExpiresAt *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// EffectiveTag is a current tag projection used by control-plane views. It
+// deliberately contains no traffic or flow counts; those belong to Audit.
+type EffectiveTag struct {
+	Tag       string     `json:"tag"`
+	Scope     string     `json:"scope"`
+	Source    string     `json:"source"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type FlowTagLookup struct {
+	FlowID   string
+	ClientIP string
+}
+
+type FlowTagAction struct {
+	FlowTagEvent
+	ClientIP string `json:"client_ip,omitempty"`
 }
 
 type OnlineRule struct {
@@ -329,25 +349,26 @@ type LogEventQueryParams struct {
 }
 
 type LogEventRecord struct {
-	EntryType        string  `json:"entry_type"`
-	IP               string  `json:"ip"`
-	ASN              int     `json:"asn"`
-	ASOrg            string  `json:"as_org"`
-	Country          string  `json:"country"`
-	Protocol         string  `json:"protocol"`
-	Port             int     `json:"port"`
-	RecordedAt       int64   `json:"recorded_at"`
-	Upstream         *string `json:"upstream"`
-	BytesUp          *uint64 `json:"bytes_up"`
-	BytesDown        *uint64 `json:"bytes_down"`
-	DurationMs       *int64  `json:"duration_ms"`
-	Reason           *string `json:"reason"`
-	MatchedRuleType  *string `json:"matched_rule_type"`
-	MatchedRuleValue *string `json:"matched_rule_value"`
-	FlowID           *string `json:"flow_id,omitempty"`
-	Listener         *string `json:"listener,omitempty"`
-	Route            *string `json:"route,omitempty"`
-	CloseReason      *string `json:"close_reason,omitempty"`
+	EntryType        string   `json:"entry_type"`
+	IP               string   `json:"ip"`
+	ASN              int      `json:"asn"`
+	ASOrg            string   `json:"as_org"`
+	Country          string   `json:"country"`
+	Protocol         string   `json:"protocol"`
+	Port             int      `json:"port"`
+	RecordedAt       int64    `json:"recorded_at"`
+	Upstream         *string  `json:"upstream"`
+	BytesUp          *uint64  `json:"bytes_up"`
+	BytesDown        *uint64  `json:"bytes_down"`
+	DurationMs       *int64   `json:"duration_ms"`
+	Reason           *string  `json:"reason"`
+	MatchedRuleType  *string  `json:"matched_rule_type"`
+	MatchedRuleValue *string  `json:"matched_rule_value"`
+	FlowID           *string  `json:"flow_id,omitempty"`
+	Listener         *string  `json:"listener,omitempty"`
+	Route            *string  `json:"route,omitempty"`
+	CloseReason      *string  `json:"close_reason,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
 
 	sourceID int64
 }
@@ -401,6 +422,25 @@ type TopASNParams struct {
 	Protocol  string
 	Upstream  string
 	Tag       string
+	SortBy    string
+	SortOrder string
+	Limit     int
+	Offset    int
+}
+
+type TopTag struct {
+	Tag        string `json:"tag"`
+	BytesUp    uint64 `json:"bytes_up"`
+	BytesDown  uint64 `json:"bytes_down"`
+	BytesTotal uint64 `json:"bytes_total"`
+	FlowCount  int    `json:"flow_count"`
+}
+
+type TopTagParams struct {
+	StartTime *int64
+	EndTime   *int64
+	Protocol  string
+	Upstream  string
 	SortBy    string
 	SortOrder string
 	Limit     int

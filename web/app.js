@@ -4,10 +4,11 @@ const app = document.querySelector('#app');
 const alertBox = document.querySelector('#alert');
 const loginError = document.querySelector('#login-error');
 const tokenInput = document.querySelector('#token');
-const pages = new Set(['status', 'flows', 'config', 'audit', 'firewall']);
+const pages = new Set(['status', 'flows', 'context', 'config', 'audit', 'firewall']);
 const pollingIntervals = { status: 5000, flows: 2000 };
 const requestedPage = new URLSearchParams(location.search).get('page');
-const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, auditPending: false, auditPendingQuery: '', auditGeneration: 0, auditView: 'table', status: null, identity: null, identityLoaded: false, routes: [], flows: { tcp: [], udp: [] }, audit: null };
+const requestedContextView = new URLSearchParams(location.search).get('view');
+const state = { page: pages.has(requestedPage) ? requestedPage : 'status', timer: 0, inFlight: false, requestPage: '', refreshPending: false, auditPending: false, auditPendingQuery: '', auditGeneration: 0, auditView: 'table', status: null, identity: null, identityLoaded: false, routes: [], flows: { tcp: [], udp: [] }, audit: null, contextView: ['backends', 'tags', 'actions'].includes(requestedContextView) ? requestedContextView : 'tags', contextOffset: 0, contextHasMore: false, contextLoading: false, contextGeneration: 0 };
 
 function showAlert(message) { alertBox.textContent = message; alertBox.hidden = !message; }
 function showLoginError(message) { loginError.textContent = message; loginError.hidden = !message; }
@@ -66,11 +67,68 @@ function renderFlowTable() {
   const filter = document.querySelector('#flow-filter').value.toLowerCase();
   const rows = document.querySelector('#flow-rows'); rows.replaceChildren();
   for (const flow of [...state.flows.tcp, ...state.flows.udp]) {
-    const haystack = [flow.id, flow.client_addr, flow.listener, flow.route, flow.upstream].join(' ').toLowerCase();
+    const haystack = [flow.id, flow.client_addr, flow.listener, flow.route, flow.upstream, ...(flow.tags || []).map((tag) => tag.tag)].join(' ').toLowerCase();
     if (filter && !haystack.includes(filter)) continue;
-    const row = document.createElement('tr'); cell(row, flow.id); cell(row, flow.client_addr); cell(row, flow.listener); cell(row, flow.route); cell(row, flow.upstream); cell(row, `${flow.bytes_up} / ${flow.bytes_down}`); cell(row, flow.last_activity); rows.append(row);
+    const row = document.createElement('tr'); cell(row, flow.id); cell(row, flow.client_addr); cell(row, flow.listener); cell(row, flow.route); cell(row, flow.upstream); cell(row, (flow.tags || []).map((tag) => `${tag.scope === 'client' ? 'C' : 'F'} ${tag.tag}`).join(' · ') || '—'); cell(row, `${flow.bytes_up} / ${flow.bytes_down}`); cell(row, flow.last_activity); rows.append(row);
   }
 }
+
+function contextToolbar() {
+  const toolbar = document.querySelector('#context-toolbar'); toolbar.replaceChildren();
+  if (state.contextView === 'backends') return;
+  const input = document.createElement('input'); input.type = 'search'; input.id = 'context-filter'; input.placeholder = state.contextView === 'tags' ? 'filter tags' : 'filter tag or backend'; input.value = state.contextFilter || '';
+  input.addEventListener('input', () => { state.contextFilter = input.value; state.contextOffset = 0; window.clearTimeout(state.contextDebounce); state.contextDebounce = window.setTimeout(refreshContext, 250); });
+  toolbar.append(input);
+  if (state.contextView === 'tags') {
+    const select = document.createElement('select'); select.id = 'context-scope'; for (const scope of ['all', 'flow', 'client']) { const option = document.createElement('option'); option.value = scope; option.textContent = scope.toUpperCase(); option.selected = scope === (state.contextScope || 'all'); select.append(option); } select.addEventListener('change', () => { state.contextScope = select.value; state.contextOffset = 0; refreshContext(); }); toolbar.append(select);
+  }
+}
+function renderContext(data, view) {
+  const head = document.querySelector('#context-head'); const rows = document.querySelector('#context-rows'); head.replaceChildren(); rows.replaceChildren();
+  const header = document.createElement('tr'); head.append(header);
+  if (view === 'backends') {
+    const identities = data && data.flow_context && Array.isArray(data.flow_context.identities) ? data.flow_context.identities : [];
+    ['backend', 'routes', 'upstreams', 'namespaces'].forEach((column) => cell(header, column));
+    for (const identity of identities) { const row = document.createElement('tr'); cell(row, identity.id); cell(row, (identity.routes || []).join(', ')); cell(row, (identity.upstreams || []).join(', ')); cell(row, (identity.namespaces || []).join(', ')); rows.append(row); }
+  } else if (view === 'tags') {
+    ['tag', 'scope', 'source', 'updated', 'expires'].forEach((column) => cell(header, column));
+    for (const record of (data && data.records) || []) { const row = document.createElement('tr'); cell(row, record.tag); cell(row, record.scope); cell(row, record.source); cell(row, record.updated_at); cell(row, record.expires_at || '—'); rows.append(row); }
+  } else {
+    ['time', 'actor', 'operation', 'tag', 'flow_id', 'client_ip'].forEach((column) => cell(header, column));
+    for (const record of (data && data.records) || []) { const row = document.createElement('tr'); cell(row, record.created_at); cell(row, record.actor); cell(row, record.operation); cell(row, record.tag); cell(row, record.flow_id); cell(row, record.client_ip); rows.append(row); }
+  }
+  document.querySelector('#context-prev').disabled = state.contextOffset === 0;
+  document.querySelector('#context-next').disabled = !state.contextHasMore;
+}
+async function refreshContext() {
+  if (state.page !== 'context') return;
+  state.contextGeneration++;
+  if (state.contextLoading) return;
+  state.contextLoading = true; contextToolbar();
+  try {
+    while (state.page === 'context') {
+      const generation = state.contextGeneration;
+      const view = state.contextView;
+      const filter = state.contextFilter || '';
+      const scope = state.contextScope || 'all';
+      const offset = state.contextOffset;
+      try {
+        let data;
+        if (view === 'backends') data = await rpc('GetRuntimeConfig');
+        else if (view === 'tags') data = await rpc('ListFlowContextTags', { query: filter, scope, limit: 50, offset });
+        else data = await rpc('ListFlowContextActions', { query: filter, limit: 50, offset });
+        if (generation === state.contextGeneration && state.page === 'context') {
+          state.contextHasMore = Boolean(data && data.has_more);
+          renderContext(data, view);
+        }
+      } catch (error) {
+        if (generation === state.contextGeneration && error.message !== 'unauthorized') showAlert(error.message);
+      }
+      if (generation === state.contextGeneration) break;
+    }
+  } finally { state.contextLoading = false; }
+}
+function selectContextView(view) { if (!['backends', 'tags', 'actions'].includes(view)) return; state.contextView = view; state.contextOffset = 0; state.contextFilter = ''; const url = new URL(location.href); url.searchParams.set('page', 'context'); url.searchParams.set('view', view); history.replaceState(null, '', `${url.pathname}${url.search}`); for (const button of document.querySelectorAll('[data-context-view]')) button.setAttribute('aria-selected', button.dataset.contextView === view ? 'true' : 'false'); contextToolbar(); refreshContext(); }
 
 function loadAuditURL() {
   const query = new URLSearchParams(location.search);
@@ -91,7 +149,7 @@ function renderAudit(data) {
   const raw = document.querySelector('#audit-raw'); raw.textContent = data ? JSON.stringify(data, null, 2) : ''; raw.hidden = state.auditView !== 'raw'; document.querySelector('#audit-table-view').hidden = state.auditView !== 'table'; document.querySelector('#audit-view-toggle').textContent = state.auditView === 'table' ? 'RAW' : 'TABLE';
   if (!data) return;
   const result = data.result; const records = Array.isArray(result) ? result : (result.records || []);
-  const columns = Array.isArray(result) ? (data.source === 'top asns' ? ['asn', 'as_org', 'country', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count'] : ['client_ip', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count']) : ['entry_type', 'ip', 'protocol', 'port', 'recorded_at', 'upstream', 'reason', 'close_reason', 'bytes_up', 'bytes_down', 'flow_id'];
+  const columns = Array.isArray(result) ? (data.source === 'top asns' ? ['asn', 'as_org', 'country', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count'] : data.source === 'top tags' ? ['tag', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count'] : ['client_ip', 'bytes_up', 'bytes_down', 'bytes_total', 'flow_count']) : ['entry_type', 'ip', 'protocol', 'port', 'recorded_at', 'upstream', 'reason', 'close_reason', ...(data.source === 'flows' || data.source === 'events' ? ['tags'] : []), 'bytes_up', 'bytes_down', 'flow_id'];
   const header = document.createElement('tr'); for (const column of columns) cell(header, column); head.append(header);
   for (const record of records) { const row = document.createElement('tr'); for (const column of columns) cell(row, record[column]); rows.append(row); }
 }
@@ -125,6 +183,7 @@ async function refreshPage() {
   try {
     if (state.page === 'status') { const status = await rpc('GetStatus'); renderStatus(status); renderRoutes(status.routes); }
     if (state.page === 'flows') renderFlows(await rpc('GetActiveFlows'));
+    if (state.page === 'context') await refreshContext();
     if (state.page === 'config') document.querySelector('#config-json').textContent = JSON.stringify(await rpc('GetRuntimeConfig'), null, 2);
     if (state.page === 'audit') {
       const query = state.auditPendingQuery || document.querySelector('#audit-query').value.trim();
@@ -133,7 +192,7 @@ async function refreshPage() {
       else if (generation === state.auditGeneration) renderAudit(null);
     }
     if (state.page === 'firewall') await refreshFirewall();
-    showAlert('');
+    if (state.page !== 'context') showAlert('');
   } catch (error) { if (state.requestPage === 'audit' && state.page === 'audit' && !state.auditPending) renderAuditError(error.message); if (error.message !== 'unauthorized') showAlert(error.message); }
   finally {
     state.inFlight = false;
@@ -148,13 +207,17 @@ async function refreshPage() {
 }
 function stopPolling() { if (state.timer) { clearInterval(state.timer); state.timer = 0; } }
 function startPolling() { stopPolling(); if (!sessionStorage.getItem(tokenKey)) return; const interval = pollingIntervals[state.page] || 0; if (interval) state.timer = setInterval(refreshPage, interval); refreshPage(); }
-function showPage(page) { for (const section of document.querySelectorAll('[data-section]')) section.hidden = section.id !== `page-${page}`; for (const button of document.querySelectorAll('[data-page]')) { if (button.dataset.page === page) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); } }
+function showPage(page) { for (const section of document.querySelectorAll('[data-section]')) section.hidden = section.id !== `page-${page}`; for (const button of document.querySelectorAll('[data-page]')) { if (button.dataset.page === page) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); } for (const button of document.querySelectorAll('[data-context-view]')) button.setAttribute('aria-selected', button.dataset.contextView === state.contextView ? 'true' : 'false'); }
 function selectPage(page) { if (!pages.has(page)) return; state.page = page; const url = new URL(location.href); url.searchParams.set('page', page); history.replaceState(null, '', `${url.pathname}${url.search}`); showPage(page); startPolling(); }
 
 document.querySelector('#login-form').addEventListener('submit', (event) => { event.preventDefault(); showLoginError(''); sessionStorage.setItem(tokenKey, tokenInput.value); tokenInput.value = ''; setAuthenticated(true); startPolling(); });
 document.querySelector('#logout').addEventListener('click', logout);
 for (const button of document.querySelectorAll('[data-page]')) button.addEventListener('click', () => selectPage(button.dataset.page));
 document.querySelector('#flow-filter').addEventListener('input', () => { if (state.page === 'flows') renderFlowTable(); });
+for (const button of document.querySelectorAll('[data-context-view]')) button.addEventListener('click', () => selectContextView(button.dataset.contextView));
+document.querySelector('#context-refresh').addEventListener('click', refreshContext);
+document.querySelector('#context-prev').addEventListener('click', () => { if (state.contextOffset >= 50) { state.contextOffset -= 50; refreshContext(); } });
+document.querySelector('#context-next').addEventListener('click', () => { if (state.contextHasMore) { state.contextOffset += 50; refreshContext(); } });
 document.querySelector('#audit-form').addEventListener('submit', (event) => { event.preventDefault(); state.auditGeneration++; saveAuditURL(); refreshPage(); });
 document.querySelector('#audit-clear').addEventListener('click', () => { state.auditGeneration++; state.auditPendingQuery = ''; document.querySelector('#audit-query').value = ''; state.audit = null; saveAuditURL(); renderAudit(null); });
 document.querySelector('#audit-help-toggle').addEventListener('click', () => { const help = document.querySelector('#audit-help'); help.hidden = !help.hidden; });

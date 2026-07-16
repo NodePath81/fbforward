@@ -72,6 +72,8 @@ func (c *ControlServer) registerRPCHandlers() {
 		"SetUpstream":            c.rpcSetUpstream,
 		"GetStatus":              c.rpcGetStatus,
 		"GetActiveFlows":         c.rpcGetActiveFlows,
+		"ListFlowContextTags":    c.rpcListFlowContextTags,
+		"ListFlowContextActions": c.rpcListFlowContextActions,
 		"GetRouteStatus":         c.rpcGetRouteStatus,
 		"SetRouteOverride":       c.rpcSetRouteOverride,
 		"ClearRouteOverride":     c.rpcClearRouteOverride,

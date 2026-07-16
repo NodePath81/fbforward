@@ -21,6 +21,10 @@ nav button[aria-current="page"] { filter: invert(1); text-decoration: underline;
 .query-form { display: grid; gap: .6rem; max-width: none; }
 .query-form input { width: 100%; }
 .audit-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.context-tabs, #context-toolbar, .context-page { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .6rem; }
+.context-tabs button[aria-selected="true"] { filter: invert(1); text-decoration: underline; text-underline-offset: .2rem; }
+.context-scroll { max-height: calc(100vh - 16rem); overflow: auto; }
+.context-page { justify-content: space-between; }
 .scroll { max-width: 100%; overflow-x: auto; }
 table { border-collapse: collapse; width: max-content; min-width: 100%; }
 th, td { border-bottom: 1px solid GrayText; padding: .45rem .6rem; text-align: left; white-space: nowrap; }

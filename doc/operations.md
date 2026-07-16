@@ -57,6 +57,12 @@ active Flow identity is held separately in `flow_entities`. Queries use the
 bounded Audit DSL and execute filtering, sorting, aggregation, and pagination
 inside SQLite.
 
+The operator page separates Flow Context from Audit. `CONTEXT` shows configured
+backend identities, current unexpired Tags, and recent Tag actions. `FLOWS`
+shows current effective Flow/Client Tags on active connections. `AUDIT` remains
+the place for historical access records, Tag filtering, and traffic/Flow
+aggregation such as `top tags`.
+
 Use `QueryAudit` for routine searches. SQLite backup, restore, and integrity
 helpers currently exist as internal Go library operations; they are not
 exposed as a Control RPC or standalone CLI command. Perform offline

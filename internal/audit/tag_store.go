@@ -3,9 +3,224 @@ package audit
 import (
 	"database/sql"
 	"errors"
-	"github.com/google/uuid"
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+const maxTagViewLimit = 1000
+
+func normalizeTagViewParams(query, scope string, limit, offset int) (string, string, int, int, error) {
+	query = strings.TrimSpace(query)
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if scope == "" {
+		scope = "all"
+	}
+	if scope != "all" && scope != "flow" && scope != "client" {
+		return "", "", 0, 0, fmt.Errorf("invalid tag scope")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > maxTagViewLimit {
+		return "", "", 0, 0, fmt.Errorf("tag view limit exceeds %d", maxTagViewLimit)
+	}
+	if offset < 0 {
+		return "", "", 0, 0, errors.New("tag view offset must be >= 0")
+	}
+	return query, scope, limit, offset, nil
+}
+
+// QueryEffectiveTags returns the current, unexpired Flow and Client tag
+// projections for a batch of active flows. A client tag is expanded to every
+// matching flow and duplicate tag values are removed per Flow.
+func (s *Store) QueryEffectiveTags(flows []FlowTagLookup) (map[string][]EffectiveTag, error) {
+	result := make(map[string][]EffectiveTag, len(flows))
+	if s == nil || len(flows) == 0 {
+		return result, nil
+	}
+	flowIDs := make([]string, 0, len(flows))
+	clientIPs := make([]string, 0, len(flows))
+	flowsByIP := make(map[string][]string, len(flows))
+	seenFlow, seenIP := make(map[string]struct{}), make(map[string]struct{})
+	for _, flow := range flows {
+		if flow.FlowID != "" {
+			result[flow.FlowID] = nil
+			if _, ok := seenFlow[flow.FlowID]; !ok {
+				seenFlow[flow.FlowID] = struct{}{}
+				flowIDs = append(flowIDs, flow.FlowID)
+			}
+		}
+		if flow.ClientIP != "" {
+			if flow.FlowID != "" {
+				flowsByIP[flow.ClientIP] = append(flowsByIP[flow.ClientIP], flow.FlowID)
+			}
+			if _, ok := seenIP[flow.ClientIP]; !ok {
+				seenIP[flow.ClientIP] = struct{}{}
+				clientIPs = append(clientIPs, flow.ClientIP)
+			}
+		}
+	}
+	now := time.Now().UTC().UnixMilli()
+	type tagKey struct{ flowID, tag, scope string }
+	seen := make(map[tagKey]struct{})
+	appendTag := func(flowID string, tag EffectiveTag) {
+		key := tagKey{flowID: flowID, tag: tag.Tag, scope: tag.Scope}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		result[flowID] = append(result[flowID], tag)
+	}
+	if len(flowIDs) > 0 {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(flowIDs)), ",")
+		rows, err := s.readDB.Query(`SELECT flow_id, tag, source, expires_at, updated_at FROM flow_tags WHERE flow_id IN (`+placeholders+`) AND (expires_at IS NULL OR expires_at > ?) ORDER BY tag`, append(stringArgs(flowIDs), now)...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var flowID, tag, source string
+			var expires, updated sql.NullInt64
+			if err := rows.Scan(&flowID, &tag, &source, &expires, &updated); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			appendTag(flowID, EffectiveTag{Tag: tag, Scope: "flow", Source: source, UpdatedAt: timeFromMillis(updated.Int64), ExpiresAt: timeFromNullable(expires)})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	if len(clientIPs) > 0 {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(clientIPs)), ",")
+		rows, err := s.readDB.Query(`SELECT client_ip, tag, source, expires_at, updated_at FROM client_tags WHERE client_ip IN (`+placeholders+`) AND (expires_at IS NULL OR expires_at > ?) ORDER BY tag`, append(stringArgs(clientIPs), now)...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var clientIP, tag, source string
+			var expires, updated sql.NullInt64
+			if err := rows.Scan(&clientIP, &tag, &source, &expires, &updated); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			for _, flowID := range flowsByIP[clientIP] {
+				appendTag(flowID, EffectiveTag{Tag: tag, Scope: "client", Source: source, UpdatedAt: timeFromMillis(updated.Int64), ExpiresAt: timeFromNullable(expires)})
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return result, nil
+}
+
+func stringArgs(values []string) []any {
+	args := make([]any, len(values))
+	for i, value := range values {
+		args[i] = value
+	}
+	return args
+}
+
+// QueryCurrentTags lists unique current tag projections for the Context page.
+func (s *Store) QueryCurrentTags(query, scope string, limit, offset int) ([]EffectiveTag, bool, error) {
+	query, scope, limit, offset, err := normalizeTagViewParams(query, scope, limit, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	if s == nil {
+		return nil, false, errors.New("audit store is nil")
+	}
+	now := time.Now().UTC().UnixMilli()
+	parts := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	if scope == "all" || scope == "flow" {
+		parts = append(parts, `SELECT tag, 'flow' AS scope, source, updated_at, expires_at FROM flow_tags WHERE (expires_at IS NULL OR expires_at > ?)`)
+		args = append(args, now)
+	}
+	if scope == "all" || scope == "client" {
+		parts = append(parts, `SELECT tag, 'client' AS scope, source, updated_at, expires_at FROM client_tags WHERE (expires_at IS NULL OR expires_at > ?)`)
+		args = append(args, now)
+	}
+	where := ""
+	if query != "" {
+		where = " WHERE instr(LOWER(tag), LOWER(?)) > 0 OR instr(LOWER(source), LOWER(?)) > 0"
+		args = append(args, query, query)
+	}
+	querySQL := `SELECT tag, scope, MAX(source), MAX(updated_at), CASE WHEN SUM(CASE WHEN expires_at IS NULL THEN 1 ELSE 0 END) > 0 THEN NULL ELSE MAX(expires_at) END FROM (` + strings.Join(parts, " UNION ALL ") + `) current_tags` + where + ` GROUP BY tag, scope ORDER BY tag, scope LIMIT ? OFFSET ?`
+	args = append(args, limit+1, offset)
+	rows, err := s.readDB.Query(querySQL, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	result := make([]EffectiveTag, 0, limit)
+	for rows.Next() {
+		var tag, tagScope, source string
+		var updated, expires sql.NullInt64
+		if err := rows.Scan(&tag, &tagScope, &source, &updated, &expires); err != nil {
+			return nil, false, err
+		}
+		result = append(result, EffectiveTag{Tag: tag, Scope: tagScope, Source: source, UpdatedAt: timeFromMillis(updated.Int64), ExpiresAt: timeFromNullable(expires)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(result) > limit
+	if hasMore {
+		result = result[:limit]
+	}
+	return result, hasMore, nil
+}
+
+// QueryTagActions returns the most recent tag events, with the resolved
+// client address joined from the flow entity when available.
+func (s *Store) QueryTagActions(query string, limit, offset int) ([]FlowTagAction, bool, error) {
+	query, _, limit, offset, err := normalizeTagViewParams(query, "all", limit, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	if s == nil {
+		return nil, false, errors.New("audit store is nil")
+	}
+	where, args := "", []any{}
+	if query != "" {
+		where = " WHERE instr(LOWER(e.tag), LOWER(?)) > 0 OR instr(LOWER(e.actor), LOWER(?)) > 0 OR instr(LOWER(e.operation), LOWER(?)) > 0"
+		args = append(args, query, query, query)
+	}
+	args = append(args, limit+1, offset)
+	rows, err := s.readDB.Query(`SELECT e.event_id, e.flow_id, e.tag, e.operation, e.source, e.actor, e.expires_at, e.created_at, e.metadata, COALESCE(fe.client_ip, '') FROM flow_tag_events e LEFT JOIN flow_entities fe ON fe.flow_id = e.flow_id`+where+` ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	result := make([]FlowTagAction, 0, limit)
+	for rows.Next() {
+		var action FlowTagAction
+		var expires, created sql.NullInt64
+		if err := rows.Scan(&action.EventID, &action.FlowID, &action.Tag, &action.Operation, &action.Source, &action.Actor, &expires, &created, &action.Metadata, &action.ClientIP); err != nil {
+			return nil, false, err
+		}
+		action.ExpiresAt = timeFromNullable(expires)
+		action.CreatedAt = timeFromMillis(created.Int64)
+		result = append(result, action)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(result) > limit
+	if hasMore {
+		result = result[:limit]
+	}
+	return result, hasMore, nil
+}
 
 func (s *Store) AppendFlowTagEvent(event FlowTagEvent) error {
 	if event.EventID == "" {

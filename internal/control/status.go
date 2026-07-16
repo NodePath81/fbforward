@@ -23,8 +23,14 @@ type StatusEntry struct {
 	SegmentsUp   uint64 `json:"segments_up"`
 	SegmentsDown uint64 `json:"segments_down"`
 	// LastActivity is Unix milliseconds; Age is seconds since creation.
-	LastActivity int64 `json:"last_activity"`
-	Age          int64 `json:"age"`
+	LastActivity int64         `json:"last_activity"`
+	Age          int64         `json:"age"`
+	Tags         []FlowTagView `json:"tags,omitempty"`
+}
+
+type FlowTagView struct {
+	Tag   string `json:"tag"`
+	Scope string `json:"scope"`
 }
 
 type statusEntry struct {

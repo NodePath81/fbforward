@@ -32,7 +32,7 @@ record.
 
 ## Runtime and routes
 
-Read-only methods include `GetStatus`, `GetActiveFlows`, `GetRouteStatus`,
+Read-only methods include `GetStatus`, `GetActiveFlows`, `ListFlowContextTags`, `ListFlowContextActions`, `GetRouteStatus`,
 `ListUpstreams`, `GetRuntimeConfig`, `GetMeasurementConfig`,
 `GetScheduleStatus`, and `GetIPLogStatus`. Runtime responses expose current
 health and route-local state; legacy per-protocol ranking fields are not part
@@ -61,6 +61,8 @@ The principal runtime response groups are:
 | --- | --- |
 | `GetStatus` | Process, listener, and upstream status |
 | `GetActiveFlows` | Current TCP streams and UDP mappings |
+| `ListFlowContextTags` | Current unexpired Flow/Client Tag projections |
+| `ListFlowContextActions` | Recent Flow Context set/unset events |
 | `GetRouteStatus` | Route-local effective and override state |
 | `ListUpstreams` | Configured addresses and health snapshots |
 | `GetRuntimeConfig` | Sanitized loaded configuration; secrets omitted |
@@ -97,10 +99,12 @@ Audit methods are `GetIPLogStatus`, `QueryIPLog`, `QueryRejectionLog`,
 ```text
 flows tag=app:test since=-24h | sort bytes_total desc | limit 50
 top asns tag=app:test since=-24h | sort bytes_total desc | limit 20
+top tags since=-24h | sort bytes_total desc | limit 50
 rejections protocol=tcp reason="connection limit" | limit 100
 ```
 
-Sources are `flows`, `rejections`, `events`, `top clients`, and `top asns`.
+Sources are `flows`, `rejections`, `events`, `top clients`, `top asns`, and
+`top tags`.
 Filters are source-specific and use exact AND matching: `tag`, `protocol`,
 `cidr`, `ip`, `asn`, `country`, `upstream`, `reason`, `since`, and `until`.
 Pipeline stages are `sort field asc|desc`, `limit n`, and `offset n`.
@@ -119,6 +123,16 @@ bytes, total bytes, and Flow count. `GetTopASNs` returns ASN, aggregated bytes,
 Flow count, and deterministic country/organization fields. Both the DSL and
 direct methods execute filtering, aggregation, ordering, and pagination in
 SQLite; callers never submit SQL text.
+
+`top tags` returns `tag`, upload/download/total bytes, and Flow count. Its
+aggregation uses current unexpired Flow and Client Tag projections. If a Flow
+has the same Tag through both projections, that Flow is counted once for that
+Tag; traffic may still contribute to multiple different Tags. Historical
+set/unset state is not reconstructed.
+
+`GetActiveFlows` includes an additive `tags` array on each Flow. Each item has
+`tag` and `scope` (`flow` or `client`) and represents an unexpired current
+projection. Traffic and Flow totals remain an Audit concern.
 
 ## Firewall and online rules
 
@@ -166,6 +180,14 @@ are `ResolveFlow`, `SetFlowTag`, `UnsetFlowTag`,
 identity and configured maximum. Backend identities have exact route,
 upstream, and namespace permissions. Tag changes are persisted in SQLite
 transactions and do not block the forwarding path.
+
+The operator page's `CONTEXT` view uses the Control RPCs
+`ListFlowContextTags` and `ListFlowContextActions`; it never sends a backend
+identity token to `/flow-context/rpc`. `ListFlowContextTags` accepts `query`,
+`scope` (`all`, `flow`, or `client`), `limit`, and `offset`, and returns unique
+unexpired Tag projections. `ListFlowContextActions` accepts `query`, `limit`,
+and `offset`, and returns recent set/unset events with actor, Flow ID, and
+client IP when available.
 
 The same RPC endpoint exposes direct controls for the currently active Flow:
 

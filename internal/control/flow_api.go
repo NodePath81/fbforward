@@ -3,7 +3,10 @@ package control
 import (
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"time"
+
+	"github.com/NodePath81/fbforward/internal/audit"
 )
 
 // activeFlowsResponse is the small, snapshot-oriented payload used by the
@@ -23,9 +26,35 @@ func (c *ControlServer) rpcGetActiveFlows(_ *rpcContext, raw json.RawMessage) (a
 		return rpcError(http.StatusServiceUnavailable, "status store unavailable")
 	}
 	tcp, udp := c.status.Snapshot()
+	c.attachFlowTags(tcp)
+	c.attachFlowTags(udp)
 	return rpcOK(activeFlowsResponse{
 		CapturedAt: time.Now().UTC().UnixMilli(),
 		TCP:        tcp,
 		UDP:        udp,
 	})
+}
+
+func (c *ControlServer) attachFlowTags(entries []StatusEntry) {
+	store := c.auditStore()
+	if store == nil || len(entries) == 0 {
+		return
+	}
+	lookups := make([]audit.FlowTagLookup, 0, len(entries))
+	for _, entry := range entries {
+		clientIP := ""
+		if addr, err := netip.ParseAddrPort(entry.ClientAddr); err == nil {
+			clientIP = addr.Addr().String()
+		}
+		lookups = append(lookups, audit.FlowTagLookup{FlowID: entry.ID, ClientIP: clientIP})
+	}
+	tags, err := store.QueryEffectiveTags(lookups)
+	if err != nil {
+		return
+	}
+	for i := range entries {
+		for _, tag := range tags[entries[i].ID] {
+			entries[i].Tags = append(entries[i].Tags, FlowTagView{Tag: tag.Tag, Scope: tag.Scope})
+		}
+	}
 }

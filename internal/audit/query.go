@@ -340,7 +340,41 @@ func (s *Store) QueryLogEvents(params LogEventQueryParams) (LogEventQueryResult,
 	}
 	defer rows.Close()
 	records, err := scanLogEvents(rows)
+	if err != nil {
+		return LogEventQueryResult{}, err
+	}
+	if err := s.attachLogEventTags(records); err != nil {
+		return LogEventQueryResult{}, err
+	}
 	return LogEventQueryResult{Total: total, Records: records}, err
+}
+
+func (s *Store) attachLogEventTags(records []LogEventRecord) error {
+	lookups := make([]FlowTagLookup, 0, len(records))
+	for _, record := range records {
+		if record.EntryType != EntryTypeFlow || record.FlowID == nil || *record.FlowID == "" {
+			continue
+		}
+		lookups = append(lookups, FlowTagLookup{FlowID: *record.FlowID, ClientIP: record.IP})
+	}
+	tags, err := s.QueryEffectiveTags(lookups)
+	if err != nil {
+		return err
+	}
+	for i := range records {
+		if records[i].FlowID == nil {
+			continue
+		}
+		seen := make(map[string]struct{})
+		for _, tag := range tags[*records[i].FlowID] {
+			if _, ok := seen[tag.Tag]; ok {
+				continue
+			}
+			seen[tag.Tag] = struct{}{}
+			records[i].Tags = append(records[i].Tags, tag.Tag)
+		}
+	}
+	return nil
 }
 
 func (s *Store) GetTopTalkers(params TopTalkerParams) ([]TopTalker, error) {
@@ -460,6 +494,80 @@ func (s *Store) GetTopASNs(params TopASNParams) ([]TopASN, error) {
 	return result, rows.Err()
 }
 
+// GetTopTags aggregates traffic for currently effective, unexpired tags. A
+// Flow carrying the same tag through both Flow and Client projections is
+// counted once for that tag.
+func (s *Store) GetTopTags(params TopTagParams) ([]TopTag, error) {
+	if err := validateTopQuery(params.StartTime, params.EndTime, params.Protocol, params.Limit, params.Offset); err != nil {
+		return nil, err
+	}
+	if params.Limit <= 0 {
+		params.Limit = 10
+	}
+	sortColumn, sortOrder, err := topSort(params.SortBy, params.SortOrder, "tag")
+	if err != nil {
+		return nil, err
+	}
+	where := make([]string, 0, 3)
+	args := make([]any, 0, 6)
+	if params.StartTime != nil {
+		where = append(where, "f.ended_at >= ?")
+		args = append(args, *params.StartTime*1000)
+	}
+	if params.EndTime != nil {
+		where = append(where, "f.ended_at <= ?")
+		args = append(args, *params.EndTime*1000)
+	}
+	if protocol := strings.ToLower(strings.TrimSpace(params.Protocol)); protocol != "" {
+		where = append(where, "f.protocol = ?")
+		args = append(args, protocol)
+	}
+	if upstream := strings.TrimSpace(params.Upstream); upstream != "" {
+		where = append(where, "f.upstream = ?")
+		args = append(args, upstream)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " AND " + strings.Join(where, " AND ")
+	}
+	now := time.Now().UTC().UnixMilli()
+	query := `WITH tagged AS (
+		SELECT f.flow_id, ft.tag, f.bytes_up, f.bytes_down
+		FROM flows f JOIN flow_tags ft ON ft.flow_id = f.flow_id
+		WHERE (ft.expires_at IS NULL OR ft.expires_at > ?)` + whereSQL + `
+		UNION ALL
+		SELECT f.flow_id, ct.tag, f.bytes_up, f.bytes_down
+		FROM flows f JOIN client_tags ct ON ct.client_ip = f.client_ip
+		WHERE (ct.expires_at IS NULL OR ct.expires_at > ?)` + whereSQL + `
+	), dedup AS (
+		SELECT flow_id, tag, MAX(bytes_up) AS bytes_up, MAX(bytes_down) AS bytes_down
+		FROM tagged GROUP BY flow_id, tag
+	)
+	SELECT tag, COALESCE(SUM(bytes_up), 0), COALESCE(SUM(bytes_down), 0),
+	       COALESCE(SUM(bytes_up + bytes_down), 0), COUNT(*)
+	FROM dedup GROUP BY tag ORDER BY ` + sortColumn + ` ` + sortOrder + `, tag ASC LIMIT ? OFFSET ?`
+	queryArgs := make([]any, 0, len(args)*2+3)
+	queryArgs = append(queryArgs, now)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, now)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, params.Limit, params.Offset)
+	rows, err := s.readDB.Query(query, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]TopTag, 0, params.Limit)
+	for rows.Next() {
+		var item TopTag
+		if err := rows.Scan(&item.Tag, &item.BytesUp, &item.BytesDown, &item.BytesTotal, &item.FlowCount); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func validateTopQuery(start, end *int64, protocol string, limit, offset int) error {
 	if start != nil && end != nil && *start > *end {
 		return errors.New("start_time must be earlier than or equal to end_time")
@@ -490,8 +598,10 @@ func topSort(sortBy, sortOrder, tieColumn string) (string, string, error) {
 	}
 	if tieColumn == "client_ip" {
 		columns["client_ip"] = "client_ip"
-	} else {
+	} else if tieColumn == "asn" {
 		columns["asn"] = "asn"
+	} else {
+		columns["tag"] = "tag"
 	}
 	column, ok := columns[sortBy]
 	if !ok {

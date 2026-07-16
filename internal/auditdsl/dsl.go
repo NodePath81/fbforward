@@ -25,6 +25,7 @@ const (
 	SourceEvents     Source = "events"
 	SourceTopClients Source = "top clients"
 	SourceTopASNs    Source = "top asns"
+	SourceTopTags    Source = "top tags"
 )
 
 type Query struct {
@@ -48,6 +49,7 @@ var sourceFilters = map[Source]map[string]bool{
 	SourceEvents:     commonFilters,
 	SourceTopClients: {"protocol": true, "upstream": true, "tag": true, "since": true, "until": true},
 	SourceTopASNs:    {"protocol": true, "upstream": true, "tag": true, "since": true, "until": true},
+	SourceTopTags:    {"protocol": true, "upstream": true, "since": true, "until": true},
 }
 
 var sortFields = map[Source]map[string]bool{
@@ -56,6 +58,7 @@ var sortFields = map[Source]map[string]bool{
 	SourceEvents:     {"recorded_at": true, "ip": true, "asn": true, "country": true, "protocol": true, "port": true, "entry_type": true},
 	SourceTopClients: {"bytes_total": true, "bytes_up": true, "bytes_down": true, "flow_count": true, "client_ip": true},
 	SourceTopASNs:    {"bytes_total": true, "bytes_up": true, "bytes_down": true, "flow_count": true, "asn": true},
+	SourceTopTags:    {"bytes_total": true, "bytes_up": true, "bytes_down": true, "flow_count": true, "tag": true},
 }
 
 type token struct {
@@ -150,13 +153,15 @@ func Parse(input string) (Query, error) {
 	case string(SourceEvents):
 		q.Source = SourceEvents
 	case "top":
-		if len(tokens) < 2 || (tokens[1].value != "clients" && tokens[1].value != "asns") {
-			return Query{}, syntaxError(tokens[i].pos, "top must be followed by clients or asns")
+		if len(tokens) < 2 || (tokens[1].value != "clients" && tokens[1].value != "asns" && tokens[1].value != "tags") {
+			return Query{}, syntaxError(tokens[i].pos, "top must be followed by clients, asns, or tags")
 		}
 		if tokens[1].value == "clients" {
 			q.Source = SourceTopClients
-		} else {
+		} else if tokens[1].value == "asns" {
 			q.Source = SourceTopASNs
+		} else {
+			q.Source = SourceTopTags
 		}
 		i++
 	default:
@@ -236,7 +241,7 @@ func Parse(input string) (Query, error) {
 		}
 	}
 	if q.SortBy == "" {
-		if q.Source == SourceTopClients || q.Source == SourceTopASNs {
+		if q.Source == SourceTopClients || q.Source == SourceTopASNs || q.Source == SourceTopTags {
 			q.SortBy = "bytes_total"
 		} else {
 			q.SortBy = "recorded_at"

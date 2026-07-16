@@ -82,7 +82,7 @@ func (c *ControlServer) rpcQueryAudit(_ *rpcContext, raw json.RawMessage) (any, 
 		return rpcError(http.StatusBadRequest, err.Error())
 	}
 	now := time.Now().UTC()
-	if query.Source == auditdsl.SourceTopClients || query.Source == auditdsl.SourceTopASNs {
+	if query.Source == auditdsl.SourceTopClients || query.Source == auditdsl.SourceTopASNs || query.Source == auditdsl.SourceTopTags {
 		start, end, err := auditQueryTimes(query, now)
 		if err != nil {
 			return rpcError(http.StatusBadRequest, err.Error())
@@ -92,6 +92,17 @@ func (c *ControlServer) rpcQueryAudit(_ *rpcContext, raw json.RawMessage) (any, 
 				StartTime: start, EndTime: end, Protocol: query.Filters["protocol"],
 				Upstream: query.Filters["upstream"], Tag: query.Filters["tag"],
 				SortBy: query.SortBy, SortOrder: query.SortOrder, Limit: query.Limit, Offset: query.Offset,
+			})
+			if err != nil {
+				return rpcError(http.StatusBadRequest, err.Error())
+			}
+			return rpcOK(auditQueryResponse{Query: params.Query, Source: string(query.Source), Result: result})
+		}
+		if query.Source == auditdsl.SourceTopTags {
+			result, err := store.GetTopTags(iplog.TopTagParams{
+				StartTime: start, EndTime: end, Protocol: query.Filters["protocol"],
+				Upstream: query.Filters["upstream"], SortBy: query.SortBy,
+				SortOrder: query.SortOrder, Limit: query.Limit, Offset: query.Offset,
 			})
 			if err != nil {
 				return rpcError(http.StatusBadRequest, err.Error())

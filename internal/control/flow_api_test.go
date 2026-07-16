@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/flow"
+	"github.com/NodePath81/fbforward/internal/iplog"
 )
 
 func TestGetActiveFlowsRPCReturnsSnapshot(t *testing.T) {
@@ -75,5 +76,40 @@ func TestGetActiveFlowsSnapshotConcurrentWithUpdates(t *testing.T) {
 	tcp, udp := store.Snapshot()
 	if len(tcp) != 0 || len(udp) != 1 || udp[0].ID != id.String() {
 		t.Fatalf("unexpected concurrent snapshot: tcp=%v udp=%v", tcp, udp)
+	}
+}
+
+func TestGetActiveFlowsIncludesEffectiveTags(t *testing.T) {
+	server := newTestControlServer(t)
+	store := newTestIPLogStore(t, server)
+	id, err := flow.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.UpsertFlowEntity(iplog.FlowEntity{FlowID: id.String(), Protocol: "tcp", ClientIP: "192.0.2.15", CreatedAt: now, LastActivity: now, State: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowTag(iplog.FlowTag{FlowID: id.String(), Tag: "app:user=alice", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertClientTag(iplog.ClientTag{ClientIP: "192.0.2.15", Tag: "app:risk=trusted", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	server.status.Open(flow.Meta{ID: id, Protocol: flow.ProtocolTCP, ClientAddr: netip.MustParseAddrPort("192.0.2.15:4321"), StartedAt: now})
+	rec := callTestRPC(t, server, "0123456789abcdef", "GetActiveFlows", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetActiveFlows status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Result struct {
+			TCP []StatusEntry `json:"tcp"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Result.TCP) != 1 || len(response.Result.TCP[0].Tags) != 2 {
+		t.Fatalf("active flow tags = %+v", response.Result.TCP)
 	}
 }

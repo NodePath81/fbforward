@@ -314,6 +314,9 @@ func TestFlowRejectionTagsAndTopTalkers(t *testing.T) {
 	if err := store.UpsertClientTag(ClientTag{ClientIP: "192.0.2.1", Tag: "customer"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.UpsertClientTag(ClientTag{ClientIP: "192.0.2.1", Tag: "trusted"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.UpsertOnlineRule(OnlineRule{RuleID: "rule-1", Action: "deny", RuleType: "cidr", RuleValue: "198.51.100.0/24", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -323,8 +326,21 @@ func TestFlowRejectionTagsAndTopTalkers(t *testing.T) {
 	if tags, err := store.QueryFlowTags("f1"); err != nil || len(tags) != 1 || tags[0].Tag != "trusted" {
 		t.Fatalf("flow tags = %+v err=%v", tags, err)
 	}
-	if result, err := store.Query(QueryParams{Tag: "trusted", Limit: 10}); err != nil || result.Total != 1 || len(result.Records) != 1 || result.Records[0].FlowID != "f1" {
+	result, err := store.Query(QueryParams{Tag: "trusted", Limit: 10})
+	if err != nil || result.Total != 2 || len(result.Records) != 2 {
 		t.Fatalf("tag flow query=%+v err=%v", result, err)
+	}
+	logResult, err := store.QueryLogEvents(LogEventQueryParams{Tag: "trusted", EntryType: EntryTypeFlow, Limit: 10})
+	for _, record := range logResult.Records {
+		trustedCount := 0
+		for _, tag := range record.Tags {
+			if tag == "trusted" {
+				trustedCount++
+			}
+		}
+		if trustedCount != 1 {
+			t.Fatalf("duplicate effective audit tags=%+v err=%v", logResult.Records, err)
+		}
 	}
 	if result, err := store.Query(QueryParams{Tag: "customer", Limit: 10}); err != nil || result.Total != 2 {
 		t.Fatalf("client tag flow query=%+v err=%v", result, err)
@@ -332,7 +348,7 @@ func TestFlowRejectionTagsAndTopTalkers(t *testing.T) {
 	if talkers, err := store.GetTopTalkers(TopTalkerParams{Tag: "trusted", Limit: 10}); err != nil || len(talkers) != 1 || talkers[0].ClientIP != "192.0.2.1" {
 		t.Fatalf("tag top talkers=%+v err=%v", talkers, err)
 	}
-	if tags, err := store.QueryClientTags("192.0.2.1"); err != nil || len(tags) != 1 || tags[0].Tag != "customer" {
+	if tags, err := store.QueryClientTags("192.0.2.1"); err != nil || len(tags) != 2 || tags[0].Tag != "customer" || tags[1].Tag != "trusted" {
 		t.Fatalf("client tags = %+v err=%v", tags, err)
 	}
 	if events, err := store.QueryPolicyEvents("f1"); err != nil || len(events) != 1 || events[0].Decision != "allow" {
@@ -378,6 +394,72 @@ func TestTopASNsCombinesCountriesPerASN(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ASN != 64510 || rows[0].BytesTotal != 40 || rows[0].FlowCount != 2 || rows[0].Country != "" {
 		t.Fatalf("unexpected combined ASN: %#v", rows)
+	}
+}
+
+func TestTopTagsUsesCurrentMappingsAndDeduplicatesFlowAndClient(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.InsertBatch([]EnrichedRecord{
+		{CloseEvent: CloseEvent{FlowID: "tag-flow-1", Protocol: "tcp", IP: "192.0.2.1", BytesUp: 10, BytesDown: 20, RecordedAt: now}},
+		{CloseEvent: CloseEvent{FlowID: "tag-flow-2", Protocol: "tcp", IP: "192.0.2.2", BytesUp: 5, BytesDown: 5, RecordedAt: now}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowTag(FlowTag{FlowID: "tag-flow-1", Tag: "app:user=alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertClientTag(ClientTag{ClientIP: "192.0.2.1", Tag: "app:user=alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertClientTag(ClientTag{ClientIP: "192.0.2.2", Tag: "app:user=alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowTag(FlowTag{FlowID: "tag-flow-2", Tag: "expired", ExpiresAt: func() *time.Time { v := now.Add(-time.Minute); return &v }()}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.GetTopTags(TopTagParams{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Tag != "app:user=alice" || rows[0].BytesTotal != 40 || rows[0].FlowCount != 2 {
+		t.Fatalf("unexpected top tags: %#v", rows)
+	}
+}
+
+func TestCurrentTagsAndActionsPageQueries(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC()
+	if err := store.UpsertFlowEntity(FlowEntity{FlowID: "context-flow", Protocol: "tcp", ClientIP: "192.0.2.9", CreatedAt: now, LastActivity: now, State: "closed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowTag(FlowTag{FlowID: "context-flow", Tag: "app:test", Source: "flow-context", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowTag(FlowTag{FlowID: "context-flow", Tag: "literal%_tag", Source: "flow-context", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendFlowTagEvent(FlowTagEvent{EventID: "context-event", FlowID: "context-flow", Tag: "app:test", Operation: "set", Actor: "backend", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendFlowTagEvent(FlowTagEvent{EventID: "literal-event", FlowID: "context-flow", Tag: "literal%_action", Operation: "set", Actor: "literal%_actor", CreatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	tags, more, err := store.QueryCurrentTags("app:", "flow", 10, 0)
+	if err != nil || more || len(tags) != 1 || tags[0].Tag != "app:test" || tags[0].Scope != "flow" {
+		t.Fatalf("current tags = %#v more=%v err=%v", tags, more, err)
+	}
+	tags, more, err = store.QueryCurrentTags("%_", "flow", 10, 0)
+	if err != nil || more || len(tags) != 1 || tags[0].Tag != "literal%_tag" {
+		t.Fatalf("literal tag search = %#v more=%v err=%v", tags, more, err)
+	}
+	actions, more, err := store.QueryTagActions("backend", 10, 0)
+	if err != nil || more || len(actions) != 1 || actions[0].Actor != "backend" || actions[0].Operation != "set" {
+		t.Fatalf("actions = %#v more=%v err=%v", actions, more, err)
+	}
+	actions, more, err = store.QueryTagActions("%_", 10, 0)
+	if err != nil || more || len(actions) != 1 || actions[0].Tag != "literal%_action" {
+		t.Fatalf("literal action search = %#v more=%v err=%v", actions, more, err)
 	}
 }
 

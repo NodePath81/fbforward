@@ -28,6 +28,7 @@ func TestParseSourcesAndValidation(t *testing.T) {
 		{"events protocol=tcp", SourceEvents},
 		{"top clients tag=app:test", SourceTopClients},
 		{"top asns protocol=udp", SourceTopASNs},
+		{"top tags protocol=tcp", SourceTopTags},
 	}
 	for _, test := range tests {
 		query, err := Parse(test.input)

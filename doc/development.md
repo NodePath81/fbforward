@@ -35,6 +35,11 @@ Audit tests use temporary SQLite databases. E2E tests use deadlines instead of
 long fixed sleeps and inspect temporary SQLite events when that is the most
 direct evidence.
 
+WebUI Context tests cover the three lazy-loaded views (Backends, Tags, and
+Actions), while Flow tests cover effective Flow/Client Tag rendering. Audit
+tests cover current Tag filtering and `top tags` aggregation, including
+expiry and duplicate Flow/Client projections.
+
 ## Invariants
 
 - A TCP stream or UDP mapping is one Flow.
