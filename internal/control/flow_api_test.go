@@ -96,7 +96,18 @@ func TestGetActiveFlowsIncludesEffectiveTags(t *testing.T) {
 	if err := store.UpsertClientTag(iplog.ClientTag{ClientIP: "192.0.2.15", Tag: "app:risk=trusted", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	udpID, err := flow.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowEntity(iplog.FlowEntity{FlowID: udpID.String(), Protocol: "udp", ClientIP: "192.0.2.16", CreatedAt: now, LastActivity: now, State: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFlowTag(iplog.FlowTag{FlowID: udpID.String(), Tag: "app:udp", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	server.status.Open(flow.Meta{ID: id, Protocol: flow.ProtocolTCP, ClientAddr: netip.MustParseAddrPort("192.0.2.15:4321"), StartedAt: now})
+	server.status.Open(flow.Meta{ID: udpID, Protocol: flow.ProtocolUDP, ClientAddr: netip.MustParseAddrPort("192.0.2.16:4322"), StartedAt: now})
 	rec := callTestRPC(t, server, "0123456789abcdef", "GetActiveFlows", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GetActiveFlows status=%d body=%s", rec.Code, rec.Body.String())
@@ -104,6 +115,7 @@ func TestGetActiveFlowsIncludesEffectiveTags(t *testing.T) {
 	var response struct {
 		Result struct {
 			TCP []StatusEntry `json:"tcp"`
+			UDP []StatusEntry `json:"udp"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
@@ -111,5 +123,8 @@ func TestGetActiveFlowsIncludesEffectiveTags(t *testing.T) {
 	}
 	if len(response.Result.TCP) != 1 || len(response.Result.TCP[0].Tags) != 2 {
 		t.Fatalf("active flow tags = %+v", response.Result.TCP)
+	}
+	if len(response.Result.UDP) != 1 || len(response.Result.UDP[0].Tags) != 1 || response.Result.UDP[0].Tags[0].Tag != "app:udp" {
+		t.Fatalf("active UDP flow tags = %+v", response.Result.UDP)
 	}
 }

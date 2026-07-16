@@ -26,8 +26,12 @@ func (c *ControlServer) rpcGetActiveFlows(_ *rpcContext, raw json.RawMessage) (a
 		return rpcError(http.StatusServiceUnavailable, "status store unavailable")
 	}
 	tcp, udp := c.status.Snapshot()
-	c.attachFlowTags(tcp)
-	c.attachFlowTags(udp)
+	entries := make([]StatusEntry, 0, len(tcp)+len(udp))
+	entries = append(entries, tcp...)
+	entries = append(entries, udp...)
+	c.attachFlowTags(entries)
+	tcp = entries[:len(tcp)]
+	udp = entries[len(tcp):]
 	return rpcOK(activeFlowsResponse{
 		CapturedAt: time.Now().UTC().UnixMilli(),
 		TCP:        tcp,

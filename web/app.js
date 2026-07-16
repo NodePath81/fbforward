@@ -73,10 +73,18 @@ function renderFlowTable() {
   }
 }
 
-function contextToolbar() {
-  const toolbar = document.querySelector('#context-toolbar'); toolbar.replaceChildren();
+function contextToolbar(force = false) {
+  const toolbar = document.querySelector('#context-toolbar');
+  if (!force && toolbar.dataset.view === state.contextView) {
+    const input = toolbar.querySelector('#context-filter');
+    if (input) input.value = state.contextFilter || '';
+    const select = toolbar.querySelector('#context-scope');
+    if (select) select.value = state.contextScope || 'all';
+    return;
+  }
+  toolbar.replaceChildren(); toolbar.dataset.view = state.contextView;
   if (state.contextView === 'backends') return;
-  const input = document.createElement('input'); input.type = 'search'; input.id = 'context-filter'; input.placeholder = state.contextView === 'tags' ? 'filter tags' : 'filter tag or backend'; input.value = state.contextFilter || '';
+  const input = document.createElement('input'); input.type = 'search'; input.id = 'context-filter'; input.setAttribute('aria-label', 'Filter flow context'); input.placeholder = state.contextView === 'tags' ? 'filter tags' : 'filter tag or backend'; input.value = state.contextFilter || '';
   input.addEventListener('input', () => { state.contextFilter = input.value; state.contextOffset = 0; window.clearTimeout(state.contextDebounce); state.contextDebounce = window.setTimeout(refreshContext, 250); });
   toolbar.append(input);
   if (state.contextView === 'tags') {
@@ -120,6 +128,7 @@ async function refreshContext() {
         if (generation === state.contextGeneration && state.page === 'context') {
           state.contextHasMore = Boolean(data && data.has_more);
           renderContext(data, view);
+          showAlert('');
         }
       } catch (error) {
         if (generation === state.contextGeneration && error.message !== 'unauthorized') showAlert(error.message);
@@ -128,7 +137,7 @@ async function refreshContext() {
     }
   } finally { state.contextLoading = false; }
 }
-function selectContextView(view) { if (!['backends', 'tags', 'actions'].includes(view)) return; state.contextView = view; state.contextOffset = 0; state.contextFilter = ''; const url = new URL(location.href); url.searchParams.set('page', 'context'); url.searchParams.set('view', view); history.replaceState(null, '', `${url.pathname}${url.search}`); for (const button of document.querySelectorAll('[data-context-view]')) button.setAttribute('aria-selected', button.dataset.contextView === view ? 'true' : 'false'); contextToolbar(); refreshContext(); }
+function selectContextView(view) { if (!['backends', 'tags', 'actions'].includes(view)) return; state.contextView = view; state.contextOffset = 0; state.contextFilter = ''; const url = new URL(location.href); url.searchParams.set('page', 'context'); url.searchParams.set('view', view); history.replaceState(null, '', `${url.pathname}${url.search}`); for (const button of document.querySelectorAll('[data-context-view]')) button.setAttribute('aria-selected', button.dataset.contextView === view ? 'true' : 'false'); contextToolbar(true); refreshContext(); }
 
 function loadAuditURL() {
   const query = new URLSearchParams(location.search);
