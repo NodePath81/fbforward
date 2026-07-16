@@ -248,6 +248,12 @@ func (s *Service) authenticate(r *http.Request) (Identity, bool) {
 
 func (s *Service) dispatch(ctx context.Context, method string, raw json.RawMessage, identity Identity) (any, error) {
 	switch method {
+	case "Ping":
+		params := strings.TrimSpace(string(raw))
+		if params != "" && params != "null" && params != "{}" {
+			return nil, ErrInvalidParams
+		}
+		return map[string]any{"pong": true}, nil
 	case "ResolveFlow":
 		var request ResolveFlowRequest
 		if err := decodeParams(raw, &request); err != nil {

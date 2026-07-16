@@ -157,7 +157,9 @@ optional bounded `wait_ms`. The service returns the original client address,
 route, upstream, FlowID, and lifecycle state. A closed Flow remains resolvable
 only during the Registry grace period; after that it is reported as not found.
 
-Tag RPC methods are `ResolveFlow`, `SetFlowTag`, `UnsetFlowTag`,
+`Ping` is an authenticated, side-effect-free health check. It returns
+`{"pong":true}` and does not require a Flow or write SQLite. Tag RPC methods
+are `ResolveFlow`, `SetFlowTag`, `UnsetFlowTag`,
 `SetClientTag`, `UnsetClientTag`, and `ListFlowTags`. Tag writes contain a
 `flow_id` or resolved client, `namespace`, `key`, `value`, and optional
 `ttl_seconds`; namespaces and TTL are checked against the authenticated

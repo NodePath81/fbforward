@@ -243,6 +243,15 @@ func (c *Client) BlockFlow(ctx context.Context, flowID, reason string) error {
 	return c.callRPC(ctx, "BlockFlow", map[string]any{"flow_id": flowID, "reason": reason})
 }
 
+// Ping verifies that the Flow Context endpoint is reachable and that this
+// client's backend token is accepted. It has no Flow or database side effect.
+func (c *Client) Ping(ctx context.Context) error {
+	if c == nil {
+		return ErrInvalidRequest
+	}
+	return c.callRPC(ctx, "Ping", nil)
+}
+
 func (c *Client) callRPC(ctx context.Context, method string, params any) error {
 	body, err := json.Marshal(rpcRequest{Method: method, Params: params})
 	if err != nil {

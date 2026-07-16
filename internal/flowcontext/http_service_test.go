@@ -72,6 +72,32 @@ func callHTTPRPC(t *testing.T, client *http.Client, endpoint, token, method stri
 	return response.StatusCode, decoded
 }
 
+func TestHTTPServicePing(t *testing.T) {
+	service, registry, store, _ := newHTTPTagServiceTest(t)
+	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))
+	t.Cleanup(server.Close)
+	_ = registry
+	_ = store
+
+	status, response := callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "Ping", nil)
+	if status != http.StatusOK || response["ok"] != true {
+		t.Fatalf("ping status=%d response=%v", status, response)
+	}
+	result, ok := response["result"].(map[string]any)
+	if !ok || result["pong"] != true {
+		t.Fatalf("ping result=%v, want pong=true", response["result"])
+	}
+
+	status, response = callHTTPRPC(t, server.Client(), server.URL, "wrong-secret", "Ping", nil)
+	if status != http.StatusUnauthorized || response["ok"] != false {
+		t.Fatalf("invalid ping status=%d response=%v", status, response)
+	}
+	status, response = callHTTPRPC(t, server.Client(), server.URL, "backend-secret", "Ping", map[string]any{"unexpected": true})
+	if status != http.StatusBadRequest || response["ok"] != false {
+		t.Fatalf("invalid ping params status=%d response=%v", status, response)
+	}
+}
+
 func TestHTTPServiceTagLifecycleUsesFlowEntities(t *testing.T) {
 	service, registry, store, tuple := newHTTPTagServiceTest(t)
 	server := httptest.NewServer(http.HandlerFunc(service.HandleRPC))

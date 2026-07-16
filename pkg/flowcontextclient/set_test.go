@@ -399,3 +399,51 @@ func TestResolvedFlowControlZeroValueRejects(t *testing.T) {
 		t.Fatalf("Block error=%v", err)
 	}
 }
+
+func TestClientSetPingAll(t *testing.T) {
+	var calls atomic.Int32
+	newServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var request rpcRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if request.Method != "Ping" {
+				t.Fatalf("method=%q, want Ping", request.Method)
+			}
+			calls.Add(1)
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"pong":true}}`))
+		}))
+	}
+	serverA := newServer()
+	t.Cleanup(serverA.Close)
+	serverB := newServer()
+	t.Cleanup(serverB.Close)
+	set, err := NewClientSet([]InstanceOptions{
+		instanceOptions("edge-a", netip.MustParseAddr("127.0.0.2"), serverA.URL),
+		instanceOptions("edge-b", netip.MustParseAddr("127.0.0.3"), serverB.URL),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := set.PingAll(context.Background()); err != nil {
+		t.Fatalf("ping all: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("ping calls=%d, want 2", calls.Load())
+	}
+}
+
+func TestClientSetPingAllNilAndEmpty(t *testing.T) {
+	var set *ClientSet
+	if err := set.PingAll(context.Background()); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil set error=%v, want invalid request", err)
+	}
+	empty, err := NewClientSet(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := empty.PingAll(context.Background()); err != nil {
+		t.Fatalf("empty set error=%v, want nil", err)
+	}
+}

@@ -363,6 +363,46 @@ func TestFlowControlRPCs(t *testing.T) {
 	}
 }
 
+func TestClientPing(t *testing.T) {
+	var request rpcRequest
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != rpcPath || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"pong":true}}`))
+	})
+	if err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	if request.Method != "Ping" || request.Params != nil {
+		t.Fatalf("ping request=%+v, want method Ping and null params", request)
+	}
+}
+
+func TestClientPingErrorMapping(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		code int
+		want error
+	}{
+		{name: "unauthorized", code: http.StatusUnauthorized, want: ErrUnauthorized},
+		{name: "unavailable", code: http.StatusServiceUnavailable, want: ErrUnavailable},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(testCase.code)
+				_, _ = w.Write([]byte(`{"ok":false,"error":"ping failed"}`))
+			})
+			if err := client.Ping(context.Background()); !errors.Is(err, testCase.want) {
+				t.Fatalf("error=%v, want %v", err, testCase.want)
+			}
+		})
+	}
+}
+
 func TestFlowControlValidationAndErrorMapping(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
