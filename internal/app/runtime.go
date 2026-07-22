@@ -266,6 +266,9 @@ func (r *Runtime) Stop() {
 	for _, ln := range r.listeners {
 		_ = ln.Close()
 	}
+	// Drain forwarding handlers before shutting down the observers and stores
+	// they may still be using during their final close transition.
+	r.wait()
 	if r.flowContext != nil {
 		if err := r.flowContext.Shutdown(); err != nil {
 			util.Event(r.logger, slog.LevelWarn, "flowcontext.shutdown_failed", "error", err)
@@ -298,7 +301,6 @@ func (r *Runtime) Stop() {
 		}
 		cancel()
 	}
-	r.wait()
 }
 
 func (r *Runtime) startMeasurement() {
