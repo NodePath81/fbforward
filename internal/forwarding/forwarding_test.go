@@ -455,7 +455,6 @@ func TestTCPCloseWithReasonEmitsOneSummary(t *testing.T) {
 		upstreamTag: "primary",
 		listenPort:  9000,
 		observer:    observer,
-		done:        make(chan struct{}),
 		created:     time.Now().UTC().Add(-time.Second),
 		clientAddr:  "1.1.1.1:12345",
 		clientIP:    "1.1.1.1",
@@ -490,7 +489,7 @@ func TestTCPRegistryBlockClosesWithBackendReason(t *testing.T) {
 	registry := flow.NewRegistry()
 	conn := &tcpConn{
 		client: client, upstream: upstreamConn, upstreamTag: "primary", observer: observer,
-		registry: registry, done: make(chan struct{}), created: time.Now().UTC(),
+		registry: registry, created: time.Now().UTC(),
 		clientAddr: "1.1.1.1:12345", clientIP: "1.1.1.1", listenAddr: ":9000",
 	}
 	conn.id, _ = flow.NewID()
@@ -518,7 +517,7 @@ func TestTCPRegistryBlockRacesWithClose(t *testing.T) {
 	defer peer1.Close()
 	defer peer2.Close()
 	registry := flow.NewRegistry()
-	conn := &tcpConn{client: client, upstream: upstreamConn, done: make(chan struct{})}
+	conn := &tcpConn{client: client, upstream: upstreamConn}
 	conn.id, _ = flow.NewID()
 	registry.Register(flow.Meta{ID: conn.id, Protocol: flow.ProtocolTCP}, conn.close)
 	registry.SetControls(conn.id, flow.Controls{Block: func() bool { return conn.closeWithReason("backend_blocked") }})

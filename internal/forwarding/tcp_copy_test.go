@@ -53,6 +53,19 @@ func TestTCPCopyErrors(t *testing.T) {
 			t.Fatalf("result = %+v", result)
 		}
 	})
+	t.Run("partial write", func(t *testing.T) {
+		want := errors.New("write failed")
+		progress := 0
+		result := copyTCP(context.Background(), partialErrorWriter{written: 2, err: want}, bytes.NewBufferString("data"), nil, make([]byte, 8), func(n int) {
+			progress += n
+		})
+		if result.end != tcpCopyWriteError || !errors.Is(result.err, want) {
+			t.Fatalf("result = %+v", result)
+		}
+		if progress != 2 {
+			t.Fatalf("progress = %d, want 2", progress)
+		}
+	})
 	t.Run("zero progress", func(t *testing.T) {
 		result := copyTCP(context.Background(), zeroProgressWriter{}, bytes.NewBufferString("x"), nil, make([]byte, 8), nil)
 		if result.end != tcpCopyWriteError || !errors.Is(result.err, io.ErrShortWrite) {
@@ -75,7 +88,7 @@ func TestTCPCopyRateWaitCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := copyTCP(ctx, io.Discard, &cancelingReader{reader: bytes.NewBufferString("x"), cancel: cancel}, limiter, make([]byte, 8), nil)
-	if result.end != tcpCopyRateContextDone || !errors.Is(result.err, context.Canceled) {
+	if result.end != tcpCopyContextDone || !errors.Is(result.err, context.Canceled) {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -154,6 +167,15 @@ func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 type errorWriter struct{ err error }
 
 func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
+
+type partialErrorWriter struct {
+	written int
+	err     error
+}
+
+func (w partialErrorWriter) Write(p []byte) (int, error) {
+	return min(w.written, len(p)), w.err
+}
 
 type zeroProgressWriter struct{}
 

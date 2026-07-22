@@ -231,7 +231,6 @@ type tcpConn struct {
 	closed     bool
 	cancel     context.CancelFunc
 	activityCh chan struct{}
-	done       chan struct{}
 	created    time.Time
 	lifecycle  *flow.Lifecycle
 }
@@ -246,7 +245,6 @@ func (c *tcpConn) start(ctx context.Context) {
 		c.created = c.created.UTC()
 	}
 	c.activityCh = make(chan struct{}, 1)
-	c.done = make(chan struct{})
 	flowCtx, cancel := context.WithCancel(ctx)
 	c.controlMu.Lock()
 	c.cancel = cancel
@@ -324,9 +322,13 @@ func (c *tcpConn) serve(ctx context.Context) {
 		case direction := <-results:
 			remaining--
 			if direction.result.end == tcpCopyEOF {
-				if err := closeWrite(c.destination(direction.up)); err != nil && !errors.Is(err, net.ErrClosed) {
+				destination := c.client
+				if direction.up {
+					destination = c.upstream
+				}
+				if err := closeWrite(destination); err != nil && !errors.Is(err, net.ErrClosed) {
 					c.closeWithReason("write_error")
-					c.waitCopies(results, remaining)
+					waitTCPCopies(results, remaining)
 					return
 				}
 				if remaining == 0 {
@@ -337,20 +339,17 @@ func (c *tcpConn) serve(ctx context.Context) {
 			}
 
 			if !c.isClosed() {
-				c.closeWithReason(c.copyCloseReason(ctx, direction.result))
+				c.closeWithReason(tcpCopyCloseReason(direction.result))
 			}
-			c.waitCopies(results, remaining)
+			waitTCPCopies(results, remaining)
 			return
 		case <-ctx.Done():
 			c.closeWithReason("context_done")
-			c.waitCopies(results, remaining)
-			return
-		case <-c.done:
-			c.waitCopies(results, remaining)
+			waitTCPCopies(results, remaining)
 			return
 		case <-timer.C:
 			c.closeWithReason("idle_timeout")
-			c.waitCopies(results, remaining)
+			waitTCPCopies(results, remaining)
 			return
 		case <-c.activityCh:
 			resetTimer(timer, c.timeout)
@@ -368,30 +367,20 @@ func (c *tcpConn) copyDirection(ctx context.Context, dst, src net.Conn, up bool,
 	results <- tcpCopyDirection{result: result, up: up}
 }
 
-func (c *tcpConn) copyCloseReason(ctx context.Context, result tcpCopyResult) string {
+func tcpCopyCloseReason(result tcpCopyResult) string {
 	switch result.end {
 	case tcpCopyReadError:
 		return "read_error"
 	case tcpCopyWriteError:
 		return "write_error"
-	case tcpCopyContextDone, tcpCopyRateContextDone:
-		if ctx.Err() != nil {
-			return "context_done"
-		}
-		return "rate_limit_context_done"
+	case tcpCopyContextDone:
+		return "context_done"
 	default:
 		return "read_error"
 	}
 }
 
-func (c *tcpConn) destination(up bool) net.Conn {
-	if up {
-		return c.upstream
-	}
-	return c.client
-}
-
-func (c *tcpConn) waitCopies(results <-chan tcpCopyDirection, remaining int) {
+func waitTCPCopies(results <-chan tcpCopyDirection, remaining int) {
 	for remaining > 0 {
 		<-results
 		remaining--
@@ -502,13 +491,9 @@ func (c *tcpConn) closeWithReason(reason string) bool {
 	}
 	c.closed = true
 	cancel := c.cancel
-	done := c.done
 	c.controlMu.Unlock()
 	if cancel != nil {
 		cancel()
-	}
-	if done != nil {
-		close(done)
 	}
 	_ = c.client.Close()
 	_ = c.upstream.Close()

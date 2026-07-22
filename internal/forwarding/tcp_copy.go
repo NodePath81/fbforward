@@ -13,7 +13,6 @@ const (
 	tcpCopyReadError
 	tcpCopyWriteError
 	tcpCopyContextDone
-	tcpCopyRateContextDone
 )
 
 type tcpCopyResult struct {
@@ -38,13 +37,14 @@ func copyTCP(ctx context.Context, dst io.Writer, src io.Reader, limiter *byteRat
 		n, readErr := src.Read(buffer)
 		if n > 0 {
 			if err := limiter.Wait(ctx, n); err != nil {
-				return tcpCopyResult{end: tcpCopyRateContextDone, err: err}
+				return tcpCopyResult{end: tcpCopyContextDone, err: err}
 			}
-			if err := writeAll(dst, buffer[:n]); err != nil {
+			written, err := writeAll(dst, buffer[:n])
+			if written > 0 && onProgress != nil {
+				onProgress(written)
+			}
+			if err != nil {
 				return tcpCopyResult{end: tcpCopyWriteError, err: err}
-			}
-			if onProgress != nil {
-				onProgress(n)
 			}
 		}
 		if readErr != nil {
@@ -56,19 +56,21 @@ func copyTCP(ctx context.Context, dst io.Writer, src io.Reader, limiter *byteRat
 	}
 }
 
-func writeAll(dst io.Writer, buffer []byte) error {
+func writeAll(dst io.Writer, buffer []byte) (int, error) {
+	written := 0
 	for len(buffer) > 0 {
 		n, err := dst.Write(buffer)
 		if n < 0 || n > len(buffer) {
-			return errors.New("invalid tcp writer count")
+			return written, errors.New("invalid tcp writer count")
 		}
+		written += n
 		buffer = buffer[n:]
 		if err != nil {
-			return err
+			return written, err
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			return written, io.ErrShortWrite
 		}
 	}
-	return nil
+	return written, nil
 }

@@ -120,11 +120,10 @@ func TestTCPBlockCancelsLimitedTransport(t *testing.T) {
 }
 
 func TestTCPCopyCloseReason(t *testing.T) {
-	conn := &tcpConn{}
-	if got := conn.copyCloseReason(context.Background(), tcpCopyResult{end: tcpCopyReadError}); got != "read_error" {
+	if got := tcpCopyCloseReason(tcpCopyResult{end: tcpCopyReadError}); got != "read_error" {
 		t.Fatalf("read close reason = %q", got)
 	}
-	if got := conn.copyCloseReason(context.Background(), tcpCopyResult{end: tcpCopyWriteError}); got != "write_error" {
+	if got := tcpCopyCloseReason(tcpCopyResult{end: tcpCopyWriteError}); got != "write_error" {
 		t.Fatalf("write close reason = %q", got)
 	}
 }
@@ -275,6 +274,7 @@ type tcpListenerFixture struct {
 	observer   *recordingObserver
 	cancel     context.CancelFunc
 	wg         *sync.WaitGroup
+	acceptDone chan struct{}
 	cleanupOne sync.Once
 }
 
@@ -301,21 +301,28 @@ func startTCPListenerFixture(t *testing.T, maxConnections int) *tcpListenerFixtu
 		t.Fatalf("start TCP listener fixture: %v", err)
 	}
 	fixture := &tcpListenerFixture{
-		listener:  listener,
-		backend:   backend,
-		backends:  make(chan *net.TCPConn, 4),
-		proxyAddr: net.JoinHostPort("127.0.0.1", util.FormatPort(port)),
-		observer:  observer,
-		cancel:    cancel,
-		wg:        wg,
+		listener:   listener,
+		backend:    backend,
+		backends:   make(chan *net.TCPConn, 4),
+		proxyAddr:  net.JoinHostPort("127.0.0.1", util.FormatPort(port)),
+		observer:   observer,
+		cancel:     cancel,
+		wg:         wg,
+		acceptDone: make(chan struct{}),
 	}
 	go func() {
+		defer close(fixture.acceptDone)
 		for {
 			conn, acceptErr := backend.AcceptTCP()
 			if acceptErr != nil {
 				return
 			}
-			fixture.backends <- conn
+			select {
+			case fixture.backends <- conn:
+			case <-ctx.Done():
+				_ = conn.Close()
+				return
+			}
 		}
 	}()
 	t.Cleanup(func() { fixture.cleanup() })
@@ -348,6 +355,7 @@ func (f *tcpListenerFixture) cleanup() {
 		_ = f.listener.Close()
 		_ = f.backend.Close()
 		f.wg.Wait()
+		<-f.acceptDone
 		close(f.backends)
 		for conn := range f.backends {
 			_ = conn.Close()
