@@ -27,6 +27,9 @@ func TestPipelineWritesFlowAndCheckpoint(t *testing.T) {
 	started := time.Now().UTC().Add(-time.Second)
 	pipeline.Open(flow.Meta{ID: id, Protocol: flow.ProtocolTCP, ClientAddr: netip.MustParseAddrPort("192.0.2.10:1234"), Listener: ":9000", Upstream: "primary", StartedAt: started})
 	pipeline.Update(id, flow.Counters{LastActivity: started.Add(500 * time.Millisecond), BytesUp: 10, BytesDown: 20, SegmentsUp: 1, SegmentsDown: 2})
+	if got := waitForCheckpointCount(t, store, id.String(), 1); got != 1 {
+		t.Fatalf("active checkpoint count = %d, want 1", got)
+	}
 	pipeline.Close(flow.Summary{Meta: flow.Meta{ID: id, Protocol: flow.ProtocolTCP, ClientAddr: netip.MustParseAddrPort("192.0.2.10:1234"), Listener: ":9000", Upstream: "primary", StartedAt: started}, EndedAt: started.Add(time.Second), LastActivity: started.Add(500 * time.Millisecond), BytesUp: 10, BytesDown: 20, CloseReason: "eof"})
 	if err := pipeline.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
@@ -39,8 +42,36 @@ func TestPipelineWritesFlowAndCheckpoint(t *testing.T) {
 	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM flow_checkpoints WHERE flow_id = ?`, id.String()).Scan(&checkpoints); err != nil {
 		t.Fatal(err)
 	}
-	if checkpoints < 1 {
-		t.Fatalf("expected checkpoint, got %d", checkpoints)
+	if checkpoints < 2 {
+		t.Fatalf("expected active and final checkpoints, got %d", checkpoints)
+	}
+}
+
+func waitForCheckpointCount(t *testing.T, store *Store, flowID string, want int) int {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	read := func() int {
+		var count int
+		if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM flow_checkpoints WHERE flow_id = ?`, flowID).Scan(&count); err != nil {
+			t.Fatalf("read checkpoint count: %v", err)
+		}
+		return count
+	}
+	if count := read(); count >= want {
+		return count
+	}
+	for {
+		select {
+		case <-ticker.C:
+			if count := read(); count >= want {
+				return count
+			}
+		case <-deadline.C:
+			return read()
+		}
 	}
 }
 

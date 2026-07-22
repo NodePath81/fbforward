@@ -22,7 +22,7 @@ func newTestStore(t *testing.T) *Store {
 	return store
 }
 
-func TestEmptyStoreInitializesSchemaV4(t *testing.T) {
+func TestEmptyStoreInitializesSchemaV5(t *testing.T) {
 	store := newTestStore(t)
 	var version int
 	if err := store.readDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
@@ -30,6 +30,10 @@ func TestEmptyStoreInitializesSchemaV4(t *testing.T) {
 	}
 	if version != currentSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
+	}
+	var foreignTable string
+	if err := store.readDB.QueryRow(`SELECT "table" FROM pragma_foreign_key_list('flow_checkpoints') WHERE "table" = 'flow_entities'`).Scan(&foreignTable); err != nil {
+		t.Fatalf("flow_checkpoints foreign key = %v", err)
 	}
 	for _, table := range []string{"flows", "flow_entities", "flow_checkpoints", "rejection_events", "flow_tag_events", "flow_tags", "client_tags", "online_rules", "online_rule_events", "policy_events", "schema_migrations", "ip_log", "rejection_log"} {
 		var count int
@@ -46,7 +50,7 @@ func TestEmptyStoreInitializesSchemaV4(t *testing.T) {
 	}
 }
 
-func TestSchemaV3MigratesToV4OnlineRules(t *testing.T) {
+func TestSchemaV3MigratesToCurrentOnlineRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v3.sqlite")
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
@@ -83,8 +87,8 @@ func TestSchemaV3MigratesToV4OnlineRules(t *testing.T) {
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("schema version = %d, want 4", version)
+	if version != currentSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
 	}
 	for _, column := range []string{"priority", "created_by", "reason", "ticket_ref", "matcher_json", "params_json"} {
 		var count int
@@ -110,6 +114,60 @@ func TestSchemaV3MigratesToV4OnlineRules(t *testing.T) {
 		t.Fatalf("legacy source = %q, want legacy", source)
 	}
 	_ = db.Close()
+}
+
+func TestSchemaV4MigratesCheckpointForeignKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v4.sqlite")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`PRAGMA foreign_keys = ON`,
+		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)`,
+		`CREATE TABLE flows (flow_id TEXT PRIMARY KEY)`,
+		`CREATE TABLE flow_entities (flow_id TEXT PRIMARY KEY)`,
+		`CREATE TABLE flow_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, flow_id TEXT NOT NULL, recorded_at INTEGER NOT NULL, last_activity_at INTEGER NOT NULL, bytes_up INTEGER NOT NULL DEFAULT 0, bytes_down INTEGER NOT NULL DEFAULT 0, segments_up INTEGER NOT NULL DEFAULT 0, segments_down INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(flow_id) REFERENCES flows(flow_id) ON DELETE CASCADE)`,
+		`CREATE INDEX idx_flow_checkpoints_flow_time ON flow_checkpoints(flow_id, recorded_at)`,
+		`INSERT INTO flows(flow_id) VALUES ('closed-flow')`,
+		`INSERT INTO flow_entities(flow_id) VALUES ('closed-flow'), ('active-flow')`,
+		`INSERT INTO flow_checkpoints(flow_id, recorded_at, last_activity_at, bytes_up, bytes_down, segments_up, segments_down) VALUES ('closed-flow', 1, 1, 2, 3, 4, 5)`,
+		`PRAGMA user_version = 4`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("execute %q: %v", statement, err)
+		}
+	}
+
+	if err := migrateDB(db); err != nil {
+		t.Fatalf("migrate v4 database: %v", err)
+	}
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM flow_checkpoints WHERE flow_id = 'closed-flow'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("migrated checkpoint count = %d, want 1", count)
+	}
+	var foreignTable string
+	if err := db.QueryRow(`SELECT "table" FROM pragma_foreign_key_list('flow_checkpoints') WHERE "table" = 'flow_entities'`).Scan(&foreignTable); err != nil {
+		t.Fatalf("migrated flow_checkpoints foreign key = %v", err)
+	}
+	var violations int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil {
+		t.Fatal(err)
+	}
+	if violations != 0 {
+		t.Fatalf("foreign key violations = %d, want 0", violations)
+	}
 }
 
 func TestOnlineRuleStoreLifecycleAndAudit(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 var schemaV2Statements = []string{
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -49,7 +49,7 @@ var schemaV2Statements = []string{
         bytes_down INTEGER NOT NULL DEFAULT 0,
         segments_up INTEGER NOT NULL DEFAULT 0,
         segments_down INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY(flow_id) REFERENCES flows(flow_id) ON DELETE CASCADE
+        FOREIGN KEY(flow_id) REFERENCES flow_entities(flow_id) ON DELETE CASCADE
     )`,
 	`CREATE TABLE IF NOT EXISTS rejection_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,8 +200,13 @@ func migrateDBWithHook(db *sql.DB, hook migrationHook) error {
 			return rollback(err)
 		}
 	}
+	if version < 5 {
+		if err := migrateSchemaV5(tx); err != nil {
+			return rollback(err)
+		}
+	}
 	now := time.Now().UTC().UnixMilli()
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`, currentSchemaVersion, "audit schema v4", now); err != nil {
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`, currentSchemaVersion, "audit schema v5", now); err != nil {
 		return rollback(fmt.Errorf("record sqlite migration: %w", err))
 	}
 	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
@@ -209,6 +214,38 @@ func migrateDBWithHook(db *sql.DB, hook migrationHook) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite migration: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV5(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DROP INDEX IF EXISTS idx_flow_checkpoints_flow_time`); err != nil {
+		return fmt.Errorf("drop flow checkpoint index: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE flow_checkpoints RENAME TO flow_checkpoints_v4`); err != nil {
+		return fmt.Errorf("rename flow_checkpoints: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE flow_checkpoints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        flow_id TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL,
+        last_activity_at INTEGER NOT NULL,
+        bytes_up INTEGER NOT NULL DEFAULT 0,
+        bytes_down INTEGER NOT NULL DEFAULT 0,
+        segments_up INTEGER NOT NULL DEFAULT 0,
+        segments_down INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(flow_id) REFERENCES flow_entities(flow_id) ON DELETE CASCADE
+    )`); err != nil {
+		return fmt.Errorf("create flow_checkpoints v5: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO flow_checkpoints(id, flow_id, recorded_at, last_activity_at, bytes_up, bytes_down, segments_up, segments_down) SELECT id, flow_id, recorded_at, last_activity_at, bytes_up, bytes_down, segments_up, segments_down FROM flow_checkpoints_v4`); err != nil {
+		return fmt.Errorf("copy flow checkpoints: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE flow_checkpoints_v4`); err != nil {
+		return fmt.Errorf("drop old flow_checkpoints: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX idx_flow_checkpoints_flow_time ON flow_checkpoints(flow_id, recorded_at)`); err != nil {
+		return fmt.Errorf("create flow checkpoint index: %w", err)
 	}
 	return nil
 }
