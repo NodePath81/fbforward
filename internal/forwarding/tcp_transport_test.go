@@ -4,10 +4,14 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flow"
+	"github.com/NodePath81/fbforward/internal/util"
 )
 
 func TestTCPHalfClosePreservesReverseResponse(t *testing.T) {
@@ -125,6 +129,53 @@ func TestTCPCopyCloseReason(t *testing.T) {
 	}
 }
 
+func TestTCPConnectionLimitTracksActiveFlow(t *testing.T) {
+	fixture := startTCPListenerFixture(t, 1)
+	firstClient, firstBackend := fixture.connect(t)
+
+	secondClient, err := net.Dial("tcp", fixture.proxyAddr)
+	if err != nil {
+		t.Fatalf("dial second client: %v", err)
+	}
+	_ = secondClient.Close()
+	waitTCPRejections(t, fixture.observer, 1)
+	select {
+	case backend := <-fixture.backends:
+		backend.Close()
+		t.Fatal("connection limit admitted a second active flow")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	_ = firstClient.Close()
+	_ = firstBackend.Close()
+	waitTCPFlowCapacity(t, fixture.listener.sem, 0)
+
+	thirdClient, thirdBackend := fixture.connect(t)
+	_ = thirdClient.Close()
+	_ = thirdBackend.Close()
+}
+
+func TestTCPListenerShutdownWaitsForActiveFlow(t *testing.T) {
+	fixture := startTCPListenerFixture(t, 1)
+	client, backend := fixture.connect(t)
+	defer client.Close()
+	defer backend.Close()
+
+	fixture.cancel()
+	_ = fixture.listener.Close()
+	done := make(chan struct{})
+	go func() {
+		fixture.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("listener shutdown did not wait for active TCP handler")
+	}
+	waitTCPFlowCapacity(t, fixture.listener.sem, 0)
+}
+
 func startTCPTransport(t *testing.T, ctx context.Context, client, upstream *net.TCPConn, observer *recordingObserver, registry *flow.Registry, timeout time.Duration) (*tcpConn, <-chan struct{}) {
 	t.Helper()
 	conn := &tcpConn{
@@ -214,4 +265,116 @@ func onlyTCPSummary(t *testing.T, observer *recordingObserver) flow.Summary {
 		t.Fatalf("TCP close summaries = %d, want 1", len(observer.closes))
 	}
 	return observer.closes[0]
+}
+
+type tcpListenerFixture struct {
+	listener   *TCPListener
+	backend    *net.TCPListener
+	backends   chan *net.TCPConn
+	proxyAddr  string
+	observer   *recordingObserver
+	cancel     context.CancelFunc
+	wg         *sync.WaitGroup
+	cleanupOne sync.Once
+}
+
+func startTCPListenerFixture(t *testing.T, maxConnections int) *tcpListenerFixture {
+	t.Helper()
+	backend, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 2)})
+	if err != nil {
+		t.Fatalf("listen upstream fixture: %v", err)
+	}
+	port := backend.Addr().(*net.TCPAddr).Port
+	observer := &recordingObserver{}
+	listener := NewTCPListener(
+		config.ListenerConfig{BindAddr: "127.0.0.1", BindPort: port, Route: "test"},
+		config.ForwardingLimitsConfig{MaxTCPConnections: maxConnections},
+		time.Second,
+		&fakePicker{selected: Upstream{Tag: "primary", Addr: netip.MustParseAddr("127.0.0.2")}},
+		allowedPolicy(), observer, nil, nil, nil,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	wg := &sync.WaitGroup{}
+	if err := listener.Start(ctx, wg); err != nil {
+		backend.Close()
+		cancel()
+		t.Fatalf("start TCP listener fixture: %v", err)
+	}
+	fixture := &tcpListenerFixture{
+		listener:  listener,
+		backend:   backend,
+		backends:  make(chan *net.TCPConn, 4),
+		proxyAddr: net.JoinHostPort("127.0.0.1", util.FormatPort(port)),
+		observer:  observer,
+		cancel:    cancel,
+		wg:        wg,
+	}
+	go func() {
+		for {
+			conn, acceptErr := backend.AcceptTCP()
+			if acceptErr != nil {
+				return
+			}
+			fixture.backends <- conn
+		}
+	}()
+	t.Cleanup(func() { fixture.cleanup() })
+	return fixture
+}
+
+func (f *tcpListenerFixture) connect(t *testing.T) (*net.TCPConn, *net.TCPConn) {
+	t.Helper()
+	addr, err := net.ResolveTCPAddr("tcp", f.proxyAddr)
+	if err != nil {
+		t.Fatalf("resolve TCP listener fixture: %v", err)
+	}
+	client, err := net.DialTCP("tcp", nil, addr)
+	if err != nil {
+		t.Fatalf("dial TCP listener fixture: %v", err)
+	}
+	select {
+	case backend := <-f.backends:
+		return client, backend
+	case <-time.After(2 * time.Second):
+		client.Close()
+		t.Fatal("TCP listener did not connect to backend")
+		return nil, nil
+	}
+}
+
+func (f *tcpListenerFixture) cleanup() {
+	f.cleanupOne.Do(func() {
+		f.cancel()
+		_ = f.listener.Close()
+		_ = f.backend.Close()
+		f.wg.Wait()
+		close(f.backends)
+		for conn := range f.backends {
+			_ = conn.Close()
+		}
+	})
+}
+
+func waitTCPRejections(t *testing.T, observer *recordingObserver, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if observer.rejectionCount() >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("TCP rejections = %d, want at least %d", observer.rejectionCount(), want)
+}
+
+func waitTCPFlowCapacity(t *testing.T, semaphore chan struct{}, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(semaphore) == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("active TCP capacity = %d, want %d", len(semaphore), want)
 }

@@ -83,7 +83,11 @@ func (l *TCPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 			}
 			select {
 			case l.sem <- struct{}{}:
-				go l.handleConn(ctx, conn)
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					l.handleConn(ctx, conn)
+				}()
 			default:
 				clientAddr := conn.RemoteAddr().String()
 				emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "tcp_connection_limit", Decision{})
