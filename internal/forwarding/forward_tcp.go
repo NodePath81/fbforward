@@ -3,7 +3,6 @@ package forwarding
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -304,61 +303,30 @@ func (c *tcpConn) proxy(ctx context.Context, dst, src net.Conn, up bool) {
 	bufPtr := tcpBufPool.Get().(*[]byte)
 	buf := *bufPtr
 	defer tcpBufPool.Put(bufPtr)
-	for {
-		_ = src.SetReadDeadline(time.Now().Add(c.timeout))
-		n, err := src.Read(buf)
-		if n > 0 {
-			if c.rateLimiter != nil {
-				if waitErr := c.rateLimiter.Wait(ctx, n); waitErr != nil {
-					c.closeWithReason("rate_limit_context_done")
-					return
-				}
-			}
-			if werr := writeAll(dst, buf[:n]); werr != nil {
-				c.closeWithReason("write_error")
-				return
-			}
-			c.touch(uint64(n), up)
-		}
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
-					c.closeWithReason("context_done")
-					return
-				case <-c.done:
-					return
-				default:
-					continue
-				}
-			}
-			if err != io.EOF {
-				c.closeWithReason("read_error")
-			} else {
-				c.closeWithReason("eof")
-			}
+	result := copyTCP(ctx, dst, src, c.rateLimiter, buf, func(n int) {
+		c.touch(uint64(n), up)
+	})
+	switch result.end {
+	case tcpCopyEOF:
+		c.closeWithReason("eof")
+	case tcpCopyReadError:
+		c.closeWithReason("read_error")
+	case tcpCopyWriteError:
+		c.closeWithReason("write_error")
+	case tcpCopyContextDone:
+		c.closeWithReason("context_done")
+	case tcpCopyRateContextDone:
+		if c.isClosed() {
 			return
 		}
-		select {
-		case <-ctx.Done():
-			c.closeWithReason("context_done")
-			return
-		case <-c.done:
-			return
-		default:
-		}
+		c.closeWithReason("rate_limit_context_done")
 	}
 }
 
-func writeAll(dst net.Conn, buf []byte) error {
-	for len(buf) > 0 {
-		n, err := dst.Write(buf)
-		if err != nil {
-			return err
-		}
-		buf = buf[n:]
-	}
-	return nil
+func (c *tcpConn) isClosed() bool {
+	c.controlMu.Lock()
+	defer c.controlMu.Unlock()
+	return c.closed
 }
 
 func dialTCPWithRetry(ctx context.Context, addr string, attempts int, backoff time.Duration, logger util.Logger, upstream string) (net.Conn, error) {
