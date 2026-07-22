@@ -223,9 +223,9 @@ type tcpConn struct {
 	clientIP     string
 
 	id         flow.ID
-	closeOnce  sync.Once
 	controlMu  sync.Mutex
 	closed     bool
+	cancel     context.CancelFunc
 	activityCh chan struct{}
 	done       chan struct{}
 	created    time.Time
@@ -243,6 +243,11 @@ func (c *tcpConn) start(ctx context.Context) {
 	}
 	c.activityCh = make(chan struct{}, 1)
 	c.done = make(chan struct{})
+	flowCtx, cancel := context.WithCancel(ctx)
+	c.controlMu.Lock()
+	c.cancel = cancel
+	c.controlMu.Unlock()
+	defer cancel()
 	clientEndpoint, err := netip.ParseAddrPort(clientAddr)
 	if err != nil {
 		util.Event(c.logger, slog.LevelWarn, "forward.tcp.invalid_client_addr", "client.addr", clientAddr, "error", err)
@@ -294,33 +299,116 @@ func (c *tcpConn) start(ctx context.Context) {
 		"result", "connected",
 	)
 
-	go c.proxy(ctx, c.upstream, c.client, true)
-	go c.proxy(ctx, c.client, c.upstream, false)
-	go c.idleWatcher(ctx)
+	c.serve(flowCtx)
 }
 
-func (c *tcpConn) proxy(ctx context.Context, dst, src net.Conn, up bool) {
+type tcpCopyDirection struct {
+	result tcpCopyResult
+	up     bool
+}
+
+func (c *tcpConn) serve(ctx context.Context) {
+	results := make(chan tcpCopyDirection, 2)
+	go c.copyDirection(ctx, c.upstream, c.client, true, results)
+	go c.copyDirection(ctx, c.client, c.upstream, false, results)
+
+	timer := time.NewTimer(c.timeout)
+	defer timer.Stop()
+	remaining := 2
+	for remaining > 0 {
+		select {
+		case direction := <-results:
+			remaining--
+			if direction.result.end == tcpCopyEOF {
+				if err := closeWrite(c.destination(direction.up)); err != nil && !errors.Is(err, net.ErrClosed) {
+					c.closeWithReason("write_error")
+					c.waitCopies(results, remaining)
+					return
+				}
+				if remaining == 0 {
+					c.closeWithReason("eof")
+					return
+				}
+				continue
+			}
+
+			if !c.isClosed() {
+				c.closeWithReason(c.copyCloseReason(ctx, direction.result))
+			}
+			c.waitCopies(results, remaining)
+			return
+		case <-ctx.Done():
+			c.closeWithReason("context_done")
+			c.waitCopies(results, remaining)
+			return
+		case <-c.done:
+			c.waitCopies(results, remaining)
+			return
+		case <-timer.C:
+			c.closeWithReason("idle_timeout")
+			c.waitCopies(results, remaining)
+			return
+		case <-c.activityCh:
+			resetTimer(timer, c.timeout)
+		}
+	}
+}
+
+func (c *tcpConn) copyDirection(ctx context.Context, dst, src net.Conn, up bool, results chan<- tcpCopyDirection) {
 	bufPtr := tcpBufPool.Get().(*[]byte)
 	buf := *bufPtr
 	defer tcpBufPool.Put(bufPtr)
 	result := copyTCP(ctx, dst, src, c.rateLimiter, buf, func(n int) {
 		c.touch(uint64(n), up)
 	})
+	results <- tcpCopyDirection{result: result, up: up}
+}
+
+func (c *tcpConn) copyCloseReason(ctx context.Context, result tcpCopyResult) string {
 	switch result.end {
-	case tcpCopyEOF:
-		c.closeWithReason("eof")
 	case tcpCopyReadError:
-		c.closeWithReason("read_error")
+		return "read_error"
 	case tcpCopyWriteError:
-		c.closeWithReason("write_error")
-	case tcpCopyContextDone:
-		c.closeWithReason("context_done")
-	case tcpCopyRateContextDone:
-		if c.isClosed() {
-			return
+		return "write_error"
+	case tcpCopyContextDone, tcpCopyRateContextDone:
+		if ctx.Err() != nil {
+			return "context_done"
 		}
-		c.closeWithReason("rate_limit_context_done")
+		return "rate_limit_context_done"
+	default:
+		return "read_error"
 	}
+}
+
+func (c *tcpConn) destination(up bool) net.Conn {
+	if up {
+		return c.upstream
+	}
+	return c.client
+}
+
+func (c *tcpConn) waitCopies(results <-chan tcpCopyDirection, remaining int) {
+	for remaining > 0 {
+		<-results
+		remaining--
+	}
+}
+
+func closeWrite(conn net.Conn) error {
+	if writer, ok := conn.(interface{ CloseWrite() error }); ok {
+		return writer.CloseWrite()
+	}
+	return nil
+}
+
+func resetTimer(timer *time.Timer, timeout time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(timeout)
 }
 
 func (c *tcpConn) isClosed() bool {
@@ -382,31 +470,6 @@ func (c *tcpConn) touch(n uint64, up bool) {
 	}
 }
 
-func (c *tcpConn) idleWatcher(ctx context.Context) {
-	timer := time.NewTimer(c.timeout)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			c.closeWithReason("context_done")
-			return
-		case <-c.done:
-			return
-		case <-timer.C:
-			c.closeWithReason("idle_timeout")
-			return
-		case <-c.activityCh:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(c.timeout)
-		}
-	}
-}
-
 func (c *tcpConn) setRateLimit(rateBPS uint64) bool {
 	c.controlMu.Lock()
 	defer c.controlMu.Unlock()
@@ -434,38 +497,41 @@ func (c *tcpConn) closeWithReason(reason string) bool {
 		return false
 	}
 	c.closed = true
+	cancel := c.cancel
+	done := c.done
 	c.controlMu.Unlock()
-	closed := false
-	c.closeOnce.Do(func() {
-		closed = true
-		close(c.done)
-		_ = c.client.Close()
-		_ = c.upstream.Close()
-		durationMs := int64(0)
-		if !c.created.IsZero() {
-			durationMs = time.Since(c.created).Milliseconds()
-		}
-		counters := flow.Counters{}
-		if c.lifecycle != nil {
-			counters = c.lifecycle.Snapshot()
-			c.lifecycle.Close(reason)
-		}
-		util.Event(c.logger, slog.LevelInfo, "forward.tcp.connection_closed",
-			"flow.id", c.id,
-			"request.protocol", "tcp",
-			"client.addr", c.clientAddr,
-			"client.ip", c.clientIP,
-			"upstream", c.upstreamTag,
-			"upstream.ip", c.upstreamIP,
-			"upstream.addr", c.upstreamAddr,
-			"flow.close_reason", reason,
-			"flow.bytes_up", counters.BytesUp,
-			"flow.bytes_down", counters.BytesDown,
-			"flow.duration_ms", durationMs,
-			"result", "closed",
-		)
-	})
-	return closed
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		close(done)
+	}
+	_ = c.client.Close()
+	_ = c.upstream.Close()
+	durationMs := int64(0)
+	if !c.created.IsZero() {
+		durationMs = time.Since(c.created).Milliseconds()
+	}
+	counters := flow.Counters{}
+	if c.lifecycle != nil {
+		counters = c.lifecycle.Snapshot()
+		c.lifecycle.Close(reason)
+	}
+	util.Event(c.logger, slog.LevelInfo, "forward.tcp.connection_closed",
+		"flow.id", c.id,
+		"request.protocol", "tcp",
+		"client.addr", c.clientAddr,
+		"client.ip", c.clientIP,
+		"upstream", c.upstreamTag,
+		"upstream.ip", c.upstreamIP,
+		"upstream.addr", c.upstreamAddr,
+		"flow.close_reason", reason,
+		"flow.bytes_up", counters.BytesUp,
+		"flow.bytes_down", counters.BytesDown,
+		"flow.duration_ms", durationMs,
+		"result", "closed",
+	)
+	return true
 }
 
 func (c *tcpConn) close() {

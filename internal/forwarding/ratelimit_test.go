@@ -168,13 +168,12 @@ func TestTCPProxyWaitsForFlowRateBudget(t *testing.T) {
 	}
 	source := &scriptedRateConn{data: make([]byte, 256)}
 	sink := &scriptedRateConn{}
-	conn := &tcpConn{
-		client: source, upstream: sink,
-		rateLimiter: limiter, done: make(chan struct{}),
-	}
 	finished := make(chan struct{})
 	start := time.Now()
-	go func() { conn.proxy(context.Background(), sink, source, true); close(finished) }()
+	go func() {
+		copyTCP(context.Background(), sink, source, limiter, make([]byte, tcpBufferSize), nil)
+		close(finished)
+	}()
 	select {
 	case <-finished:
 	case <-time.After(time.Second):
