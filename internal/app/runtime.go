@@ -52,6 +52,7 @@ type Runtime struct {
 	notifier           *notify.Client
 	notifyPolicy       *notify.Policy
 	wg                 sync.WaitGroup
+	stopOnce           sync.Once
 }
 
 type closer interface {
@@ -247,6 +248,13 @@ func (r *Runtime) Start() error {
 }
 
 func (r *Runtime) Stop() {
+	if r == nil {
+		return
+	}
+	r.stopOnce.Do(r.stop)
+}
+
+func (r *Runtime) stop() {
 	r.cancel()
 	if r.control != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

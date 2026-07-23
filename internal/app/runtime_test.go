@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,7 +73,15 @@ func TestNewRuntimeWithIPLogAndFirewallCleansUp(t *testing.T) {
 		t.Fatalf("expected runtime to wire geoip/iplog/firewall components")
 	}
 
-	rt.Stop()
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rt.Stop()
+		}()
+	}
+	wg.Wait()
 }
 
 func TestMeasurementUpstreamsOnlyIncludesAdaptiveRoutes(t *testing.T) {
