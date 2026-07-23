@@ -82,8 +82,11 @@ service unavailable when the webhook sink is disabled.
 - `GET /metrics` returns Prometheus metrics when enabled.
 - `GET /identity` returns instance identity for the operator page.
 
-The metrics endpoint exposes cumulative counters and current gauges only. Use
-PromQL `rate(fbforward_traffic_bytes_total[1m])` for traffic rates. Labels are
+The metrics endpoint exposes cumulative counters and current gauges only. The
+`fbforward_route_selected_upstream` gauge records the last successful upstream
+selection for each route, including per-Flow overrides; it is not a global
+policy snapshot. Use PromQL `rate(fbforward_traffic_bytes_total[1m])` for
+traffic rates. Labels are
 bounded to configured route/upstream names and fixed protocol, direction,
 state, result, and rule-type values; Flow IDs, client IPs, Flow Context tags,
 rule values, and error text are not Prometheus labels.

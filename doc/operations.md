@@ -47,7 +47,8 @@ current browser session.
 
 Prometheus is available at `/metrics` when enabled. The compact metric set
 covers active Flow counts and bounded Flow events, cumulative traffic by
-upstream/protocol/direction, route selections, upstream health/RTT/probes,
+upstream/protocol/direction, the last upstream selected for each route,
+upstream health/RTT/probes,
 Audit received/written/dropped records, firewall decisions, UDP rate-limit
 drops, online-rule errors, and webhook results. Traffic rates should be
 calculated with PromQL, for example:
