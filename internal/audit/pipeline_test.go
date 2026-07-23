@@ -189,8 +189,8 @@ func TestPipelineBoundsRejectionDeduplication(t *testing.T) {
 	if got := len(pipeline.recent); got != rejectionDedupeMaxEntries {
 		t.Fatalf("dedupe entries at capacity = %d, want %d", got, rejectionDedupeMaxEntries)
 	}
-	if _, ok := pipeline.recent["key-0"]; ok {
-		t.Fatal("dedupe cache unexpectedly replaced an existing entry")
+	if _, ok := pipeline.recent["key-0"]; !ok {
+		t.Fatal("dedupe cache lost an existing entry before reaching capacity")
 	}
 	if pipeline.allowRejection("overflow", base.Add(2*time.Second)) {
 		t.Fatal("new rejection should be suppressed while dedupe cache is full")
