@@ -3,12 +3,14 @@ package app
 import (
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flow"
 	"github.com/NodePath81/fbforward/internal/forwarding"
+	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
@@ -74,6 +76,21 @@ func TestUpstreamPickerScopesAdaptiveRoutesAndKeepsStaticFixed(t *testing.T) {
 	}
 	if fixed.Tag != "static" {
 		t.Fatalf("static route changed with global active selection: %+v", fixed)
+	}
+}
+
+func TestUpstreamPickerOverrideRecordsRouteSelection(t *testing.T) {
+	selected := &upstream.Upstream{Tag: "primary"}
+	selected.SetActiveIP(net.ParseIP("203.0.113.10"))
+	manager := upstream.NewUpstreamManager([]*upstream.Upstream{selected}, nil)
+	metricSet := metrics.NewMetrics([]string{"primary"})
+	picker := &upstreamPicker{manager: manager, metrics: metricSet}
+
+	if _, err := picker.PickOverride(flow.Meta{Route: "override-route"}, "primary"); err != nil {
+		t.Fatalf("PickOverride error: %v", err)
+	}
+	if got := metricSet.Render(); !strings.Contains(got, `fbforward_route_selected_upstream{route="override-route",upstream="primary"} 1`) {
+		t.Fatalf("override route selection was not recorded:\n%s", got)
 	}
 }
 

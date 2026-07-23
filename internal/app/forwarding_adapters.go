@@ -76,7 +76,7 @@ func (p *upstreamPicker) RouteStatus() []upstream.RouteStatus {
 	return p.routes.Status()
 }
 
-func (p *upstreamPicker) PickOverride(_ flow.Meta, tag string) (forwarding.Upstream, error) {
+func (p *upstreamPicker) PickOverride(meta flow.Meta, tag string) (forwarding.Upstream, error) {
 	if p == nil || p.manager == nil {
 		return forwarding.Upstream{}, fmt.Errorf("upstream picker is unavailable")
 	}
@@ -91,6 +91,9 @@ func (p *upstreamPicker) PickOverride(_ flow.Meta, tag string) (forwarding.Upstr
 	addr, ok := netip.AddrFromSlice(ip)
 	if !ok {
 		return forwarding.Upstream{}, fmt.Errorf("upstream %q has invalid active IP %q", tag, ip.String())
+	}
+	if p.metrics != nil {
+		p.metrics.SetRouteSelected(meta.Route, selected.Tag)
 	}
 	return forwarding.Upstream{Tag: selected.Tag, Addr: addr.Unmap()}, nil
 }
