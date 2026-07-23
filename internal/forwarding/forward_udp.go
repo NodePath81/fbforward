@@ -48,6 +48,7 @@ const (
 )
 
 var errUDPUpstreamSelection = errors.New("udp upstream selection failed")
+var errUDPUpstreamDial = errors.New("udp upstream dial failed")
 var errUDPMappingLimit = errors.New("udp mapping limit reached")
 var errUDPPerIPLimit = errors.New("udp per-ip mapping limit reached")
 var errUDPRateLimited = errors.New("udp packet rate limited")
@@ -195,8 +196,8 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 		case errors.Is(err, errUDPMappingLimit):
 			emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), key, "udp_mapping_limit", Decision{})
 			util.Event(l.logger, slog.LevelWarn, "forward.udp.mapping_limit_reached", "client.addr", key)
-		case errors.Is(err, errUDPUpstreamSelection):
-			util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)
+		default:
+			l.observeMappingFailure(key, err)
 		}
 		return
 	}
@@ -204,9 +205,7 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 		mapping, err = l.buildMapping(clientAddr, candidate, decision)
 		l.finishReservation(key, clientIP, reservation, mapping, err)
 		if err != nil {
-			if errors.Is(err, errUDPUpstreamSelection) {
-				util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)
-			}
+			l.observeMappingFailure(key, err)
 			return
 		}
 		l.activateMapping(ctx, mapping)
@@ -263,14 +262,14 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		decision = decisions[0]
 	}
 	if l.picker == nil {
-		return nil, errors.New("upstream picker is unavailable")
+		return nil, errors.Join(errUDPUpstreamSelection, errors.New("upstream picker is unavailable"))
 	}
 	var selected Upstream
 	var err error
 	if decision.UpstreamOverride != "" {
 		picker, ok := l.picker.(OverridePicker)
 		if !ok {
-			return nil, errors.New("upstream override is not supported")
+			return nil, errors.Join(errUDPUpstreamSelection, errors.New("upstream override is not supported"))
 		}
 		selected, err = picker.PickOverride(candidate, decision.UpstreamOverride)
 	} else {
@@ -298,7 +297,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		if feedback, ok := l.picker.(DialFeedback); ok {
 			feedback.MarkDialFailure(selected, udpDialFailureCooldown)
 		}
-		return nil, err
+		return nil, errors.Join(errUDPUpstreamDial, err)
 	}
 	if feedback, ok := l.picker.(DialFeedback); ok {
 		feedback.ClearDialFailure(selected)
@@ -361,6 +360,16 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		}
 	}
 	return mapping, nil
+}
+
+func (l *UDPListener) observeMappingFailure(clientAddress string, err error) {
+	switch {
+	case errors.Is(err, errUDPUpstreamSelection):
+		emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), clientAddress, "upstream_unusable", Decision{})
+		util.Event(l.logger, slog.LevelWarn, "forward.udp.upstream_selection_failed", "error", err)
+	case errors.Is(err, errUDPUpstreamDial):
+		emitRejection(l.observer, flow.ProtocolUDP, l.listenAddr(), clientAddress, "dial_failed", Decision{})
+	}
 }
 
 func (l *UDPListener) activateMapping(ctx context.Context, mapping *udpMapping) {

@@ -133,16 +133,19 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 		}
 	}
 	if l.picker == nil {
+		emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "upstream_unusable", Decision{})
 		_ = client.Close()
 		return
 	}
 	selected, err := l.pickUpstream(candidate, decision)
 	if err != nil {
+		emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "upstream_unusable", Decision{})
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.upstream_selection_failed", "error", err)
 		_ = client.Close()
 		return
 	}
 	if !selected.Addr.IsValid() {
+		emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "upstream_unusable", Decision{})
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.dial_failed",
 			"upstream", selected.Tag,
 			"result", "failed",
@@ -158,6 +161,7 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 	remoteAddr := net.JoinHostPort(selected.Addr.String(), util.FormatPort(l.cfg.BindPort))
 	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond, l.logger, selected.Tag)
 	if err != nil {
+		emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "dial_failed", Decision{})
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.dial_failed",
 			"upstream", selected.Tag,
 			"upstream.ip", upstreamIP,

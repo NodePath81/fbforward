@@ -236,6 +236,35 @@ func TestTCPPickErrorClosesConnectionWithoutCreatingFlow(t *testing.T) {
 	if len(observer.opens) != 0 || len(observer.closes) != 0 {
 		t.Fatalf("picker error must not create a Flow: opens=%d closes=%d", len(observer.opens), len(observer.closes))
 	}
+	if observer.rejectionCount() != 1 || observer.firstRejection().Reason != "upstream_unusable" {
+		t.Fatalf("unexpected picker rejection: %+v", observer.rejections)
+	}
+}
+
+func TestTCPDialFailureEmitsRejection(t *testing.T) {
+	port := freeTCPPort(t)
+	observer := &recordingObserver{}
+	conn := &stubConn{
+		local:  stubAddr("127.0.0.1:9000"),
+		remote: stubAddr("192.0.2.1:12345"),
+	}
+	listener := &TCPListener{
+		cfg:      config.ListenerConfig{BindPort: port},
+		picker:   &fakePicker{selected: selectedUpstream()},
+		policy:   allowedPolicy(),
+		observer: observer,
+		sem:      make(chan struct{}, 1),
+	}
+	listener.sem <- struct{}{}
+
+	listener.handleConn(context.Background(), conn)
+
+	if !conn.closed {
+		t.Fatal("expected dial failure to close TCP connection")
+	}
+	if observer.rejectionCount() != 1 || observer.firstRejection().Reason != "dial_failed" {
+		t.Fatalf("unexpected dial rejection: %+v", observer.rejections)
+	}
 }
 
 func TestTCPFlowBindsUpstreamSocketTuple(t *testing.T) {
@@ -439,6 +468,43 @@ func TestUDPMappingLimitEmitsRejection(t *testing.T) {
 
 	if observer.rejectionCount() != 1 || observer.firstRejection().Reason != "udp_mapping_limit" {
 		t.Fatalf("unexpected rejection records: %+v", observer.rejections)
+	}
+}
+
+func TestUDPSetupFailuresEmitRejections(t *testing.T) {
+	tests := []struct {
+		name       string
+		port       int
+		picker     *fakePicker
+		wantReason string
+	}{
+		{name: "selection", port: 9000, picker: &fakePicker{err: context.Canceled}, wantReason: "upstream_unusable"},
+		{name: "dial", port: 70000, picker: &fakePicker{selected: selectedUpstream()}, wantReason: "dial_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			observer := &recordingObserver{}
+			listener := &UDPListener{
+				cfg:      config.ListenerConfig{BindPort: tt.port},
+				picker:   tt.picker,
+				policy:   allowedPolicy(),
+				observer: observer,
+				sem:      make(chan struct{}, 1),
+				mappings: make(map[string]*udpMapping),
+				pending:  make(map[string]*udpMappingReservation),
+				ipCounts: make(map[string]int),
+				maxPerIP: udpMaxMappingsPerIP,
+			}
+
+			listener.handlePacket(context.Background(), &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 12345}, []byte("payload"))
+
+			if observer.rejectionCount() != 1 || observer.firstRejection().Reason != tt.wantReason {
+				t.Fatalf("unexpected setup rejection: %+v", observer.rejections)
+			}
+			if len(listener.mappings) != 0 || len(listener.pending) != 0 {
+				t.Fatalf("failed setup left mapping state: mappings=%d pending=%d", len(listener.mappings), len(listener.pending))
+			}
+		})
 	}
 }
 
