@@ -45,9 +45,21 @@ deployment with TLS termination or a trusted private network. The embedded
 operator page is a thin polling client and stores its token only in the
 current browser session.
 
-Prometheus is available at `/metrics` when enabled. Useful views include
-active Flow counts, upstream health/RTT, probe counters, route selections,
-firewall decisions, audit queue depth, and webhook results.
+Prometheus is available at `/metrics` when enabled. The compact metric set
+covers active Flow counts and bounded Flow events, cumulative traffic by
+upstream/protocol/direction, route selections, upstream health/RTT/probes,
+Audit received/written/dropped records, firewall decisions, UDP rate-limit
+drops, online-rule errors, and webhook results. Traffic rates should be
+calculated with PromQL, for example:
+
+```promql
+rate(fbforward_traffic_bytes_total[1m]) * 8
+```
+
+Labels are limited to configured upstream/route names and fixed protocol,
+direction, state, result, and rule-type values. Flow IDs, client addresses,
+Flow Context tags, rule values, and error text are available through Audit or
+logs rather than Prometheus labels.
 
 ## Audit and SQLite
 
@@ -114,7 +126,8 @@ metrics and logs. It never blocks the forwarding path.
    fbforward host.
 5. Check `GetStatus`, `GetRouteStatus`, and Prometheus health metrics.
 6. Check firewall policy and rejection audit records.
-7. Check SQLite and webhook queue/error metrics for local resource failures.
+7. Check SQLite, audit dropped-record metrics, and webhook error metrics for
+   local resource failures.
 
 An upstream failure does not migrate an existing Flow. Test a new connection
 when verifying fallback or a route override change.

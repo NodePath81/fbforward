@@ -82,6 +82,12 @@ service unavailable when the webhook sink is disabled.
 - `GET /metrics` returns Prometheus metrics when enabled.
 - `GET /identity` returns instance identity for the operator page.
 
+The metrics endpoint exposes cumulative counters and current gauges only. Use
+PromQL `rate(fbforward_traffic_bytes_total[1m])` for traffic rates. Labels are
+bounded to configured route/upstream names and fixed protocol, direction,
+state, result, and rule-type values; Flow IDs, client IPs, Flow Context tags,
+rule values, and error text are not Prometheus labels.
+
 Measurement returns health and raw RTT. TCP and UDP observations contribute to
 one upstream health snapshot. Static-only routes do not start a scheduler.
 `GetGeoIPStatus` reports local database availability; `ReloadGeoIP` only

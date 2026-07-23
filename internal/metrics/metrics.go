@@ -338,13 +338,19 @@ func (m *Metrics) IncFirewallDenied(ruleType string) {
 	if m == nil {
 		return
 	}
-	ruleType = strings.ToLower(strings.TrimSpace(ruleType))
-	if ruleType == "" {
-		ruleType = "other"
-	}
+	ruleType = normalizeRuleType(ruleType)
 	m.mu.Lock()
 	m.firewallDenied[ruleType]++
 	m.mu.Unlock()
+}
+
+func normalizeRuleType(ruleType string) string {
+	switch strings.ToLower(strings.TrimSpace(ruleType)) {
+	case "ip", "cidr", "asn", "country", "protocol":
+		return strings.ToLower(strings.TrimSpace(ruleType))
+	default:
+		return "other"
+	}
 }
 
 func (m *Metrics) Handler(w http.ResponseWriter, _ *http.Request) {
