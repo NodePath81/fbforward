@@ -108,6 +108,36 @@ func BenchmarkUDPMappingHitParallel(b *testing.B) {
 	})
 }
 
+func BenchmarkUDPMappingLookup(b *testing.B) {
+	key := "192.0.2.10:12345"
+	listener := &UDPListener{
+		mappings: map[string]*udpMapping{key: {}},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if listener.lookupMapping(key) == nil {
+			b.Fatal("mapping lookup missed")
+		}
+	}
+}
+
+func BenchmarkUDPMappingLookupParallel(b *testing.B) {
+	key := "192.0.2.10:12345"
+	listener := &UDPListener{
+		mappings: map[string]*udpMapping{key: {}},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if listener.lookupMapping(key) == nil {
+				b.Fatal("mapping lookup missed")
+			}
+		}
+	})
+}
+
 func BenchmarkUDPMappingCreate(b *testing.B) {
 	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {

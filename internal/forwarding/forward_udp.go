@@ -29,7 +29,7 @@ type UDPListener struct {
 	logger       util.Logger
 
 	conn     *net.UDPConn
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	mappings map[string]*udpMapping
 	pending  map[string]*udpMappingReservation
 	ipCounts map[string]int
@@ -216,8 +216,8 @@ func (l *UDPListener) handlePacket(ctx context.Context, clientAddr *net.UDPAddr,
 }
 
 func (l *UDPListener) lookupMapping(key string) *udpMapping {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.mappings[key]
 }
 
