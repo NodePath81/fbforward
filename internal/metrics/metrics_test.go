@@ -74,6 +74,32 @@ func TestRenderEscapesLabels(t *testing.T) {
 	}
 }
 
+func TestNormalizeFlowReasons(t *testing.T) {
+	tests := map[string]string{
+		"eof":                      "eof",
+		"idle_timeout":             "timeout",
+		"firewall_deny":            "policy",
+		"backend_blocked":          "policy",
+		"tcp_connection_limit":     "capacity",
+		"udp_mapping_limit":        "capacity",
+		"udp_per_ip_mapping_limit": "capacity",
+		"write_error":              "io_error",
+		"upstream_write_error":     "io_error",
+		"upstream_read_error":      "io_error",
+		"client_write_error":       "io_error",
+		"context_done":             "canceled",
+		"upstream_unusable":        "upstream_unusable",
+		"dial_failed":              "dial_failed",
+		"shutdown":                 "shutdown",
+		"peer detail":              "other",
+	}
+	for input, want := range tests {
+		if got := normalizeReason(input); got != want {
+			t.Errorf("normalizeReason(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestConcurrentUpdateAndRender(t *testing.T) {
 	m := NewMetrics([]string{"primary"})
 	var wg sync.WaitGroup

@@ -226,8 +226,26 @@ func normalizeProtocol(protocol string) string {
 
 func normalizeReason(reason string) string {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
-	case "eof", "timeout", "policy", "dial_failed", "shutdown", "none":
-		return strings.ToLower(strings.TrimSpace(reason))
+	case "eof":
+		return "eof"
+	case "idle_timeout", "timeout":
+		return "timeout"
+	case "firewall_deny", "backend_blocked", "policy":
+		return "policy"
+	case "tcp_connection_limit", "udp_mapping_limit", "udp_per_ip_mapping_limit", "capacity":
+		return "capacity"
+	case "write_error", "upstream_write_error", "upstream_read_error", "client_write_error", "io_error":
+		return "io_error"
+	case "context_done", "canceled":
+		return "canceled"
+	case "upstream_unusable":
+		return "upstream_unusable"
+	case "dial_failed":
+		return "dial_failed"
+	case "shutdown":
+		return "shutdown"
+	case "none":
+		return "none"
 	default:
 		return "other"
 	}
