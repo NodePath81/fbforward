@@ -23,11 +23,15 @@ func NewSupervisor(configPath string, logger util.Logger) *Supervisor {
 }
 
 func (s *Supervisor) Start() error {
-	lifecycleLogger := util.ComponentLogger(s.logger, util.CompLifecycle)
 	cfg, err := config.LoadConfig(s.configPath)
 	if err != nil {
 		return err
 	}
+	return s.startConfig(cfg)
+}
+
+func (s *Supervisor) startConfig(cfg config.Config) error {
+	lifecycleLogger := util.ComponentLogger(s.logger, util.CompLifecycle)
 	for _, warning := range cfg.Warnings {
 		util.Event(lifecycleLogger, slog.LevelWarn, "lifecycle.config_warning", "warning", warning)
 	}
@@ -53,6 +57,11 @@ func (s *Supervisor) Start() error {
 func (s *Supervisor) Restart() error {
 	lifecycleLogger := util.ComponentLogger(s.logger, util.CompLifecycle)
 	util.Event(lifecycleLogger, slog.LevelInfo, "lifecycle.restart_triggered", "restart.source", "rpc")
+	cfg, err := config.LoadConfig(s.configPath)
+	if err != nil {
+		util.Event(lifecycleLogger, slog.LevelError, "lifecycle.restart_failed", "error", err)
+		return err
+	}
 
 	s.mu.Lock()
 	current := s.runtime
@@ -62,7 +71,7 @@ func (s *Supervisor) Restart() error {
 	if current != nil {
 		current.Stop()
 	}
-	if err := s.Start(); err != nil {
+	if err := s.startConfig(cfg); err != nil {
 		util.Event(lifecycleLogger, slog.LevelError, "lifecycle.restart_failed", "error", err)
 		return err
 	}
