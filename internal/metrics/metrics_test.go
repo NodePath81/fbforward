@@ -74,6 +74,16 @@ func TestRenderEscapesLabels(t *testing.T) {
 	}
 }
 
+func TestInitialUpstreamHealthIsUnknown(t *testing.T) {
+	rendered := NewMetrics([]string{"primary"}).Render()
+	if !strings.Contains(rendered, `fbforward_upstream_health_state{upstream="primary",state="unknown"} 1`) {
+		t.Fatalf("initial health was not unknown:\n%s", rendered)
+	}
+	if strings.Contains(rendered, `fbforward_upstream_health_state{upstream="primary",state="healthy"} 1`) {
+		t.Fatal("initial health unexpectedly reported healthy")
+	}
+}
+
 func TestNormalizeFlowReasons(t *testing.T) {
 	tests := map[string]string{
 		"eof":                      "eof",
@@ -84,6 +94,7 @@ func TestNormalizeFlowReasons(t *testing.T) {
 		"udp_mapping_limit":        "capacity",
 		"udp_per_ip_mapping_limit": "capacity",
 		"write_error":              "io_error",
+		"read_error":               "io_error",
 		"upstream_write_error":     "io_error",
 		"upstream_read_error":      "io_error",
 		"client_write_error":       "io_error",

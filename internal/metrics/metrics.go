@@ -83,7 +83,9 @@ func NewMetrics(tags []string) *Metrics {
 		if tag == "" {
 			continue
 		}
-		upstreams[tag] = &upstreamState{}
+		upstreams[tag] = &upstreamState{metrics: UpstreamMetrics{
+			HealthState: string(upstream.HealthUnknown),
+		}}
 	}
 	return &Metrics{
 		upstreams:      upstreams,
@@ -234,7 +236,7 @@ func normalizeReason(reason string) string {
 		return "policy"
 	case "tcp_connection_limit", "udp_mapping_limit", "udp_per_ip_mapping_limit", "capacity":
 		return "capacity"
-	case "write_error", "upstream_write_error", "upstream_read_error", "client_write_error", "io_error":
+	case "read_error", "write_error", "upstream_write_error", "upstream_read_error", "client_write_error", "io_error":
 		return "io_error"
 	case "context_done", "canceled":
 		return "canceled"
