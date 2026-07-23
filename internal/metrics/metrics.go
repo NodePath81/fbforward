@@ -134,6 +134,9 @@ func (m *Metrics) RecordProbe(tag, protocol string, success bool) {
 		return
 	}
 	protocol = normalizeProtocol(protocol)
+	if protocol == "other" {
+		return
+	}
 	result := "failure"
 	if success {
 		result = "success"
@@ -315,7 +318,11 @@ func (m *Metrics) IncWebhookDelivery(result string) {
 	if m == nil {
 		return
 	}
-	result = normalizeWebhookResult(result)
+	var ok bool
+	result, ok = normalizeWebhookResult(result)
+	if !ok {
+		return
+	}
 	m.mu.Lock()
 	m.webhook[result]++
 	m.mu.Unlock()
@@ -325,12 +332,12 @@ func (m *Metrics) IncWebhookDropped() {
 	m.IncWebhookDelivery("dropped")
 }
 
-func normalizeWebhookResult(result string) string {
+func normalizeWebhookResult(result string) (string, bool) {
 	switch result {
 	case "success", "failed", "dropped":
-		return result
+		return result, true
 	default:
-		return "failed"
+		return "", false
 	}
 }
 
