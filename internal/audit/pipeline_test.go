@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -11,8 +12,19 @@ import (
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flow"
+	"github.com/NodePath81/fbforward/internal/geoip"
 	"github.com/NodePath81/fbforward/internal/metrics"
 )
+
+type pipelineLookup struct{}
+
+func (pipelineLookup) Lookup(net.IP) geoip.LookupResult {
+	return geoip.LookupResult{ASN: 13335, ASOrg: "Cloudflare", Country: "US"}
+}
+
+func (pipelineLookup) Availability() geoip.Availability {
+	return geoip.Availability{ASNDBAvailable: true, CountryAvailable: true}
+}
 
 func TestPipelineWritesFlowAndCheckpoint(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "pipeline.sqlite"))
@@ -153,6 +165,32 @@ func TestPipelineCountsStoreWriteFailuresAsDropped(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("missing audit metric %q:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestPipelineEnrichesRejectionBeforeWrite(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "rejection.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	logRejections := true
+	pipeline := NewPipeline(config.IPLogConfig{Enabled: true, LogRejections: &logRejections, GeoQueueSize: 2, WriteQueueSize: 2, BatchSize: 1}, pipelineLookup{}, store, nil, nil)
+	pipeline.Start()
+	pipeline.Reject(flow.Rejection{
+		Protocol: "udp", ClientAddr: netip.MustParseAddrPort("192.0.2.1:1234"), Listener: ":9000",
+		Reason: "firewall_deny", RecordedAt: time.Now().UTC(),
+	})
+	if err := pipeline.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.QueryRejections(RejectionQueryParams{Limit: 10})
+	if err != nil || result.Total != 1 || len(result.Records) != 1 {
+		t.Fatalf("rejection result = %+v err=%v", result, err)
+	}
+	record := result.Records[0]
+	if record.ASN != 13335 || record.ASOrg != "Cloudflare" || record.Country != "US" {
+		t.Fatalf("rejection was not GeoIP enriched: %+v", record)
 	}
 }
 
