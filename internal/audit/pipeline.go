@@ -211,10 +211,9 @@ func (p *Pipeline) allowRejection(key string, now time.Time) bool {
 		return false
 	}
 	if len(p.recent) >= rejectionDedupeMaxEntries {
-		// Reset the bounded best-effort cache instead of scanning it for the
-		// oldest entry on every new rejection. Rejection persistence remains
-		// bounded and the forwarding path keeps a constant-size critical step.
-		p.recent = make(map[string]time.Time, rejectionDedupeMaxEntries)
+		// Do not allocate or scan on the forwarding path when the best-effort
+		// audit dedupe cache is full. Metrics still count every rejection.
+		return false
 	}
 	p.recent[key] = now
 	return true
