@@ -163,7 +163,7 @@ func TestDenyMetricUsesRuleLabels(t *testing.T) {
 		t.Fatalf("expected deny")
 	}
 	rendered := m.Render()
-	if !strings.Contains(rendered, `fbforward_firewall_denied_total{rule_type="cidr",rule_value="10.0.0.0/8"} 1`) {
+	if !strings.Contains(rendered, `fbforward_firewall_denied_total{rule_type="cidr"} 1`) {
 		t.Fatalf("expected labeled firewall deny metric, got:\n%s", rendered)
 	}
 }

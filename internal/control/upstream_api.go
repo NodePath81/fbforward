@@ -57,15 +57,9 @@ func (c *ControlServer) rpcSetUpstream(ctx *rpcContext, raw json.RawMessage) (an
 	switch mode {
 	case "auto":
 		c.manager.SetAuto()
-		if c.metrics != nil {
-			c.metrics.SetMode(upstream.ModeAuto)
-		}
 	case "manual":
 		if err := c.manager.SetManual(params.Tag); err != nil {
 			return rpcError(http.StatusBadRequest, err.Error())
-		}
-		if c.metrics != nil {
-			c.metrics.SetMode(upstream.ModeManual)
 		}
 	default:
 		return rpcError(http.StatusBadRequest, "invalid mode")

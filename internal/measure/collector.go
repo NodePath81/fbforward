@@ -102,19 +102,6 @@ func (c *Collector) syncUpstreamMetrics() {
 			c.metrics.SetUpstreamMetrics(tag, stats)
 		}
 	}
-	c.syncScheduleMetrics()
-}
-
-func (c *Collector) syncScheduleMetrics() {
-	if c.metrics == nil || c.scheduler == nil {
-		return
-	}
-	status := c.scheduler.Status()
-	c.metrics.SetScheduleMetrics(metrics.ScheduleMetrics{
-		QueueSize:     status.QueueLength,
-		NextScheduled: status.NextScheduled,
-		LastRun:       status.LastRun,
-	})
 }
 
 func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, network string) error {
@@ -130,26 +117,26 @@ func (c *Collector) RunProtocol(ctx context.Context, up *upstream.Upstream, netw
 
 	result, err := c.runMeasurement(cycleCtx, up, network, probeTimeout)
 	if err != nil {
-		return c.handleMeasurementFailure(up.Tag, err)
+		return c.handleMeasurementFailure(up.Tag, network, err)
 	}
-	c.handleMeasurementSuccess(up.Tag, result)
+	c.handleMeasurementSuccess(up.Tag, network, result)
 	return nil
 }
 
-func (c *Collector) handleMeasurementFailure(tag string, err error) error {
+func (c *Collector) handleMeasurementFailure(tag, protocol string, err error) error {
 	stats := c.manager.RecordProbeFailure(tag, time.Now())
 	if c.metrics != nil {
-		c.metrics.RecordProbe(tag, false)
+		c.metrics.RecordProbe(tag, protocol, false)
 		c.metrics.SetUpstreamMetrics(tag, stats)
 	}
 	util.Event(c.logger, slog.LevelWarn, "measure.probe_failed", "upstream", tag, "error", err)
 	return err
 }
 
-func (c *Collector) handleMeasurementSuccess(tag string, result upstream.ProbeObservation) {
+func (c *Collector) handleMeasurementSuccess(tag, protocol string, result upstream.ProbeObservation) {
 	stats := c.manager.RecordProbe(tag, result)
 	if c.metrics != nil {
-		c.metrics.RecordProbe(tag, true)
+		c.metrics.RecordProbe(tag, protocol, true)
 		c.metrics.SetUpstreamMetrics(tag, stats)
 	}
 }

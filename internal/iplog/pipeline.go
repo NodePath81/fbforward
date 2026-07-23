@@ -269,7 +269,6 @@ func (p *Pipeline) runWriteWorker() {
 		}
 		if written > 0 && p.metrics != nil {
 			p.metrics.AddIPLogWrites(uint64(written))
-			p.metrics.ObserveIPLogBatchSize(written)
 		}
 	}
 

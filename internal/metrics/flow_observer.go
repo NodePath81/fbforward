@@ -35,11 +35,8 @@ func (o *FlowObserver) Open(meta flow.Meta) {
 	o.mu.Lock()
 	o.flows[meta.ID] = flowMetricState{protocol: meta.Protocol, upstream: meta.Upstream}
 	o.mu.Unlock()
-	if meta.Protocol == flow.ProtocolTCP {
-		o.metrics.IncTCPActive()
-	} else if meta.Protocol == flow.ProtocolUDP {
-		o.metrics.IncUDPActive()
-	}
+	o.metrics.IncActive(meta.Protocol)
+	o.metrics.RecordFlowEvent(meta.Protocol, "open", "")
 }
 
 func (o *FlowObserver) Update(id flow.ID, counters flow.Counters) {
@@ -91,20 +88,22 @@ func (o *FlowObserver) Close(summary flow.Summary) {
 		return
 	}
 	o.addBytes(state, upDelta, downDelta)
-	if state.protocol == flow.ProtocolTCP {
-		o.metrics.DecTCPActive()
-	} else if state.protocol == flow.ProtocolUDP {
-		o.metrics.DecUDPActive()
-	}
+	o.metrics.DecActive(state.protocol)
+	o.metrics.RecordFlowEvent(state.protocol, "close", summary.CloseReason)
 }
 
-func (o *FlowObserver) Reject(flow.Rejection) {}
+func (o *FlowObserver) Reject(rejection flow.Rejection) {
+	if o == nil || o.metrics == nil {
+		return
+	}
+	o.metrics.RecordFlowEvent(rejection.Protocol, "reject", rejection.Reason)
+}
 
 func (o *FlowObserver) addBytes(state flowMetricState, upDelta, downDelta uint64) {
 	if upDelta > 0 {
-		o.metrics.AddBytesUp(state.upstream, upDelta, state.protocol)
+		o.metrics.AddTraffic(state.upstream, state.protocol, "up", upDelta)
 	}
 	if downDelta > 0 {
-		o.metrics.AddBytesDown(state.upstream, downDelta, state.protocol)
+		o.metrics.AddTraffic(state.upstream, state.protocol, "down", downDelta)
 	}
 }

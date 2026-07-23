@@ -310,7 +310,7 @@ func TestPipelineWriteQueueOverflowIncrementsDropMetric(t *testing.T) {
 	pipeline.runGeoWorker()
 
 	rendered := m.Render()
-	if !strings.Contains(rendered, "fbforward_iplog_events_dropped_total 1") {
+	if !strings.Contains(rendered, `fbforward_audit_records_total{result="dropped"} 1`) {
 		t.Fatalf("expected dropped metric after write queue overflow, got:\n%s", rendered)
 	}
 }

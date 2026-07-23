@@ -109,7 +109,7 @@ func (e *Engine) Decide(ip net.IP) Decision {
 		}
 		if !rule.action {
 			if e.metrics != nil {
-				e.metrics.IncFirewallDenied(rule.kind, rule.value)
+				e.metrics.IncFirewallDenied(rule.kind)
 			}
 			util.Event(e.logger, slog.LevelInfo, "firewall.denied",
 				"client.ip", ip.String(),

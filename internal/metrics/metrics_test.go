@@ -2,56 +2,118 @@ package metrics
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
-func TestRenderIncludesIPLogAndFirewallMetrics(t *testing.T) {
-	m := NewMetrics(nil)
+func TestRenderContract(t *testing.T) {
+	m := NewMetrics([]string{"primary"})
+	m.IncActive("tcp")
+	m.RecordFlowEvent("tcp", "open", "")
+	m.RecordFlowEvent("tcp", "reject", "client provided detail")
+	m.AddTraffic("primary", "tcp", "up", 12)
+	m.AddTraffic("primary", "tcp", "down", 8)
+	m.SetRouteSelected("default", "primary")
+	m.RecordProbe("primary", "tcp", true)
+	m.RecordProbe("primary", "udp", false)
 	m.IncIPLogEvent()
+	m.AddIPLogWrites(1)
 	m.IncIPLogEventDropped()
-	m.AddIPLogWrites(3)
 	m.RecordRateLimitDrop("udp", 1200)
 	m.SetOnlineRulesActive(2)
 	m.IncOnlineRuleExpiryError()
 	m.IncWebhookDelivery("success")
 	m.IncWebhookDelivery("failed")
 	m.IncWebhookDropped()
-	m.ObserveIPLogBatchSize(3)
-	m.IncFirewallDenied("cidr", "10.0.0.0/8")
+	m.IncFirewallDenied("cidr")
 
 	rendered := m.Render()
 	for _, needle := range []string{
-		"fbforward_iplog_events_total 1",
-		"fbforward_iplog_events_dropped_total 1",
-		"fbforward_iplog_writes_total 3",
-		`fbforward_firewall_denied_total{rule_type="cidr",rule_value="10.0.0.0/8"} 1`,
-		"fbforward_iplog_batch_size_count 1",
-		"fbforward_iplog_batch_size_sum 3",
-		"fbforward_udp_rate_limit_drops_total 1",
-		"fbforward_udp_rate_limit_drop_bytes_total 1200",
-		"fbforward_online_rules_active 2",
-		"fbforward_online_rule_expiry_errors_total 1",
-		`fbforward_webhook_deliveries_total{result="success"} 1`,
-		`fbforward_webhook_deliveries_total{result="failed"} 1`,
-		"fbforward_webhook_dropped_total 1",
+		"fbforward_uptime_seconds ",
+		`fbforward_flows_active{protocol="tcp"} 1`,
+		`fbforward_flow_events_total{protocol="tcp",event="open",reason="none"} 1`,
+		`fbforward_flow_events_total{protocol="tcp",event="reject",reason="other"} 1`,
+		`fbforward_traffic_bytes_total{upstream="primary",protocol="tcp",direction="up"} 12`,
+		`fbforward_route_selected_upstream{route="default",upstream="primary"} 1`,
+		`fbforward_upstream_probes_total{upstream="primary",protocol="tcp",result="success"} 1`,
+		`fbforward_audit_records_total{result="written"} 1`,
+		`fbforward_udp_rate_limit_drops_total 1`,
+		`fbforward_online_rules_active 2`,
+		`fbforward_webhook_deliveries_total{result="dropped"} 1`,
+		`fbforward_firewall_denied_total{rule_type="cidr"} 1`,
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected metrics output to contain %q\n%s", needle, rendered)
 		}
 	}
+	for _, removed := range []string{
+		"fbforward_bytes_up_total",
+		"fbforward_bytes_up_per_second",
+		"fbforward_mode",
+		"fbforward_active_upstream",
+		"fbforward_iplog_batch_size",
+		"rule_value=",
+	} {
+		if strings.Contains(rendered, removed) {
+			t.Fatalf("removed metric or label %q is still rendered\n%s", removed, rendered)
+		}
+	}
 }
 
-func TestProbeMetricsCountSuccessAndFailure(t *testing.T) {
-	m := NewMetrics([]string{"primary"})
-	m.RecordProbe("primary", true)
-	m.RecordProbe("primary", false)
+func TestRenderEscapesLabels(t *testing.T) {
+	upstreamTag := "upstream\"\\\nline"
+	route := "route\"\\\n"
+	m := NewMetrics([]string{upstreamTag})
+	m.SetRouteSelected(route, upstreamTag)
 	rendered := m.Render()
-	for _, needle := range []string{
-		`fbforward_upstream_probe_total{upstream="primary"} 2`,
-		`fbforward_upstream_probe_failures_total{upstream="primary"} 1`,
-	} {
-		if !strings.Contains(rendered, needle) {
-			t.Fatalf("expected metrics output to contain %q\n%s", needle, rendered)
-		}
+	if !strings.Contains(rendered, `upstream="upstream\"\\\nline"`) {
+		t.Fatalf("upstream label was not escaped:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, `route="route\"\\\n"`) {
+		t.Fatalf("route label was not escaped:\n%s", rendered)
+	}
+}
+
+func TestConcurrentUpdateAndRender(t *testing.T) {
+	m := NewMetrics([]string{"primary"})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 1000; j++ {
+				m.AddTraffic("primary", "tcp", "up", 1)
+				m.RecordFlowEvent("tcp", "close", "eof")
+				_ = m.Render()
+			}
+		}()
+	}
+	wg.Wait()
+	if !strings.Contains(m.Render(), `fbforward_traffic_bytes_total{upstream="primary",protocol="tcp",direction="up"} 8000`) {
+		t.Fatal("concurrent traffic updates were lost")
+	}
+}
+
+func BenchmarkAddTraffic(b *testing.B) {
+	m := NewMetrics([]string{"primary"})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.AddTraffic("primary", "tcp", "up", 1024)
+	}
+}
+
+func BenchmarkRender(b *testing.B) {
+	tags := make([]string, 16)
+	for i := range tags {
+		tags[i] = "upstream-" + string(rune('a'+i))
+	}
+	m := NewMetrics(tags)
+	for i, tag := range tags {
+		m.SetRouteSelected("route-"+string(rune('a'+i%8)), tag)
+		m.AddTraffic(tag, "tcp", "up", 1024)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = m.Render()
 	}
 }

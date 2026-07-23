@@ -193,19 +193,13 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 		})
 	}
 
-	manager.SetCallbacks(func(change upstream.ActiveChange) {
-		if change.OldTag != change.NewTag {
-			metricSet.SetActive(change.NewTag)
-		}
-	}, func(change upstream.UsabilityChange) {
+	manager.SetCallbacks(nil, func(change upstream.UsabilityChange) {
 		if rt.notifyPolicy != nil {
 			rt.notifyPolicy.HandleUsabilityChange(change.Tag, change.Usable, change.Reason)
 		}
 	})
 
-	metricSet.SetMode(upstream.ModeAuto)
 	manager.SetAuto()
-	metricSet.Start(ctx.Done())
 
 	ctrl := control.NewControlServer(cfg, manager, metricSet, status, restartFn, logger)
 	if rt.notifier != nil {

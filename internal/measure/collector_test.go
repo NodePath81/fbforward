@@ -37,7 +37,7 @@ func TestCollectorFailureUpdatesHealthAndMetrics(t *testing.T) {
 	metricSet := metrics.NewMetrics([]string{"primary"})
 	collector := NewCollector(config.MeasurementConfig{}, manager, metricSet, nil, nil)
 
-	if err := collector.handleMeasurementFailure("primary", errors.New("probe timeout")); err == nil {
+	if err := collector.handleMeasurementFailure("primary", "tcp", errors.New("probe timeout")); err == nil {
 		t.Fatal("expected measurement failure")
 	}
 	stats, ok := manager.Health("primary")
@@ -49,7 +49,7 @@ func TestCollectorFailureUpdatesHealthAndMetrics(t *testing.T) {
 		t.Fatalf("metrics did not receive failed observation: ok=%v metrics=%+v", ok, upstreamMetrics)
 	}
 	rendered := metricSet.Render()
-	if !strings.Contains(rendered, `fbforward_upstream_probe_failures_total{upstream="primary"} 1`) {
+	if !strings.Contains(rendered, `fbforward_upstream_probes_total{upstream="primary",protocol="tcp",result="failure"} 1`) {
 		t.Fatalf("missing probe failure counter:\n%s", rendered)
 	}
 }
