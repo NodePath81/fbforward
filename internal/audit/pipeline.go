@@ -93,7 +93,7 @@ func NewPipeline(cfg config.IPLogConfig, lookup geoip.LookupProvider, store *Sto
 	}
 	return &Pipeline{
 		geoCh: make(chan pipelineItem, geoSize), writeCh: make(chan pipelineItem, writeSize),
-		lookup: lookup, store: store, metrics: metricSet, logger: util.ComponentLogger(logger, util.CompIPLog),
+		lookup: lookup, store: store, metrics: metricSet, logger: util.ComponentLogger(logger, util.CompAudit),
 		batchSize: batchSize, flushInterval: flush, logRejections: util.BoolValue(cfg.LogRejections, cfg.Enabled),
 		active: make(map[flow.ID]activeFlow), recent: make(map[string]time.Time),
 	}

@@ -24,7 +24,7 @@ const (
 	CompDNS        = "dns"
 	CompUpstream   = "upstream"
 	CompGeoIP      = "geoip"
-	CompIPLog      = "iplog"
+	CompAudit      = "audit"
 	CompFirewall   = "firewall"
 	CompNotify     = "notify"
 )

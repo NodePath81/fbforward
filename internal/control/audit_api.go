@@ -78,8 +78,8 @@ type ipLogStatusResponse struct {
 }
 
 func (c *ControlServer) auditDB() *audit.Store {
-	c.iplogMu.RLock()
-	defer c.iplogMu.RUnlock()
+	c.auditMu.RLock()
+	defer c.auditMu.RUnlock()
 	return c.auditStore
 }
 

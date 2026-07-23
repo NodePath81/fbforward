@@ -52,7 +52,7 @@ type ControlServer struct {
 	collector   *measure.Collector
 	geoipMu     sync.RWMutex
 	geoipMgr    geoipManager
-	iplogMu     sync.RWMutex
+	auditMu     sync.RWMutex
 	auditStore  *audit.Store
 	firewallMu  sync.RWMutex
 	firewall    *policy.Provider
@@ -155,8 +155,8 @@ func (c *ControlServer) SetGeoIPManager(manager geoipManager) {
 }
 
 func (c *ControlServer) SetAuditStore(store *audit.Store) {
-	c.iplogMu.Lock()
-	defer c.iplogMu.Unlock()
+	c.auditMu.Lock()
+	defer c.auditMu.Unlock()
 	c.auditStore = store
 }
 
