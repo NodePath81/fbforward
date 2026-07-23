@@ -256,11 +256,7 @@ func (m *Metrics) AddTraffic(upstreamTag, protocol, direction string, n uint64) 
 	}
 }
 
-func (m *Metrics) IncIPLogEvent() {
-	m.AddIPLogEvents(1)
-}
-
-func (m *Metrics) AddIPLogEvents(n uint64) {
+func (m *Metrics) AddAuditReceived(n uint64) {
 	if m == nil || n == 0 {
 		return
 	}
@@ -269,11 +265,7 @@ func (m *Metrics) AddIPLogEvents(n uint64) {
 	m.mu.Unlock()
 }
 
-func (m *Metrics) IncIPLogEventDropped() {
-	m.AddIPLogDrops(1)
-}
-
-func (m *Metrics) AddIPLogDrops(n uint64) {
+func (m *Metrics) AddAuditDropped(n uint64) {
 	if m == nil || n == 0 {
 		return
 	}
@@ -282,7 +274,7 @@ func (m *Metrics) AddIPLogDrops(n uint64) {
 	m.mu.Unlock()
 }
 
-func (m *Metrics) AddIPLogWrites(n uint64) {
+func (m *Metrics) AddAuditWritten(n uint64) {
 	if m == nil || n == 0 {
 		return
 	}

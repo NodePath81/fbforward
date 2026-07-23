@@ -229,14 +229,15 @@ func (p *Pipeline) allowRejection(key string, now time.Time) bool {
 }
 
 func (p *Pipeline) enqueue(item pipelineItem) bool {
+	count := item.recordCount()
+	if p.metrics != nil {
+		p.metrics.AddAuditReceived(count)
+	}
 	p.mu.Lock()
 	closed := p.closed
 	if !closed {
 		select {
 		case p.geoCh <- item:
-			if p.metrics != nil {
-				p.metrics.AddIPLogEvents(item.recordCount())
-			}
 			p.mu.Unlock()
 			return true
 		default:
@@ -244,9 +245,9 @@ func (p *Pipeline) enqueue(item pipelineItem) bool {
 	}
 	p.mu.Unlock()
 	if p.metrics != nil {
-		p.metrics.AddIPLogDrops(item.recordCount())
+		p.metrics.AddAuditDropped(count)
 	}
-	return !closed && false
+	return false
 }
 
 func (p *Pipeline) Shutdown(ctx context.Context) error {
@@ -282,7 +283,7 @@ func (p *Pipeline) runGeoWorker() {
 		case p.writeCh <- item:
 		default:
 			if p.metrics != nil {
-				p.metrics.AddIPLogDrops(item.recordCount())
+				p.metrics.AddAuditDropped(item.recordCount())
 			}
 		}
 	}
@@ -301,19 +302,19 @@ func (p *Pipeline) runWriteWorker() {
 		}
 		if err != nil {
 			if p.metrics != nil {
-				p.metrics.AddIPLogDrops(uint64(count))
+				p.metrics.AddAuditDropped(uint64(count))
 			}
 			util.Event(p.logger, slog.LevelError, event, "batch.size", count, "error", err)
 			return
 		}
 		if p.metrics != nil {
-			p.metrics.AddIPLogWrites(uint64(count))
+			p.metrics.AddAuditWritten(uint64(count))
 		}
 	}
 	flush := func() {
 		if p.store == nil {
 			if p.metrics != nil {
-				p.metrics.AddIPLogDrops(uint64(len(entities) + len(flows) + len(checkpoints) + len(rejections)))
+				p.metrics.AddAuditDropped(uint64(len(entities) + len(flows) + len(checkpoints) + len(rejections)))
 			}
 			entities = entities[:0]
 			flows = flows[:0]
