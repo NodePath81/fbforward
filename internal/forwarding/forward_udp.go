@@ -256,11 +256,7 @@ func (l *UDPListener) getOrReserveMapping(key, clientIP string) (*udpMapping, *u
 	}
 }
 
-func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta, decisions ...Decision) (*udpMapping, error) {
-	decision := Decision{Allowed: true}
-	if len(decisions) > 0 {
-		decision = decisions[0]
-	}
+func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta, decision Decision) (*udpMapping, error) {
 	if l.picker == nil {
 		return nil, errors.Join(errUDPUpstreamSelection, errors.New("upstream picker is unavailable"))
 	}
@@ -286,7 +282,19 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		"upstream", selected.Tag,
 		"upstream.ip", upstreamIP,
 	)
-	upAddr := &net.UDPAddr{IP: net.ParseIP(upstreamIP), Port: l.cfg.BindPort}
+	if l.cfg.BindPort < 0 || l.cfg.BindPort > 65535 {
+		err := errors.New("invalid upstream port")
+		util.Event(l.logger, slog.LevelWarn, "forward.udp.dial_failed",
+			"upstream", selected.Tag,
+			"error", err,
+			"result", "failed",
+		)
+		if feedback, ok := l.picker.(DialFeedback); ok {
+			feedback.MarkDialFailure(selected, udpDialFailureCooldown)
+		}
+		return nil, errors.Join(errUDPUpstreamDial, err)
+	}
+	upAddr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(selected.Addr, uint16(l.cfg.BindPort)))
 	upConn, err := net.DialUDP("udp", nil, upAddr)
 	if err != nil {
 		util.Event(l.logger, slog.LevelWarn, "forward.udp.dial_failed",
@@ -448,9 +456,7 @@ type udpMappingReservation struct {
 }
 
 func (m *udpMapping) forwardToUpstream(payload []byte) error {
-	if m.rateLimiter != nil && !m.rateLimiter.Try(len(payload)) {
-		m.parent.recordRateLimitDrop(len(payload))
-		util.Event(m.logger, slog.LevelDebug, "forward.udp.rate_limited", "flow.id", m.id, "bytes", len(payload), "result", "dropped")
+	if !m.allowPacket(len(payload)) {
 		return errUDPRateLimited
 	}
 	if _, err := m.upstreamConn.Write(payload); err != nil {
@@ -481,9 +487,7 @@ func (m *udpMapping) readLoop(ctx context.Context) {
 			}
 		}
 		if n > 0 {
-			if m.rateLimiter != nil && !m.rateLimiter.Try(n) {
-				m.parent.recordRateLimitDrop(n)
-				util.Event(m.logger, slog.LevelDebug, "forward.udp.rate_limited", "flow.id", m.id, "bytes", n, "result", "dropped")
+			if !m.allowPacket(n) {
 				continue
 			}
 			_, werr := m.parent.conn.WriteToUDP(buf[:n], m.clientAddr)
@@ -506,6 +510,15 @@ func (m *udpMapping) readLoop(ctx context.Context) {
 		default:
 		}
 	}
+}
+
+func (m *udpMapping) allowPacket(size int) bool {
+	if m.rateLimiter == nil || m.rateLimiter.Try(size) {
+		return true
+	}
+	m.parent.recordRateLimitDrop(size)
+	util.Event(m.logger, slog.LevelDebug, "forward.udp.rate_limited", "flow.id", m.id, "bytes", size, "result", "dropped")
+	return false
 }
 
 func (l *UDPListener) recordRateLimitDrop(bytes int) {
@@ -581,7 +594,7 @@ func (m *udpMapping) closeWithReason(reason string) bool {
 	m.controlMu.Unlock()
 	close(m.done)
 	_ = m.upstreamConn.Close()
-	m.parent.removeMapping(m.clientAddr.String(), m.clientIP)
+	m.parent.removeMapping(m.clientAddrStr, m.clientIP)
 	durationMs := int64(0)
 	if !m.created.IsZero() {
 		durationMs = time.Since(m.created).Milliseconds()

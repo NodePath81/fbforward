@@ -361,7 +361,7 @@ func TestUDPMappingBindsUpstreamSocketTuple(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mapping, err := listener.buildMapping(clientAddr, candidate)
+	mapping, err := listener.buildMapping(clientAddr, candidate, Decision{})
 	if err != nil {
 		t.Fatal(err)
 	}
