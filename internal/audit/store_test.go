@@ -421,10 +421,10 @@ func TestFlowRejectionTagsAndTopTalkers(t *testing.T) {
 func TestTopASNsAggregatesFlowBytes(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.InsertBatch([]EnrichedRecord{
-		{CloseEvent: CloseEvent{IP: "192.0.2.1", Protocol: "tcp", BytesUp: 10, BytesDown: 20, RecordedAt: now}, ASN: 64500, ASOrg: "Example A", Country: "US"},
-		{CloseEvent: CloseEvent{IP: "192.0.2.2", Protocol: "udp", BytesUp: 40, BytesDown: 0, RecordedAt: now}, ASN: 64500, ASOrg: "Example A", Country: "US"},
-		{CloseEvent: CloseEvent{IP: "192.0.2.3", Protocol: "tcp", BytesUp: 1, BytesDown: 2, RecordedAt: now}, ASN: 64501, ASOrg: "Example B", Country: "GB"},
+	if err := store.InsertFlows([]FlowRecord{
+		{FlowID: "asn-flow-1", ClientIP: "192.0.2.1", Protocol: "tcp", BytesUp: 10, BytesDown: 20, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64500, ASOrg: "Example A", Country: "US"},
+		{FlowID: "asn-flow-2", ClientIP: "192.0.2.2", Protocol: "udp", BytesUp: 40, BytesDown: 0, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64500, ASOrg: "Example A", Country: "US"},
+		{FlowID: "asn-flow-3", ClientIP: "192.0.2.3", Protocol: "tcp", BytesUp: 1, BytesDown: 2, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64501, ASOrg: "Example B", Country: "GB"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -440,9 +440,9 @@ func TestTopASNsAggregatesFlowBytes(t *testing.T) {
 func TestTopASNsCombinesCountriesPerASN(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.InsertBatch([]EnrichedRecord{
-		{CloseEvent: CloseEvent{IP: "192.0.2.10", Protocol: "tcp", BytesUp: 10, BytesDown: 5, RecordedAt: now}, ASN: 64510, ASOrg: "Org A", Country: "US"},
-		{CloseEvent: CloseEvent{IP: "192.0.2.11", Protocol: "tcp", BytesUp: 20, BytesDown: 5, RecordedAt: now}, ASN: 64510, ASOrg: "Org B", Country: "GB"},
+	if err := store.InsertFlows([]FlowRecord{
+		{FlowID: "country-flow-1", ClientIP: "192.0.2.10", Protocol: "tcp", BytesUp: 10, BytesDown: 5, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64510, ASOrg: "Org A", Country: "US"},
+		{FlowID: "country-flow-2", ClientIP: "192.0.2.11", Protocol: "tcp", BytesUp: 20, BytesDown: 5, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64510, ASOrg: "Org B", Country: "GB"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -458,9 +458,9 @@ func TestTopASNsCombinesCountriesPerASN(t *testing.T) {
 func TestTopTagsUsesCurrentMappingsAndDeduplicatesFlowAndClient(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.InsertBatch([]EnrichedRecord{
-		{CloseEvent: CloseEvent{FlowID: "tag-flow-1", Protocol: "tcp", IP: "192.0.2.1", BytesUp: 10, BytesDown: 20, RecordedAt: now}},
-		{CloseEvent: CloseEvent{FlowID: "tag-flow-2", Protocol: "tcp", IP: "192.0.2.2", BytesUp: 5, BytesDown: 5, RecordedAt: now}},
+	if err := store.InsertFlows([]FlowRecord{
+		{FlowID: "tag-flow-1", Protocol: "tcp", ClientIP: "192.0.2.1", BytesUp: 10, BytesDown: 20, StartedAt: now, EndedAt: now, LastActivity: now},
+		{FlowID: "tag-flow-2", Protocol: "tcp", ClientIP: "192.0.2.2", BytesUp: 5, BytesDown: 5, StartedAt: now, EndedAt: now, LastActivity: now},
 	}); err != nil {
 		t.Fatal(err)
 	}

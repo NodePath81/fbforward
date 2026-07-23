@@ -3,34 +3,10 @@ package audit
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"github.com/google/uuid"
 	"strings"
 	"time"
 )
-
-func (s *Store) InsertBatch(records []EnrichedRecord) error {
-	flows := make([]FlowRecord, 0, len(records))
-	for _, record := range records {
-		flows = append(flows, flowRecordFromClose(record))
-	}
-	return s.InsertFlows(flows)
-}
-
-func (s *Store) InsertRejectionBatch(records []EnrichedRejectionRecord) error {
-	rejections := make([]RejectionRow, 0, len(records))
-	for _, record := range records {
-		rejections = append(rejections, RejectionRow{
-			EventID: record.EventID, Protocol: record.Protocol, ClientIP: record.IP,
-			ClientPort: record.ClientPort, Listener: record.Listener, Port: record.Port,
-			Reason: record.Reason, MatchedRuleType: record.MatchedRuleType,
-			MatchedRuleValue: record.MatchedRuleValue, PolicyVersion: record.PolicyVersion,
-			RuleID: record.RuleID, RecordedAt: record.RecordedAt, ASN: record.ASN,
-			ASOrg: record.ASOrg, Country: record.Country,
-		})
-	}
-	return s.InsertRejections(rejections)
-}
 
 func (s *Store) InsertFlows(records []FlowRecord) error {
 	if s == nil || len(records) == 0 {
@@ -191,30 +167,6 @@ func upsertFlowEntityTx(tx *sql.Tx, entity FlowEntity) error {
 	}
 	_, err := tx.Exec(`INSERT INTO flow_entities(flow_id, protocol, client_ip, client_port, listener, route, upstream, backend_key, backend_protocol, backend_local, backend_remote, created_at, ended_at, resolve_until, state, generation, last_activity_at, bytes_up, bytes_down) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(flow_id) DO UPDATE SET protocol=excluded.protocol, client_ip=excluded.client_ip, client_port=excluded.client_port, listener=excluded.listener, route=excluded.route, upstream=excluded.upstream, backend_key=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_key <> '' THEN excluded.backend_key ELSE flow_entities.backend_key END, backend_protocol=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_protocol <> '' THEN excluded.backend_protocol ELSE flow_entities.backend_protocol END, backend_local=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_local <> '' THEN excluded.backend_local ELSE flow_entities.backend_local END, backend_remote=CASE WHEN flow_entities.state <> 'closed' AND excluded.generation >= flow_entities.generation AND excluded.backend_remote <> '' THEN excluded.backend_remote ELSE flow_entities.backend_remote END, created_at=MIN(flow_entities.created_at, excluded.created_at), ended_at=CASE WHEN excluded.ended_at IS NOT NULL THEN excluded.ended_at ELSE flow_entities.ended_at END, resolve_until=CASE WHEN excluded.resolve_until IS NOT NULL THEN excluded.resolve_until ELSE flow_entities.resolve_until END, state=CASE WHEN flow_entities.state = 'closed' AND excluded.state <> 'closed' THEN flow_entities.state ELSE excluded.state END, generation=MAX(flow_entities.generation, excluded.generation), last_activity_at=MAX(flow_entities.last_activity_at, excluded.last_activity_at), bytes_up=MAX(flow_entities.bytes_up, excluded.bytes_up), bytes_down=MAX(flow_entities.bytes_down, excluded.bytes_down)`, entity.FlowID, entity.Protocol, entity.ClientIP, entity.ClientPort, entity.Listener, entity.Route, entity.Upstream, entity.BackendKey, entity.BackendProtocol, entity.BackendLocal, entity.BackendRemote, unixMilli(created), nullableTime(entity.EndedAt), nullableTime(entity.ResolveUntil), entity.State, entity.Generation, unixMilli(last), entity.BytesUp, entity.BytesDown)
 	return err
-}
-
-func flowRecordFromClose(record EnrichedRecord) FlowRecord {
-	event := record.CloseEvent
-	ended := event.EndedAt
-	if ended.IsZero() {
-		ended = event.RecordedAt
-	}
-	if ended.IsZero() {
-		ended = time.Now().UTC()
-	}
-	started := event.StartedAt
-	if started.IsZero() {
-		started = ended.Add(-time.Duration(event.DurationMs) * time.Millisecond)
-	}
-	last := event.LastActivity
-	if last.IsZero() {
-		last = ended
-	}
-	listener := event.Listener
-	if listener == "" && event.Port > 0 {
-		listener = fmt.Sprintf(":%d", event.Port)
-	}
-	return FlowRecord{FlowID: event.FlowID, Protocol: event.Protocol, ClientIP: event.IP, ClientPort: event.ClientPort, Listener: listener, Route: event.Route, Upstream: event.Upstream, StartedAt: started, EndedAt: ended, LastActivity: last, BytesUp: event.BytesUp, BytesDown: event.BytesDown, CloseReason: event.CloseReason, Fingerprint: event.Fingerprint, PolicyVersion: event.PolicyVersion, RuleID: event.RuleID, ASN: record.ASN, ASOrg: record.ASOrg, Country: record.Country}
 }
 
 func normalizeFlowTimes(record FlowRecord) (time.Time, time.Time, time.Time) {

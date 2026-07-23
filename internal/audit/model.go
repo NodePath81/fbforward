@@ -13,60 +13,6 @@ const (
 	EntryTypeRejection = "rejection"
 )
 
-// CloseEvent is the compatibility event accepted by the existing iplog
-// pipeline. New code should prefer FlowRecord, which has explicit address
-// components and lifecycle timestamps.
-type CloseEvent struct {
-	FlowID        string
-	IP            string
-	ClientPort    int
-	Protocol      string
-	Listener      string
-	Route         string
-	Upstream      string
-	Port          int
-	BytesUp       uint64
-	BytesDown     uint64
-	DurationMs    int64
-	StartedAt     time.Time
-	EndedAt       time.Time
-	LastActivity  time.Time
-	CloseReason   string
-	Fingerprint   string
-	PolicyVersion string
-	RuleID        string
-	RecordedAt    time.Time
-}
-
-type EnrichedRecord struct {
-	CloseEvent
-	ASN     int
-	ASOrg   string
-	Country string
-}
-
-type RejectionEvent struct {
-	EventID          string
-	IP               string
-	ClientPort       int
-	Protocol         string
-	Listener         string
-	Port             int
-	Reason           string
-	MatchedRuleType  string
-	MatchedRuleValue string
-	PolicyVersion    string
-	RuleID           string
-	RecordedAt       time.Time
-}
-
-type EnrichedRejectionRecord struct {
-	RejectionEvent
-	ASN     int
-	ASOrg   string
-	Country string
-}
-
 // FlowRecord is the durable lifecycle row. Times are represented as UTC
 // time.Time in Go and stored as Unix milliseconds in SQLite.
 type FlowRecord struct {
