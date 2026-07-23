@@ -44,10 +44,6 @@ func TestCollectorFailureUpdatesHealthAndMetrics(t *testing.T) {
 	if !ok || stats.ConsecutiveFailures != 1 {
 		t.Fatalf("unexpected health after failure: ok=%v snapshot=%+v", ok, stats)
 	}
-	upstreamMetrics, ok := metricSet.GetUpstreamMetrics("primary")
-	if !ok || upstreamMetrics.ConsecutiveFailures != 1 {
-		t.Fatalf("metrics did not receive failed observation: ok=%v metrics=%+v", ok, upstreamMetrics)
-	}
 	rendered := metricSet.Render()
 	if !strings.Contains(rendered, `fbforward_upstream_probes_total{upstream="primary",protocol="tcp",result="failure"} 1`) {
 		t.Fatalf("missing probe failure counter:\n%s", rendered)
@@ -71,10 +67,6 @@ func TestCollectorSyncsStaleHealthToMetrics(t *testing.T) {
 	collector := NewCollector(config.MeasurementConfig{}, manager, metricSet, nil, nil)
 
 	collector.syncUpstreamMetrics()
-	got, ok := metricSet.GetUpstreamMetrics("primary")
-	if !ok || got.HealthState != string(upstream.HealthStale) {
-		t.Fatalf("expected metrics to expose stale health, ok=%v metrics=%+v", ok, got)
-	}
 	if !strings.Contains(metricSet.Render(), `fbforward_upstream_health_state{upstream="primary",state="stale"} 1`) {
 		t.Fatal("rendered metrics did not expose stale health")
 	}

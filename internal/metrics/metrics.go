@@ -12,16 +12,11 @@ import (
 	"github.com/NodePath81/fbforward/internal/upstream"
 )
 
-// UpstreamMetrics is the health snapshot retained for the control and
-// measurement paths. Prometheus output intentionally exposes only the
-// health, RTT, and last-success fields needed for operations.
+// UpstreamMetrics is the health snapshot rendered for operations.
 type UpstreamMetrics struct {
-	HealthState         string
-	Reachable           bool
-	RTTMs               float64
-	Unusable            bool
-	LastSuccess         time.Time
-	ConsecutiveFailures int
+	HealthState string
+	RTTMs       float64
+	LastSuccess time.Time
 }
 
 type trafficCounters struct {
@@ -109,26 +104,10 @@ func (m *Metrics) SetUpstreamMetrics(tag string, stats upstream.UpstreamStats) {
 		return
 	}
 	state.metrics = UpstreamMetrics{
-		HealthState:         string(stats.HealthState),
-		Reachable:           stats.Reachable,
-		RTTMs:               stats.RTTMs,
-		Unusable:            !stats.Usable,
-		LastSuccess:         stats.LastReachable,
-		ConsecutiveFailures: stats.ConsecutiveFailures,
+		HealthState: string(stats.HealthState),
+		RTTMs:       stats.RTTMs,
+		LastSuccess: stats.LastReachable,
 	}
-}
-
-func (m *Metrics) GetUpstreamMetrics(tag string) (UpstreamMetrics, bool) {
-	if m == nil {
-		return UpstreamMetrics{}, false
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	state, ok := m.upstreams[tag]
-	if !ok || state == nil {
-		return UpstreamMetrics{}, false
-	}
-	return state.metrics, true
 }
 
 func (m *Metrics) RecordProbe(tag, protocol string, success bool) {
