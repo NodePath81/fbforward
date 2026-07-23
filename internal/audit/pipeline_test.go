@@ -178,6 +178,51 @@ func TestPipelineCountsStoreWriteFailuresAsDropped(t *testing.T) {
 	}
 }
 
+func TestPipelineFlushesPendingBatchOnShutdown(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "pending.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	pipeline := NewPipeline(config.IPLogConfig{GeoQueueSize: 2, WriteQueueSize: 2, BatchSize: 10, FlushInterval: config.Duration(time.Hour)}, nil, store, nil, nil)
+	pipeline.Start()
+	pipeline.PublishEntity(FlowEntity{FlowID: "pending-flow", Protocol: "tcp", ClientIP: "192.0.2.1", CreatedAt: time.Now().UTC(), State: "active"})
+	if err := pipeline.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := store.readDB.QueryRow(`SELECT COUNT(*) FROM flow_entities WHERE flow_id = ?`, "pending-flow").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("pending entity count = %d, want 1", count)
+	}
+}
+
+func TestPipelineCountsQueueDropAsReceivedAndDropped(t *testing.T) {
+	metricSet := metrics.NewMetrics(nil)
+	pipeline := NewPipeline(config.IPLogConfig{GeoQueueSize: 1, WriteQueueSize: 1}, nil, nil, metricSet, nil)
+	item := FlowEntity{FlowID: "queued-flow", Protocol: "tcp", ClientIP: "192.0.2.1", CreatedAt: time.Now().UTC(), State: "active"}
+	if !pipeline.enqueue(pipelineItem{entity: &item}) {
+		t.Fatal("first entity should be queued")
+	}
+	if pipeline.enqueue(pipelineItem{entity: &item}) {
+		t.Fatal("second entity should be dropped when geo queue is full")
+	}
+	if err := pipeline.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rendered := metricSet.Render()
+	for _, want := range []string{
+		`fbforward_audit_records_total{result="received"} 2`,
+		`fbforward_audit_records_total{result="dropped"} 1`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("missing audit metric %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestPipelineEnrichesRejectionBeforeWrite(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "rejection.sqlite"))
 	if err != nil {
