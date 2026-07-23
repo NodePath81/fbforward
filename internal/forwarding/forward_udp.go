@@ -434,7 +434,6 @@ type udpMapping struct {
 	route         string
 
 	id         flow.ID
-	closeOnce  sync.Once
 	controlMu  sync.Mutex
 	closed     bool
 	activityCh chan struct{}
@@ -468,22 +467,18 @@ func (m *udpMapping) forwardToUpstream(payload []byte) error {
 func (m *udpMapping) readLoop(ctx context.Context) {
 	buf := make([]byte, 65535)
 	for {
-		_ = m.upstreamConn.SetReadDeadline(time.Now().Add(m.timeout))
 		n, err := m.upstreamConn.Read(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
-					m.closeWithReason("context_done")
-					return
-				case <-m.done:
-					return
-				default:
-					continue
-				}
+			select {
+			case <-ctx.Done():
+				m.closeWithReason("context_done")
+				return
+			case <-m.done:
+				return
+			default:
+				m.closeWithReason("upstream_read_error")
+				return
 			}
-			m.closeWithReason("upstream_read_error")
-			return
 		}
 		if n > 0 {
 			if m.rateLimiter != nil && !m.rateLimiter.Try(n) {
@@ -537,8 +532,13 @@ func (m *udpMapping) idleWatcher(ctx context.Context) {
 		case <-m.done:
 			return
 		case <-timer.C:
-			m.closeWithReason("idle_timeout")
-			return
+			select {
+			case <-m.activityCh:
+				timer.Reset(m.timeout)
+			default:
+				m.closeWithReason("idle_timeout")
+				return
+			}
 		case <-m.activityCh:
 			if !timer.Stop() {
 				select {
@@ -579,38 +579,34 @@ func (m *udpMapping) closeWithReason(reason string) bool {
 	}
 	m.closed = true
 	m.controlMu.Unlock()
-	closed := false
-	m.closeOnce.Do(func() {
-		closed = true
-		close(m.done)
-		_ = m.upstreamConn.Close()
-		m.parent.removeMapping(m.clientAddr.String(), m.clientIP)
-		durationMs := int64(0)
-		if !m.created.IsZero() {
-			durationMs = time.Since(m.created).Milliseconds()
-		}
-		counters := flow.Counters{}
-		if m.lifecycle != nil {
-			counters = m.lifecycle.Snapshot()
-			m.lifecycle.Close(reason)
-		}
-		util.Event(m.logger, slog.LevelInfo, "forward.udp.mapping_closed",
-			"flow.id", m.id,
-			"request.protocol", "udp",
-			"client.addr", m.clientAddrStr,
-			"client.ip", m.clientIP,
-			"upstream", m.upstreamTag,
-			"upstream.ip", m.upstreamIP,
-			"upstream.addr", m.upstreamAddr,
-			"flow.close_reason", reason,
-			"flow.bytes_up", counters.BytesUp,
-			"flow.bytes_down", counters.BytesDown,
-			"flow.duration_ms", durationMs,
-			"result", "closed",
-		)
-		<-m.parent.sem
-	})
-	return closed
+	close(m.done)
+	_ = m.upstreamConn.Close()
+	m.parent.removeMapping(m.clientAddr.String(), m.clientIP)
+	durationMs := int64(0)
+	if !m.created.IsZero() {
+		durationMs = time.Since(m.created).Milliseconds()
+	}
+	counters := flow.Counters{}
+	if m.lifecycle != nil {
+		counters = m.lifecycle.Snapshot()
+		m.lifecycle.Close(reason)
+	}
+	util.Event(m.logger, slog.LevelInfo, "forward.udp.mapping_closed",
+		"flow.id", m.id,
+		"request.protocol", "udp",
+		"client.addr", m.clientAddrStr,
+		"client.ip", m.clientIP,
+		"upstream", m.upstreamTag,
+		"upstream.ip", m.upstreamIP,
+		"upstream.addr", m.upstreamAddr,
+		"flow.close_reason", reason,
+		"flow.bytes_up", counters.BytesUp,
+		"flow.bytes_down", counters.BytesDown,
+		"flow.duration_ms", durationMs,
+		"result", "closed",
+	)
+	<-m.parent.sem
+	return true
 }
 
 func (m *udpMapping) close() {
