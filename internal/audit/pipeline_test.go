@@ -26,6 +26,16 @@ func (pipelineLookup) Availability() geoip.Availability {
 	return geoip.Availability{ASNDBAvailable: true, CountryAvailable: true}
 }
 
+func TestPipelineStartIsIdempotent(t *testing.T) {
+	pipeline := NewPipeline(config.IPLogConfig{GeoQueueSize: 1, WriteQueueSize: 1}, nil, nil, nil, nil)
+	pipeline.Start()
+	pipeline.Start()
+	if err := pipeline.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pipeline.Start()
+}
+
 func TestPipelineWritesFlowAndCheckpoint(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "pipeline.sqlite"))
 	if err != nil {

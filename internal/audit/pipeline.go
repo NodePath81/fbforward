@@ -66,6 +66,7 @@ type Pipeline struct {
 	mu        sync.Mutex
 	active    map[flow.ID]activeFlow
 	closed    bool
+	startOnce sync.Once
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 	rejectMu  sync.Mutex
@@ -102,9 +103,17 @@ func (p *Pipeline) Start() {
 	if p == nil {
 		return
 	}
-	p.wg.Add(2)
-	go func() { defer p.wg.Done(); p.runGeoWorker() }()
-	go func() { defer p.wg.Done(); p.runWriteWorker() }()
+	p.startOnce.Do(func() {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return
+		}
+		p.wg.Add(2)
+		p.mu.Unlock()
+		go func() { defer p.wg.Done(); p.runGeoWorker() }()
+		go func() { defer p.wg.Done(); p.runWriteWorker() }()
+	})
 }
 
 func (p *Pipeline) Open(meta flow.Meta) {
