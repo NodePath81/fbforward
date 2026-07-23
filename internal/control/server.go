@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -103,6 +104,10 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	mux.Handle("/", web.Handler())
 
 	addr := util.NetJoin(c.cfg.BindAddr, c.cfg.BindPort)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
 	c.server = &http.Server{
 		Addr:    addr,
 		Handler: c.httpMiddleware(mux),
@@ -117,7 +122,9 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	go c.limiter.RunCleanup(ctx.Done(), rpcRateTTL)
 
 	go func() {
-		_ = c.server.ListenAndServe()
+		if err := c.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			util.Event(c.logger, slog.LevelError, "control.server_failed", "listen.addr", addr, "error", err)
+		}
 	}()
 	util.Event(c.logger, slog.LevelInfo, "control.server_started", "listen.addr", addr)
 	return nil
