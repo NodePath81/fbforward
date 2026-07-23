@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -152,5 +153,40 @@ func TestPipelineCountsStoreWriteFailuresAsDropped(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("missing audit metric %q:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestPipelineBoundsRejectionDeduplication(t *testing.T) {
+	logRejections := true
+	pipeline := NewPipeline(config.IPLogConfig{Enabled: true, LogRejections: &logRejections}, nil, nil, nil, nil)
+	base := time.Unix(1000, 0).UTC()
+	if !pipeline.allowRejection("same", base) {
+		t.Fatal("first rejection should be accepted")
+	}
+	if pipeline.allowRejection("same", base.Add(30*time.Second)) {
+		t.Fatal("repeated rejection inside TTL should be suppressed")
+	}
+	if !pipeline.allowRejection("same", base.Add(time.Minute)) {
+		t.Fatal("rejection after TTL should be accepted")
+	}
+
+	pipeline.recent = map[string]time.Time{"expired": base.Add(-2 * time.Minute)}
+	pipeline.lastSweep = base.Add(-2 * time.Minute)
+	if !pipeline.allowRejection("fresh", base) {
+		t.Fatal("fresh rejection should be accepted")
+	}
+	if _, ok := pipeline.recent["expired"]; ok {
+		t.Fatal("expired rejection was not cleaned up")
+	}
+
+	pipeline.recent = make(map[string]time.Time, rejectionDedupeMaxEntries)
+	pipeline.lastSweep = base
+	for i := 0; i < rejectionDedupeMaxEntries+1; i++ {
+		if !pipeline.allowRejection(fmt.Sprintf("key-%d", i), base.Add(time.Second)) {
+			t.Fatalf("rejection %d was unexpectedly suppressed", i)
+		}
+	}
+	if got := len(pipeline.recent); got != rejectionDedupeMaxEntries {
+		t.Fatalf("dedupe entries = %d, want %d", got, rejectionDedupeMaxEntries)
 	}
 }

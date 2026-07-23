@@ -16,6 +16,12 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	rejectionDedupeTTL             = time.Minute
+	rejectionDedupeCleanupInterval = time.Minute
+	rejectionDedupeMaxEntries      = 4096
+)
+
 type pipelineItem struct {
 	entity     *FlowEntity
 	flow       *FlowRecord
@@ -64,6 +70,7 @@ type Pipeline struct {
 	wg        sync.WaitGroup
 	rejectMu  sync.Mutex
 	recent    map[string]time.Time
+	lastSweep time.Time
 }
 
 func NewPipeline(cfg config.IPLogConfig, lookup geoip.LookupProvider, store *Store, metricSet *metrics.Metrics, logger util.Logger) *Pipeline {
@@ -182,15 +189,41 @@ func (p *Pipeline) Reject(rejection flow.Rejection) {
 	}
 	event := RejectionRow{EventID: uuidLike(), Protocol: rejection.Protocol, ClientIP: rejection.ClientAddr.Addr().String(), ClientPort: int(rejection.ClientAddr.Port()), Listener: rejection.Listener, Port: listenerPort(rejection.Listener), Reason: rejection.Reason, MatchedRuleType: rejection.MatchedRuleType, MatchedRuleValue: rejection.MatchedRuleValue, RecordedAt: defaultTime(rejection.RecordedAt)}
 	key := event.ClientIP + "|" + event.Protocol + "|" + event.Reason + "|" + event.MatchedRuleType + "|" + event.MatchedRuleValue
-	p.rejectMu.Lock()
-	last := p.recent[key]
-	if !last.IsZero() && event.RecordedAt.Sub(last) < time.Minute {
-		p.rejectMu.Unlock()
+	if !p.allowRejection(key, event.RecordedAt) {
 		return
 	}
-	p.recent[key] = event.RecordedAt
-	p.rejectMu.Unlock()
 	p.enqueue(pipelineItem{rejection: &event})
+}
+
+func (p *Pipeline) allowRejection(key string, now time.Time) bool {
+	p.rejectMu.Lock()
+	defer p.rejectMu.Unlock()
+
+	if p.lastSweep.IsZero() || now.Sub(p.lastSweep) >= rejectionDedupeCleanupInterval {
+		for existingKey, seenAt := range p.recent {
+			if now.Sub(seenAt) >= rejectionDedupeTTL {
+				delete(p.recent, existingKey)
+			}
+		}
+		p.lastSweep = now
+	}
+	if seenAt, ok := p.recent[key]; ok && now.Sub(seenAt) < rejectionDedupeTTL {
+		return false
+	}
+	if len(p.recent) >= rejectionDedupeMaxEntries {
+		oldestKey := ""
+		var oldestAt time.Time
+		for existingKey, seenAt := range p.recent {
+			if oldestKey == "" || seenAt.Before(oldestAt) {
+				oldestKey, oldestAt = existingKey, seenAt
+			}
+		}
+		if oldestKey != "" {
+			delete(p.recent, oldestKey)
+		}
+	}
+	p.recent[key] = now
+	return true
 }
 
 func (p *Pipeline) enqueue(item pipelineItem) bool {
