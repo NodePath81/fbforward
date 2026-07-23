@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/audit"
@@ -62,6 +63,7 @@ type ControlServer struct {
 	flowContext *flowcontext.Service
 	nextReqID   uint64
 	rpcs        *rpcRegistry
+	ready       atomic.Bool
 }
 
 type geoipManager interface {
@@ -91,7 +93,9 @@ func NewControlServer(cfg config.Config, manager upstream.UpstreamStateReader, m
 }
 
 func (c *ControlServer) Start(ctx context.Context) error {
+	c.ready.Store(false)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", c.handleHealthz)
 	if c.cfg.Metrics.IsEnabled() {
 		mux.HandleFunc("/metrics", c.handleMetrics)
 	}
@@ -128,6 +132,25 @@ func (c *ControlServer) Start(ctx context.Context) error {
 	}()
 	util.Event(c.logger, slog.LevelInfo, "control.server_started", "listen.addr", addr)
 	return nil
+}
+
+func (c *ControlServer) SetReady(ready bool) {
+	if c == nil {
+		return
+	}
+	c.ready.Store(ready)
+}
+
+func (c *ControlServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !c.ready.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *ControlServer) Shutdown(ctx context.Context) error {

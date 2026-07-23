@@ -244,6 +244,9 @@ func (r *Runtime) Start() error {
 		r.Stop()
 		return err
 	}
+	if r.control != nil {
+		r.control.SetReady(true)
+	}
 	return nil
 }
 
@@ -255,6 +258,9 @@ func (r *Runtime) Stop() {
 }
 
 func (r *Runtime) stop() {
+	if r.control != nil {
+		r.control.SetReady(false)
+	}
 	r.cancel()
 	if r.control != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
