@@ -140,13 +140,7 @@ func (l *UDPListener) Start(ctx context.Context, wg *sync.WaitGroup) error {
 					continue
 				}
 			}
-			payload := buf[:n]
-			select {
-			case packetCh <- udpPacket{addr: clientAddr, data: payload, bufPtr: bufPtr}:
-			default:
-				udpPacketPool.Put(bufPtr)
-				l.noteQueueDrop(len(packetCh))
-			}
+			l.enqueuePacket(packetCh, udpPacket{addr: clientAddr, data: buf[:n], bufPtr: bufPtr}, &udpPacketPool)
 		}
 	}()
 	return nil
@@ -623,6 +617,21 @@ type udpPacket struct {
 	addr   *net.UDPAddr
 	data   []byte
 	bufPtr *[]byte
+}
+
+type udpBufferRecycler interface {
+	Put(any)
+}
+
+func (l *UDPListener) enqueuePacket(queue chan<- udpPacket, packet udpPacket, buffers udpBufferRecycler) bool {
+	select {
+	case queue <- packet:
+		return true
+	default:
+		buffers.Put(packet.bufPtr)
+		l.noteQueueDrop(len(queue))
+		return false
+	}
 }
 
 func (l *UDPListener) noteQueueDrop(queueDepth int) {

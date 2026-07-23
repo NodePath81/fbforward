@@ -67,6 +67,76 @@ func TestUDPConcurrentFirstPacketsCreateOneMapping(t *testing.T) {
 	}
 }
 
+func TestUDPIdleActivityExtendsMappingLifetime(t *testing.T) {
+	upstream, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+
+	const idleTimeout = 100 * time.Millisecond
+	key := "192.0.2.10:12345"
+	parent := &UDPListener{
+		sem:      make(chan struct{}, 1),
+		mappings: make(map[string]*udpMapping),
+		ipCounts: map[string]int{"192.0.2.10": 1},
+	}
+	parent.sem <- struct{}{}
+	mapping := &udpMapping{
+		parent:        parent,
+		clientAddrStr: key,
+		clientIP:      "192.0.2.10",
+		upstreamConn:  upstream,
+		timeout:       idleTimeout,
+		activityCh:    make(chan struct{}, 1),
+		done:          make(chan struct{}),
+	}
+	parent.mappings[key] = mapping
+
+	watcherDone := make(chan struct{})
+	go func() {
+		mapping.idleWatcher(context.Background())
+		close(watcherDone)
+	}()
+	time.Sleep(60 * time.Millisecond)
+	mapping.touch()
+
+	select {
+	case <-mapping.done:
+		t.Fatal("mapping closed at the original idle deadline despite recent activity")
+	case <-time.After(60 * time.Millisecond):
+	}
+	select {
+	case <-mapping.done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("mapping did not close after the extended idle deadline")
+	}
+	<-watcherDone
+}
+
+func TestUDPFullPacketQueueDropsAndRecyclesBuffer(t *testing.T) {
+	queue := make(chan udpPacket, 1)
+	listener := &UDPListener{}
+	recycler := &recordingUDPBufferRecycler{}
+	firstBuffer := make([]byte, 1)
+	first := udpPacket{data: firstBuffer, bufPtr: &firstBuffer}
+	if !listener.enqueuePacket(queue, first, recycler) {
+		t.Fatal("first packet was not queued")
+	}
+
+	droppedBuffer := make([]byte, 1)
+	dropped := udpPacket{data: droppedBuffer, bufPtr: &droppedBuffer}
+	if listener.enqueuePacket(queue, dropped, recycler) {
+		t.Fatal("packet was queued despite a full queue")
+	}
+	if len(queue) != 1 {
+		t.Fatalf("queue length=%d, want 1", len(queue))
+	}
+	if len(recycler.values) != 1 || recycler.values[0] != dropped.bufPtr {
+		t.Fatalf("recycled buffers=%v, want dropped buffer", recycler.values)
+	}
+}
+
 func BenchmarkUDPForwardToUpstream(b *testing.B) {
 	for _, size := range []int{64, 1200, 1500, 65507} {
 		b.Run(udpPacketSizeName(size), func(b *testing.B) {
@@ -216,4 +286,12 @@ func benchmarkUDPMapping(b *testing.B) (*udpMapping, func()) {
 		<-done
 	}
 	return mapping, cleanup
+}
+
+type recordingUDPBufferRecycler struct {
+	values []any
+}
+
+func (r *recordingUDPBufferRecycler) Put(value any) {
+	r.values = append(r.values, value)
 }
