@@ -258,20 +258,28 @@ func (m *Metrics) AddTraffic(upstreamTag, protocol, direction string, n uint64) 
 }
 
 func (m *Metrics) IncIPLogEvent() {
-	if m == nil {
+	m.AddIPLogEvents(1)
+}
+
+func (m *Metrics) AddIPLogEvents(n uint64) {
+	if m == nil || n == 0 {
 		return
 	}
 	m.mu.Lock()
-	m.audit.received++
+	m.audit.received += n
 	m.mu.Unlock()
 }
 
 func (m *Metrics) IncIPLogEventDropped() {
-	if m == nil {
+	m.AddIPLogDrops(1)
+}
+
+func (m *Metrics) AddIPLogDrops(n uint64) {
+	if m == nil || n == 0 {
 		return
 	}
 	m.mu.Lock()
-	m.audit.dropped++
+	m.audit.dropped += n
 	m.mu.Unlock()
 }
 

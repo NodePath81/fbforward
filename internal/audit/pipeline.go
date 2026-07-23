@@ -23,6 +23,23 @@ type pipelineItem struct {
 	rejection  *RejectionRow
 }
 
+func (i pipelineItem) recordCount() uint64 {
+	var count uint64
+	if i.entity != nil {
+		count++
+	}
+	if i.flow != nil {
+		count++
+	}
+	if i.checkpoint != nil {
+		count++
+	}
+	if i.rejection != nil {
+		count++
+	}
+	return count
+}
+
 type activeFlow struct {
 	meta           flow.Meta
 	lastCounters   flow.Counters
@@ -183,7 +200,7 @@ func (p *Pipeline) enqueue(item pipelineItem) bool {
 		select {
 		case p.geoCh <- item:
 			if p.metrics != nil {
-				p.metrics.IncIPLogEvent()
+				p.metrics.AddIPLogEvents(item.recordCount())
 			}
 			p.mu.Unlock()
 			return true
@@ -192,7 +209,7 @@ func (p *Pipeline) enqueue(item pipelineItem) bool {
 	}
 	p.mu.Unlock()
 	if p.metrics != nil {
-		p.metrics.IncIPLogEventDropped()
+		p.metrics.AddIPLogDrops(item.recordCount())
 	}
 	return !closed && false
 }
@@ -230,7 +247,7 @@ func (p *Pipeline) runGeoWorker() {
 		case p.writeCh <- item:
 		default:
 			if p.metrics != nil {
-				p.metrics.IncIPLogEventDropped()
+				p.metrics.AddIPLogDrops(item.recordCount())
 			}
 		}
 	}
@@ -243,8 +260,26 @@ func (p *Pipeline) runWriteWorker() {
 	rejections := make([]RejectionRow, 0, p.batchSize)
 	ticker := time.NewTicker(p.flushInterval)
 	defer ticker.Stop()
+	recordResult := func(event string, count int, err error) {
+		if count == 0 {
+			return
+		}
+		if err != nil {
+			if p.metrics != nil {
+				p.metrics.AddIPLogDrops(uint64(count))
+			}
+			util.Event(p.logger, slog.LevelError, event, "batch.size", count, "error", err)
+			return
+		}
+		if p.metrics != nil {
+			p.metrics.AddIPLogWrites(uint64(count))
+		}
+	}
 	flush := func() {
 		if p.store == nil {
+			if p.metrics != nil {
+				p.metrics.AddIPLogDrops(uint64(len(entities) + len(flows) + len(checkpoints) + len(rejections)))
+			}
 			entities = entities[:0]
 			flows = flows[:0]
 			checkpoints = checkpoints[:0]
@@ -252,27 +287,19 @@ func (p *Pipeline) runWriteWorker() {
 			return
 		}
 		if len(entities) > 0 {
-			if err := p.store.InsertFlowEntities(entities); err != nil {
-				util.Event(p.logger, slog.LevelError, "audit.flow_entity_write_failed", "error", err)
-			}
+			recordResult("audit.flow_entity_write_failed", len(entities), p.store.InsertFlowEntities(entities))
 			entities = entities[:0]
 		}
 		if len(flows) > 0 {
-			if err := p.store.InsertFlows(flows); err != nil {
-				util.Event(p.logger, slog.LevelError, "audit.flow_write_failed", "error", err)
-			}
+			recordResult("audit.flow_write_failed", len(flows), p.store.InsertFlows(flows))
 			flows = flows[:0]
 		}
 		if len(checkpoints) > 0 {
-			if err := p.store.InsertCheckpoints(checkpoints); err != nil {
-				util.Event(p.logger, slog.LevelError, "audit.checkpoint_write_failed", "error", err)
-			}
+			recordResult("audit.checkpoint_write_failed", len(checkpoints), p.store.InsertCheckpoints(checkpoints))
 			checkpoints = checkpoints[:0]
 		}
 		if len(rejections) > 0 {
-			if err := p.store.InsertRejections(rejections); err != nil {
-				util.Event(p.logger, slog.LevelError, "audit.rejection_write_failed", "error", err)
-			}
+			recordResult("audit.rejection_write_failed", len(rejections), p.store.InsertRejections(rejections))
 			rejections = rejections[:0]
 		}
 	}

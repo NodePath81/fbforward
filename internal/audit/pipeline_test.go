@@ -4,11 +4,13 @@ import (
 	"context"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flow"
+	"github.com/NodePath81/fbforward/internal/metrics"
 )
 
 func TestPipelineWritesFlowAndCheckpoint(t *testing.T) {
@@ -18,7 +20,8 @@ func TestPipelineWritesFlowAndCheckpoint(t *testing.T) {
 	}
 	defer store.Close()
 	cfg := config.IPLogConfig{Enabled: true, GeoQueueSize: 8, WriteQueueSize: 8, BatchSize: 1, FlushInterval: config.Duration(10 * time.Millisecond)}
-	pipeline := NewPipeline(cfg, nil, store, nil, nil)
+	metricSet := metrics.NewMetrics(nil)
+	pipeline := NewPipeline(cfg, nil, store, metricSet, nil)
 	pipeline.Start()
 	id, err := flow.NewID()
 	if err != nil {
@@ -44,6 +47,16 @@ func TestPipelineWritesFlowAndCheckpoint(t *testing.T) {
 	}
 	if checkpoints < 2 {
 		t.Fatalf("expected active and final checkpoints, got %d", checkpoints)
+	}
+	rendered := metricSet.Render()
+	for _, want := range []string{
+		`fbforward_audit_records_total{result="received"} 5`,
+		`fbforward_audit_records_total{result="written"} 5`,
+		`fbforward_audit_records_total{result="dropped"} 0`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("missing audit metric %q:\n%s", want, rendered)
+		}
 	}
 }
 
@@ -108,5 +121,36 @@ func TestPipelinePersistsContextSnapshotAndGracePeriod(t *testing.T) {
 	}
 	if state != "closed" || backendKey == "" || backendLocal == "" || resolve != resolveUntil.UnixMilli() {
 		t.Fatalf("unexpected persisted snapshot: state=%s backend=%s local=%s resolve=%d", state, backendKey, backendLocal, resolve)
+	}
+}
+
+func TestPipelineCountsStoreWriteFailuresAsDropped(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "write-failure.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	metricSet := metrics.NewMetrics(nil)
+	cfg := config.IPLogConfig{Enabled: true, GeoQueueSize: 1, WriteQueueSize: 1, BatchSize: 1}
+	pipeline := NewPipeline(cfg, nil, store, metricSet, nil)
+	pipeline.Start()
+	pipeline.PublishEntity(FlowEntity{
+		FlowID: "failed-write", Protocol: "tcp", ClientIP: "192.0.2.1",
+		CreatedAt: time.Now().UTC(), State: "active",
+	})
+	if err := pipeline.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rendered := metricSet.Render()
+	for _, want := range []string{
+		`fbforward_audit_records_total{result="received"} 1`,
+		`fbforward_audit_records_total{result="written"} 0`,
+		`fbforward_audit_records_total{result="dropped"} 1`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("missing audit metric %q:\n%s", want, rendered)
+		}
 	}
 }
