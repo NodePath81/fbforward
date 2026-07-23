@@ -161,6 +161,10 @@ func (l *TCPListener) handleConn(ctx context.Context, client net.Conn) {
 	remoteAddr := net.JoinHostPort(selected.Addr.String(), util.FormatPort(l.cfg.BindPort))
 	upConn, err := dialTCPWithRetry(ctx, remoteAddr, 2, 150*time.Millisecond, l.logger, selected.Tag)
 	if err != nil {
+		if ctx.Err() != nil {
+			_ = client.Close()
+			return
+		}
 		emitRejection(l.observer, flow.ProtocolTCP, l.listenAddr(), clientAddr, "dial_failed", Decision{})
 		util.Event(l.logger, slog.LevelWarn, "forward.tcp.dial_failed",
 			"upstream", selected.Tag,

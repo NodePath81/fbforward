@@ -58,6 +58,41 @@ func TestRenderContract(t *testing.T) {
 			t.Fatalf("removed metric or label %q is still rendered\n%s", removed, rendered)
 		}
 	}
+	types := make(map[string]bool)
+	for _, line := range strings.Split(rendered, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 4 && fields[0] == "#" && fields[1] == "TYPE" {
+			if types[fields[2]] {
+				t.Fatalf("metric family %q has duplicate TYPE declaration", fields[2])
+			}
+			types[fields[2]] = true
+		}
+	}
+	expectedFamilies := []string{
+		"fbforward_uptime_seconds",
+		"fbforward_flows_active",
+		"fbforward_flow_events_total",
+		"fbforward_route_selected_upstream",
+		"fbforward_upstream_health_state",
+		"fbforward_upstream_rtt_seconds",
+		"fbforward_upstream_last_success_timestamp_seconds",
+		"fbforward_upstream_probes_total",
+		"fbforward_traffic_bytes_total",
+		"fbforward_audit_records_total",
+		"fbforward_udp_rate_limit_drops_total",
+		"fbforward_online_rules_active",
+		"fbforward_online_rule_errors_total",
+		"fbforward_webhook_deliveries_total",
+		"fbforward_firewall_denied_total",
+	}
+	if len(types) != len(expectedFamilies) {
+		t.Fatalf("metric family count = %d, want %d", len(types), len(expectedFamilies))
+	}
+	for _, family := range expectedFamilies {
+		if !types[family] {
+			t.Fatalf("missing metric family %q", family)
+		}
+	}
 }
 
 func TestRenderEscapesLabels(t *testing.T) {

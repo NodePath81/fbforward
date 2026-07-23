@@ -267,6 +267,40 @@ func TestTCPDialFailureEmitsRejection(t *testing.T) {
 	}
 }
 
+func TestTCPDialCancellationDoesNotEmitFailure(t *testing.T) {
+	picker := &fakePicker{selected: selectedUpstream()}
+	observer := &recordingObserver{}
+	conn := &stubConn{
+		local:  stubAddr("127.0.0.1:9000"),
+		remote: stubAddr("192.0.2.1:12345"),
+	}
+	listener := &TCPListener{
+		cfg:      config.ListenerConfig{BindPort: freeTCPPort(t)},
+		picker:   picker,
+		policy:   allowedPolicy(),
+		observer: observer,
+		sem:      make(chan struct{}, 1),
+	}
+	listener.sem <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	listener.handleConn(ctx, conn)
+
+	if !conn.closed {
+		t.Fatal("expected canceled dial to close TCP connection")
+	}
+	if observer.rejectionCount() != 0 {
+		t.Fatalf("canceled dial emitted rejection: %+v", observer.rejections)
+	}
+	picker.mu.Lock()
+	dialFailures := len(picker.dialFailures)
+	picker.mu.Unlock()
+	if dialFailures != 0 {
+		t.Fatalf("canceled dial updated failure feedback: %d", dialFailures)
+	}
+}
+
 func TestTCPFlowBindsUpstreamSocketTuple(t *testing.T) {
 	observer := &recordingObserver{}
 	binder := &recordingBinder{}
