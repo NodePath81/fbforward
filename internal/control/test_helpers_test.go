@@ -12,7 +12,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/geoip"
-	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/notify"
 	"github.com/NodePath81/fbforward/internal/policy"
@@ -110,13 +109,13 @@ func newTestOnlineProvider(t *testing.T) (*policy.OnlineProvider, *audit.Store) 
 	return provider, store
 }
 
-func newTestIPLogStore(t *testing.T, server *ControlServer) *iplog.Store {
+func newTestAuditStore(t *testing.T, server *ControlServer) *audit.Store {
 	t.Helper()
-	store, err := iplog.NewStore(filepath.Join(t.TempDir(), "iplog.sqlite"))
+	store, err := audit.NewStore(filepath.Join(t.TempDir(), "iplog.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server.SetIPLogStore(store)
+	server.SetAuditStore(store)
 	return store
 }

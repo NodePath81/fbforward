@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/NodePath81/fbforward/internal/iplog"
+	"github.com/NodePath81/fbforward/internal/audit"
 )
 
 type queryIPLogParams struct {
@@ -77,17 +77,17 @@ type ipLogStatusResponse struct {
 	PruneInterval        string `json:"prune_interval"`
 }
 
-func (c *ControlServer) auditStore() *iplog.Store {
+func (c *ControlServer) auditDB() *audit.Store {
 	c.iplogMu.RLock()
 	defer c.iplogMu.RUnlock()
-	return c.iplogStore
+	return c.auditStore
 }
 
 func (c *ControlServer) rpcGetIPLogStatus(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
 	if fault := decodeOptionalParams(raw, &struct{}{}); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -99,7 +99,7 @@ func (c *ControlServer) rpcGetIPLogStatus(_ *rpcContext, raw json.RawMessage) (a
 }
 
 func (c *ControlServer) rpcQueryIPLog(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -107,7 +107,7 @@ func (c *ControlServer) rpcQueryIPLog(_ *rpcContext, raw json.RawMessage) (any, 
 	if fault := decodeOptionalParams(raw, &params); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	result, err := store.Query(iplog.QueryParams{
+	result, err := store.Query(audit.QueryParams{
 		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, IP: params.IP, ASN: params.ASN,
 		Country: params.Country, Tag: params.Tag, Protocol: params.Protocol, Upstream: params.Upstream, SortBy: params.SortBy, SortOrder: params.SortOrder,
 		Limit: params.Limit, Offset: params.Offset,
@@ -119,7 +119,7 @@ func (c *ControlServer) rpcQueryIPLog(_ *rpcContext, raw json.RawMessage) (any, 
 }
 
 func (c *ControlServer) rpcQueryRejectionLog(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -127,7 +127,7 @@ func (c *ControlServer) rpcQueryRejectionLog(_ *rpcContext, raw json.RawMessage)
 	if fault := decodeOptionalParams(raw, &params); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	result, err := store.QueryRejections(iplog.RejectionQueryParams{
+	result, err := store.QueryRejections(audit.RejectionQueryParams{
 		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, IP: params.IP, ASN: params.ASN,
 		Country: params.Country, Reason: params.Reason, Protocol: params.Protocol, Port: params.Port,
 		MatchedRuleType: params.MatchedRuleType, MatchedRuleValue: params.MatchedRuleValue,
@@ -140,7 +140,7 @@ func (c *ControlServer) rpcQueryRejectionLog(_ *rpcContext, raw json.RawMessage)
 }
 
 func (c *ControlServer) rpcQueryLogEvents(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -148,7 +148,7 @@ func (c *ControlServer) rpcQueryLogEvents(_ *rpcContext, raw json.RawMessage) (a
 	if fault := decodeOptionalParams(raw, &params); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	result, err := store.QueryLogEvents(iplog.LogEventQueryParams{
+	result, err := store.QueryLogEvents(audit.LogEventQueryParams{
 		StartTime: params.StartTime, EndTime: params.EndTime, CIDR: params.CIDR, IP: params.IP, ASN: params.ASN,
 		Country: params.Country, Tag: params.Tag, Protocol: params.Protocol, Upstream: params.Upstream, Port: params.Port, Reason: params.Reason,
 		MatchedRuleType: params.MatchedRuleType, MatchedRuleValue: params.MatchedRuleValue,
@@ -171,7 +171,7 @@ type topTalkersParams struct {
 }
 
 func (c *ControlServer) rpcGetTopTalkers(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -179,7 +179,7 @@ func (c *ControlServer) rpcGetTopTalkers(_ *rpcContext, raw json.RawMessage) (an
 	if fault := decodeOptionalParams(raw, &params); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	result, err := store.GetTopTalkers(iplog.TopTalkerParams{
+	result, err := store.GetTopTalkers(audit.TopTalkerParams{
 		StartTime: params.StartTime,
 		EndTime:   params.EndTime,
 		Protocol:  params.Protocol,
@@ -193,7 +193,7 @@ func (c *ControlServer) rpcGetTopTalkers(_ *rpcContext, raw json.RawMessage) (an
 	return rpcOK(result)
 }
 
-func (c *ControlServer) getIPLogStatus(store *iplog.Store) (ipLogStatusResponse, error) {
+func (c *ControlServer) getIPLogStatus(store *audit.Store) (ipLogStatusResponse, error) {
 	stats, err := store.Stats()
 	if err != nil {
 		return ipLogStatusResponse{}, err

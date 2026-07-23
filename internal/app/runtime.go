@@ -14,7 +14,6 @@ import (
 	"github.com/NodePath81/fbforward/internal/flowcontext"
 	"github.com/NodePath81/fbforward/internal/forwarding"
 	"github.com/NodePath81/fbforward/internal/geoip"
-	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/notify"
@@ -43,8 +42,8 @@ type Runtime struct {
 	policy             forwarding.AdmissionPolicy
 	control            *control.ControlServer
 	geoipMgr           *geoip.Manager
-	iplogStore         *iplog.Store
-	iplogPipeline      *audit.Pipeline
+	auditStore         *audit.Store
+	auditPipeline      *audit.Pipeline
 	firewall           *policy.Provider
 	onlinePolicy       *policy.OnlineProvider
 	upstreams          []*upstream.Upstream
@@ -130,24 +129,24 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	}
 	rt.firewall = fw
 	if cfg.IPLog.Enabled {
-		store, err := iplog.NewStore(cfg.IPLog.DBPath)
+		store, err := audit.NewStore(cfg.IPLog.DBPath)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
-		rt.iplogStore = store
-		rt.iplogStore.StartRetention(ctx, cfg.IPLog.Retention.Duration(), cfg.IPLog.PruneInterval.Duration())
-		rt.iplogPipeline = audit.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
-		flowObservers = append(flowObservers, rt.iplogPipeline)
-		flowContextRegistry.SetSnapshotSink(auditContextSink{pipeline: rt.iplogPipeline})
-		onlinePolicy, onlineErr := policy.NewOnlineProvider(rt.iplogStore, policy.OnlineProviderOptions{
+		rt.auditStore = store
+		rt.auditStore.StartRetention(ctx, cfg.IPLog.Retention.Duration(), cfg.IPLog.PruneInterval.Duration())
+		rt.auditPipeline = audit.NewPipeline(cfg.IPLog, rt.geoipMgr, store, metricSet, logger)
+		flowObservers = append(flowObservers, rt.auditPipeline)
+		flowContextRegistry.SetSnapshotSink(auditContextSink{pipeline: rt.auditPipeline})
+		onlinePolicy, onlineErr := policy.NewOnlineProvider(rt.auditStore, policy.OnlineProviderOptions{
 			UpstreamAvailable: func(tag string) bool { return manager.Get(tag) != nil },
 			Logger:            util.ComponentLogger(logger, util.CompControl),
 			Telemetry:         metricSet,
 		})
 		if onlineErr != nil {
 			cancel()
-			_ = rt.iplogStore.Close()
+			_ = rt.auditStore.Close()
 			return nil, onlineErr
 		}
 		rt.onlinePolicy = onlinePolicy
@@ -162,7 +161,7 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 				Namespaces: append([]string(nil), identity.Namespaces...),
 			})
 		}
-		rt.flowContextService = flowcontext.NewService(flowContextRegistry, rt.iplogStore, flowcontext.HTTPOptions{
+		rt.flowContextService = flowcontext.NewService(flowContextRegistry, rt.auditStore, flowcontext.HTTPOptions{
 			Identities: identities,
 			MaxTTL:     cfg.FlowContext.MaxTTL.Duration(),
 		}, logger)
@@ -208,8 +207,8 @@ func NewRuntime(cfg config.Config, logger util.Logger, restartFn func() error) (
 	if rt.geoipMgr != nil {
 		ctrl.SetGeoIPManager(rt.geoipMgr)
 	}
-	if rt.iplogStore != nil {
-		ctrl.SetIPLogStore(rt.iplogStore)
+	if rt.auditStore != nil {
+		ctrl.SetAuditStore(rt.auditStore)
 	}
 	ctrl.SetFirewallProvider(rt.firewall)
 	ctrl.SetOnlinePolicyProvider(rt.onlinePolicy)
@@ -230,8 +229,8 @@ func (r *Runtime) Start() error {
 	if r.geoipMgr != nil {
 		r.geoipMgr.Start(r.ctx)
 	}
-	if r.iplogPipeline != nil {
-		r.iplogPipeline.Start()
+	if r.auditPipeline != nil {
+		r.auditPipeline.Start()
 	}
 	if r.onlinePolicy != nil {
 		r.onlinePolicy.Start(r.ctx.Done())
@@ -268,10 +267,10 @@ func (r *Runtime) Stop() {
 			util.Event(r.logger, slog.LevelWarn, "flowcontext.shutdown_failed", "error", err)
 		}
 	}
-	if r.iplogPipeline != nil {
+	if r.auditPipeline != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := r.iplogPipeline.Shutdown(ctx); err != nil {
-			util.Event(r.logger, slog.LevelWarn, "iplog.shutdown_failed", "error", err)
+		if err := r.auditPipeline.Shutdown(ctx); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "audit.shutdown_failed", "error", err)
 		}
 		cancel()
 	}
@@ -280,9 +279,9 @@ func (r *Runtime) Stop() {
 			util.Event(r.logger, slog.LevelWarn, "geoip.close_failed", "error", err)
 		}
 	}
-	if r.iplogStore != nil {
-		if err := r.iplogStore.Close(); err != nil {
-			util.Event(r.logger, slog.LevelWarn, "iplog.store_close_failed", "error", err)
+	if r.auditStore != nil {
+		if err := r.auditStore.Close(); err != nil {
+			util.Event(r.logger, slog.LevelWarn, "audit.store_close_failed", "error", err)
 		}
 	}
 	if r.notifyPolicy != nil {

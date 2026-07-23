@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/config"
 	"github.com/NodePath81/fbforward/internal/flowcontext"
 	"github.com/NodePath81/fbforward/internal/geoip"
-	"github.com/NodePath81/fbforward/internal/iplog"
 	"github.com/NodePath81/fbforward/internal/measure"
 	"github.com/NodePath81/fbforward/internal/metrics"
 	"github.com/NodePath81/fbforward/internal/notify"
@@ -53,7 +53,7 @@ type ControlServer struct {
 	geoipMu     sync.RWMutex
 	geoipMgr    geoipManager
 	iplogMu     sync.RWMutex
-	iplogStore  *iplog.Store
+	auditStore  *audit.Store
 	firewallMu  sync.RWMutex
 	firewall    *policy.Provider
 	onlineMu    sync.RWMutex
@@ -154,10 +154,10 @@ func (c *ControlServer) SetGeoIPManager(manager geoipManager) {
 	c.geoipMgr = manager
 }
 
-func (c *ControlServer) SetIPLogStore(store *iplog.Store) {
+func (c *ControlServer) SetAuditStore(store *audit.Store) {
 	c.iplogMu.Lock()
 	defer c.iplogMu.Unlock()
-	c.iplogStore = store
+	c.auditStore = store
 }
 
 func (c *ControlServer) SetFirewallProvider(provider *policy.Provider) {

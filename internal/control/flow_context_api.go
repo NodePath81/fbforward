@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/NodePath81/fbforward/internal/iplog"
+	"github.com/NodePath81/fbforward/internal/audit"
 )
 
 type listFlowContextTagsParams struct {
@@ -22,17 +22,17 @@ type listFlowContextActionsParams struct {
 }
 
 type flowContextTagsResponse struct {
-	Records []iplog.EffectiveTag `json:"records"`
+	Records []audit.EffectiveTag `json:"records"`
 	HasMore bool                 `json:"has_more"`
 }
 
 type flowContextActionsResponse struct {
-	Records []iplog.FlowTagAction `json:"records"`
+	Records []audit.FlowTagAction `json:"records"`
 	HasMore bool                  `json:"has_more"`
 }
 
 func (c *ControlServer) rpcListFlowContextTags(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -48,7 +48,7 @@ func (c *ControlServer) rpcListFlowContextTags(_ *rpcContext, raw json.RawMessag
 }
 
 func (c *ControlServer) rpcListFlowContextActions(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}

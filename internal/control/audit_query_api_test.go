@@ -6,16 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NodePath81/fbforward/internal/iplog"
+	"github.com/NodePath81/fbforward/internal/audit"
 )
 
 func TestQueryAuditDSLAndTopASNs(t *testing.T) {
 	server := newTestControlServer(t)
-	store := newTestIPLogStore(t, server)
+	store := newTestAuditStore(t, server)
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.InsertBatch([]iplog.EnrichedRecord{
-		{CloseEvent: iplog.CloseEvent{IP: "192.0.2.10", Protocol: "tcp", Upstream: "primary", BytesUp: 20, BytesDown: 30, RecordedAt: now}, ASN: 64500, ASOrg: "Example", Country: "US"},
-		{CloseEvent: iplog.CloseEvent{IP: "192.0.2.11", Protocol: "tcp", Upstream: "primary", BytesUp: 1, BytesDown: 2, RecordedAt: now}, ASN: 64501, ASOrg: "Other", Country: "GB"},
+	if err := store.InsertFlows([]audit.FlowRecord{
+		{FlowID: "query-flow-1", ClientIP: "192.0.2.10", Protocol: "tcp", Upstream: "primary", BytesUp: 20, BytesDown: 30, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64500, ASOrg: "Example", Country: "US"},
+		{FlowID: "query-flow-2", ClientIP: "192.0.2.11", Protocol: "tcp", Upstream: "primary", BytesUp: 1, BytesDown: 2, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64501, ASOrg: "Other", Country: "GB"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestQueryAuditDSLAndTopASNs(t *testing.T) {
 
 func TestQueryAuditRejectsUnknownFieldsAndSQL(t *testing.T) {
 	server := newTestControlServer(t)
-	_ = newTestIPLogStore(t, server)
+	_ = newTestAuditStore(t, server)
 	for _, params := range []map[string]any{
 		{"query": "flows protocol=tcp; DROP TABLE flows"},
 		{"query": "flows tag=x", "extra": true},
@@ -66,9 +66,9 @@ func TestQueryAuditRejectsUnknownFieldsAndSQL(t *testing.T) {
 
 func TestQueryAuditSourcesAndFilters(t *testing.T) {
 	server := newTestControlServer(t)
-	store := newTestIPLogStore(t, server)
+	store := newTestAuditStore(t, server)
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.InsertBatch([]iplog.EnrichedRecord{{CloseEvent: iplog.CloseEvent{IP: "192.0.2.20", Protocol: "udp", Upstream: "backup", BytesUp: 3, BytesDown: 7, RecordedAt: now}, ASN: 64520, Country: "US"}}); err != nil {
+	if err := store.InsertFlows([]audit.FlowRecord{{FlowID: "query-flow-3", ClientIP: "192.0.2.20", Protocol: "udp", Upstream: "backup", BytesUp: 3, BytesDown: 7, StartedAt: now, EndedAt: now, LastActivity: now, ASN: 64520, Country: "US"}}); err != nil {
 		t.Fatal(err)
 	}
 	queries := []string{
@@ -98,15 +98,15 @@ func TestQueryAuditSourcesAndFilters(t *testing.T) {
 
 func TestFlowContextTagAndActionRPCs(t *testing.T) {
 	server := newTestControlServer(t)
-	store := newTestIPLogStore(t, server)
+	store := newTestAuditStore(t, server)
 	now := time.Now().UTC()
-	if err := store.UpsertFlowEntity(iplog.FlowEntity{FlowID: "rpc-context-flow", Protocol: "tcp", ClientIP: "192.0.2.40", CreatedAt: now, LastActivity: now, State: "closed"}); err != nil {
+	if err := store.UpsertFlowEntity(audit.FlowEntity{FlowID: "rpc-context-flow", Protocol: "tcp", ClientIP: "192.0.2.40", CreatedAt: now, LastActivity: now, State: "closed"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFlowTag(iplog.FlowTag{FlowID: "rpc-context-flow", Tag: "app:user=alice", Source: "flow-context", UpdatedAt: now}); err != nil {
+	if err := store.UpsertFlowTag(audit.FlowTag{FlowID: "rpc-context-flow", Tag: "app:user=alice", Source: "flow-context", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AppendFlowTagEvent(iplog.FlowTagEvent{EventID: "rpc-context-event", FlowID: "rpc-context-flow", Tag: "app:user=alice", Operation: "set", Actor: "micproxy", CreatedAt: now}); err != nil {
+	if err := store.AppendFlowTagEvent(audit.FlowTagEvent{EventID: "rpc-context-event", FlowID: "rpc-context-flow", Tag: "app:user=alice", Operation: "set", Actor: "micproxy", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	for method := range map[string]bool{"ListFlowContextTags": true, "ListFlowContextActions": true} {
@@ -125,15 +125,15 @@ func TestFlowContextTagAndActionRPCs(t *testing.T) {
 
 func TestQueryAuditFlowRecordsIncludeCurrentTags(t *testing.T) {
 	server := newTestControlServer(t)
-	store := newTestIPLogStore(t, server)
+	store := newTestAuditStore(t, server)
 	now := time.Now().UTC()
-	if err := store.InsertBatch([]iplog.EnrichedRecord{{CloseEvent: iplog.CloseEvent{FlowID: "audit-tag-flow", IP: "192.0.2.41", Protocol: "tcp", BytesUp: 4, BytesDown: 6, RecordedAt: now}}}); err != nil {
+	if err := store.InsertFlows([]audit.FlowRecord{{FlowID: "audit-tag-flow", ClientIP: "192.0.2.41", Protocol: "tcp", BytesUp: 4, BytesDown: 6, StartedAt: now, EndedAt: now, LastActivity: now}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFlowEntity(iplog.FlowEntity{FlowID: "audit-tag-flow", Protocol: "tcp", ClientIP: "192.0.2.41", CreatedAt: now, LastActivity: now, State: "closed"}); err != nil {
+	if err := store.UpsertFlowEntity(audit.FlowEntity{FlowID: "audit-tag-flow", Protocol: "tcp", ClientIP: "192.0.2.41", CreatedAt: now, LastActivity: now, State: "closed"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFlowTag(iplog.FlowTag{FlowID: "audit-tag-flow", Tag: "app:user=alice", UpdatedAt: now}); err != nil {
+	if err := store.UpsertFlowTag(audit.FlowTag{FlowID: "audit-tag-flow", Tag: "app:user=alice", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	rec := callTestRPC(t, server, "0123456789abcdef", "QueryAudit", map[string]any{"query": "flows"})

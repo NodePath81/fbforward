@@ -3,8 +3,8 @@ package control
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/config"
-	"github.com/NodePath81/fbforward/internal/iplog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,7 +14,7 @@ import (
 
 func TestQueryIPLogRejectsCIDRWithoutTimeBound(t *testing.T) {
 	server := newTestControlServer(t)
-	_ = newTestIPLogStore(t, server)
+	_ = newTestAuditStore(t, server)
 
 	rec := callTestRPC(t, server, "0123456789abcdef", "QueryIPLog", map[string]any{
 		"cidr": "192.168.0.0/16",
@@ -26,7 +26,7 @@ func TestQueryIPLogRejectsCIDRWithoutTimeBound(t *testing.T) {
 
 func TestQueryIPLogRejectsMalformedAndInvalidPaging(t *testing.T) {
 	server := newTestControlServer(t)
-	_ = newTestIPLogStore(t, server)
+	_ = newTestAuditStore(t, server)
 
 	malformed := httptest.NewRequest(http.MethodPost, "/rpc", bytes.NewBufferString(`{"method":"QueryIPLog","params":{"limit":"bad"}}`))
 	malformed.Header.Set("Authorization", "Bearer 0123456789abcdef")
@@ -48,12 +48,12 @@ func TestQueryIPLogRejectsMalformedAndInvalidPaging(t *testing.T) {
 func TestGetIPLogStatusReturnsStats(t *testing.T) {
 	server := newTestControlServer(t)
 	dbPath := filepath.Join(t.TempDir(), "iplog.sqlite")
-	store, err := iplog.NewStore(dbPath)
+	store, err := audit.NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewStore error: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server.SetIPLogStore(store)
+	server.SetAuditStore(store)
 	server.fullCfg.IPLog = config.IPLogConfig{
 		Enabled:       true,
 		DBPath:        dbPath,
@@ -62,16 +62,16 @@ func TestGetIPLogStatusReturnsStats(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.InsertBatch([]iplog.EnrichedRecord{
-		{CloseEvent: iplog.CloseEvent{IP: "192.168.1.10", Protocol: "tcp", Upstream: "a", Port: 1, RecordedAt: now.Add(-time.Minute)}},
-		{CloseEvent: iplog.CloseEvent{IP: "192.168.1.11", Protocol: "udp", Upstream: "b", Port: 2, RecordedAt: now}},
+	if err := store.InsertFlows([]audit.FlowRecord{
+		{FlowID: "audit-flow-1", ClientIP: "192.168.1.10", Protocol: "tcp", Upstream: "a", ClientPort: 1, StartedAt: now.Add(-time.Minute), EndedAt: now.Add(-time.Minute), LastActivity: now.Add(-time.Minute)},
+		{FlowID: "audit-flow-2", ClientIP: "192.168.1.11", Protocol: "udp", Upstream: "b", ClientPort: 2, StartedAt: now, EndedAt: now, LastActivity: now},
 	}); err != nil {
-		t.Fatalf("InsertBatch error: %v", err)
+		t.Fatalf("InsertFlows error: %v", err)
 	}
-	if err := store.InsertRejectionBatch([]iplog.EnrichedRejectionRecord{
-		{RejectionEvent: iplog.RejectionEvent{IP: "10.0.0.1", Protocol: "tcp", Port: 1, Reason: "firewall_deny", RecordedAt: now.Add(-30 * time.Second)}},
+	if err := store.InsertRejections([]audit.RejectionRow{
+		{EventID: "rejection-1", ClientIP: "10.0.0.1", Protocol: "tcp", Port: 1, Reason: "firewall_deny", RecordedAt: now.Add(-30 * time.Second)},
 	}); err != nil {
-		t.Fatalf("InsertRejectionBatch error: %v", err)
+		t.Fatalf("InsertRejections error: %v", err)
 	}
 
 	rec := callTestRPC(t, server, "0123456789abcdef", "GetIPLogStatus", nil)
@@ -108,35 +108,34 @@ func TestGetIPLogStatusReturnsStats(t *testing.T) {
 
 func TestQueryLogEventsReturnsMergedResult(t *testing.T) {
 	server := newTestControlServer(t)
-	store := newTestIPLogStore(t, server)
+	store := newTestAuditStore(t, server)
 
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := store.InsertBatch([]iplog.EnrichedRecord{
-		{CloseEvent: iplog.CloseEvent{
-			IP:         "192.168.1.10",
-			Protocol:   "tcp",
-			Upstream:   "primary",
-			Port:       9000,
-			BytesUp:    10,
-			BytesDown:  20,
-			DurationMs: 30,
-			RecordedAt: now.Add(-time.Minute),
-		}},
+	if err := store.InsertFlows([]audit.FlowRecord{
+		{FlowID: "audit-flow-3", ClientIP: "192.168.1.10",
+			Protocol:     "tcp",
+			Upstream:     "primary",
+			ClientPort:   9000,
+			BytesUp:      10,
+			BytesDown:    20,
+			StartedAt:    now.Add(-time.Minute),
+			EndedAt:      now.Add(-time.Minute),
+			LastActivity: now.Add(-time.Minute),
+		},
 	}); err != nil {
-		t.Fatalf("InsertBatch error: %v", err)
+		t.Fatalf("InsertFlows error: %v", err)
 	}
-	if err := store.InsertRejectionBatch([]iplog.EnrichedRejectionRecord{
-		{RejectionEvent: iplog.RejectionEvent{
-			IP:               "10.0.0.1",
+	if err := store.InsertRejections([]audit.RejectionRow{
+		{EventID: "rejection-2", ClientIP: "10.0.0.1",
 			Protocol:         "tcp",
 			Port:             9000,
 			Reason:           "firewall_deny",
 			MatchedRuleType:  "cidr",
 			MatchedRuleValue: "10.0.0.0/8",
 			RecordedAt:       now,
-		}},
+		},
 	}); err != nil {
-		t.Fatalf("InsertRejectionBatch error: %v", err)
+		t.Fatalf("InsertRejections error: %v", err)
 	}
 
 	rec := callTestRPC(t, server, "0123456789abcdef", "QueryLogEvents", map[string]any{

@@ -40,7 +40,7 @@ func (c *ControlServer) rpcGetActiveFlows(_ *rpcContext, raw json.RawMessage) (a
 }
 
 func (c *ControlServer) attachFlowTags(entries []StatusEntry) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil || len(entries) == 0 {
 		return
 	}

@@ -68,7 +68,7 @@ func TestNewRuntimeWithIPLogAndFirewallCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRuntime error: %v", err)
 	}
-	if rt.geoipMgr == nil || rt.iplogStore == nil || rt.iplogPipeline == nil || rt.firewall == nil {
+	if rt.geoipMgr == nil || rt.auditStore == nil || rt.auditPipeline == nil || rt.firewall == nil {
 		t.Fatalf("expected runtime to wire geoip/iplog/firewall components")
 	}
 

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/flow"
-	"github.com/NodePath81/fbforward/internal/iplog"
 )
 
 func TestGetActiveFlowsRPCReturnsSnapshot(t *testing.T) {
@@ -81,29 +81,29 @@ func TestGetActiveFlowsSnapshotConcurrentWithUpdates(t *testing.T) {
 
 func TestGetActiveFlowsIncludesEffectiveTags(t *testing.T) {
 	server := newTestControlServer(t)
-	store := newTestIPLogStore(t, server)
+	store := newTestAuditStore(t, server)
 	id, err := flow.NewID()
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := store.UpsertFlowEntity(iplog.FlowEntity{FlowID: id.String(), Protocol: "tcp", ClientIP: "192.0.2.15", CreatedAt: now, LastActivity: now, State: "active"}); err != nil {
+	if err := store.UpsertFlowEntity(audit.FlowEntity{FlowID: id.String(), Protocol: "tcp", ClientIP: "192.0.2.15", CreatedAt: now, LastActivity: now, State: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFlowTag(iplog.FlowTag{FlowID: id.String(), Tag: "app:user=alice", UpdatedAt: now}); err != nil {
+	if err := store.UpsertFlowTag(audit.FlowTag{FlowID: id.String(), Tag: "app:user=alice", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertClientTag(iplog.ClientTag{ClientIP: "192.0.2.15", Tag: "app:risk=trusted", UpdatedAt: now}); err != nil {
+	if err := store.UpsertClientTag(audit.ClientTag{ClientIP: "192.0.2.15", Tag: "app:risk=trusted", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	udpID, err := flow.NewID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFlowEntity(iplog.FlowEntity{FlowID: udpID.String(), Protocol: "udp", ClientIP: "192.0.2.16", CreatedAt: now, LastActivity: now, State: "active"}); err != nil {
+	if err := store.UpsertFlowEntity(audit.FlowEntity{FlowID: udpID.String(), Protocol: "udp", ClientIP: "192.0.2.16", CreatedAt: now, LastActivity: now, State: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFlowTag(iplog.FlowTag{FlowID: udpID.String(), Tag: "app:udp", UpdatedAt: now}); err != nil {
+	if err := store.UpsertFlowTag(audit.FlowTag{FlowID: udpID.String(), Tag: "app:udp", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	server.status.Open(flow.Meta{ID: id, Protocol: flow.ProtocolTCP, ClientAddr: netip.MustParseAddrPort("192.0.2.15:4321"), StartedAt: now})

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NodePath81/fbforward/internal/audit"
 	"github.com/NodePath81/fbforward/internal/auditdsl"
-	"github.com/NodePath81/fbforward/internal/iplog"
 )
 
 type queryAuditParams struct {
@@ -36,7 +36,7 @@ type auditQueryResponse struct {
 }
 
 func (c *ControlServer) rpcGetTopASNs(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -44,7 +44,7 @@ func (c *ControlServer) rpcGetTopASNs(_ *rpcContext, raw json.RawMessage) (any, 
 	if fault := decodeOptionalParams(raw, &params); fault != nil {
 		return rpcError(fault.Status, fault.Message)
 	}
-	result, err := store.GetTopASNs(iplog.TopASNParams{
+	result, err := store.GetTopASNs(audit.TopASNParams{
 		StartTime: params.StartTime, EndTime: params.EndTime, Protocol: params.Protocol,
 		Upstream: params.Upstream, Tag: params.Tag, SortBy: params.SortBy,
 		SortOrder: params.SortOrder, Limit: params.Limit, Offset: params.Offset,
@@ -69,7 +69,7 @@ func decodeAuditQuery(raw json.RawMessage) (queryAuditParams, *rpcFault) {
 }
 
 func (c *ControlServer) rpcQueryAudit(_ *rpcContext, raw json.RawMessage) (any, *rpcFault) {
-	store := c.auditStore()
+	store := c.auditDB()
 	if store == nil {
 		return rpcError(http.StatusServiceUnavailable, "ip log store not available")
 	}
@@ -88,7 +88,7 @@ func (c *ControlServer) rpcQueryAudit(_ *rpcContext, raw json.RawMessage) (any, 
 			return rpcError(http.StatusBadRequest, err.Error())
 		}
 		if query.Source == auditdsl.SourceTopClients {
-			result, err := store.GetTopTalkers(iplog.TopTalkerParams{
+			result, err := store.GetTopTalkers(audit.TopTalkerParams{
 				StartTime: start, EndTime: end, Protocol: query.Filters["protocol"],
 				Upstream: query.Filters["upstream"], Tag: query.Filters["tag"],
 				SortBy: query.SortBy, SortOrder: query.SortOrder, Limit: query.Limit, Offset: query.Offset,
@@ -99,7 +99,7 @@ func (c *ControlServer) rpcQueryAudit(_ *rpcContext, raw json.RawMessage) (any, 
 			return rpcOK(auditQueryResponse{Query: params.Query, Source: string(query.Source), Result: result})
 		}
 		if query.Source == auditdsl.SourceTopTags {
-			result, err := store.GetTopTags(iplog.TopTagParams{
+			result, err := store.GetTopTags(audit.TopTagParams{
 				StartTime: start, EndTime: end, Protocol: query.Filters["protocol"],
 				Upstream: query.Filters["upstream"], SortBy: query.SortBy,
 				SortOrder: query.SortOrder, Limit: query.Limit, Offset: query.Offset,
@@ -109,7 +109,7 @@ func (c *ControlServer) rpcQueryAudit(_ *rpcContext, raw json.RawMessage) (any, 
 			}
 			return rpcOK(auditQueryResponse{Query: params.Query, Source: string(query.Source), Result: result})
 		}
-		result, err := store.GetTopASNs(iplog.TopASNParams{
+		result, err := store.GetTopASNs(audit.TopASNParams{
 			StartTime: start, EndTime: end, Protocol: query.Filters["protocol"],
 			Upstream: query.Filters["upstream"], Tag: query.Filters["tag"],
 			SortBy: query.SortBy, SortOrder: query.SortOrder, Limit: query.Limit, Offset: query.Offset,
@@ -127,13 +127,13 @@ func (c *ControlServer) rpcQueryAudit(_ *rpcContext, raw json.RawMessage) (any, 
 	if err != nil {
 		return rpcError(http.StatusBadRequest, err.Error())
 	}
-	entryType := iplog.EntryTypeAll
+	entryType := audit.EntryTypeAll
 	if query.Source == auditdsl.SourceFlows {
-		entryType = iplog.EntryTypeFlow
+		entryType = audit.EntryTypeFlow
 	} else if query.Source == auditdsl.SourceRejections {
-		entryType = iplog.EntryTypeRejection
+		entryType = audit.EntryTypeRejection
 	}
-	result, err := store.QueryLogEvents(iplog.LogEventQueryParams{
+	result, err := store.QueryLogEvents(audit.LogEventQueryParams{
 		StartTime: start, EndTime: end, CIDR: query.Filters["cidr"], IP: query.Filters["ip"], ASN: asn,
 		Country: query.Filters["country"], Tag: query.Filters["tag"], Protocol: query.Filters["protocol"],
 		Upstream: query.Filters["upstream"], Reason: query.Filters["reason"], EntryType: entryType,
