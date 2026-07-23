@@ -211,16 +211,10 @@ func (p *Pipeline) allowRejection(key string, now time.Time) bool {
 		return false
 	}
 	if len(p.recent) >= rejectionDedupeMaxEntries {
-		oldestKey := ""
-		var oldestAt time.Time
-		for existingKey, seenAt := range p.recent {
-			if oldestKey == "" || seenAt.Before(oldestAt) {
-				oldestKey, oldestAt = existingKey, seenAt
-			}
-		}
-		if oldestKey != "" {
-			delete(p.recent, oldestKey)
-		}
+		// Reset the bounded best-effort cache instead of scanning it for the
+		// oldest entry on every new rejection. Rejection persistence remains
+		// bounded and the forwarding path keeps a constant-size critical step.
+		p.recent = make(map[string]time.Time, rejectionDedupeMaxEntries)
 	}
 	p.recent[key] = now
 	return true

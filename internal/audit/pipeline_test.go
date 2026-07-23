@@ -186,7 +186,13 @@ func TestPipelineBoundsRejectionDeduplication(t *testing.T) {
 			t.Fatalf("rejection %d was unexpectedly suppressed", i)
 		}
 	}
-	if got := len(pipeline.recent); got != rejectionDedupeMaxEntries {
-		t.Fatalf("dedupe entries = %d, want %d", got, rejectionDedupeMaxEntries)
+	if got := len(pipeline.recent); got != 1 {
+		t.Fatalf("dedupe entries after capacity reset = %d, want 1", got)
+	}
+	if _, ok := pipeline.recent["key-0"]; ok {
+		t.Fatal("dedupe cache retained entries across a capacity reset")
+	}
+	if _, ok := pipeline.recent[fmt.Sprintf("key-%d", rejectionDedupeMaxEntries)]; !ok {
+		t.Fatal("dedupe cache did not retain the latest rejection")
 	}
 }
