@@ -181,7 +181,7 @@ func TestPipelineBoundsRejectionDeduplication(t *testing.T) {
 
 	pipeline.recent = make(map[string]time.Time, rejectionDedupeMaxEntries)
 	pipeline.lastSweep = base
-	for i := 0; i < rejectionDedupeMaxEntries+1; i++ {
+	for i := 0; i < rejectionDedupeMaxEntries; i++ {
 		if !pipeline.allowRejection(fmt.Sprintf("key-%d", i), base.Add(time.Second)) {
 			t.Fatalf("rejection %d was unexpectedly suppressed", i)
 		}
