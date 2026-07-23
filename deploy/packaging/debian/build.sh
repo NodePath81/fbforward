@@ -16,7 +16,7 @@ PKG_DIR="${BUILD_DIR}/${SERVICE_NAME}_${VERSION}_${ARCH}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/deploy/packaging/debian/deb}"
 OUTPUT_DEB="${OUTPUT_DIR}/${SERVICE_NAME}_${VERSION}_${ARCH}.deb"
 
-rm -rf "$PKG_DIR"
+rm -rf "$BUILD_DIR"
 mkdir -p "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/usr/local/bin" \
   "$PKG_DIR/usr/share/fbforward" \
