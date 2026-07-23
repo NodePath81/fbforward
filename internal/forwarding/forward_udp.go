@@ -222,38 +222,36 @@ func (l *UDPListener) lookupMapping(key string) *udpMapping {
 }
 
 func (l *UDPListener) getOrReserveMapping(key, clientIP string) (*udpMapping, *udpMappingReservation, error) {
-	for {
-		l.mu.Lock()
-		if mapping := l.mappings[key]; mapping != nil {
-			l.mu.Unlock()
-			return mapping, nil, nil
-		}
-		if pending := l.pending[key]; pending != nil {
-			l.mu.Unlock()
-			<-pending.ready
-			if pending.err != nil {
-				return nil, nil, pending.err
-			}
-			return pending.mapping, nil, nil
-		}
-		if clientIP != "" && l.ipCounts[clientIP] >= l.maxPerIP {
-			l.mu.Unlock()
-			return nil, nil, errUDPPerIPLimit
-		}
-		select {
-		case l.sem <- struct{}{}:
-		default:
-			l.mu.Unlock()
-			return nil, nil, errUDPMappingLimit
-		}
-		pending := &udpMappingReservation{ready: make(chan struct{})}
-		l.pending[key] = pending
-		if clientIP != "" {
-			l.ipCounts[clientIP]++
-		}
+	l.mu.Lock()
+	if mapping := l.mappings[key]; mapping != nil {
 		l.mu.Unlock()
-		return nil, pending, nil
+		return mapping, nil, nil
 	}
+	if pending := l.pending[key]; pending != nil {
+		l.mu.Unlock()
+		<-pending.ready
+		if pending.err != nil {
+			return nil, nil, pending.err
+		}
+		return pending.mapping, nil, nil
+	}
+	if clientIP != "" && l.ipCounts[clientIP] >= l.maxPerIP {
+		l.mu.Unlock()
+		return nil, nil, errUDPPerIPLimit
+	}
+	select {
+	case l.sem <- struct{}{}:
+	default:
+		l.mu.Unlock()
+		return nil, nil, errUDPMappingLimit
+	}
+	pending := &udpMappingReservation{ready: make(chan struct{})}
+	l.pending[key] = pending
+	if clientIP != "" {
+		l.ipCounts[clientIP]++
+	}
+	l.mu.Unlock()
+	return nil, pending, nil
 }
 
 func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta, decision Decision) (*udpMapping, error) {
@@ -282,19 +280,7 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		"upstream", selected.Tag,
 		"upstream.ip", upstreamIP,
 	)
-	if l.cfg.BindPort < 0 || l.cfg.BindPort > 65535 {
-		err := errors.New("invalid upstream port")
-		util.Event(l.logger, slog.LevelWarn, "forward.udp.dial_failed",
-			"upstream", selected.Tag,
-			"error", err,
-			"result", "failed",
-		)
-		if feedback, ok := l.picker.(DialFeedback); ok {
-			feedback.MarkDialFailure(selected, udpDialFailureCooldown)
-		}
-		return nil, errors.Join(errUDPUpstreamDial, err)
-	}
-	upAddr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(selected.Addr, uint16(l.cfg.BindPort)))
+	upAddr := &net.UDPAddr{IP: net.IP(selected.Addr.AsSlice()), Port: l.cfg.BindPort, Zone: selected.Addr.Zone()}
 	upConn, err := net.DialUDP("udp", nil, upAddr)
 	if err != nil {
 		util.Event(l.logger, slog.LevelWarn, "forward.udp.dial_failed",
@@ -321,9 +307,6 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		upstreamConn:  upConn,
 		timeout:       l.timeout,
 		logger:        l.logger,
-		observer:      l.observer,
-		registry:      l.registry,
-		binder:        l.binder,
 		rateLimiter:   newByteRateLimiter(decision.RateLimitBPS),
 		activityCh:    make(chan struct{}, 1),
 		done:          make(chan struct{}),
@@ -351,10 +334,10 @@ func (l *UDPListener) buildMapping(clientAddr *net.UDPAddr, candidate flow.Meta,
 		Route:      mapping.route,
 		Upstream:   selected.Tag,
 		StartedAt:  candidate.StartedAt,
-	}, mapping.observer, mapping.registry, mapping.close)
+	}, l.observer, l.registry, mapping.close)
 	mapping.lifecycle.Open()
-	if mapping.registry != nil {
-		mapping.registry.SetControls(mapping.id, flow.Controls{
+	if l.registry != nil {
+		l.registry.SetControls(mapping.id, flow.Controls{
 			Block:      func() bool { return mapping.closeWithReason("backend_blocked") },
 			SetLimit:   mapping.setRateLimit,
 			ClearLimit: mapping.clearRateLimit,
@@ -431,9 +414,6 @@ type udpMapping struct {
 	upstreamConn  *net.UDPConn
 	timeout       time.Duration
 	logger        util.Logger
-	observer      FlowObserver
-	registry      *flow.Registry
-	binder        BackendBinder
 	rateLimiter   *byteRateLimiter
 	created       time.Time
 	upstreamIP    string

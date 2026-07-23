@@ -57,9 +57,17 @@ func TestUDPConcurrentFirstPacketsCreateOneMapping(t *testing.T) {
 		t.Fatalf("upstream picker calls=%d, want 1", got)
 	}
 	mapping.closeWithReason("test")
+	listener.mu.RLock()
+	defer listener.mu.RUnlock()
+	if len(listener.mappings) != 0 || len(listener.pending) != 0 || len(listener.ipCounts) != 0 {
+		t.Fatalf("mapping state not released: mappings=%d pending=%d ip_counts=%d", len(listener.mappings), len(listener.pending), len(listener.ipCounts))
+	}
+	if len(listener.sem) != 0 {
+		t.Fatalf("mapping semaphore token not released: %d", len(listener.sem))
+	}
 }
 
-func BenchmarkUDPMappingHit(b *testing.B) {
+func BenchmarkUDPForwardToUpstream(b *testing.B) {
 	for _, size := range []int{64, 1200, 1500, 65507} {
 		b.Run(udpPacketSizeName(size), func(b *testing.B) {
 			mapping, stop := benchmarkUDPMapping(b)
@@ -92,7 +100,7 @@ func udpPacketSizeName(size int) string {
 	}
 }
 
-func BenchmarkUDPMappingHitParallel(b *testing.B) {
+func BenchmarkUDPForwardToUpstreamParallel(b *testing.B) {
 	mapping, stop := benchmarkUDPMapping(b)
 	defer stop()
 	payload := make([]byte, 1200)
@@ -138,7 +146,7 @@ func BenchmarkUDPMappingLookupParallel(b *testing.B) {
 	})
 }
 
-func BenchmarkUDPMappingCreate(b *testing.B) {
+func BenchmarkUDPBuildAndCloseMapping(b *testing.B) {
 	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		b.Fatal(err)

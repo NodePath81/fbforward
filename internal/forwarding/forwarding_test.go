@@ -655,7 +655,6 @@ func TestUDPCloseWithReasonEmitsOneSummary(t *testing.T) {
 		clientIP:      "1.1.1.1",
 		upstreamTag:   "primary",
 		upstreamConn:  upstreamConn,
-		observer:      observer,
 		done:          make(chan struct{}),
 		created:       time.Now().UTC().Add(-time.Second),
 		listenAddr:    ":9000",
@@ -668,7 +667,7 @@ func TestUDPCloseWithReasonEmitsOneSummary(t *testing.T) {
 		Listener:   mapping.listenAddr,
 		Upstream:   mapping.upstreamTag,
 		StartedAt:  mapping.created,
-	}, mapping.observer, nil, mapping.close)
+	}, observer, nil, mapping.close)
 	mapping.lifecycle.Open()
 	parent.mappings[mapping.clientAddrStr] = mapping
 
@@ -700,14 +699,14 @@ func TestUDPRegistryBlockClosesWithBackendReason(t *testing.T) {
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 12345}
 	mapping := &udpMapping{
 		parent: parent, clientAddr: clientAddr, clientAddrStr: clientAddr.String(), clientIP: "1.1.1.1",
-		upstreamTag: "primary", upstreamConn: upstreamConn, observer: observer, registry: registry,
+		upstreamTag: "primary", upstreamConn: upstreamConn,
 		done: make(chan struct{}), created: time.Now().UTC(), listenAddr: ":9000",
 	}
 	mapping.id, _ = flow.NewID()
 	mapping.lifecycle = flow.NewLifecycle(flow.Meta{
 		ID: mapping.id, Protocol: flow.ProtocolUDP, ClientAddr: netip.MustParseAddrPort(mapping.clientAddrStr),
 		Listener: mapping.listenAddr, Upstream: mapping.upstreamTag, StartedAt: mapping.created,
-	}, mapping.observer, registry, mapping.close)
+	}, observer, registry, mapping.close)
 	mapping.lifecycle.Open()
 	parent.mappings[mapping.clientAddrStr] = mapping
 	registry.SetControls(mapping.id, flow.Controls{Block: func() bool { return mapping.closeWithReason("backend_blocked") }})
